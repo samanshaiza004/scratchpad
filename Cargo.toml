@@ -1,0 +1,14 @@
+[package]
+name = "scratchpad"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+youth-sdk = { git = "https://github.com/samanshaiza004/youth", rev = "f9867b55988353b2d1f10854d40e23f3a58bd600" }
+
+[profile.release]
+lto = true

@@ -1,0 +1,12 @@
+[app]
+id = "dev.saman.scratchpad"
+name = "Scratchpad"
+protocol = "0.0.6"
+
+[build]
+language = "rust"
+package = "scratchpad"
+target = "wasm32-wasip2"
+
+[development]
+state = ".youth/state"

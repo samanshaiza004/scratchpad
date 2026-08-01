@@ -1,0 +1,6 @@
+state integer "document_revision" 5
+state text "text" "hello from before"
+
+mount
+expect text document "hello from before"
+expect text status "Saved as revision 5"

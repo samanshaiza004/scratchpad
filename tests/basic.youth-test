@@ -1,0 +1,14 @@
+mount
+expect present document
+expect text document ""
+expect text status "Saved as revision 1"
+
+activate save
+expect state integer "document_revision" 2
+expect state text "text" ""
+expect text status "Saved as revision 2"
+
+restart
+expect present document
+expect text document ""
+expect text status "Saved as revision 2"
