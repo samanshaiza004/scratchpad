@@ -15,25 +15,12 @@ jobs:
     outputs:
       sha256: ${{ steps.artifact.outputs.sha256 }}
     steps:
-      - name: Compute the Youth checkout path
-        shell: bash
-        run: echo "YOUTH_HOST=${{ runner.temp }}/youth-host" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
-      # Checked out outside github.workspace (the Scratchpad checkout), not a
-      # relative "youth-host" subdirectory inside it. Scratchpad's own
-      # .cargo/config.toml pins target = "wasm32-wasip2" for its own build,
-      # and Cargo's config-file discovery walks up through every ancestor
-      # directory of the current working directory regardless of
-      # --manifest-path -- a checkout nested anywhere under the Scratchpad
-      # tree would silently inherit that default and try to cross-compile
-      # the *native* youth-cli binary as wasm32-wasip2, which fails (an
-      # unstable-std-feature error on Linux, a C-toolchain target error on
-      # macOS -- confirmed both locally and in a real failed CI run).
       - uses: actions/checkout@v4
         with:
           repository: samanshaiza004/youth
           ref: ${{ env.YOUTH_COMMIT }}
-          path: ${{ env.YOUTH_HOST }}
+          path: youth-host
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: wasm32-wasip2
@@ -41,12 +28,30 @@ jobs:
       - uses: taiki-e/install-action@wasm-tools
       - name: Install Linux host dependencies
         run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev
+      - name: Compute the native host triple
+        shell: bash
+        run: 'echo "RUST_HOST_TRIPLE=$(rustc -vV | sed -n "s/^host: //p")" >> "$GITHUB_ENV"'
+      # actions/checkout@v4 refuses a path outside github.workspace (confirmed
+      # by a failed real CI run), so this repo's own .cargo/config.toml
+      # (correctly pinning target = "wasm32-wasip2" for Scratchpad's own
+      # build, so a bare `cargo check`/rust-analyzer target the right thing)
+      # is unavoidably an ancestor of youth-host/ too -- Cargo's config-file
+      # discovery walks up every ancestor of the current working directory
+      # regardless of --manifest-path. Without an explicit --target here,
+      # the *native* youth-cli build silently inherits that wasm32-wasip2
+      # default and tries to cross-compile the host CLI as wasm (confirmed
+      # locally and in two real failed CI runs, with a different symptom per
+      # platform). An explicit --target beats a config file's `build.target`
+      # in Cargo's own documented precedence, which both escapes the
+      # inherited default and, as a side effect, changes the output path
+      # from target/release/ to target/<triple>/release/ -- every reference
+      # below accounts for that.
       - name: Build pinned Youth CLI
-        run: cargo build --manifest-path "$YOUTH_HOST/Cargo.toml" -p youth-cli --release
+        run: cargo build --manifest-path youth-host/Cargo.toml -p youth-cli --release --target "$RUST_HOST_TRIPLE"
       - name: Check, test, and build Scratchpad
         run: |
           set -euo pipefail
-          cli="$YOUTH_HOST/target/release/youth"
+          cli="youth-host/target/$RUST_HOST_TRIPLE/release/youth"
           "$cli" check
           "$cli" test
           "$cli" build --release
@@ -106,18 +111,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      # See the canonical job's YOUTH_HOST comment: this must stay outside
-      # github.workspace so Scratchpad's own wasm32-wasip2 Cargo default
-      # never applies to the native youth-cli build.
-      - name: Compute the Youth checkout path
-        shell: bash
-        run: echo "YOUTH_HOST=${{ runner.temp }}/youth-host" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
           repository: samanshaiza004/youth
           ref: ${{ env.YOUTH_COMMIT }}
-          path: ${{ env.YOUTH_HOST }}
+          path: youth-host
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
@@ -131,14 +130,21 @@ jobs:
         with:
           name: scratchpad-canonical
           path: canonical
+      # See the canonical job's comment on the "Build pinned Youth CLI" step:
+      # an explicit --target is required to escape this repo's own
+      # .cargo/config.toml default, and moves the build output under
+      # target/<triple>/release/ instead of target/release/.
+      - name: Compute the native host triple
+        shell: bash
+        run: 'echo "RUST_HOST_TRIPLE=$(rustc -vV | sed -n "s/^host: //p")" >> "$GITHUB_ENV"'
       - name: Build pinned Youth CLI
         shell: bash
-        run: cargo build --manifest-path "$YOUTH_HOST/Cargo.toml" -p youth-cli --release
+        run: cargo build --manifest-path youth-host/Cargo.toml -p youth-cli --release --target "$RUST_HOST_TRIPLE"
       - name: Mount certified bytes and validate locked source
         shell: pwsh
         run: |
           $cliName = if ($IsWindows) { "youth.exe" } else { "youth" }
-          $cli = (Resolve-Path (Join-Path "$env:YOUTH_HOST/target/release" $cliName)).Path
+          $cli = (Resolve-Path (Join-Path "youth-host/target/$env:RUST_HOST_TRIPLE/release" $cliName)).Path
           $component = (Resolve-Path "canonical/dev.saman.scratchpad.wasm").Path
           $expected = "${{ needs.canonical.outputs.sha256 }}".ToLowerInvariant()
           $observed = (Get-FileHash $component -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -173,12 +179,11 @@ jobs:
           }
       - name: Native host smoke (Ubuntu/Xvfb)
         if: runner.os == 'Linux'
-        run: 'xvfb-run -a "$YOUTH_HOST/target/release/youth" doctor --full'
-      - name: Native host smoke (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: '"$YOUTH_HOST/target/release/youth.exe" doctor --full'
-      - name: Native host smoke (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: '"$YOUTH_HOST/target/release/youth" doctor --full'
+        run: xvfb-run -a "youth-host/target/$RUST_HOST_TRIPLE/release/youth" doctor --full
+      - name: Native host smoke (hosted desktop)
+        if: runner.os != 'Linux'
+        shell: pwsh
+        run: |
+          $cliName = if ($IsWindows) { "youth.exe" } else { "youth" }
+          $cli = Join-Path "youth-host/target/$env:RUST_HOST_TRIPLE/release" $cliName
+          & $cli doctor --full
