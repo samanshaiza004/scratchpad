@@ -36,7 +36,7 @@ impl Application for Scratchpad {
         Ok(Tree::root(BoxNode::column([
             Editor::new(DOCUMENT, DocumentRevision::new(document_revision), text),
             Text::new(STATUS, format!("Saved as revision {document_revision}")),
-            Button::new(SAVE, "Save"),
+            Button::new(SAVE, "Save").shortcut(Shortcut::primary('s')),
         ])))
     }
 

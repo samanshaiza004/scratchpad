@@ -1,4 +1,4 @@
-package youth:app@0.0.6;
+package youth:app@0.0.7;
 
 interface ui {
     type node-id = u64;
@@ -52,6 +52,15 @@ interface ui {
         backspace,
     }
 
+    flags shortcut-modifiers {
+        primary,
+    }
+
+    record shortcut {
+        key: shortcut-key,
+        modifiers: shortcut-modifiers,
+    }
+
     record box-data {
         enabled: bool,
         layout: box-layout,
@@ -70,7 +79,7 @@ interface ui {
     record button-data {
         label: string,
         enabled: bool,
-        shortcuts: list<shortcut-key>,
+        shortcuts: list<shortcut>,
     }
 
     variant node-data {
