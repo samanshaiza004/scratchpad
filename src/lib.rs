@@ -1,74 +1,117 @@
 #![cfg(all(target_os = "wasi", target_env = "p2"))]
 
+use std::cell::Cell;
+
 use youth_sdk::prelude::*;
 
-/// The Editor node's guest-owned document identity. Declared once, at
-/// mount; the host owns the live buffer for as long as this node stays
-/// installed. See the Editor session lifecycle in the Youth platform's
-/// Gate A design notes -- a stable node identity implicitly owns one host
-/// editor session while installed.
 const DOCUMENT: NodeKey = node!("document");
 const SAVE: NodeKey = node!("save");
 const STATUS: NodeKey = node!("status");
 
-const DOCUMENT_REVISION_KEY: &str = "document_revision";
-const TEXT_KEY: &str = "text";
+#[derive(Clone, Copy)]
+enum ScratchpadStatus {
+    Saved,
+    Unsaved,
+    Saving,
+    Conflict,
+    Failed,
+}
+
+impl ScratchpadStatus {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Saved => "Saved",
+            Self::Unsaved => "Unsaved changes",
+            Self::Saving => "Saving...",
+            Self::Conflict => "Conflict",
+            Self::Failed => "Save failed",
+        }
+    }
+}
+
+thread_local! {
+    static STATUS_VALUE: Cell<ScratchpadStatus> = const { Cell::new(ScratchpadStatus::Saved) };
+}
 
 struct Scratchpad;
 
 impl Application for Scratchpad {
     fn view(context: &ViewContext) -> Result<Tree> {
-        // Guest state persists across restarts; the host's live buffer
-        // persists across ordinary turns. On a fresh mount (first turn for
-        // a fresh host session) these coincide: the Editor node is created
-        // from exactly this declared revision and text. On every later
-        // turn the declaration is compared against what the host already
-        // has and, since the revision matches, ignored in favor of the
-        // live buffer -- so re-declaring the last-saved text here every
-        // turn never clobbers in-progress typing.
-        let document_revision = context
-            .state()
-            .integer(DOCUMENT_REVISION_KEY)?
-            .unwrap_or(1)
-            .max(1) as u64;
-        let text = context.state().text(TEXT_KEY)?.unwrap_or_default();
-
+        let document = context.text_document().current()?;
+        validate_extension(document.filename())?;
         Ok(Tree::root(BoxNode::column([
-            Editor::new(DOCUMENT, DocumentRevision::new(document_revision), text),
-            Text::new(STATUS, format!("Saved as revision {document_revision}")),
+            Text::new(node!("filename"), document.filename()),
+            Editor::document(DOCUMENT, &document),
+            Text::new(STATUS, STATUS_VALUE.with(Cell::get).label()),
             Button::new(SAVE, "Save").shortcut(Shortcut::primary('s')),
         ])))
     }
 
     fn handle(context: &mut EventContext, events: &Events) -> Result<Update> {
-        if !events.activated(SAVE) {
-            return Ok(Update::unchanged());
+        let document = context.text_document().current()?;
+        validate_extension(document.filename())?;
+        let mut update = Update::unchanged();
+
+        if events
+            .editor_dirty_changes()
+            .any(|(editor, dirty)| editor == DOCUMENT.id() && dirty)
+        {
+            set_status(ScratchpadStatus::Unsaved);
+            update = update.set_text(STATUS, ScratchpadStatus::Unsaved.label());
         }
 
-        // The one guest turn Save costs: read the host's current buffer,
-        // then accept it. `accept` never touches the live buffer/cursor/
-        // selection -- it only advances the guest's own bookkeeping, so
-        // typing that happens between this snapshot and the turn
-        // committing is not lost or overwritten.
-        let snapshot = context.editor().snapshot(DOCUMENT)?;
-        let new_revision = DocumentRevision::new(snapshot.document_revision().get() + 1);
-        context.editor().accept(
-            DOCUMENT,
-            snapshot.document_revision(),
-            snapshot.edit_sequence(),
-            new_revision,
-        )?;
+        if events.activated(SAVE) {
+            context
+                .text_document()
+                .request_save(&document, DOCUMENT)?;
+            set_status(ScratchpadStatus::Saving);
+            update = update.set_text(STATUS, ScratchpadStatus::Saving.label());
+        }
 
-        context
-            .state()
-            .set_integer(DOCUMENT_REVISION_KEY, new_revision.get() as i64)?;
-        context.state().set_text(TEXT_KEY, snapshot.text())?;
+        for completion in events.text_document_save_completions() {
+            update = match completion.outcome() {
+                TextDocumentSaveOutcome::Saved {
+                    document,
+                    version,
+                    still_dirty,
+                    ..
+                } => {
+                    let status = if still_dirty {
+                        ScratchpadStatus::Unsaved
+                    } else {
+                        ScratchpadStatus::Saved
+                    };
+                    set_status(status);
+                    update
+                        .set_editor_document_version(DOCUMENT, document, version)
+                        .set_text(STATUS, status.label())
+                }
+                TextDocumentSaveOutcome::Failed(TextDocumentFailure::Conflict) => {
+                    set_status(ScratchpadStatus::Conflict);
+                    update.set_text(STATUS, ScratchpadStatus::Conflict.label())
+                }
+                TextDocumentSaveOutcome::Failed(_) => {
+                    set_status(ScratchpadStatus::Failed);
+                    update.set_text(STATUS, ScratchpadStatus::Failed.label())
+                }
+            };
+        }
 
-        Ok(Update::new().set_text(
-            STATUS,
-            format!("Saved as revision {}", new_revision.get()),
-        ))
+        Ok(update)
     }
+}
+
+fn validate_extension(filename: &str) -> Result<()> {
+    if filename.ends_with(".txt") || filename.ends_with(".md") {
+        Ok(())
+    } else {
+        Err(Error::invalid_state()
+            .with_message("Scratchpad accepts only .txt and .md documents"))
+    }
+}
+
+fn set_status(status: ScratchpadStatus) {
+    STATUS_VALUE.set(status);
 }
 
 youth_sdk::export_app!(Scratchpad);

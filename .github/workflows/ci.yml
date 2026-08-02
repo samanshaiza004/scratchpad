@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  YOUTH_COMMIT: bda6f25d916778141427ea63377c1fbe83e49d54
+
+jobs:
+  canonical:
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.artifact.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: samanshaiza004/youth
+          ref: ${{ env.YOUTH_COMMIT }}
+          path: youth-host
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@wasm-tools
+      - name: Install Linux host dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev
+      - name: Build pinned Youth CLI
+        run: cargo build --manifest-path youth-host/Cargo.toml -p youth-cli --release
+      - name: Check, test, and build Scratchpad
+        run: |
+          set -euo pipefail
+          cli=youth-host/target/release/youth
+          "$cli" check
+          "$cli" test
+          "$cli" build --release
+          wasm-tools validate dist/dev.saman.scratchpad.wasm
+      - name: Record canonical artifact
+        id: artifact
+        run: |
+          set -euo pipefail
+          component=dist/dev.saman.scratchpad.wasm
+          digest=$(sha256sum "$component" | cut -d' ' -f1)
+          bytes=$(stat -c '%s' "$component")
+          protocol=$(awk -F'"' '/^protocol[[:space:]]*=/{print $2; exit}' Youth.lock)
+          sdk_revision=$(awk -F'"' '/^sdk-revision[[:space:]]*=/{print $2; exit}' Youth.lock)
+          wit_sha256=$(awk -F'"' '/^wit-sha256[[:space:]]*=/{print $2; exit}' Youth.lock)
+          export digest bytes protocol sdk_revision wit_sha256
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = {
+              "app_id": "dev.saman.scratchpad",
+              "app_commit": os.environ["GITHUB_SHA"],
+              "youth_commit": os.environ["YOUTH_COMMIT"],
+              "sdk_revision": os.environ["sdk_revision"],
+              "protocol": os.environ["protocol"],
+              "wit_sha256": os.environ["wit_sha256"],
+              "component_sha256": os.environ["digest"],
+              "component_bytes": int(os.environ["bytes"]),
+              "rustc": os.popen("rustc --version").read().strip(),
+              "cargo": os.popen("cargo --version").read().strip(),
+              "build_profile": "release",
+              "canonical_builder": "ubuntu-x86_64",
+              "build_command": "youth build --release",
+              "supported_contract_profiles": ["youth:app@0.0.8"],
+              "reproducible_builds_claimed": False,
+          }
+          Path("dist/scratchpad-canonical-manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          echo "Scratchpad canonical SHA-256: $digest ($bytes bytes)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scratchpad-canonical
+          path: |
+            dist/dev.saman.scratchpad.wasm
+            dist/scratchpad-canonical-manifest.json
+          if-no-files-found: error
+
+  host:
+    needs: canonical
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: samanshaiza004/youth
+          ref: ${{ env.YOUTH_COMMIT }}
+          path: youth-host
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@wasm-tools
+      - name: Install Linux presentation dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev
+      - uses: actions/download-artifact@v4
+        with:
+          name: scratchpad-canonical
+          path: canonical
+      - name: Build pinned Youth CLI
+        run: cargo build --manifest-path youth-host/Cargo.toml -p youth-cli --release
+      - name: Mount certified bytes and validate locked source
+        shell: pwsh
+        run: |
+          $cliName = if ($IsWindows) { "youth.exe" } else { "youth" }
+          $cli = (Resolve-Path (Join-Path "youth-host/target/release" $cliName)).Path
+          $component = (Resolve-Path "canonical/dev.saman.scratchpad.wasm").Path
+          $expected = "${{ needs.canonical.outputs.sha256 }}".ToLowerInvariant()
+          $observed = (Get-FileHash $component -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifest = Get-Content canonical/scratchpad-canonical-manifest.json -Raw | ConvertFrom-Json
+          if ($observed -ne $expected) { throw "canonical hash mismatch: expected $expected, observed $observed" }
+          if ($manifest.component_sha256 -ne $expected) { throw "manifest hash mismatch" }
+          if ($manifest.protocol -ne "0.0.8") { throw "manifest protocol mismatch" }
+          Write-Host "Scratchpad canonical SHA-256: expected $expected, observed $observed"
+
+          $grant = Join-Path $env:RUNNER_TEMP "scratchpad-grant"
+          New-Item -ItemType Directory -Force -Path $grant | Out-Null
+          [IO.File]::WriteAllText((Join-Path $grant "note.md"), "CI document")
+          & $cli mount $component --workspace-root $grant --document note.md
+          if ($LASTEXITCODE -ne 0) { throw "certified Scratchpad mount failed" }
+
+          & $cli check
+          if ($LASTEXITCODE -ne 0) { throw "Scratchpad check failed" }
+          & $cli test
+          if ($LASTEXITCODE -ne 0) { throw "Scratchpad tests failed" }
+          & $cli build --release
+          if ($LASTEXITCODE -ne 0) { throw "Scratchpad release build failed" }
+          $local = (Resolve-Path "dist/dev.saman.scratchpad.wasm").Path
+          & wasm-tools validate $local
+          if ($LASTEXITCODE -ne 0) { throw "host-local component validation failed" }
+          $localHash = (Get-FileHash $local -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Scratchpad host-local SHA-256 (source portability only): $localHash"
+
+          if (Select-String -Path Cargo.toml -Pattern 'path\s*=') { throw "local path dependency found" }
+          $forbidden = 'wit_bindgen|bindings::|PatchBatch|acknowledg|NodeId::new|DocumentHandle|DocumentVersion'
+          if (Get-ChildItem src -Recurse -File -Filter *.rs | Select-String -Pattern $forbidden) {
+            throw "raw Youth/WIT concept found in application source"
+          }
+      - name: Native host smoke (Ubuntu/Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a youth-host/target/release/youth doctor --full
+      - name: Native host smoke (hosted desktop)
+        if: runner.os != 'Linux'
+        run: youth-host/target/release/youth doctor --full

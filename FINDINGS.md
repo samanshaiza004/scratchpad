@@ -1,79 +1,108 @@
 # Scratchpad Findings
 
-This is the evidence record for the Scratchpad entry in the Youth Utility
-Suite. Findings describe observed application and platform friction; they
-do not automatically authorize new platform features.
+This is the durable evidence record for Scratchpad. Findings do not
+automatically authorize new platform features.
 
-Scratchpad is Gate A's application proof: an `Editor` node, declared and
-read back through `context.editor()` with no raw WIT, whose live buffer,
-cursor, selection, IME, undo/redo, clipboard, scrolling, and accessibility
-tree are all host-owned. `Save` is the one guest turn this app ever spends
-on that node, and it costs exactly `snapshot()` + `accept()` — never
-`replace()`, since this app never has authoritative content of its own.
-See `README.md` for the current state.
+| ID | Category | Status | Summary |
+| --- | --- | --- | --- |
+| SCRATCHPAD-F001 | platform discovery | addressed | Primary+S required modifier-aware shortcut records; delivered in 0.0.7. |
+| SCRATCHPAD-F002 | tooling defect | addressed | Editor imports were absent from the validated guest profile. |
+| SCRATCHPAD-F003 | platform discovery | addressed | A real file required a narrow single-document capability, not filesystem WASI. |
+| SCRATCHPAD-F004 | boundary confirmation | addressed | Content stays host-owned and does not cross the component boundary during edit/save. |
+| SCRATCHPAD-F005 | platform discovery | addressed | Dirty transition and save completion have different delivery semantics. |
+| SCRATCHPAD-F006 | application convention | addressed | Resync-safe transient status needs a small process-local session model. |
+| SCRATCHPAD-F007 | platform limitation | deferred | Gate B has optimistic conflict detection, not merge/reload/overwrite UX. |
+| SCRATCHPAD-F008 | platform limitation | deferred | Atomic replacement cannot promise universal metadata or power-loss preservation. |
+| SCRATCHPAD-F009 | boundary confirmation | addressed | The supported 1 MiB path is bounded and functional, but large-document local edit latency remains visible evidence. |
 
-## SCRATCHPAD-F001 — No modifier-aware keyboard shortcuts exist yet
+## SCRATCHPAD-F001 — Modifier-aware Save shortcut
 
-Gate A's own design notes describe `Ctrl`/`Cmd`+S as falling through from a
-declining, focused Editor to the app's declared Save command — an ordinary
-semantic activation, not a special event. That decline-and-fall-through
-path is real and already tested at the platform level (a focused Editor's
-`editor_input()` returns `None` for Primary+S, so it never claims the key).
-What is missing is the other half: `youth_tree::ShortcutKey` has only a
-bare `Character(String)` variant, and `youth_interaction`'s own generic
-shortcut matching explicitly excludes any character press with Control or
-Super held (`LogicalKey::Character(value) if !modifiers.control &&
-!modifiers.super_key`). So a declined Primary+S reaches the fallback
-shortcut-matching path and is simply dropped — no app-declared shortcut
-can ever be bound to a modified character today, regardless of protocol
-version.
+Gate A proved that a focused Editor should decline Primary+S so the semantic
+Save command can receive it, but the old shortcut type could not express the
+modifier. Youth `0.0.7` added a general shortcut record with key and modifier
+flags. Scratchpad now uses `Shortcut::primary('s')`; the test DSL proves
+`key "s" +primary` follows the same command path as the Save button.
 
-This app works around it by binding `Save` to a plain `Button` rather than
-a keyboard shortcut, which is a legitimate "ordinary semantic activation"
-in its own right and was enough to prove the accept boundary end to end.
-A real `Primary+S` (or any modifier-aware shortcut) needs a
-`ShortcutKey` variant that carries modifier state and a matching arm in
-`youth_interaction::key()`'s non-editor fallback — platform work, not
-something this repository can address on its own.
+## SCRATCHPAD-F002 — Capability imports must be profile-aware
 
-## SCRATCHPAD-F002 — `youth check` could not have accepted any Editor-capable app before this pass
+The first external Editor app exposed that `youth check` permitted neither the
+Editor import nor later a document-only app that legitimately omitted state
+calls. The profile now requires the application UI contract, permits only the
+known Youth capabilities, and continues rejecting WASI filesystem imports.
+Capabilities unused by a guest are allowed to be absent after component
+link-time import elimination.
 
-Building this app the first time failed `youth check` with `component
-imports interfaces outside the Youth Rust Guest Profile:
-["youth:editor/session"]`, even though `youth-runtime`'s own test suite
-(`import_profile.rs`) had already anticipated and asserted a
-`PERMITTED_V006` list containing exactly that import. The gap was that
-`youth-runtime::profile::PERMITTED_GUEST_IMPORTS` — the list
-`validate_component` (the function `youth check`/`youth build` actually
-call) enforces — had never had `youth:editor/session` added to it, only
-`youth:time/scheduler`. Every test that exercised the editor capability
-went through `YouthApp::load`/`mount` directly, never through
-`profile::validate_component`, so nothing caught the gap until a real
-external app tried to pass `youth check`.
+## SCRATCHPAD-F003 — One document is smaller than a workspace
 
-Fixed upstream in the Youth workspace (`youth-runtime/src/profile.rs`)
-alongside adding the `0.0.6` entry to `youth-project::SUPPORTED_PROFILES`
-(protocol, WIT hash, and this repository's pinned SDK revision) — neither
-of which had a "real external-SDK release reason" to exist until this app
-needed them. `youth-runtime::profile`'s own unit test and
-`youth-project`'s `v006_profile_hash_matches_the_canonical_tree` now cover
-both directly.
+Gate B needs one existing UTF-8 document. It does not need listing, arbitrary
+open, creation, rename, deletion, watching, or multiple resources. The public
+contract is therefore `youth:text-document@0.0.1`; “workspace” exists only in
+trusted host configuration. The host retains a directory capability and a
+validated relative path, rejects traversal and symlinks, and never grants
+filesystem WASI to the component.
 
-## What this app's own test suite still cannot exercise
+## SCRATCHPAD-F004 — The ownership boundary survived real persistence
 
-`.youth-test` drives the guest through ordinary semantic turns
-(`mount`/`activate`/`key`/`state`); it has no hook for host-local typing,
-since typing is specifically designed to never reach the guest at all.
-That means this repository's own tests can prove the mount-declares,
-Save-accepts, and restart-persists shape of the boundary, but not that
-real keystrokes land in the buffer, that IME composition behaves, that
-undo/redo groups correctly, or that scrolling/selection/AccessKit work —
-those are all proven at the platform level (`youth-editor-engine`,
-`youth-runtime`'s `editor_local_input.rs`/`editor_accessibility.rs`,
-`youth-desktop`'s `access.rs`/`raster.rs`), not here. This repository
-proves the guest-side half of the contract; the Youth workspace proves the
-host-side half.
+Scratchpad calls `current()`, declares `Editor::document`, and requests Save.
+It never snapshots the full buffer and has no file byte API. The host captures
+immutable bytes and the edit sequence, commits the guest turn, then dispatches
+replacement. This keeps document bytes out of Youth state and ordinary
+component-boundary traffic. The remaining boundary traffic is opaque handles,
+versions, semantic patches, dirty transitions, and effect outcomes.
 
-Native verification in this pass was `youth check`/`youth build` on macOS
-only — no Linux or Windows smoke test, and no real screen reader was
-available to exercise the AccessKit tree this app's Editor now exposes.
+## SCRATCHPAD-F005 — Dirty state and effect outcomes are distinct
+
+Clean-to-dirty is a coalesced current-state notification: further edits while
+already dirty generate no guest event. Save completion is an external-effect
+outcome and must identify the captured sequence and opaque host-issued
+version. If later edits exist, the saved bytes are accepted while the live
+Editor remains dirty.
+
+## SCRATCHPAD-F006 — Transient status is an app convention
+
+`Saved`, `Saving...`, `Conflict`, and `Save failed` are process-local
+presentation state. Persisting them would be wrong, while adding dirty state
+to the public Document merely for reconstruction would widen the capability.
+A small application-owned thread-local status model keeps ordinary resync
+convergent and naturally resets on restart. This is evidence for a future
+session-state ergonomic, not authorization for one yet.
+
+## SCRATCHPAD-F007 — Conflict resolution remains intentionally absent
+
+Youth detects every external byte change visible at the final comparison and
+does not overwrite it. Scratchpad retains the complete local buffer and shows
+`Conflict`, but offers no reload, merge, overwrite confirmation, or Save Copy.
+A non-cooperating write after comparison and before replacement can still be
+overwritten. Those workflows remain later gates.
+
+## SCRATCHPAD-F008 — Replacement metadata and crash limits
+
+The candidate begins private, is written and synced in the destination
+directory, receives supported ordinary destination permissions, and is
+atomically replaced. Gate B does not promise universal ACL, xattr, ownership,
+resource-fork, or power-loss preservation. A crash after the request commits
+but before dispatch may leave disk unchanged; a crash after replacement but
+before completion leaves disk updated and restart reconstructs from disk. A
+durable effect journal remains Gate D work.
+
+## SCRATCHPAD-F009 — The 1 MiB limit is real, not merely declarative
+
+An optimized end-to-end host test opened a 1 MiB document, performed one
+host-local edit, saved exact bytes, and reconstructed the saved file in a new
+runtime instance. On the local Apple arm64 evidence machine, initial
+spawn/mount took 787.511 ms, the edit 403.938 ms, Save through completion
+199.645 ms, and restart 424.979 ms. No measured operation was multi-second.
+
+The result makes the bound credible but does not make large-document editing
+fast: a roughly 404 ms character edit is conspicuous. Gate B keeps the current
+Parley `PlainEditor` rather than introducing a second Ropey authority. The
+measurement remains reporting evidence for a future editor-backend decision,
+not a reason to leak file bytes into the guest or widen the capability.
+
+## Raw-WIT exposure
+
+Application authors see zero raw WIT concepts: no generated bindings,
+revisions, acknowledgements, patches, numeric IDs, file handles, hashes,
+absolute paths, or export plumbing. The vendored WIT directory remains an
+inspectable language-neutral contract snapshot and is not a Rust binding
+source.

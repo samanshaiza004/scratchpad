@@ -1,0 +1,13 @@
+fixture file "note.md" "canonical"
+grant document "note.md"
+mount
+
+type document " local"
+expect editor dirty document true
+external write "note.md" "external"
+activate save
+
+expect file "note.md" "external"
+expect editor text document "canonical local"
+expect editor dirty document true
+expect text status "Conflict"

@@ -1,99 +1,82 @@
 # Scratchpad
 
-The fourth Youth Utility Suite application, and the first proof of Youth's
-`Editor` node and `youth:editor` capability (platform Gate A). It targets
-protocol `0.0.6` and the exact SDK revision in `Youth.lock`.
+Scratchpad is Youth’s fourth Utility Suite application and the Gate B proof
+for one real host-owned text document. It targets `youth:app@0.0.8` and pins
+the immutable SDK revision recorded in `Youth.lock`.
 
-```text
-youth check
-youth test
-youth dev
-youth build --release
+The file remains canonical. Scratchpad never places document content in Youth
+state and never receives the full buffer while editing or saving. The host
+opens one explicit relative grant, owns the Editor session, and performs an
+exact-byte conflict check followed by atomic replacement only after the Save
+turn commits.
+
+## Run it
+
+Create an existing `.txt` or `.md` file, then pass its containing directory and
+relative name explicitly:
+
+```bash
+cargo build --manifest-path ../youth/Cargo.toml -p youth-cli
+../youth/target/debug/youth dev \
+  --workspace-root "$PWD/notes" \
+  --document note.md
 ```
 
-## What this app is (Gate A9)
+For one validated run without the development watcher:
 
-This app declares exactly one `Editor` node and reads/writes it through
-`context.editor()` — no raw WIT anywhere in `src/lib.rs`. Everything about
-live text editing (the buffer, cursor, selection, IME composition, undo/redo,
-clipboard, scrolling, and now the platform's real AccessKit tree) is
-host-owned; this repository never touches any of it and could not construct
-a byte offset into the document if it wanted to. `youth mount` shows this
-directly: a freshly mounted app's Editor node carries whatever text was last
-saved, and typing into it (which this repository's own `.youth-test` suite
-cannot simulate, since typing never enters the guest at all) never produces
-a guest turn — see the Youth workspace's `editor_local_input.rs` for the
-10,000-edit, zero-guest-turn proof this app's Editor is built on.
+```bash
+../youth/target/debug/youth build
+../youth/target/debug/youth run dist/dev.saman.scratchpad.wasm \
+  --app-id dev.saman.scratchpad \
+  --ephemeral \
+  --workspace-root "$PWD/notes" \
+  --document note.md
+```
 
-`Save` is the one guest turn this app ever asks the host for on this node.
-It performs exactly the boundary Gate A's design settled on: `snapshot()`
-reads the host's current buffer without touching it, then `accept()`
-acknowledges that buffer under a new `DocumentRevision` — never `replace()`,
-since this app never has authoritative content of its own to install, only
-whatever the user already typed. Between the snapshot and the turn
-committing, further keystrokes are not lost or clobbered: `accept` never
-mutates the live buffer, cursor, or selection. The new revision and the
-just-accepted text are persisted to guest state (`document_revision`,
-`text`), so a real restart reopens the app with exactly what was last
-saved — `tests/reopen_restores_saved_content.youth-test` pre-seeds that
-state and asserts the reopened Editor's declared text matches; the same
-mechanism is why redeclaring the last-saved text on every ordinary turn
-never clobbers in-progress typing (a stable node with a matching
-`DocumentRevision` preserves the host's live session by construction — see
-the platform's Gate A design notes for the exact lifecycle rule).
+`--workspace-root` and `--document` are required together. The document must
+already exist, remain inside the root, contain valid UTF-8, and be no larger
+than 1 MiB after an optional UTF-8 BOM. Scratchpad itself accepts only `.txt`
+and `.md`; the generic Youth capability does not impose extensions.
 
-There is no `Ctrl`/`Cmd`+S binding yet: `Save` is a plain `Button`, an
-ordinary semantic activation, not a keyboard shortcut. `youth_tree`'s
-`ShortcutKey` has no modifier-aware variant today, so a real Primary+S
-binding — which Gate A's own design notes describe as falling through from
-a declining, focused Editor to the app's declared Save command — is not
-actually reachable yet at the platform level. See `FINDINGS.md`,
-SCRATCHPAD-F001.
+## Behavior
 
-## The model
+- The title row shows the normalized relative filename.
+- Editing is host-local and does not call the guest for every keystroke.
+- The first clean-to-dirty transition updates the status to `Unsaved changes`.
+- The Save button and Primary+S request the same semantic effect.
+- `Saving...` is installed by the committed request turn.
+- Success accepts exactly the captured edit sequence and reports `Saved`.
+- Newer typing remains dirty even if an older captured sequence was saved.
+- An external byte change reports `Conflict`, keeps the local buffer, and
+  leaves external bytes untouched.
+- Restart reloads the canonical file and resets ephemeral status to `Saved`.
 
-One in-memory document. Two pieces of guest state, both plain and both
-exactly what a real restart needs to reopen the last save:
-
-- `document_revision` (`integer`) — the guest's own accepted-document
-  counter, starting at 1 on first mount and incrementing by exactly 1 on
-  every successful `Save`.
-- `text` (`text`) — the exact buffer content `Save` last accepted. This is
-  also what `view()` declares as the Editor's `initial_text` on every turn,
-  which only matters the first time a host session is created for this
-  node (see above).
-
-No dirty-state tracking exists on the guest side, deliberately: whether the
-live host buffer currently differs from the last-accepted revision
-(`locally_dirty`) is a host-owned fact by design, never surfaced to the
-guest as a notification or a readable flag. The `status` text this app
-shows is exactly "Saved as revision N" for whatever N is currently
-accepted — a factual record of the last successful Save, not a claim about
-whether there are unsaved changes right now.
+UTF-8 BOM presence, CRLF/LF, embedded NUL, and final-newline presence are
+preserved. Gate B preserves ordinary permissions where supported but does not
+promise universal ACL, xattr, ownership, resource-fork, or power-loss
+durability guarantees.
 
 ## Verification
 
-- `cargo test` (native, this repo) exercises nothing guest-specific today;
-  the domain here is thin enough that `tests/*.youth-test` carries the real
-  coverage.
-- `tests/basic.youth-test`: mount declares an empty document at revision 1;
-  activating `save` accepts it, bumps guest state to revision 2, and
-  updates the status text; a `restart` reopens with revision 2 still
-  declared.
-- `tests/reopen_restores_saved_content.youth-test`: pre-seeds
-  `document_revision`/`text` state (simulating a previous session's save),
-  then asserts a fresh mount's Editor declares exactly that text and the
-  status line reflects that revision — the local-first persistence claim
-  this app exists to prove.
-- `youth check` / `youth mount` / `youth activate --node <id>` were each run
-  directly against the built `wasm32-wasip2` component during development
-  to confirm the real Editor node, capability calls, and turn accounting
-  match what the `.youth-test` suite asserts.
-- Smoke-tested via `youth check`/build on macOS only in this pass; see
-  `FINDINGS.md`, SCRATCHPAD-F002.
+```bash
+../youth/target/debug/youth check
+../youth/target/debug/youth test
+../youth/target/debug/youth build --release
+```
 
-`FINDINGS.md` records what this pass left open, including a real platform
-bug this repository's own `youth check` run surfaced and that got fixed
-upstream during this work: the Youth Rust Guest Profile didn't actually
-permit `youth:editor/session` imports until now, so no editor-capable app
-could ever have passed `youth check` before this revision.
+The tests use isolated byte fixtures and the real headless runtime. They cover
+editing, dirty transitions, button and Primary+S saves, exact file bytes,
+BOM/CRLF preservation, conflict retention, restart, and view convergence. Host-only fault,
+symlink, permission, shutdown, and conflict matrices live in the Youth
+workspace because ordinary application tests cannot receive privileged
+filesystem fault controls.
+
+The application source contains no generated bindings, raw patches, numeric
+identities, acknowledgements, absolute paths, hashes, file handles, or
+full-text save plumbing. See `FINDINGS.md` for the evidence and limitations.
+
+CI builds one canonical component on Ubuntu, records its manifest and SHA-256,
+then mounts those exact bytes with an explicit temporary document grant on
+Ubuntu, Windows, and macOS. Each host also builds and semantically tests the
+locked source independently. Host-local hashes are logged as source-portability
+evidence; byte-reproducible independent builds are not claimed.

@@ -1,6 +1,12 @@
-state integer "document_revision" 5
-state text "text" "hello from before"
-
+fixture file-hex "note.md" "efbbbf48656c6c6f0d0a"
+grant document "note.md"
 mount
-expect text document "hello from before"
-expect text status "Saved as revision 5"
+expect editor text document "Hello\r\n"
+
+type document "Preserved"
+key "s" +primary
+expect file-hex "note.md" "efbbbf48656c6c6f0d0a507265736572766564"
+
+restart
+expect editor text document "Hello\r\nPreserved"
+expect editor dirty document false

@@ -1,14 +1,22 @@
+fixture file "note.md" "Hello"
+grant document "note.md"
 mount
-expect present document
-expect text document ""
-expect text status "Saved as revision 1"
+expect text filename "note.md"
+expect text status "Saved"
+expect editor text document "Hello"
+expect editor dirty document false
+
+type document " world"
+expect editor text document "Hello world"
+expect editor dirty document true
+expect text status "Unsaved changes"
 
 activate save
-expect state integer "document_revision" 2
-expect state text "text" ""
-expect text status "Saved as revision 2"
+expect file "note.md" "Hello world"
+expect editor dirty document false
+expect text status "Saved"
 
 restart
-expect present document
-expect text document ""
-expect text status "Saved as revision 2"
+expect editor text document "Hello world"
+expect editor dirty document false
+expect text status "Saved"
