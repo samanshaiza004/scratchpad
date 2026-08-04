@@ -7,7 +7,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  YOUTH_COMMIT: 2b45a5185ffbed76153c5d34eefe580bc289c69e
+  YOUTH_COMMIT: f5a2db2b5a6587aae92d9c9cd5e8d0574f0b16d7
 
 jobs:
   canonical:
