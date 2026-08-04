@@ -1,7 +1,7 @@
 [app]
 id = "dev.saman.scratchpad"
 name = "Scratchpad"
-protocol = "0.0.8"
+protocol = "0.0.9"
 
 [build]
 language = "rust"

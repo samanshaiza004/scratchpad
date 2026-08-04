@@ -41,7 +41,7 @@ impl Application for Scratchpad {
         validate_extension(document.filename())?;
         Ok(Tree::root(BoxNode::column([
             Text::new(node!("filename"), document.filename()),
-            Editor::document(DOCUMENT, &document),
+            Editor::document(DOCUMENT, &document).grow(1),
             Text::new(STATUS, STATUS_VALUE.with(Cell::get).label()),
             Button::new(SAVE, "Save").shortcut(Shortcut::primary('s')),
         ])))
