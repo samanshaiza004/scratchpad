@@ -86,7 +86,7 @@ jobs:
               "build_profile": "release",
               "canonical_builder": "ubuntu-x86_64",
               "build_command": "youth build --release",
-              "supported_contract_profiles": ["youth:app@0.0.8"],
+              "supported_contract_profiles": ["youth:app@0.0.9"],
               "reproducible_builds_claimed": False,
           }
           Path("dist/scratchpad-canonical-manifest.json").write_text(
@@ -151,7 +151,7 @@ jobs:
           $manifest = Get-Content canonical/scratchpad-canonical-manifest.json -Raw | ConvertFrom-Json
           if ($observed -ne $expected) { throw "canonical hash mismatch: expected $expected, observed $observed" }
           if ($manifest.component_sha256 -ne $expected) { throw "manifest hash mismatch" }
-          if ($manifest.protocol -ne "0.0.8") { throw "manifest protocol mismatch" }
+          if ($manifest.protocol -ne "0.0.9") { throw "manifest protocol mismatch" }
           Write-Host "Scratchpad canonical SHA-256: expected $expected, observed $observed"
 
           $grant = Join-Path $env:RUNNER_TEMP "scratchpad-grant"
