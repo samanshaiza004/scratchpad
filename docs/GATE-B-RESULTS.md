@@ -132,18 +132,56 @@ lookup/localized edits grow into multi-second operations. This is evidence that
 the next storage iteration needs cached metadata or a balanced piece index; it
 does not justify changing the observable editor contract.
 
-The experiment therefore changes the storage risk from unknown to explicit:
-the simple piece sequence is a valid scale proof and benchmark fixture, but is
-not yet a long-session production representation. Keep it as regression
-evidence while the next editor-core iteration evaluates cached metadata or a
-balanced tree.
+## Balanced piece-tree rerun
+
+The next storage iteration keeps the same public `Buffer` API but replaces the
+linear piece slice with an implicit balanced treap. Each node caches subtree
+byte length, newline count, and piece count. Splitting at an edit offset and
+merging the resulting subtrees provide expected logarithmic edit/index work.
+The previous slice behavior is retained as a test-only oracle, and the
+identical deterministic edit stream is compared against it for 5,000 steps.
+
+The same 10,000-edit suite now measures:
+
+| Operation | Wall ms | Allocs | Allocated bytes | Pieces | Document bytes |
+|---|---:|---:|---:|---:|---:|
+| random-10000 | 10.792 | 36,676 | 2,946,072 | 13,327 | 10,482,428 |
+| line-lookup | 19.404 | 13,343 | 589,952 | 13,327 | 10,482,428 |
+| edit-start | 2.584 | 10,005 | 850,432 | 13,327 | 10,482,428 |
+| edit-middle | 9.142 | 10,004 | 850,592 | 13,328 | 10,482,428 |
+| edit-end | 2.789 | 10,003 | 841,120 | 13,329 | 10,482,428 |
+| scroll-visible-rows | 23.423 | 240,017 | 13,552,648 | 13,329 | 10,482,428 |
+
+The same 100,000-edit suite completed every phase:
+
+| Operation | Wall ms | Allocs | Allocated bytes | Heap before → after | Pieces | Document bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| random-100000 | 115.851 | 364,725 | 29,344,480 | 10.7 → 25.3 MB | 132,311 | 10,452,428 |
+| line-lookup | 102.543 | 133,844 | 5,900,352 | 21.3 → 27.2 MB | 132,311 | 10,452,428 |
+| edit-start | 21.364 | 100,005 | 8,532,480 | 21.3 → 29.8 MB | 132,311 | 10,452,428 |
+| edit-middle | 35.779 | 100,005 | 8,499,888 | 21.4 → 29.9 MB | 132,312 | 10,452,428 |
+| edit-end | 37.055 | 100,003 | 8,352,416 | 21.5 → 29.9 MB | 132,313 | 10,452,428 |
+| scroll-visible-rows | 159.116 | 2,400,013 | 199,466,912 | 21.6 → 25.6 MB | 132,313 | 10,452,428 |
+
+The tree changes the 100k line lookup from 9.467 seconds to 103 ms and the
+localized edit probes from 16–21 seconds to 21–37 ms. The sequential line
+cursor brings visible-row traversal below 160 ms. Allocation pressure remains
+visible: the 100k scroll phase still performs roughly 2.4 million allocations
+and allocates about 199 MB because `Line` copies requested row text. That is
+now the next measured bottleneck, separate from piece-index lookup.
+
+The pre-tree experiment changed the storage risk from unknown to explicit: the
+simple piece sequence was a valid scale proof and benchmark fixture, but not a
+long-session production representation. It remains regression evidence for
+the balanced implementation above.
 
 ## Decision
 
 **The Gate B decision is complete: TextArea is rejected for Scratchpad-scale
-editing, and the custom-editor path is required. Gate B remains open until the
-parity and fragmentation artifacts are accepted.** Freeze the TextArea and
-fragmentation measurements as regression evidence. Do not begin Gate C or
+editing, and the custom-editor path is required. The balanced piece tree now
+survives the 10k/100k fragmentation suite, but Gate B remains open until the
+Shirei-backed visual/native parity artifact is accepted.** Freeze the TextArea
+and both fragmentation baselines as regression evidence. Do not begin Gate C or
 language work yet.
 
 The parity order is:

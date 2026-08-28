@@ -122,12 +122,15 @@ func scrolling(b *editor.Buffer, edits int) measurement {
 	lines := b.LineCount()
 	for i := 0; i < edits; i++ {
 		base := []int{0, lines / 2, lines - 1}[i%3]
+		cursor, ok := b.NewLineCursor(base)
+		if !ok {
+			continue
+		}
 		for row := 0; row < 30; row++ {
-			line := base + row
-			if line >= lines {
-				line = lines - 1
+			_, _ = cursor.Line()
+			if row+1 < 30 && !cursor.Next() {
+				break
 			}
-			_, _ = b.Line(line)
 		}
 	}
 	return finishMeasurement(startMeasurement, time.Since(start), b, "scroll-visible-rows", edits)

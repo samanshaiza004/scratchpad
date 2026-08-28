@@ -89,7 +89,8 @@ long-session storage limit. “It feels slow” is not an acceptance criterion.
 
 Framework risks: no public scalable editable-text primitive; custom paint may
 need a small Shirei capability or a downstream adapter. A simple piece sequence
-may also need cached metadata or a balanced index after fragmentation testing.
+has now been replaced by a cached balanced piece index after fragmentation
+testing; row-copy allocation remains a measured follow-up bottleneck.
 
 Deferred: soft wrapping, syntax highlighting, parser selection, LSP.
 
