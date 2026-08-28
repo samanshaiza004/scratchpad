@@ -48,5 +48,6 @@ the observable behavior and keeps the storage representation replaceable.
   language services remain outside the Gate B core.
 
 The fragmentation benchmark is a required regression fixture for any storage
-replacement. The current simple piece sequence passes the 10 MiB one-off edit
-proof but does not complete the bounded 100k-edit session.
+replacement. The balanced piece tree completes the bounded 100k-edit session;
+the remaining measured cost is primarily row materialization during repeated
+scroll walks, not document-size-proportional edit work.

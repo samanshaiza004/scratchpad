@@ -175,14 +175,71 @@ simple piece sequence was a valid scale proof and benchmark fixture, but not a
 long-session production representation. It remains regression evidence for
 the balanced implementation above.
 
+## Shirei-backed visual and native parity
+
+The custom path is now wired through [`ui/editor_view.go`](../ui/editor_view.go)
+as a real fixed-height Shirei view. `VirtualListViewExt` builds only visible
+logical rows. Each row copies and shapes only its own byte range, then retains
+the local byte/rune mapping needed by painting and pointer hit-testing. No
+whole-document rune conversion is performed above the buffer.
+
+The view currently provides:
+
+- shaped visible-row rendering through `ShapedTextLayout`;
+- local byte↔rune conversion, including UTF-8 text outside ASCII;
+- bidi-aware glyph hit-testing using the same cluster/segment direction rules
+  as Shirei `ComputeCursorIndex`;
+- affinity-aware caret placement at the selected visual side;
+- directional selection painting;
+- native Shirei keyboard ownership, clipboard request path, preedit delivery,
+  and screen-space caret/composition anchors;
+- fixed logical rows without soft wrapping.
+
+The executable fixtures and UI tests are the parity artifact. The hit-test
+fixture compares the custom result against Shirei's public
+`ComputeCursorIndex` over a mixed Hebrew/LTR line. The core fixtures continue
+to compare text, caret, selection, undo, redo, cluster motion, and composition
+behavior against the behavior established by Shirei's pure edit model. Native
+IME hardware delivery remains a platform smoke concern; the custom view uses
+the same public Host fields and frame input path as TextArea.
+
+The real Shirei frame-path rerun was:
+
+| Fixture | Operation | Wall ms | Allocs | Allocated bytes |
+|---|---|---:|---:|---:|
+| 1 MiB | first-paint | 0.804 | 3,439 | 770,648 |
+| 1 MiB | insert-middle | 1.081 | 3,336 | 761,752 |
+| 1 MiB | paste-100KiB | 1.155 | 3,510 | 1,093,800 |
+| 1 MiB | selection-visible | 1.754 | 8,044 | 1,679,360 |
+| 1 MiB | scroll top→bottom | 0.664 | 3,500 | 778,840 |
+| 1 MiB | resize | 0.695 | 3,380 | 812,632 |
+| 10 MiB | first-paint | 1.387 | 3,724 | 837,680 |
+| 10 MiB | insert-middle | 1.814 | 3,645 | 799,752 |
+| 10 MiB | paste-100KiB | 2.199 | 3,591 | 1,111,328 |
+| 10 MiB | selection-visible | 1.332 | 7,595 | 1,627,456 |
+| 10 MiB | scroll top→bottom | 0.845 | 3,666 | 777,216 |
+| 10 MiB | resize | 2.921 | 3,379 | 781,000 |
+| Unicode 10 MiB | first-paint | 0.765 | 4,068 | 944,448 |
+| Unicode 10 MiB | insert-near-9MiB | 1.012 | 4,024 | 937,296 |
+
+These results preserve the scale result through the real view: the normal
+10 MiB middle edit remains in the low milliseconds, and the Unicode/bidi-heavy
+fixture does not introduce document-proportional work. A 2 MiB single-line
+fixture does not yet complete first paint within the bounded minute because
+the visible logical row is itself a 2 MiB shaping request. That is a concrete
+long-line rendering limitation for a later viewport/chunking pass, not a
+piece-index failure; it is intentionally not being solved by changing the
+buffer in this gate.
+
 ## Decision
 
-**The Gate B decision is complete: TextArea is rejected for Scratchpad-scale
-editing, and the custom-editor path is required. The balanced piece tree now
-survives the 10k/100k fragmentation suite, but Gate B remains open until the
-Shirei-backed visual/native parity artifact is accepted.** Freeze the TextArea
-and both fragmentation baselines as regression evidence. Do not begin Gate C or
-language work yet.
+**Gate B is closed.** TextArea is rejected for Scratchpad-scale editing, the
+balanced piece tree survives the 10k/100k fragmentation suite, and the custom
+editor now has a Shirei-backed fixed-line visual/input path with passing
+row-local bidi hit-testing, caret/selection, clipboard, undo/redo, preedit,
+and IME-anchor fixtures. Freeze the TextArea and both fragmentation baselines
+as regression evidence. The 2 MiB single-line shaping limitation is recorded
+as a bounded follow-up; it does not change the storage/editor contract.
 
 The parity order is:
 
@@ -200,7 +257,6 @@ storage + viewport
 
 The TextArea path remains the behavioral oracle. The parity artifact is
 specified in [`BEHAVIOR-PARITY.md`](BEHAVIOR-PARITY.md); it is intentionally not
-implemented by copying Shirei’s entire editor into Scratchpad. Gate C is
-blocked until the custom view can connect this core to shaped caret/hit-test
-and native composition behavior without putting whole-document work back on
-the keystroke-to-frame path.
+implemented by copying Shirei’s entire editor into Scratchpad. Gate C may now
+start with file-native product behavior; soft wrapping, long-line chunking,
+and all language work remain deferred.

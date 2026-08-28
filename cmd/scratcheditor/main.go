@@ -15,9 +15,9 @@ import (
 	"unicode/utf8"
 
 	"scratchpad/editor"
+	scratchui "scratchpad/ui"
 
 	. "go.hasen.dev/shirei"
-	. "go.hasen.dev/shirei/widgets"
 )
 
 const (
@@ -231,17 +231,9 @@ func rootView() {
 	ContainerWithKey(sessionKey, Attrs(Viewport, Background(220, 12, 96, 1), Pad(16), Gap(8)), func() {
 		Label("Scratchpad Gate B — ScratchEditor spike", FontWeight(WeightBold), FontSize(16))
 		Label(fmt.Sprintf("fixture=%s bytes=%d lines=%d", fixtureName, active.Buffer.ByteLen(), active.Buffer.LineCount()), FontSize(12))
-		if GetFrameInput().Text != "" {
-			_ = active.Insert([]byte(GetFrameInput().Text))
-		}
-		VirtualListViewExt("scratch-editor-lines", VirtualListAttrs{
-			ItemCount:  active.Buffer.LineCount(),
-			ItemKey:    func(index int) any { return index },
-			ItemHeight: func(index int, width float32) float32 { return 18 },
-			ItemView: func(index int, width float32) {
-				line, _ := active.Buffer.Line(index)
-				Label(line, FontSize(13))
-			},
+		scratchui.EditableView(sessionKey, active, scratchui.EditorViewOptions{
+			Style:     TextStyle(FontSize(13), TextColor(0, 0, 15, 1)),
+			RowHeight: 18,
 		})
 	})
 }

@@ -80,19 +80,18 @@ Benchmarks: repeatable `go test -bench` or behavior harness with a written
 machine/environment record; compare work per keystroke against document size.
 
 Acceptance: either a measured decision to use `TextArea`, or a measured list
-of failures and a minimal custom editor boundary. This gate now has a measured
-failure result in [`GATE-B-RESULTS.md`](GATE-B-RESULTS.md), so the next work is
-the formal parity artifact plus a fragmentation torture benchmark, not Gate C.
-The decision is complete, but Gate B remains open until those artifacts show
-that the custom core preserves the needed TextArea behavior and exposes the
-long-session storage limit. “It feels slow” is not an acceptance criterion.
+of failures and a minimal custom editor boundary. This gate now has the
+measured failure, balanced-index fragmentation proof, and Shirei-backed visual
+parity result recorded in [`GATE-B-RESULTS.md`](GATE-B-RESULTS.md). Gate B is
+closed; “it feels slow” was not used as an acceptance criterion.
 
 Framework risks: no public scalable editable-text primitive; custom paint may
 need a small Shirei capability or a downstream adapter. A simple piece sequence
 has now been replaced by a cached balanced piece index after fragmentation
 testing; row-copy allocation remains a measured follow-up bottleneck.
 
-Deferred: soft wrapping, syntax highlighting, parser selection, LSP.
+Deferred: soft wrapping, long-line chunked shaping, syntax highlighting,
+parser selection, LSP.
 
 ## Gate C — file-native Scratchpad
 

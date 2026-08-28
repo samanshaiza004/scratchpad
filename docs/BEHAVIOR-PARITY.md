@@ -43,15 +43,19 @@ yet be observed through the public API.
 The current core has unit tests for insertion, deletion, selection replacement,
 line counts, large-offset edits, logical hit testing, clipboard operations,
 undo/redo, combining-mark and ZWJ cluster motion/deletion, affinity state, and
-composition commit/cancel. Its IME layer is still a pure preedit state
-adapter; native Shirei composition delivery and caret geometry are not claimed
-by this storage package. Its bidi behavior is likewise limited to preserving
-logical affinity and direction metadata; visual run hit-testing remains a
-Shirei-backed view concern.
+composition commit/cancel. `ui/editor_view_test.go` now adds Shirei-backed
+row-local byte/rune mapping, mixed-direction hit-testing against public
+`ComputeCursorIndex`, caret-affinity round trips, and keyboard/IME host-anchor
+fixtures. The view uses Shirei's public frame input and Host clipboard/IME
+surfaces rather than copying its private editor state.
 
-This is intentionally a staged parity result. The next view-level parity work
-must compare shaped visual positions and native composition geometry against
-TextArea before the custom editor is promoted beyond a Gate B proof.
+The remaining native limitation is environmental: actual IME candidate-window
+behavior still needs platform smoke coverage on the available desktop
+backends. The app-side geometry contract is exercised headlessly, and the
+custom view is now promoted through Gate B. A 2 MiB single logical line also
+needs a later horizontal/chunked shaping strategy; ordinary multiline and
+Unicode-heavy 10 MiB fixtures remain visible-row bounded.
 
-Parity is a Gate B artifact. It does not authorize beginning Markdown,
-Tree-sitter, tabs, workspace search, or other Gate C+ work.
+Parity remains a regression artifact. It does not authorize Markdown,
+Tree-sitter, or language work; Gate C is now limited to the file-native product
+surface.

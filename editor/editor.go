@@ -4,9 +4,9 @@ import "unicode"
 
 // ScratchEditor is the intentionally boring Gate B behavior shell around
 // Buffer. It supports one byte-oriented caret, one selection, local grapheme
-// motion, affinity, clipboard operations, undo/redo, and a preedit state. Full
-// Shirei-equivalent visual bidi hit testing and native IME wiring remain above
-// this pure core.
+// motion, affinity, clipboard operations, undo/redo, and a preedit state.
+// Shirei supplies the visual mapping and native input transport above this
+// pure core.
 type ScratchEditor struct {
 	Buffer   Buffer
 	Cursor   int
@@ -193,9 +193,9 @@ func (e *ScratchEditor) CancelComposition() {
 	e.preedit = Composition{}
 }
 
-// HitTest maps a logical line and byte column to a buffer byte offset. The
-// first spike has no pixel shaping; the affinity parameter records which side
-// of a bidi boundary the caller selected for the later visual hit-test layer.
+// HitTest maps a logical line and byte column to a buffer byte offset. Pixel
+// hit-testing belongs to the Shirei view; affinity records the visual side of
+// a bidi boundary selected by that view.
 func (e *ScratchEditor) HitTest(line, byteColumn int, affinity Affinity) (int, bool) {
 	start, end, ok := e.Buffer.LineRange(line)
 	if !ok {
