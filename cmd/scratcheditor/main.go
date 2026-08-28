@@ -1,6 +1,7 @@
 // scratcheditor is the conditional Gate B prototype: a piece-backed editable
 // buffer rendered as fixed-height logical lines through Shirei's virtual list.
-// It is intentionally not a replacement for TextArea behavior yet.
+// The pure editor package carries the first parity layer; this executable is
+// still a storage/viewport proof, not a product editor.
 package main
 
 import (

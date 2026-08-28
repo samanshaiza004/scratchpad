@@ -70,9 +70,12 @@ and [`editor/`](../editor/) contain the smallest conditional alternative:
 - fixed-height logical rows through Shirei `VirtualListViewExt`;
 - visible rows only, no soft wrapping, syntax, folding, or language services.
 
-It intentionally does not claim TextArea parity. There is no IME, bidi,
-grapheme motion, key decoder, undo/redo, or rendered caret yet. Those are the
-next ordered parity layers, not part of this storage proof.
+The pure editor core now carries the first parity layer: one caret and
+selection, logical hit-testing, clipboard-shaped copy/cut/paste operations,
+range-based undo/redo, local grapheme motion/deletion for combining marks and
+ZWJ emoji, affinity state, and a preedit/commit/cancel model. This is still not
+native TextArea parity: the Shirei-backed view must later supply shaped visual
+bidi hit-testing, rendered caret geometry, and native IME composition geometry.
 
 Representative spike results:
 
@@ -89,13 +92,61 @@ The single-line case is slower because the one visible line itself must be
 copied for the row; it is not a whole-document line-index scan. Normal and
 Unicode multi-line edits remain sub-millisecond in this small proof.
 
+## Fragmentation experiment
+
+[`cmd/fragmentbench`](../cmd/fragmentbench/main.go) starts from a deterministic
+10 MiB ordinary-source fixture and uses a fixed random seed. It performs random
+single-byte insert/delete edits, then measures line lookup, repeated edits at
+the beginning/middle/end, and visible-row scrolling. Each row records wall
+time, allocations, allocated bytes, heap before/after, piece count, and final
+document size.
+
+The completed 10,000-edit run was:
+
+| Operation | Wall ms | Allocs | Allocated bytes | Pieces | Document bytes |
+|---|---:|---:|---:|---:|---:|
+| random-10000 | 98.570 | 40 | 2,293,944 | 13,327 | 10,482,428 |
+| line-lookup | 103.960 | 13,344 | 589,968 | 13,327 | 10,482,428 |
+| edit-start | 142.658 | 5 | 50,432 | 13,327 | 10,482,428 |
+| edit-middle | 184.991 | 2 | 50,432 | 13,328 | 10,482,428 |
+| edit-end | 211.017 | 1 | 40,960 | 13,329 | 10,482,428 |
+| scroll-visible-rows | 2,377.139 | 466,660 | 14,933,600 | 13,329 | 10,482,428 |
+
+The 100,000-edit run completed all mutation, lookup, and localized-edit
+phases before the visible-row phase was stopped. The benchmark now emits each
+phase as it completes, so these are retained even when a later phase is
+bounded:
+
+| Operation | Wall ms | Allocs | Allocated bytes | Heap before → after | Pieces | Document bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| random-100000 | 8,187.091 | 121 | 20,866,856 | 10.7 → 25.2 MB | 132,311 | 10,452,428 |
+| line-lookup | 9,467.380 | 133,844 | 5,900,336 | 15.0 → 20.9 MB | 132,311 | 10,452,428 |
+| edit-start | 16,306.370 | 6 | 532,496 | 15.0 → 15.5 MB | 132,311 | 10,452,428 |
+| edit-middle | 18,673.891 | 2 | 499,712 | 15.1 → 15.6 MB | 132,312 | 10,452,428 |
+| edit-end | 21,266.029 | 1 | 352,256 | 15.3 → 15.6 MB | 132,313 | 10,452,428 |
+
+The 100,000-edit visible-row phase exceeded a further bounded minute and was
+interrupted. The 10,000-edit result already shows the simple piece sequence
+reaching roughly 13k pieces; at 100,000 edits it reaches 132k pieces, and line
+lookup/localized edits grow into multi-second operations. This is evidence that
+the next storage iteration needs cached metadata or a balanced piece index; it
+does not justify changing the observable editor contract.
+
+The experiment therefore changes the storage risk from unknown to explicit:
+the simple piece sequence is a valid scale proof and benchmark fixture, but is
+not yet a long-session production representation. Keep it as regression
+evidence while the next editor-core iteration evaluates cached metadata or a
+balanced tree.
+
 ## Decision
 
-**Gate B chooses the custom-editor path.** Freeze the TextArea measurements as
-regression evidence and keep the spike aggressively narrow. Do not begin Gate C
-or language work yet.
+**The Gate B decision is complete: TextArea is rejected for Scratchpad-scale
+editing, and the custom-editor path is required. Gate B remains open until the
+parity and fragmentation artifacts are accepted.** Freeze the TextArea and
+fragmentation measurements as regression evidence. Do not begin Gate C or
+language work yet.
 
-The next work inside this gate is behavioral parity in this order:
+The parity order is:
 
 ```text
 storage + viewport
@@ -109,6 +160,9 @@ storage + viewport
 → soft wrap later
 ```
 
-The TextArea path remains the behavioral oracle. The first parity artifact is
+The TextArea path remains the behavioral oracle. The parity artifact is
 specified in [`BEHAVIOR-PARITY.md`](BEHAVIOR-PARITY.md); it is intentionally not
-implemented by copying Shirei’s entire editor into Scratchpad.
+implemented by copying Shirei’s entire editor into Scratchpad. Gate C is
+blocked until the custom view can connect this core to shaped caret/hit-test
+and native composition behavior without putting whole-document work back on
+the keystroke-to-frame path.

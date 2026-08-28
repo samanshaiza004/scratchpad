@@ -5,6 +5,8 @@ package editor
 import (
 	"bytes"
 	"errors"
+	"unicode"
+	"unicode/utf8"
 )
 
 type sourceKind uint8
@@ -45,12 +47,25 @@ func (b *Buffer) ByteLen() int {
 	return b.bytes
 }
 
+// PieceCount is exposed for fragmentation experiments, not as a product
+// contract. A future balanced tree can preserve the same observable behavior.
+func (b *Buffer) PieceCount() int {
+	return len(b.pieces)
+}
+
 func (b *Buffer) LineCount() int {
 	return b.newlines + 1
 }
 
 func (b *Buffer) Text() []byte {
 	return b.slice(0, b.bytes)
+}
+
+func (b *Buffer) Bytes(start, end int) ([]byte, error) {
+	if start < 0 || end < start || end > b.bytes {
+		return nil, errors.New("range outside buffer")
+	}
+	return b.slice(start, end), nil
 }
 
 func (b *Buffer) Insert(at int, text []byte) error {
@@ -112,6 +127,158 @@ func (b *Buffer) Line(line int) (string, bool) {
 		end = b.lineStart(line+1) - 1
 	}
 	return string(b.slice(start, end)), true
+}
+
+func (b *Buffer) LineRange(line int) (start, end int, ok bool) {
+	if line < 0 || line >= b.LineCount() {
+		return 0, 0, false
+	}
+	start = b.lineStart(line)
+	end = b.bytes
+	if line+1 < b.LineCount() {
+		end = b.lineStart(line+1) - 1
+	}
+	return start, end, true
+}
+
+func (b *Buffer) ByteAt(at int) (byte, bool) {
+	if at < 0 || at >= b.bytes {
+		return 0, false
+	}
+	offset := 0
+	for _, p := range b.pieces {
+		if at < offset+p.length {
+			return b.pieceBytes(p)[at-offset], true
+		}
+		offset += p.length
+	}
+	return 0, false
+}
+
+func (b *Buffer) boundary(at int) int {
+	if at <= 0 {
+		return 0
+	}
+	if at >= b.bytes {
+		return b.bytes
+	}
+	for at > 0 {
+		c, _ := b.ByteAt(at)
+		if utf8.RuneStart(c) {
+			return at
+		}
+		at--
+	}
+	return 0
+}
+
+func (b *Buffer) runeAt(at int) (rune, int, bool) {
+	first, ok := b.ByteAt(at)
+	if !ok {
+		return 0, 0, false
+	}
+	var encoded [utf8.UTFMax]byte
+	encoded[0] = first
+	for size := 1; size < utf8.UTFMax; size++ {
+		c, exists := b.ByteAt(at + size)
+		if !exists {
+			r, width := utf8.DecodeRune(encoded[:size])
+			return r, width, true
+		}
+		encoded[size] = c
+		r, width := utf8.DecodeRune(encoded[:size+1])
+		if width > 1 || r != utf8.RuneError {
+			return r, width, true
+		}
+	}
+	r, width := utf8.DecodeRune(encoded[:])
+	return r, width, true
+}
+
+func (b *Buffer) runeStartBefore(at int) (int, bool) {
+	if at <= 0 || at > b.bytes {
+		return 0, false
+	}
+	start := at - 1
+	for start > 0 {
+		c, _ := b.ByteAt(start)
+		if utf8.RuneStart(c) {
+			break
+		}
+		start--
+	}
+	return start, true
+}
+
+// PreviousCluster and NextCluster provide the first local grapheme behavior
+// needed by the parity spike. They avoid flattening the complete buffer. The
+// rules cover combining marks, variation selectors, emoji modifiers, and ZWJ
+// sequences; full Unicode grapheme conformance remains a parity test gate.
+func (b *Buffer) PreviousCluster(at int) int {
+	start, ok := b.runeStartBefore(at)
+	if !ok {
+		return 0
+	}
+	for start > 0 {
+		r, _, _ := b.runeAt(start)
+		if !isClusterExtend(r) {
+			break
+		}
+		start, _ = b.runeStartBefore(start)
+	}
+	for start > 0 {
+		zwjStart, _ := b.runeStartBefore(start)
+		zwj, _, _ := b.runeAt(zwjStart)
+		if zwj != '\u200d' {
+			break
+		}
+		start = zwjStart
+		start, _ = b.runeStartBefore(start)
+		for start > 0 {
+			r, _, _ := b.runeAt(start)
+			if !isClusterExtend(r) {
+				break
+			}
+			start, _ = b.runeStartBefore(start)
+		}
+	}
+	return start
+}
+
+func (b *Buffer) NextCluster(at int) int {
+	if at >= b.bytes {
+		return b.bytes
+	}
+	pos := at
+	for pos < b.bytes {
+		_, width, ok := b.runeAt(pos)
+		if !ok {
+			return b.bytes
+		}
+		pos += width
+		for pos < b.bytes {
+			next, nextWidth, _ := b.runeAt(pos)
+			if !isClusterExtend(next) {
+				break
+			}
+			pos += nextWidth
+		}
+		if pos >= b.bytes {
+			break
+		}
+		next, nextWidth, _ := b.runeAt(pos)
+		if next != '\u200d' {
+			break
+		}
+		pos += nextWidth
+	}
+	return pos
+}
+
+func isClusterExtend(r rune) bool {
+	return unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Mc, r) ||
+		unicode.Is(unicode.Me, r) || (r >= 0xfe00 && r <= 0xfe0f) ||
+		(r >= 0x1f3fb && r <= 0x1f3ff)
 }
 
 func (b *Buffer) lineStart(line int) int {

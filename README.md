@@ -24,6 +24,7 @@ See:
 - [`docs/GATE-A-CLOSEOUT.md`](docs/GATE-A-CLOSEOUT.md) — Gate A result and native-smoke limitations.
 - [`docs/GATE-B-RESULTS.md`](docs/GATE-B-RESULTS.md) — measurements and the custom-editor decision.
 - [`docs/BEHAVIOR-PARITY.md`](docs/BEHAVIOR-PARITY.md) — the parity artifact for the conditional spike.
+- [`docs/EDITOR-CORE-CONTRACT.md`](docs/EDITOR-CORE-CONTRACT.md) — the frozen Gate B core boundary.
 - [`docs/TREE-SITTER-OPTIONS.md`](docs/TREE-SITTER-OPTIONS.md) — parsing options and the provisional recommendation.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ownership and package boundaries.
 - [`docs/PLAN.md`](docs/PLAN.md) — ordered engineering gates.
@@ -76,9 +77,12 @@ go run ./cmd/textbench -fixture 100k
 go run ./cmd/textbench -fixture all -out /tmp/scratchpad-textbench.tsv
 go run ./cmd/textbench -fixture 1m -operations first-paint,insert-middle
 go run ./cmd/scratcheditor -fixture 10m -operations first-paint,insert-near-9m
+go run ./cmd/fragmentbench -edits 10000
+go run ./cmd/fragmentbench -edits 100000
 ```
 
 Output is TSV with document size, operation, wall time, allocation count and
 bytes, and heap before/after. The benchmark intentionally records scaling
 across 100 KiB, 1 MiB, and 10 MiB rather than enforcing an arbitrary latency
-threshold.
+threshold. `fragmentbench` is the separate long-edit-session experiment; its
+10k and 100k runs use the same deterministic 10 MiB source and seed.

@@ -82,11 +82,14 @@ machine/environment record; compare work per keystroke against document size.
 Acceptance: either a measured decision to use `TextArea`, or a measured list
 of failures and a minimal custom editor boundary. This gate now has a measured
 failure result in [`GATE-B-RESULTS.md`](GATE-B-RESULTS.md), so the next work is
-storage/viewport proof and the formal parity artifact, not Gate C. “It feels
-slow” is not an acceptance criterion.
+the formal parity artifact plus a fragmentation torture benchmark, not Gate C.
+The decision is complete, but Gate B remains open until those artifacts show
+that the custom core preserves the needed TextArea behavior and exposes the
+long-session storage limit. “It feels slow” is not an acceptance criterion.
 
 Framework risks: no public scalable editable-text primitive; custom paint may
-need a small Shirei capability or a downstream adapter.
+need a small Shirei capability or a downstream adapter. A simple piece sequence
+may also need cached metadata or a balanced index after fragmentation testing.
 
 Deferred: soft wrapping, syntax highlighting, parser selection, LSP.
 

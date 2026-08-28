@@ -16,7 +16,9 @@ Use small deterministic strings, including:
 
 For each fixture, establish equivalent caret and selection positions, then run
 the same operation through the Shirei TextArea frame harness and the
-ScratchEditor harness.
+ScratchEditor harness. The current pure-core tests are the first executable
+parity cases; the public Shirei frame harness remains the oracle for behavior
+that depends on shaping, focus, or native input.
 
 ## Required observations
 
@@ -27,8 +29,8 @@ Compare, after every operation:
 | Resulting text | Yes | Exact string equality. |
 | Caret | Yes | Rune/byte conversion must be explicit; compare the corresponding logical position. |
 | Selection | Yes | Direction and normalized range must both be understood. |
-| Undo result | When undo exists | ScratchEditor currently has no undo; this row is pending. |
-| Redo result | When redo exists | ScratchEditor currently has no redo; this row is pending. |
+| Undo result | Yes for core edits | Undo stores the changed byte ranges and caret/selection state, not whole-text snapshots. |
+| Redo result | Yes for core edits | Redo reapplies the same range record and restores the post-edit caret/selection. |
 
 The Shirei reference should be exercised through its public frame path and
 `ProcessTextInput`/`TextInputState` observation where possible. Do not import
@@ -38,11 +40,18 @@ yet be observed through the public API.
 
 ## Current status
 
-The storage spike currently has unit tests for insertion, deletion, selection
-replacement, line counts, and large-offset edits. It deliberately has no
-behavioral claim beyond those operations. Caret rendering, hit testing,
-clipboard, undo, cluster motion, bidi affinity, and IME must each add a parity
-case before being called complete.
+The current core has unit tests for insertion, deletion, selection replacement,
+line counts, large-offset edits, logical hit testing, clipboard operations,
+undo/redo, combining-mark and ZWJ cluster motion/deletion, affinity state, and
+composition commit/cancel. Its IME layer is still a pure preedit state
+adapter; native Shirei composition delivery and caret geometry are not claimed
+by this storage package. Its bidi behavior is likewise limited to preserving
+logical affinity and direction metadata; visual run hit-testing remains a
+Shirei-backed view concern.
+
+This is intentionally a staged parity result. The next view-level parity work
+must compare shaped visual positions and native composition geometry against
+TextArea before the custom editor is promoted beyond a Gate B proof.
 
 Parity is a Gate B artifact. It does not authorize beginning Markdown,
 Tree-sitter, tabs, workspace search, or other Gate C+ work.
