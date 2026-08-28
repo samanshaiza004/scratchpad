@@ -80,8 +80,10 @@ Benchmarks: repeatable `go test -bench` or behavior harness with a written
 machine/environment record; compare work per keystroke against document size.
 
 Acceptance: either a measured decision to use `TextArea`, or a measured list
-of failures and a minimal custom editor boundary. “It feels slow” is not an
-acceptance criterion.
+of failures and a minimal custom editor boundary. This gate now has a measured
+failure result in [`GATE-B-RESULTS.md`](GATE-B-RESULTS.md), so the next work is
+storage/viewport proof and the formal parity artifact, not Gate C. “It feels
+slow” is not an acceptance criterion.
 
 Framework risks: no public scalable editable-text primitive; custom paint may
 need a small Shirei capability or a downstream adapter.

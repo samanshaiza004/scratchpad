@@ -21,6 +21,9 @@ See:
 
 - [`docs/RESEARCH.md`](docs/RESEARCH.md) — findings from the pinned Shirei source.
 - [`docs/EDITOR-AUDIT.md`](docs/EDITOR-AUDIT.md) — what `TextArea` solves and where scale is uncertain.
+- [`docs/GATE-A-CLOSEOUT.md`](docs/GATE-A-CLOSEOUT.md) — Gate A result and native-smoke limitations.
+- [`docs/GATE-B-RESULTS.md`](docs/GATE-B-RESULTS.md) — measurements and the custom-editor decision.
+- [`docs/BEHAVIOR-PARITY.md`](docs/BEHAVIOR-PARITY.md) — the parity artifact for the conditional spike.
 - [`docs/TREE-SITTER-OPTIONS.md`](docs/TREE-SITTER-OPTIONS.md) — parsing options and the provisional recommendation.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ownership and package boundaries.
 - [`docs/PLAN.md`](docs/PLAN.md) — ordered engineering gates.
@@ -57,3 +60,25 @@ the replace directive is a local development choice and need not be committed.
 - Measure the editor path before replacing Shirei behavior.
 - Keep `document` independent of Shirei wherever the product model permits.
 - Treat framework changes as small, evidence-backed upstream contributions.
+
+## Gate B benchmark
+
+The real Shirei TextArea benchmark is a headless executable: it runs Shirei
+frame layout, text shaping, and surface generation while driving deterministic
+synthetic input. Headless mode makes scaling comparisons repeatable; native
+smoke remains a separate concern. Add `-software-render` for a separate
+software-raster stress run; it is intentionally not part of the large-fixture
+default because rasterizing the whole current TextArea surface can dominate the
+editor measurement.
+
+```bash
+go run ./cmd/textbench -fixture 100k
+go run ./cmd/textbench -fixture all -out /tmp/scratchpad-textbench.tsv
+go run ./cmd/textbench -fixture 1m -operations first-paint,insert-middle
+go run ./cmd/scratcheditor -fixture 10m -operations first-paint,insert-near-9m
+```
+
+Output is TSV with document size, operation, wall time, allocation count and
+bytes, and heap before/after. The benchmark intentionally records scaling
+across 100 KiB, 1 MiB, and 10 MiB rather than enforcing an arbitrary latency
+threshold.
