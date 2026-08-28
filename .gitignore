@@ -1,0 +1,16 @@
+# Build output
+/scratchpad
+/bin/
+
+# Go tooling
+*.test
+*.out
+coverage.out
+
+# Local development state
+.scratchpad/
+.DS_Store
+
+# Generated visual artifacts and local benchmark output
+testdata/generated/
+*.pprof
