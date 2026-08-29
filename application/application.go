@@ -15,6 +15,22 @@ import (
 
 type DocumentID string
 
+type DocumentStatus uint8
+
+const (
+	StatusSynced DocumentStatus = iota
+	StatusDirty
+	StatusConflict
+	StatusMissing
+)
+
+type Conflict struct {
+	Base        []byte
+	Disk        []byte
+	DiskVersion workspace.DiskVersion
+	DiskMode    os.FileMode
+}
+
 type ViewState struct {
 	ScrollY float32
 }
@@ -27,6 +43,9 @@ type Application struct {
 	Order        []DocumentID
 	Active       DocumentID
 	Views        map[DocumentID]ViewState
+	Watcher      workspace.Watcher
+	Stale        map[DocumentID]bool
+	Conflicts    map[DocumentID]Conflict
 }
 
 func New(store workspace.FileStore) *Application {
@@ -37,6 +56,8 @@ func New(store workspace.FileStore) *Application {
 		Store:     store,
 		Documents: make(map[DocumentID]*document.Document),
 		Views:     make(map[DocumentID]ViewState),
+		Stale:     make(map[DocumentID]bool),
+		Conflicts: make(map[DocumentID]Conflict),
 	}
 }
 
@@ -99,6 +120,117 @@ func (a *Application) OpenDocument(path string) error {
 	a.Order = append(a.Order, id)
 	a.Views[id] = ViewState{}
 	a.Active = id
+	if a.Watcher != nil {
+		if err := a.Watcher.WatchDirectory(filepath.Dir(doc.Path)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Application) SetWatcher(watcher workspace.Watcher) error {
+	a.Watcher = watcher
+	if watcher == nil {
+		return nil
+	}
+	for _, doc := range a.Documents {
+		if err := watcher.WatchDirectory(filepath.Dir(doc.Path)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// HandleWatchEvent records only an advisory hint. Reconcile performs the
+// authoritative read and fingerprint comparison.
+func (a *Application) HandleWatchEvent(event workspace.WatchEvent) {
+	name := filepath.Clean(event.Name)
+	for id, doc := range a.Documents {
+		if filepath.Clean(doc.Path) == name {
+			a.Stale[id] = true
+		}
+	}
+}
+
+func (a *Application) Reconcile(id DocumentID) (DocumentStatus, error) {
+	doc, ok := a.Documents[id]
+	if !ok {
+		return StatusMissing, errors.New("unknown document")
+	}
+	snapshot, err := a.Store.Load(doc.Path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return StatusMissing, nil
+		}
+		return StatusSynced, err
+	}
+	delete(a.Stale, id)
+	if doc.DiskVersion.Equal(snapshot.Version) {
+		if doc.Dirty() {
+			return StatusDirty, nil
+		}
+		return StatusSynced, nil
+	}
+	if !doc.Dirty() {
+		doc.Reload(snapshot.Data, snapshot.Version, snapshot.Mode)
+		return StatusSynced, nil
+	}
+	a.Conflicts[id] = Conflict{
+		Base: append([]byte(nil), doc.BaseSnapshot()...), Disk: append([]byte(nil), snapshot.Data...),
+		DiskVersion: snapshot.Version, DiskMode: snapshot.Mode,
+	}
+	return StatusConflict, nil
+}
+
+func (a *Application) Status(id DocumentID) DocumentStatus {
+	if _, ok := a.Conflicts[id]; ok {
+		return StatusConflict
+	}
+	doc := a.Documents[id]
+	if doc == nil {
+		return StatusMissing
+	}
+	if doc.Dirty() {
+		return StatusDirty
+	}
+	return StatusSynced
+}
+
+func (a *Application) Conflict(id DocumentID) (Conflict, bool) {
+	conflict, ok := a.Conflicts[id]
+	return conflict, ok
+}
+
+func (a *Application) ReloadDisk(id DocumentID) error {
+	conflict, ok := a.Conflicts[id]
+	if !ok {
+		return errors.New("document is not conflicted")
+	}
+	doc := a.Documents[id]
+	doc.Reload(conflict.Disk, conflict.DiskVersion, conflict.DiskMode)
+	delete(a.Conflicts, id)
+	return nil
+}
+
+func (a *Application) KeepEditing(id DocumentID) error {
+	if _, ok := a.Conflicts[id]; !ok {
+		return errors.New("document is not conflicted")
+	}
+	return nil
+}
+
+func (a *Application) OverwriteDisk(id DocumentID) error {
+	doc := a.Documents[id]
+	if doc == nil {
+		return errors.New("unknown document")
+	}
+	version, err := a.Store.Save(doc.Path, doc.Editor.Buffer.Text(), doc.FileMode)
+	if err != nil {
+		return err
+	}
+	doc.DiskVersion = version
+	doc.MarkSaved()
+	delete(a.Conflicts, id)
 	return nil
 }
 

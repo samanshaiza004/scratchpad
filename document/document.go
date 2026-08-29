@@ -28,6 +28,7 @@ type Document struct {
 	Projections      Projections
 	DerivedRevision  uint64
 	observedRevision uint64
+	base             []byte
 }
 
 // DiskVersion is kept as a document-package alias so callers can describe
@@ -93,6 +94,7 @@ func NewLoaded(path string, source []byte, version workspace.DiskVersion, mode f
 	doc.DiskVersion = version
 	doc.FileMode = mode
 	doc.Format = DetectFormat(source)
+	doc.base = append([]byte(nil), source...)
 	doc.MarkSaved()
 	return doc
 }
@@ -138,6 +140,7 @@ func (d *Document) Reload(source []byte, version workspace.DiskVersion, mode fs.
 	d.DiskVersion = version
 	d.FileMode = mode
 	d.Format = DetectFormat(source)
+	d.base = append([]byte(nil), source...)
 	d.SavedRevision = d.Revision()
 	d.observedRevision = d.Revision()
 	d.InvalidateDerived()
@@ -236,6 +239,7 @@ func (d *Document) Save(store workspace.FileStore) error {
 	}
 	d.DiskVersion = version
 	d.MarkSaved()
+	d.base = d.Editor.Buffer.Text()
 	return nil
 }
 
@@ -252,5 +256,15 @@ func (d *Document) SaveAs(store workspace.FileStore, path string) error {
 	d.Path = filepath.Clean(path)
 	d.DiskVersion = version
 	d.MarkSaved()
+	d.base = d.Editor.Buffer.Text()
 	return nil
+}
+
+// BaseSnapshot returns the originally loaded bytes for transient conflict
+// comparison. It is never used as the editor's content authority.
+func (d *Document) BaseSnapshot() []byte {
+	if d == nil {
+		return nil
+	}
+	return append([]byte(nil), d.base...)
 }
