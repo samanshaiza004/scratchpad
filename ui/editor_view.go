@@ -10,15 +10,23 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
+const maxShapingBytes = 64 << 10
+
 // VisualLine is the row-local bridge between the byte-oriented document and
 // Shirei's rune/cluster-oriented shaping model. It never needs the rest of
 // the document to translate a visible row.
 type VisualLine struct {
 	DocStart int
 	DocEnd   int
-	Text     string
-	Runes    []rune
-	Layout   ShapedText
+	// LogicalStart and LogicalEnd retain the complete line range when the
+	// shaped window is bounded for a pathological line.
+	LogicalStart    int
+	LogicalEnd      int
+	Text            string
+	Runes           []rune
+	Layout          ShapedText
+	TruncatedBefore bool
+	TruncatedAfter  bool
 
 	runeBytes []int
 }
@@ -26,11 +34,20 @@ type VisualLine struct {
 // BuildVisualLine copies and shapes one logical line. Callers should invoke it
 // only for rows the viewport is actually building.
 func BuildVisualLine(buffer *editor.Buffer, line int, style TextStyleAttrs) (VisualLine, bool) {
+	return BuildVisualLineAround(buffer, line, 0, style)
+}
+
+// BuildVisualLineAround copies and shapes one bounded window of a logical
+// line. For ordinary lines the window is the complete line. For pathological
+// lines it is centered on anchor when possible, so the active caret remains
+// visible without asking Shirei to shape megabytes synchronously.
+func BuildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs) (VisualLine, bool) {
 	start, end, ok := buffer.LineRange(line)
 	if !ok {
 		return VisualLine{}, false
 	}
-	data, err := buffer.Bytes(start, end)
+	windowStart, windowEnd := boundedLineWindow(buffer, start, end, anchor)
+	data, err := buffer.Bytes(windowStart, windowEnd)
 	if err != nil {
 		return VisualLine{}, false
 	}
@@ -41,13 +58,48 @@ func BuildVisualLine(buffer *editor.Buffer, line int, style TextStyleAttrs) (Vis
 		runeBytes[i+1] = runeBytes[i] + utf8.RuneLen(r)
 	}
 	return VisualLine{
-		DocStart:  start,
-		DocEnd:    end,
-		Text:      text,
-		Runes:     runes,
-		Layout:    ShapeText(text, style),
-		runeBytes: runeBytes,
+		DocStart:        windowStart,
+		DocEnd:          windowEnd,
+		LogicalStart:    start,
+		LogicalEnd:      end,
+		Text:            text,
+		Runes:           runes,
+		Layout:          ShapeText(text, style),
+		TruncatedBefore: windowStart > start,
+		TruncatedAfter:  windowEnd < end,
+		runeBytes:       runeBytes,
 	}, true
+}
+
+func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowStart, windowEnd int) {
+	if end-start <= maxShapingBytes {
+		return start, end
+	}
+	anchor = maxInt(start, minInt(anchor, end))
+	windowStart = anchor - maxShapingBytes/2
+	if windowStart < start {
+		windowStart = start
+	}
+	windowEnd = windowStart + maxShapingBytes
+	if windowEnd > end {
+		windowEnd = end
+		windowStart = maxInt(start, windowEnd-maxShapingBytes)
+	}
+	for windowStart > start {
+		byteAt, ok := buffer.ByteAt(windowStart)
+		if ok && utf8.RuneStart(byteAt) {
+			break
+		}
+		windowStart--
+	}
+	for windowEnd < end {
+		byteAt, ok := buffer.ByteAt(windowEnd)
+		if ok && utf8.RuneStart(byteAt) {
+			break
+		}
+		windowEnd++
+	}
+	return windowStart, windowEnd
 }
 
 func (v VisualLine) LocalByteToRune(offset int) int {
@@ -226,7 +278,11 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 			OutFirstVisible: firstVisible,
 			OutLastVisible:  lastVisible,
 			ItemView: func(index int, width float32) {
-				visual, ok := BuildVisualLine(&e.Buffer, index, style)
+				anchor := 0
+				if start, end, exists := e.Buffer.LineRange(index); exists && e.Cursor >= start && e.Cursor <= end {
+					anchor = e.Cursor
+				}
+				visual, ok := BuildVisualLineAround(&e.Buffer, index, anchor, style)
 				if !ok {
 					return
 				}
@@ -327,7 +383,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 		if line < 0 {
 			line = 0
 		}
-		if visual, ok := BuildVisualLine(&e.Buffer, line, style); ok {
+		if visual, ok := BuildVisualLineAround(&e.Buffer, line, e.Cursor, style); ok {
 			localRune, affinity := visual.HitTest(input.MousePoint[0] - content.Origin[0])
 			position := visual.DocStart + visual.LocalRuneToByte(localRune)
 			if IsClicked() && shift {

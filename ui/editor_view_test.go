@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"scratchpad/editor"
 
@@ -29,6 +31,23 @@ func TestVisualLineKeepsDocumentMappingLocal(t *testing.T) {
 	}
 	if got := visual.DocStart + visual.LocalRuneToByte(len(visual.Runes)); got != visual.DocEnd {
 		t.Fatalf("end mapping = %d, want %d", got, visual.DocEnd)
+	}
+}
+
+func TestVisualLineBoundsPathologicalLineShaping(t *testing.T) {
+	b := editor.NewBuffer([]byte(strings.Repeat("x", 2<<20)))
+	visual, ok := BuildVisualLineAround(&b, 0, 1<<20, DefaultTextStyle())
+	if !ok {
+		t.Fatal("BuildVisualLineAround failed")
+	}
+	if got := len(visual.Text); got > maxShapingBytes+utf8.UTFMax {
+		t.Fatalf("shaped window = %d bytes, want at most %d plus boundary slack", got, maxShapingBytes)
+	}
+	if !visual.TruncatedBefore || !visual.TruncatedAfter {
+		t.Fatalf("long line truncation = before:%v after:%v", visual.TruncatedBefore, visual.TruncatedAfter)
+	}
+	if visual.LogicalStart != 0 || visual.LogicalEnd != b.ByteLen() {
+		t.Fatalf("logical range = %d:%d", visual.LogicalStart, visual.LogicalEnd)
 	}
 }
 
