@@ -1,7 +1,6 @@
 package document
 
 import (
-	"bytes"
 	"testing"
 )
 
@@ -10,23 +9,77 @@ func TestDocumentRevisionAndOwnership(t *testing.T) {
 	doc := New("notes/today.md", source, "markdown")
 	source[0] = 'X'
 
-	if string(doc.Source) != "hello" {
-		t.Fatalf("New did not copy source: %q", doc.Source)
+	if got := string(doc.Editor.Buffer.Text()); got != "hello" {
+		t.Fatalf("New editor text = %q", got)
 	}
 	if doc.Dirty() {
 		t.Fatal("new document should be clean")
 	}
 
-	doc.ReplaceSource([]byte("changed"))
-	if !doc.Dirty() || doc.Revision != 1 {
-		t.Fatalf("unexpected revision state: revision=%d saved=%d dirty=%v", doc.Revision, doc.SavedRevision, doc.Dirty())
+	if err := doc.ReplaceText([]byte("changed")); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Dirty() || doc.Revision() != 1 {
+		t.Fatalf("unexpected revision state: revision=%d saved=%d dirty=%v", doc.Revision(), doc.SavedRevision, doc.Dirty())
 	}
 	doc.MarkSaved()
 	if doc.Dirty() {
 		t.Fatal("saved document should be clean")
 	}
-	if !bytes.Equal(doc.Source, []byte("changed")) {
-		t.Fatalf("unexpected source: %q", doc.Source)
+	if got := string(doc.Editor.Buffer.Text()); got != "changed" {
+		t.Fatalf("unexpected editor text: %q", got)
+	}
+}
+
+func TestDocumentEditorRevisionAndDerivedState(t *testing.T) {
+	doc := New("notes/today.md", []byte("one\ntwo"), "text")
+	doc.Projections = Projections{Revision: doc.Revision(), Valid: true}
+	doc.DerivedRevision = doc.Revision()
+	if !doc.DerivedCurrent() {
+		t.Fatal("initial projections should be current")
+	}
+
+	if err := doc.Insert([]byte("!")); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Dirty() || doc.DerivedCurrent() {
+		t.Fatalf("after edit: dirty=%v derivedCurrent=%v", doc.Dirty(), doc.DerivedCurrent())
+	}
+	if len(doc.Injected) != 0 || doc.Projections.Valid {
+		t.Fatal("edit did not invalidate derived state")
+	}
+
+	if err := doc.Editor.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Dirty() {
+		t.Fatal("undo back to the original saved revision should be clean")
+	}
+	if err := doc.Editor.Redo(); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Dirty() {
+		t.Fatal("redo to unsaved revision should be dirty")
+	}
+	doc.MarkSaved()
+	if doc.Dirty() {
+		t.Fatal("current revision should be clean after save")
+	}
+	if err := doc.Editor.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Dirty() {
+		t.Fatal("undo away from a newer saved revision should be dirty")
+	}
+}
+
+func TestDocumentMetadataDoesNotOwnText(t *testing.T) {
+	doc := New("notes/old.md", []byte("authoritative"), "text")
+	doc.Path = "notes/new.md"
+	doc.RootLanguage = "markdown"
+	doc.DiskVersion = DiskVersion{Exists: true, Size: 42}
+	if got := string(doc.Editor.Buffer.Text()); got != "authoritative" {
+		t.Fatalf("metadata change replaced text: %q", got)
 	}
 }
 

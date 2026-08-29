@@ -13,6 +13,7 @@ type ScratchEditor struct {
 	Anchor   int
 	Affinity Affinity
 	preedit  Composition
+	revision uint64
 	undo     []editRecord
 	redo     []editRecord
 }
@@ -30,14 +31,22 @@ type Composition struct {
 }
 
 type editRecord struct {
-	start                      int
-	deleted, inserted          []byte
-	beforeCursor, beforeAnchor int
-	afterCursor, afterAnchor   int
+	start                         int
+	deleted, inserted             []byte
+	beforeCursor, beforeAnchor    int
+	afterCursor, afterAnchor      int
+	beforeRevision, afterRevision uint64
 }
 
 func NewScratchEditor(source []byte) *ScratchEditor {
 	return &ScratchEditor{Buffer: NewBuffer(source)}
+}
+
+// Revision identifies the current editable document state. It changes only
+// when document bytes change; caret, selection, and viewport changes do not
+// make a document dirty.
+func (e *ScratchEditor) Revision() uint64 {
+	return e.revision
 }
 
 func (e *ScratchEditor) SetCursor(cursor int) {
@@ -122,6 +131,7 @@ func (e *ScratchEditor) Undo() error {
 		return err
 	}
 	e.Cursor, e.Anchor = r.beforeCursor, r.beforeAnchor
+	e.revision = r.beforeRevision
 	e.Affinity = AffinityLeading
 	e.redo = append(e.redo, r)
 	return nil
@@ -140,6 +150,7 @@ func (e *ScratchEditor) Redo() error {
 		return err
 	}
 	e.Cursor, e.Anchor = r.afterCursor, r.afterAnchor
+	e.revision = r.afterRevision
 	e.Affinity = AffinityLeading
 	e.undo = append(e.undo, r)
 	return nil
@@ -230,6 +241,9 @@ func isRTL(r rune) bool {
 }
 
 func (e *ScratchEditor) replace(start, end int, text []byte) error {
+	if start == end && len(text) == 0 {
+		return nil
+	}
 	deleted, err := e.Buffer.Bytes(start, end)
 	if err != nil {
 		return err
@@ -241,6 +255,8 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 	if err := e.Buffer.Insert(start, text); err != nil {
 		return err
 	}
+	beforeRevision := e.revision
+	e.revision++
 	e.Cursor = start + len(text)
 	e.Anchor = e.Cursor
 	e.Affinity = AffinityLeading
@@ -248,6 +264,7 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 		start: start, deleted: deleted, inserted: append([]byte(nil), text...),
 		beforeCursor: beforeCursor, beforeAnchor: beforeAnchor,
 		afterCursor: e.Cursor, afterAnchor: e.Anchor,
+		beforeRevision: beforeRevision, afterRevision: e.revision,
 	})
 	e.redo = nil
 	return nil
