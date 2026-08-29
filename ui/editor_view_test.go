@@ -131,6 +131,45 @@ func TestLongLineChunkNavigationTraversesWholeLine(t *testing.T) {
 	}
 }
 
+func TestLongLineChunksDoNotSplitCommonGraphemeBoundaries(t *testing.T) {
+	source := append([]byte(strings.Repeat("x", maxShapingBytes-1)), []byte("a\u0301👩‍💻אבג 123 ")...)
+	source = append(source, []byte(strings.Repeat("y", maxShapingBytes+32))...)
+	b := editor.NewBuffer(source)
+	for _, anchor := range []int{maxShapingBytes, maxShapingBytes + len("a\u0301👩‍💻"), len(source)} {
+		visual, ok := BuildVisualLineAround(&b, 0, anchor, DefaultTextStyle())
+		if !ok {
+			t.Fatalf("BuildVisualLineAround(%d) failed", anchor)
+		}
+		if !isEditorClusterBoundary(&b, visual.DocStart) || !isEditorClusterBoundary(&b, visual.DocEnd) {
+			t.Fatalf("chunk %d has grapheme-splitting range %d:%d", visual.ChunkIndex, visual.DocStart, visual.DocEnd)
+		}
+		if anchor < visual.DocStart || anchor > visual.DocEnd {
+			t.Fatalf("anchor %d outside chunk %d:%d", anchor, visual.DocStart, visual.DocEnd)
+		}
+		if len(visual.Text) > maxShapingBytes+maxChunkBoundaryBytes {
+			t.Fatalf("chunk %d shaped %d bytes, want bounded expansion", visual.ChunkIndex, len(visual.Text))
+		}
+	}
+	e := editor.NewScratchEditor(source)
+	e.SetSelection(maxShapingBytes-1, maxShapingBytes+len("a\u0301👩‍💻"))
+	visual, ok := BuildVisualLineAround(&e.Buffer, 0, e.Cursor, DefaultTextStyle())
+	if !ok {
+		t.Fatal("BuildVisualLineAround for cross-chunk selection failed")
+	}
+	from, to := visibleSelection(visual, e)
+	if to <= from {
+		t.Fatalf("cross-chunk selection = %d:%d, want visible selection", from, to)
+	}
+}
+
+func isEditorClusterBoundary(buffer *editor.Buffer, offset int) bool {
+	if offset == 0 || offset == buffer.ByteLen() {
+		return true
+	}
+	previous := buffer.PreviousCluster(offset)
+	return buffer.NextCluster(previous) == offset
+}
+
 func TestVisualLineHitTestMatchesShireiReference(t *testing.T) {
 	b := editor.NewBuffer([]byte("abc אבג def"))
 	visual, ok := BuildVisualLine(&b, 0, DefaultTextStyle())

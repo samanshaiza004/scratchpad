@@ -287,3 +287,12 @@ the buffer architecture. The raw output is retained in
 
 The existing `scroll-top-bottom` operation remains bounded at 11.967 ms after
 the change, and the headless viewport scroll regression remains green.
+
+The boundary regression then covered a combining sequence, an emoji ZWJ
+sequence, and mixed Hebrew/Arabic text placed at a nominal chunk edge. UTF-8
+and common grapheme boundaries are preserved; selections spanning the edge
+remain locally mappable, and caret traversal continues across the chunks. The
+view expands a boundary only within a 1 KiB cap, so a pathological grapheme
+cannot turn the shaping request into an unbounded line. The follow-up run kept
+first paint at 9.962 ms and near-end edit at 3.711 ms; its raw output is
+[`scratcheditor-longline-boundary.tsv`](baselines/scratcheditor-longline-boundary.tsv).

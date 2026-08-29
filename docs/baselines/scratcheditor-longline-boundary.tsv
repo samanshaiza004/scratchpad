@@ -1,0 +1,5 @@
+fixture	document_bytes	operation	wall_ms	allocs	alloc_bytes	heap_before	heap_after
+single-2m	2097152	first-paint	9.962	34361	11597208	26973664	38570872
+single-2m	2097153	insert-near-9m	3.711	21841	2401528	35807432	27091992
+single-2m	2097152	long-line-chunk-walk	1155.309	4308755	1466249296	35853256	38527256
+single-2m	2097152	scroll-top-bottom	8.281	33232	11364832	36899416	48264248

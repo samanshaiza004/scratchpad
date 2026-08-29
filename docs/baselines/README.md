@@ -18,6 +18,11 @@ The long-line closeout artifact was recorded with:
 - Shirei: `v0.0.0-20260824003747-6df9f18e3c20` (`6df9f18`);
 - command: `GOCACHE=/tmp/scratchpad-gocache go run ./cmd/scratcheditor -fixture single-2m -operations first-paint,insert-near-9m,selection-visible,long-line-chunk-walk,scroll-top-bottom -out docs/baselines/scratcheditor-longline-closeout.tsv`;
 - artifact: `scratcheditor-longline-closeout.tsv`.
+
+The follow-up boundary-regression run used the same environment and:
+
+- command: `GOCACHE=/tmp/scratchpad-gocache go run ./cmd/scratcheditor -fixture single-2m -operations first-paint,insert-near-9m,long-line-chunk-walk,scroll-top-bottom -out docs/baselines/scratcheditor-longline-boundary.tsv`;
+- artifact: `scratcheditor-longline-boundary.tsv`.
 - output format: TSV with fixture, document bytes, operation, wall time,
   allocation count/bytes, and heap before/after.
 

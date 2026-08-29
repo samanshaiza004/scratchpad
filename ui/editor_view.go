@@ -16,8 +16,9 @@ const (
 	// Long logical lines are presented as deterministic chunks. Keeping the
 	// chunk smaller than the old safety window materially reduces the amount
 	// of Shirei shaping and temporary glyph state per frame.
-	maxShapingBytes    = 16 << 10
-	longLineChunkBytes = maxShapingBytes
+	maxShapingBytes       = 16 << 10
+	longLineChunkBytes    = maxShapingBytes
+	maxChunkBoundaryBytes = 1 << 10
 )
 
 // VisualLine is the row-local bridge between the byte-oriented document and
@@ -121,6 +122,7 @@ func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowSta
 	}
 	windowStart = start + chunkIndex*longLineChunkBytes
 	windowEnd = minInt(end, windowStart+longLineChunkBytes)
+	windowStart, windowEnd = expandToClusterBoundaries(buffer, start, end, windowStart, windowEnd)
 	for windowStart > start {
 		byteAt, ok := buffer.ByteAt(windowStart)
 		if ok && utf8.RuneStart(byteAt) {
@@ -136,6 +138,28 @@ func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowSta
 		windowEnd++
 	}
 	return windowStart, windowEnd, chunkIndex, chunkCount
+}
+
+// expandToClusterBoundaries keeps the small amount of shaping context needed
+// for common combining and ZWJ sequences on the same side of a chunk. The
+// expansion is bounded; an unusually huge single grapheme remains subject to
+// the fixed-line fallback rather than turning a frame into an unbounded scan.
+func expandToClusterBoundaries(buffer *editor.Buffer, lineStart, lineEnd, start, end int) (int, int) {
+	if start > lineStart {
+		clusterStart := buffer.PreviousCluster(start)
+		clusterEnd := buffer.NextCluster(clusterStart)
+		if clusterStart < start && clusterEnd > start && start-clusterStart <= maxChunkBoundaryBytes {
+			start = clusterStart
+		}
+	}
+	if end < lineEnd {
+		clusterStart := buffer.PreviousCluster(end)
+		clusterEnd := buffer.NextCluster(clusterStart)
+		if clusterEnd > end && clusterEnd-end <= maxChunkBoundaryBytes {
+			end = clusterEnd
+		}
+	}
+	return start, end
 }
 
 // MoveLongLineChunk advances the caret by one bounded shaping chunk on the
