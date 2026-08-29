@@ -183,12 +183,13 @@ recovery, huge-file, and idle checks remain manual certification work.
 
 Status: implementation complete for the first workbench pass; native desktop
 certification remains a manual macOS task. The application now presents a
-two-column workspace with a bounded, scrollable file tree, a dominant editor,
-stable active/dirty tabs, close confirmation for dirty documents, temporary
-find/search surfaces, conflict comparison summary, and keyboard-first Save,
-Find, Quick Open, close, and tab-switch commands. The editor viewport has a
-headless regression test proving wheel scrolling changes and preserves its
-visible-row offset.
+focused single-file editor when no workspace is open, and a two-column
+workspace with a dense tree, dominant editor, compact menus, stable
+active/dirty tabs, close confirmation for dirty documents, transient find and
+quick-open surfaces, conflict comparison summary, status rail, and
+keyboard-first commands when a workspace is open. Opening a file no longer
+invents a containing workspace. The editor viewport has a headless regression
+test proving wheel scrolling changes and preserves its visible-row offset.
 
 This slice intentionally does not reopen the editor/storage design. Picker
 navigation and the headless editor scroll regression are covered. Remaining

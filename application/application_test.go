@@ -41,7 +41,7 @@ func TestOpenPathSharesDocumentForAliases(t *testing.T) {
 	}
 }
 
-func TestOpenPathFileEstablishesContainingWorkspace(t *testing.T) {
+func TestOpenPathFileDoesNotInventWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.txt")
 	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
@@ -51,7 +51,7 @@ func TestOpenPathFileEstablishesContainingWorkspace(t *testing.T) {
 	if err := a.OpenPath(path); err != nil {
 		t.Fatal(err)
 	}
-	if a.Workspace.Root != dir || a.ActiveDocument().Path != path {
+	if a.HasWorkspace || a.Workspace.Root != "" || a.ActiveDocument().Path != path {
 		t.Fatalf("workspace=%q document=%q", a.Workspace.Root, a.ActiveDocument().Path)
 	}
 }
@@ -239,6 +239,9 @@ func TestFindCurrentAndSearchWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := New(nil)
+	if err := a.OpenWorkspace(dir); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.OpenPath(path); err != nil {
 		t.Fatal(err)
 	}

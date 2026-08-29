@@ -119,11 +119,6 @@ func (a *Application) OpenDocument(path string) error {
 	if err != nil {
 		return err
 	}
-	if !a.HasWorkspace {
-		if err := a.OpenWorkspace(filepath.Dir(snapshot.Path)); err != nil {
-			return err
-		}
-	}
 	rootLanguage := string(language.DetectPath(snapshot.Path))
 	doc := document.NewLoaded(snapshot.Path, snapshot.Data, snapshot.Version, snapshot.Mode, rootLanguage)
 	a.Documents[id] = doc

@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +42,33 @@ func (w Workspace) List(relative string) ([]Entry, error) {
 		return result[i].Name < result[j].Name
 	})
 	return result, nil
+}
+
+// Files walks the workspace in deterministic order and emits ordinary files.
+// It is deliberately a small filesystem primitive: callers own cancellation,
+// presentation, and any asynchronous scheduling around the walk.
+func (w Workspace) Files(ctx context.Context, emit func(string) bool) error {
+	return filepath.WalkDir(w.Root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path != w.Root && (entry.Name() == ".git" || entry.Name() == ".scratchpad") {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if path == w.Root || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if !emit(path) {
+			return nil
+		}
+		return nil
+	})
 }
 
 func (w Workspace) containedPath(relative string) (string, error) {

@@ -62,3 +62,45 @@ func TestSearchStreamsRawByteMatchesAndHonorsCancellation(t *testing.T) {
 		t.Fatalf("cancel error = %v", err)
 	}
 }
+
+func TestFilesWalksVisibleFilesRecursively(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(dir, ".hidden.txt"),
+		filepath.Join(dir, "root.txt"),
+		filepath.Join(dir, "nested", "child.txt"),
+	} {
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "ignored"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	if err := ws.Files(context.Background(), func(path string) bool {
+		files = append(files, path)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(dir, ".hidden.txt"), filepath.Join(dir, "nested", "child.txt"), filepath.Join(dir, "root.txt")}
+	if len(files) != len(want) {
+		t.Fatalf("files = %v, want %v", files, want)
+	}
+	for i := range want {
+		if files[i] != want[i] {
+			t.Fatalf("files = %v, want %v", files, want)
+		}
+	}
+}

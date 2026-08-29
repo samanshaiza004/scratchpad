@@ -58,6 +58,12 @@ text. Mutations should enter through the document editing methods so derived
 state is invalidated at the same seam; callers that work directly with the
 editor must still check the revision-tagged projection validity.
 
+The application shell has two presentations over that same model. Opening a
+file without a workspace keeps `HasWorkspace` false and presents a focused
+editor; opening a directory enables the workspace tree and its per-document
+views. `ui` owns this presentation choice, while `application.OpenPath` stays
+the shared file-or-directory entry seam.
+
 ## Package boundaries
 
 Only packages with immediate scaffold value exist today:
