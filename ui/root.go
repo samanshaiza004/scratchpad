@@ -12,18 +12,25 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
-// RootView is intentionally a small proof that Scratchpad is a normal Shirei
-// application. Product state and the editor are added only after the research
-// gates establish their ownership and scale requirements.
+// RootView composes the file-native application state with Shirei's native
+// input, layout, shaping, and rendering infrastructure.
 func RootView(state *application.Application) {
 	if state == nil {
 		return
 	}
+	state.PollWatcher()
+	state.ReconcileStale()
+	state.MaybeWriteRecovery(state.RecoveryDir)
 	Container(Attrs(Viewport, Background(220, 12, 96, 1), Pad(28), Gap(18)), func() {
 		Container(Attrs(Row, CrossMid, Gap(12)), func() {
 			Label("Scratchpad", FontWeight(WeightBold), FontSize(24))
 			if state.HasWorkspace {
 				Label(state.Workspace.Root, FontSize(12), TextColor(220, 12, 35, 1))
+			}
+			if state.ActiveDocument() != nil {
+				if Button(NoIcon, "Save") {
+					_ = state.SaveActive()
+				}
 			}
 		})
 		openControls(state)
@@ -37,6 +44,7 @@ func RootView(state *application.Application) {
 			return
 		}
 		tabs(state)
+		conflictPanel(state)
 		if doc := state.ActiveDocument(); doc != nil {
 			id := state.Active
 			view := state.Views[id]
@@ -44,6 +52,27 @@ func RootView(state *application.Application) {
 				Style: DefaultTextStyle(), RowHeight: 20, ScrollY: &view.ScrollY,
 			})
 			state.Views[id] = view
+		}
+	})
+}
+
+func conflictPanel(state *application.Application) {
+	conflict, ok := state.Conflict(state.Active)
+	if !ok {
+		return
+	}
+	_ = conflict
+	Container(Attrs(Row, CrossMid, Gap(6), Background(220, 55, 86, 1), Pad(6)), func() {
+		Label("File changed on disk", FontWeight(WeightBold), FontSize(12))
+		Label(fmt.Sprintf("Compare: base %d bytes · disk %d bytes", len(conflict.Base), len(conflict.Disk)), FontSize(11))
+		if Button(NoIcon, "Reload Disk") {
+			_ = state.ReloadDisk(state.Active)
+		}
+		if Button(NoIcon, "Keep Editing") {
+			_ = state.KeepEditing(state.Active)
+		}
+		if Button(NoIcon, "Overwrite Disk") {
+			_ = state.OverwriteDisk(state.Active)
 		}
 	})
 }

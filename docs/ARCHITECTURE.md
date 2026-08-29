@@ -65,9 +65,11 @@ Only packages with immediate scaffold value exist today:
 - `document/`: product-owned document identity, revision bookkeeping, derived
   projection tags, and the byte line index helper. Its only text authority is
   the editor package; it has no Shirei imports.
-- `workspace/`: workspace-root validation, path containment, and a baseline
-  atomic save helper. File watching, conflicts, ignored files, and sessions are
-  later additions here or in clearly justified subpackages.
+- `workspace/`: workspace-root validation, path containment, file-store and
+  disk-fingerprint policy, atomic replacement, advisory directory watching,
+  directory listing, and raw-byte search.
+- `application/`: the product coordinator for OpenPath, document registry,
+  active/tab state, conflict resolution, session metadata, and recovery.
 - `language/`: root-language detection only. Parser/provider adapters arrive at
   Gate E.
 - `commands/`: stable command names, not keybinding or context behavior.
@@ -82,10 +84,8 @@ architecture theater.
 
 ## Editor/view split
 
-The current `TextArea` is the first implementation candidate for ordinary
-documents. If it passes Gate B, Scratchpad wraps it rather than replacing it.
-
-If it fails, the smallest custom editor should separate:
+The current `ScratchEditor` is the Gate B-proven implementation for ordinary
+documents. It separates:
 
 1. a document-owned editing/storage layer with byte offsets and mutation-aware
    line indexing;
@@ -148,7 +148,9 @@ file in the destination directory, writing all bytes, syncing and closing the
 temporary file, then replacing the destination. Readers see either the old
 file or the complete replacement; they do not observe a partially written
 replacement. Existing regular-file permissions are preserved. Symlink paths
-are rejected explicitly rather than silently replacing a link or following it.
+resolve and replace their validated final regular-file target so the link
+itself remains intact. Hard-linked files are rejected by the atomic path to
+avoid silently breaking their relationship.
 
 On Unix, the parent directory is opened and synced after the rename, covering
 the directory-entry durability step described by the Linux `fsync(2)` manual
@@ -172,21 +174,22 @@ I/O failure ([The Open Group rename](https://pubs.opengroup.org/onlinepubs/96999
 
 The workspace layer owns:
 
-- open/save and atomic replacement;
+- file loading, saving, and atomic replacement;
 - path and rename identity;
 - line-ending, BOM, and encoding policy;
-- external-change observation;
-- reload/keep/compare conflict decisions;
-- recovery and session state.
+- external-change observation and disk fingerprints.
+
+The application layer owns the open-document registry, active/tab state,
+reload/keep/compare conflict decisions, and recovery/session orchestration.
 
 The filesystem remains authoritative after a successful save. Scratchpad does
 not synchronize files, invent a note database, or require a cloud service.
 Sync tools operate on the ordinary folder outside the application.
 
-The scaffold now contains path validation and the documented atomic-save
-primitive. External-change conflict policy, line endings, encoding, watchers,
-and recovery remain Gate C work and must be tested on supported desktop
-platforms.
+Gate C now contains the file store, raw-byte document lifecycle, open-document
+registry, parent-directory watcher hints, verified reconciliation and conflict
+state, disposable session/recovery state, workspace listing, and asynchronous
+raw-byte search. Native platform certification remains an explicit C7 task.
 
 ## Unified commands
 

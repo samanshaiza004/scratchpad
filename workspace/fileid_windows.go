@@ -22,4 +22,15 @@ func fileID(path string, _ fs.FileInfo) FileID {
 	return FileID{A: uint64(data.VolumeSerialNumber), B: uint64(data.FileIndexHigh)<<32 | uint64(data.FileIndexLow), Valid: true}
 }
 
-func linkCount(fs.FileInfo) uint64 { return 0 }
+func linkCount(path string, _ fs.FileInfo) uint64 {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	var data windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &data); err != nil {
+		return 0
+	}
+	return uint64(data.NumberOfLinks)
+}

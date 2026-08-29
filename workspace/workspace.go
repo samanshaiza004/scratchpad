@@ -136,7 +136,7 @@ func replacementTarget(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("refusing to replace non-regular file %q", path)
 	}
-	if links := linkCount(info); links > 1 {
+	if links := linkCount(clean, info); links > 1 {
 		return "", fmt.Errorf("refusing to replace hard-linked file %q", path)
 	}
 	return clean, nil

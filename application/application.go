@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"scratchpad/document"
 	"scratchpad/language"
@@ -24,6 +25,8 @@ const (
 	StatusMissing
 )
 
+var ErrConflict = errors.New("document has an unresolved external-change conflict")
+
 type Conflict struct {
 	Base        []byte
 	Disk        []byte
@@ -36,16 +39,21 @@ type ViewState struct {
 }
 
 type Application struct {
-	Store        workspace.FileStore
-	Workspace    workspace.Workspace
-	HasWorkspace bool
-	Documents    map[DocumentID]*document.Document
-	Order        []DocumentID
-	Active       DocumentID
-	Views        map[DocumentID]ViewState
-	Watcher      workspace.Watcher
-	Stale        map[DocumentID]bool
-	Conflicts    map[DocumentID]Conflict
+	Store           workspace.FileStore
+	Workspace       workspace.Workspace
+	HasWorkspace    bool
+	Documents       map[DocumentID]*document.Document
+	Order           []DocumentID
+	Active          DocumentID
+	Views           map[DocumentID]ViewState
+	Watcher         workspace.Watcher
+	watchEvents     <-chan workspace.WatchEvent
+	Stale           map[DocumentID]bool
+	Conflicts       map[DocumentID]Conflict
+	RecoveryDir     string
+	lastRecovery    time.Time
+	recoveryRunning bool
+	recoveryDone    chan error
 }
 
 func New(store workspace.FileStore) *Application {
@@ -53,11 +61,12 @@ func New(store workspace.FileStore) *Application {
 		store = workspace.NewOSFileStore()
 	}
 	return &Application{
-		Store:     store,
-		Documents: make(map[DocumentID]*document.Document),
-		Views:     make(map[DocumentID]ViewState),
-		Stale:     make(map[DocumentID]bool),
-		Conflicts: make(map[DocumentID]Conflict),
+		Store:        store,
+		Documents:    make(map[DocumentID]*document.Document),
+		Views:        make(map[DocumentID]ViewState),
+		Stale:        make(map[DocumentID]bool),
+		Conflicts:    make(map[DocumentID]Conflict),
+		recoveryDone: make(chan error, 1),
 	}
 }
 
@@ -131,14 +140,33 @@ func (a *Application) OpenDocument(path string) error {
 func (a *Application) SetWatcher(watcher workspace.Watcher) error {
 	a.Watcher = watcher
 	if watcher == nil {
+		a.watchEvents = nil
 		return nil
 	}
+	a.watchEvents = watcher.Events()
 	for _, doc := range a.Documents {
 		if err := watcher.WatchDirectory(filepath.Dir(doc.Path)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// PollWatcher keeps watcher state on the application/UI goroutine. Events
+// remain advisory and are reconciled through the filesystem afterward.
+func (a *Application) PollWatcher() {
+	for a.watchEvents != nil {
+		select {
+		case event, ok := <-a.watchEvents:
+			if !ok {
+				a.watchEvents = nil
+				return
+			}
+			a.HandleWatchEvent(event)
+		default:
+			return
+		}
+	}
 }
 
 // HandleWatchEvent records only an advisory hint. Reconcile performs the
@@ -232,6 +260,57 @@ func (a *Application) OverwriteDisk(id DocumentID) error {
 	doc.MarkSaved()
 	delete(a.Conflicts, id)
 	return nil
+}
+
+func (a *Application) SaveActive() error {
+	doc := a.ActiveDocument()
+	if doc == nil {
+		return errors.New("no active document")
+	}
+	if _, ok := a.Conflicts[a.Active]; ok {
+		return ErrConflict
+	}
+	status, err := a.Reconcile(a.Active)
+	if err != nil {
+		return err
+	}
+	if status == StatusConflict {
+		return ErrConflict
+	}
+	return doc.Save(a.Store)
+}
+
+func (a *Application) SaveAs(id DocumentID, path string) error {
+	doc := a.Documents[id]
+	if doc == nil {
+		return errors.New("unknown document")
+	}
+	if err := doc.SaveAs(a.Store, path); err != nil {
+		return err
+	}
+	newID := documentID(doc.Path)
+	if newID != id {
+		delete(a.Documents, id)
+		a.Documents[newID] = doc
+		for i, existing := range a.Order {
+			if existing == id {
+				a.Order[i] = newID
+			}
+		}
+		a.Views[newID] = a.Views[id]
+		delete(a.Views, id)
+		if a.Active == id {
+			a.Active = newID
+		}
+	}
+	delete(a.Conflicts, id)
+	return nil
+}
+
+func (a *Application) ReconcileStale() {
+	for id := range a.Stale {
+		_, _ = a.Reconcile(id)
+	}
 }
 
 func (a *Application) Activate(id DocumentID) bool {

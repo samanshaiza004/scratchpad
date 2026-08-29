@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"scratchpad/document"
 	"scratchpad/editor"
@@ -123,33 +124,84 @@ func (a *Application) RestoreSession(path string) error {
 	return nil
 }
 
-func (a *Application) WriteRecovery(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	manifest := recoveryManifest{}
+type recoveryPayload struct {
+	Manifest recoveryManifest
+	Files    map[string][]byte
+}
+
+func (a *Application) captureRecovery() recoveryPayload {
+	payload := recoveryPayload{Files: make(map[string][]byte)}
 	for _, id := range a.Order {
 		doc := a.Documents[id]
 		if !doc.Dirty() {
 			continue
 		}
-		name := recoveryName(id)
-		data := doc.Editor.Buffer.Text()
-		if err := workspace.AtomicWriteFile(filepath.Join(dir, name+".bytes"), data, 0o600); err != nil {
-			return err
-		}
+		name := recoveryName(id) + ".bytes"
+		payload.Files[name] = doc.Editor.Buffer.Text()
 		anchor, cursor := doc.Editor.Selection()
-		manifest.Documents = append(manifest.Documents, recoveryDocument{
-			ID: id, Path: doc.Path, BytesFile: name + ".bytes", BaseVersion: doc.DiskVersion,
+		payload.Manifest.Documents = append(payload.Manifest.Documents, recoveryDocument{
+			ID: id, Path: doc.Path, BytesFile: name, BaseVersion: doc.DiskVersion,
 			Revision: doc.Revision(), Mode: doc.FileMode, Format: doc.Format,
 			Cursor: cursor, Anchor: anchor, Affinity: doc.Editor.Affinity, View: a.Views[id],
 		})
 	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
+	return payload
+}
+
+func writeRecovery(dir string, payload recoveryPayload) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if len(payload.Manifest.Documents) == 0 {
+		return clearRecovery(dir)
+	}
+	for name, data := range payload.Files {
+		if err := workspace.AtomicWriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(payload.Manifest, "", "  ")
 	if err != nil {
 		return err
 	}
 	return workspace.AtomicWriteFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600)
+}
+
+func (a *Application) WriteRecovery(dir string) error {
+	return writeRecovery(dir, a.captureRecovery())
+}
+
+// MaybeWriteRecovery captures dirty bytes on the UI goroutine and performs
+// filesystem work asynchronously, keeping large recovery writes out of the
+// keystroke-to-frame path.
+func (a *Application) MaybeWriteRecovery(dir string) {
+	if dir == "" {
+		return
+	}
+	select {
+	case <-a.recoveryDone:
+		a.recoveryRunning = false
+	default:
+	}
+	if a.recoveryRunning || time.Since(a.lastRecovery) < time.Second {
+		return
+	}
+	payload := a.captureRecovery()
+	if len(payload.Manifest.Documents) == 0 {
+		return
+	}
+	a.lastRecovery = time.Now()
+	a.recoveryRunning = true
+	go func() { a.recoveryDone <- writeRecovery(dir, payload) }()
+}
+
+func (a *Application) FlushRecovery(dir string) error {
+	if a.recoveryRunning {
+		err := <-a.recoveryDone
+		a.recoveryRunning = false
+		return err
+	}
+	return a.WriteRecovery(dir)
 }
 
 func (a *Application) RestoreRecovery(dir string) error {
@@ -208,6 +260,10 @@ func (a *Application) restoreRecoveredDocument(saved recoveryDocument, recovered
 }
 
 func (a *Application) ClearRecovery(dir string) error {
+	return clearRecovery(dir)
+}
+
+func clearRecovery(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

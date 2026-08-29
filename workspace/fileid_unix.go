@@ -15,7 +15,7 @@ func fileID(_ string, info fs.FileInfo) FileID {
 	return FileID{A: uint64(stat.Dev), B: uint64(stat.Ino), Valid: true}
 }
 
-func linkCount(info fs.FileInfo) uint64 {
+func linkCount(_ string, info fs.FileInfo) uint64 {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return 0

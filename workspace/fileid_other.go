@@ -4,5 +4,5 @@ package workspace
 
 import "io/fs"
 
-func fileID(string, fs.FileInfo) FileID { return FileID{} }
-func linkCount(fs.FileInfo) uint64      { return 0 }
+func fileID(string, fs.FileInfo) FileID    { return FileID{} }
+func linkCount(string, fs.FileInfo) uint64 { return 0 }

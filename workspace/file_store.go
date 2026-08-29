@@ -129,7 +129,7 @@ func observedVersion(path string, info fs.FileInfo) DiskVersion {
 		Size:      info.Size(),
 		ModTime:   info.ModTime(),
 		FileID:    fileID(path, info),
-		LinkCount: linkCount(info),
+		LinkCount: linkCount(path, info),
 	}
 }
 

@@ -4,9 +4,8 @@ Scratchpad is a planned native, file-first text editor and notes organizer. It
 is intended to provide one continuous writing surface for notes, prose, tasks,
 and code without turning into an IDE or a proprietary note database.
 
-This repository currently contains the research record, a deliberately small
-Go scaffold, and the implementation gates. Gate B established the scalable
-editor core; Gate C0 preflight is complete. The repository does not contain
+This repository contains a native Go editor with the Gate B scalable editor
+core and the first file-native Gate C slices. The repository does not contain
 syntax highlighting, Tree-sitter, LSP support, plugins, or sync logic.
 
 ## Current status

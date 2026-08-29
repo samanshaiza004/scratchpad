@@ -34,6 +34,29 @@ func TestVisualLineKeepsDocumentMappingLocal(t *testing.T) {
 	}
 }
 
+func TestVisualLinePreservesInvalidBytesWithExplicitMapping(t *testing.T) {
+	b := editor.NewBuffer([]byte{'a', 0xff, 'b'})
+	visual, ok := BuildVisualLine(&b, 0, DefaultTextStyle())
+	if !ok {
+		t.Fatal("BuildVisualLine failed")
+	}
+	if visual.Text != `a\xFFb` {
+		t.Fatalf("display text = %q", visual.Text)
+	}
+	if got := visual.LocalRuneToByte(1); got != 1 {
+		t.Fatalf("escape start maps to %d, want 1", got)
+	}
+	if got := visual.LocalRuneToByte(5); got != 2 {
+		t.Fatalf("after escape maps to %d, want 2", got)
+	}
+	if got := visual.LocalByteToRune(1); got != 1 {
+		t.Fatalf("invalid byte maps to display rune %d, want 1", got)
+	}
+	if got := visual.LocalByteToRune(2); got != 5 {
+		t.Fatalf("following byte maps to display rune %d, want 5", got)
+	}
+}
+
 func TestVisualLineBoundsPathologicalLineShaping(t *testing.T) {
 	b := editor.NewBuffer([]byte(strings.Repeat("x", 2<<20)))
 	visual, ok := BuildVisualLineAround(&b, 0, 1<<20, DefaultTextStyle())

@@ -116,47 +116,64 @@ parser selection, LSP.
 
 ## Gate C — file-native Scratchpad
 
-Objective: deliver a useful plain-text editor around ordinary files. Gate C is
-the next implementation phase; Gate B and the editor storage architecture are
-closed and should not be reopened without new contradictory evidence.
+Gate B and the editor storage architecture are closed. Gate C is split into
+independently verifiable product slices; no parser, language, or editor-core
+reopening belongs here.
 
-Prerequisites: Gate B storage/view decision.
+### C1 — file/document lifecycle
 
-Implementation work, in order:
+Status: implemented. Raw bytes remain authoritative; valid UTF-8, invalid
+bytes, BOMs, CRLF/LF, missing final newlines, disk fingerprints, dirty state,
+Save As, reload, and byte-identical no-op saves are covered by tests.
 
-1. C1 — open actual files into `Document`, save from the canonical editor
-   buffer, establish UTF-8/invalid-UTF-8, BOM, CRLF/LF, disk fingerprint, dirty
-   state, Save As, and reload behavior. A no-op open/save should be
-   byte-identical where policy permits.
-2. C2 — add the open-document registry, stable file identity, tabs, active
-   document, independent view state, and dirty-close handling.
-3. C3 — treat file-watcher events as hints, re-read/fingerprint disk state,
-   reload clean documents, and require explicit conflict handling for dirty
-   documents. Never silently overwrite external changes.
-4. C4 — add disposable session restore and recovery copies for dirty buffers;
-   recovery must never become a hidden note database.
-5. C5 — add the file tree, create/rename/delete policy, filename quick-open,
-   current-file find, and asynchronous workspace search.
+### C2 — application shell and multiple documents
 
-Tests: pure conflict, revision, path, encoding, and command tests; Shirei
-snapshots for chrome/tree/tabs/dialogs; native smoke tests for watching,
-keyboard shortcuts, clipboard, and window behavior.
+Status: implemented. `OpenPath` is shared by CLI/UI entry points. The
+application owns the workspace, document registry, active document, tab order,
+and per-document viewport state; tabs do not own content.
 
-Benchmarks: startup, workspace indexing, quick-open, workspace search, open
-latency, save latency, idle CPU, and memory with modest/large folders.
+### C3 — external changes and conflicts
 
-Acceptance: a user can open a folder, edit plain text, save safely, recover a
-session, and understand an external-change conflict without data loss.
+Status: implemented. Parent directories of open documents are watched only for
+advisory hints. Reconciliation reads/fingerprints disk state. Clean documents
+reload; dirty documents enter a document-scoped conflict state and ordinary
+Save is blocked. Symlink targets are preserved and hard-linked files are
+protected from accidental rename replacement.
 
-Framework risks: file APIs are caches/pickers, not complete persistence policy;
-native watcher semantics differ by platform.
+### C4 — recovery and session restore
 
-Deferred: syntax parsing, autocomplete, diagnostics, Git UI, sync.
+Status: implemented. Session metadata and raw-byte recovery files are separate
+disposable systems. Recovery writes are asynchronous and restore dirty content
+without becoming canonical note storage.
 
-After C5, complete long-line chunk navigation and reduce the measured shaping
-allocation cost before Markdown structure or language-service work. The
-existing bounded long-line fallback remains a safety mechanism, not finished
-editor behavior.
+### C5 — workspace tree and quick-open
+
+Status: implemented. The initial tree supports folders, files, expand/collapse,
+open, and refresh-by-render. Shirei's fuzzy path picker provides quick-open.
+Create/rename/delete remain deferred.
+
+### C6 — find and workspace search
+
+Status: implemented. Current-file search uses the document buffer; workspace
+search scans raw filesystem bytes asynchronously with streamed results and
+cancellation. No persistent index exists.
+
+### C7 — integration and native certification
+
+Status: code-complete; native certification pending. The deterministic
+LF/CRLF/BOM/invalid-byte, multi-document, conflict, recovery, symlink, and
+10 MiB certification is covered by `application.TestGateC*`. Run native
+certification on macOS first; keep pure tests and headless checks mandatory in
+CI. Idle CPU remains a native/manual observation rather than a hosted timing
+gate.
+
+Acceptance: a user can open a folder or file, edit multiple ordinary files,
+save without unintended byte transformations, recover dirty work, and resolve
+external changes without silent overwrite.
+
+Before Gate D, complete long-line chunk navigation and reduce the measured
+pathological-line shaping allocation cost. The current bounded fallback is a
+safety mechanism, not finished editor behavior.
 
 ## Gate D — Markdown and structural prose
 
