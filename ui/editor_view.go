@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"fmt"
 	"sort"
 	"unicode/utf8"
 
+	"scratchpad/document"
 	"scratchpad/editor"
 
 	. "go.hasen.dev/shirei"
@@ -28,7 +30,7 @@ type VisualLine struct {
 	TruncatedBefore bool
 	TruncatedAfter  bool
 
-	runeBytes []int
+	sourceBytes []int
 }
 
 // BuildVisualLine copies and shapes one logical line. Callers should invoke it
@@ -51,24 +53,48 @@ func BuildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextSt
 	if err != nil {
 		return VisualLine{}, false
 	}
-	text := string(data)
-	runes := []rune(text)
-	runeBytes := make([]int, len(runes)+1)
-	for i, r := range runes {
-		runeBytes[i+1] = runeBytes[i] + utf8.RuneLen(r)
-	}
+	display, runes, sourceBytes := displayText(data)
 	return VisualLine{
 		DocStart:        windowStart,
 		DocEnd:          windowEnd,
 		LogicalStart:    start,
 		LogicalEnd:      end,
-		Text:            text,
+		Text:            display,
 		Runes:           runes,
-		Layout:          ShapeText(text, style),
+		Layout:          ShapeText(display, style),
 		TruncatedBefore: windowStart > start,
 		TruncatedAfter:  windowEnd < end,
-		runeBytes:       runeBytes,
+		sourceBytes:     sourceBytes,
 	}, true
+}
+
+// displayText creates the Unicode projection used by Shirei while retaining
+// a local display-rune to source-byte mapping. Invalid UTF-8 bytes are shown
+// as explicit escapes and remain untouched in the authoritative buffer.
+func displayText(source []byte) (string, []rune, []int) {
+	var display []byte
+	var sourceBytes []int
+	sourceBytes = append(sourceBytes, 0)
+	for at := 0; at < len(source); {
+		r, size := utf8.DecodeRune(source[at:])
+		if r == utf8.RuneError && size == 1 && source[at] >= utf8.RuneSelf {
+			escape := fmt.Sprintf("\\x%02X", source[at])
+			display = append(display, escape...)
+			for i := range []rune(escape) {
+				if i == len([]rune(escape))-1 {
+					sourceBytes = append(sourceBytes, at+1)
+				} else {
+					sourceBytes = append(sourceBytes, at)
+				}
+			}
+			at++
+			continue
+		}
+		display = append(display, source[at:at+size]...)
+		sourceBytes = append(sourceBytes, at+size)
+		at += size
+	}
+	return string(display), []rune(string(display)), sourceBytes
 }
 
 func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowStart, windowEnd int) {
@@ -106,20 +132,20 @@ func (v VisualLine) LocalByteToRune(offset int) int {
 	if offset <= 0 {
 		return 0
 	}
-	if offset >= v.runeBytes[len(v.runeBytes)-1] {
+	if offset >= v.sourceBytes[len(v.sourceBytes)-1] {
 		return len(v.Runes)
 	}
-	return sort.Search(len(v.runeBytes), func(i int) bool { return v.runeBytes[i] > offset }) - 1
+	return sort.Search(len(v.sourceBytes), func(i int) bool { return v.sourceBytes[i] >= offset })
 }
 
 func (v VisualLine) LocalRuneToByte(index int) int {
 	if index <= 0 {
 		return 0
 	}
-	if index >= len(v.runeBytes) {
-		return v.runeBytes[len(v.runeBytes)-1]
+	if index >= len(v.sourceBytes) {
+		return v.sourceBytes[len(v.sourceBytes)-1]
 	}
-	return v.runeBytes[index]
+	return v.sourceBytes[index]
 }
 
 // HitTest maps a shaped visual x-coordinate to a local rune boundary. The
@@ -243,6 +269,18 @@ func (v VisualLine) nextClusterBoundary(bounds []int, cluster int) int {
 type EditorViewOptions struct {
 	Style     TextStyleAttrs
 	RowHeight float32
+	ScrollY   *float32
+}
+
+// EditableDocumentView binds the existing Shirei-backed editor view to the
+// product document seam. The editor remains the content authority; this
+// adapter only synchronizes revision/derived-state bookkeeping.
+func EditableDocumentView(key any, doc *document.Document, options EditorViewOptions) {
+	if doc == nil || doc.Editor == nil {
+		return
+	}
+	EditableView(key, doc.Editor, options)
+	doc.SyncEditorState()
 }
 
 // EditableView is the fixed-height Shirei view for ScratchEditor. It shapes
@@ -263,6 +301,9 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		PressAction()
 
 		scrollY := Use[float32]("editor-scroll-y")
+		if options.ScrollY != nil {
+			*scrollY = *options.ScrollY
+		}
 		firstVisible := Use[int]("editor-first-visible")
 		lastVisible := Use[int]("editor-last-visible")
 		if HasFocus() {
@@ -321,6 +362,9 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				})
 			},
 		})
+		if options.ScrollY != nil {
+			*options.ScrollY = *scrollY
+		}
 	})
 }
 
