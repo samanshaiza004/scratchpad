@@ -4,33 +4,42 @@ package document
 
 import (
 	"errors"
+	"io/fs"
 	"path/filepath"
-	"time"
 
 	"scratchpad/editor"
+	"scratchpad/workspace"
 )
+
+var ErrDiskChanged = errors.New("file changed on disk")
 
 // Document is the product-owned identity and revision shell around the one
 // authoritative editable text state. The editor contains the bytes; Document
 // never keeps a second complete content copy.
 type Document struct {
-	Path            string
-	Editor          *editor.ScratchEditor
-	SavedRevision   uint64
-	DiskVersion     DiskVersion
-	RootLanguage    string
-	Injected        []InjectedRegion
-	Projections     Projections
-	DerivedRevision uint64
+	Path             string
+	Editor           *editor.ScratchEditor
+	SavedRevision    uint64
+	DiskVersion      workspace.DiskVersion
+	FileMode         fs.FileMode
+	Format           FileFormat
+	RootLanguage     string
+	Injected         []InjectedRegion
+	Projections      Projections
+	DerivedRevision  uint64
+	observedRevision uint64
 }
 
-// DiskVersion is the small file identity snapshot needed by the document
-// seam. It is evidence for future external-change policy, not that policy
-// itself.
-type DiskVersion struct {
-	Exists  bool
-	Size    int64
-	ModTime time.Time
+// DiskVersion is kept as a document-package alias so callers can describe
+// persistence state without depending on the concrete workspace adapter.
+type DiskVersion = workspace.DiskVersion
+
+// FileFormat records byte-preserving presentation facts. The bytes remain in
+// the editor buffer; this metadata only describes how they should be shown or
+// interpreted by future explicit encoding commands.
+type FileFormat struct {
+	UTF8BOM  bool
+	Encoding string
 }
 
 // InjectedRegion identifies a nested-language region without tying the
@@ -68,10 +77,30 @@ func New(path string, source []byte, rootLanguage string) *Document {
 		cleanPath = ""
 	}
 	return &Document{
-		Path:          cleanPath,
-		Editor:        editor.NewScratchEditor(source),
-		RootLanguage:  rootLanguage,
-		SavedRevision: 0,
+		Path:             cleanPath,
+		Editor:           editor.NewScratchEditor(source),
+		RootLanguage:     rootLanguage,
+		SavedRevision:    0,
+		observedRevision: 0,
+	}
+}
+
+// NewLoaded creates a clean document from a verified filesystem snapshot.
+// The snapshot bytes are transferred into the editor and are not retained as
+// a second document-content authority.
+func NewLoaded(path string, source []byte, version workspace.DiskVersion, mode fs.FileMode, rootLanguage string) *Document {
+	doc := New(path, source, rootLanguage)
+	doc.DiskVersion = version
+	doc.FileMode = mode
+	doc.Format = DetectFormat(source)
+	doc.MarkSaved()
+	return doc
+}
+
+func DetectFormat(source []byte) FileFormat {
+	return FileFormat{
+		UTF8BOM:  len(source) >= 3 && source[0] == 0xef && source[1] == 0xbb && source[2] == 0xbf,
+		Encoding: "utf-8",
 	}
 }
 
@@ -101,6 +130,29 @@ func (d *Document) ReplaceText(source []byte) error {
 	return nil
 }
 
+// Reload replaces the editor state with freshly loaded bytes and marks that
+// state clean. It is intentionally not undoable because it is a filesystem
+// synchronization operation rather than a user edit.
+func (d *Document) Reload(source []byte, version workspace.DiskVersion, mode fs.FileMode) {
+	d.Editor.Reset(source)
+	d.DiskVersion = version
+	d.FileMode = mode
+	d.Format = DetectFormat(source)
+	d.SavedRevision = d.Revision()
+	d.observedRevision = d.Revision()
+	d.InvalidateDerived()
+}
+
+// SyncEditorState records edits made through the visual editor adapter and
+// invalidates derived projections without copying the editor contents.
+func (d *Document) SyncEditorState() {
+	if d == nil || d.Editor == nil || d.observedRevision == d.Revision() {
+		return
+	}
+	d.observedRevision = d.Revision()
+	d.InvalidateDerived()
+}
+
 // Insert delegates a byte edit to the authoritative editor and invalidates
 // derived state when the document revision changes.
 func (d *Document) Insert(source []byte) error {
@@ -109,6 +161,7 @@ func (d *Document) Insert(source []byte) error {
 		return err
 	}
 	if d.Revision() != before {
+		d.observedRevision = d.Revision()
 		d.InvalidateDerived()
 	}
 	return nil
@@ -126,6 +179,7 @@ func (d *Document) Delete(start, end int) error {
 		return err
 	}
 	if d.Revision() != before {
+		d.observedRevision = d.Revision()
 		d.InvalidateDerived()
 	}
 	return nil
@@ -160,4 +214,43 @@ func (d *Document) SetDerived(injected []InjectedRegion, projections Projections
 // MarkSaved records that the current revision has been persisted.
 func (d *Document) MarkSaved() {
 	d.SavedRevision = d.Revision()
+	d.observedRevision = d.Revision()
+}
+
+// Save persists the current authoritative buffer and changes saved metadata
+// only after the filesystem operation succeeds.
+func (d *Document) Save(store workspace.FileStore) error {
+	if d == nil || d.Editor == nil || d.Path == "" {
+		return errors.New("document has no save path")
+	}
+	disk, err := store.Verify(d.Path)
+	if err != nil {
+		return err
+	}
+	if !d.DiskVersion.Equal(disk) {
+		return ErrDiskChanged
+	}
+	version, err := store.Save(d.Path, d.Editor.Buffer.Text(), d.FileMode)
+	if err != nil {
+		return err
+	}
+	d.DiskVersion = version
+	d.MarkSaved()
+	return nil
+}
+
+// SaveAs persists the current buffer at a new path. The document path changes
+// only after the replacement succeeds.
+func (d *Document) SaveAs(store workspace.FileStore, path string) error {
+	if d == nil || d.Editor == nil || path == "" {
+		return errors.New("document has no save-as path")
+	}
+	version, err := store.Save(path, d.Editor.Buffer.Text(), d.FileMode)
+	if err != nil {
+		return err
+	}
+	d.Path = filepath.Clean(path)
+	d.DiskVersion = version
+	d.MarkSaved()
+	return nil
 }

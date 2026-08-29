@@ -56,11 +56,15 @@ func (w Workspace) RelativePath(path string) (string, error) {
 // contract this package can establish through the host OS; it is not a power-
 // loss proof for hardware or filesystems that misreport flush completion.
 func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
-	targetMode, err := replacementMode(path, mode)
+	targetPath, err := replacementTarget(path)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
+	targetMode, err := replacementMode(targetPath, mode)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(targetPath)
 	tmp, err := os.CreateTemp(dir, ".scratchpad-save-*")
 	if err != nil {
 		return err
@@ -91,7 +95,13 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := atomicReplace(tmpName, path); err != nil {
+	if targetPath != filepath.Clean(path) {
+		currentTarget, err := filepath.EvalSymlinks(path)
+		if err != nil || filepath.Clean(currentTarget) != filepath.Clean(targetPath) {
+			return fmt.Errorf("symlink target changed during save")
+		}
+	}
+	if err := atomicReplace(tmpName, targetPath); err != nil {
 		return err
 	}
 	if err := syncParentDirectory(dir); err != nil {
@@ -100,12 +110,41 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	return nil
 }
 
+func replacementTarget(path string) (string, error) {
+	clean := filepath.Clean(path)
+	info, err := os.Lstat(clean)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return clean, nil
+		}
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(clean)
+		if err != nil {
+			return "", fmt.Errorf("resolve symlink %q: %w", path, err)
+		}
+		targetInfo, err := os.Stat(target)
+		if err != nil {
+			return "", err
+		}
+		if !targetInfo.Mode().IsRegular() {
+			return "", fmt.Errorf("symlink target %q is not a regular file", target)
+		}
+		return filepath.Clean(target), nil
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("refusing to replace non-regular file %q", path)
+	}
+	if links := linkCount(info); links > 1 {
+		return "", fmt.Errorf("refusing to replace hard-linked file %q", path)
+	}
+	return clean, nil
+}
+
 func replacementMode(path string, requested fs.FileMode) (fs.FileMode, error) {
 	info, err := os.Lstat(path)
 	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return 0, fmt.Errorf("refusing to replace symlink %q", path)
-		}
 		if !info.Mode().IsRegular() {
 			return 0, fmt.Errorf("refusing to replace non-regular file %q", path)
 		}

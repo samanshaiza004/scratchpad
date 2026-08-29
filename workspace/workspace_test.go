@@ -68,7 +68,7 @@ func TestAtomicWriteUsesRequestedModeForNewFile(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteRefusesSymlink(t *testing.T) {
+func TestAtomicWritePreservesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real.md")
 	link := filepath.Join(dir, "link.md")
@@ -78,11 +78,29 @@ func TestAtomicWriteRefusesSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if err := AtomicWriteFile(link, []byte("replacement"), 0); err == nil {
-		t.Fatal("expected symlink replacement to be refused")
+	if err := AtomicWriteFile(link, []byte("replacement"), 0); err != nil {
+		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(target); err != nil || string(got) != "real" {
-		t.Fatalf("target changed: %q, %v", got, err)
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link was replaced: %v", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "replacement" {
+		t.Fatalf("target not updated: %q, %v", got, err)
+	}
+}
+
+func TestAtomicWriteRefusesHardLink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "original")
+	link := filepath.Join(dir, "hard-link")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, link); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if err := AtomicWriteFile(path, []byte("new"), 0); err == nil {
+		t.Fatal("expected hard-link replacement to be refused")
 	}
 }
 

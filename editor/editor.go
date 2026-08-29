@@ -8,14 +8,15 @@ import "unicode"
 // Shirei supplies the visual mapping and native input transport above this
 // pure core.
 type ScratchEditor struct {
-	Buffer   Buffer
-	Cursor   int
-	Anchor   int
-	Affinity Affinity
-	preedit  Composition
-	revision uint64
-	undo     []editRecord
-	redo     []editRecord
+	Buffer       Buffer
+	Cursor       int
+	Anchor       int
+	Affinity     Affinity
+	preedit      Composition
+	revision     uint64
+	nextRevision uint64
+	undo         []editRecord
+	redo         []editRecord
 }
 
 type Affinity uint8
@@ -39,7 +40,7 @@ type editRecord struct {
 }
 
 func NewScratchEditor(source []byte) *ScratchEditor {
-	return &ScratchEditor{Buffer: NewBuffer(source)}
+	return &ScratchEditor{Buffer: NewBuffer(source), nextRevision: 1}
 }
 
 // Revision identifies the current editable document state. It changes only
@@ -47,6 +48,20 @@ func NewScratchEditor(source []byte) *ScratchEditor {
 // make a document dirty.
 func (e *ScratchEditor) Revision() uint64 {
 	return e.revision
+}
+
+// Reset replaces the editable content with a newly loaded file state. The
+// load is not an edit and therefore clears undo history and starts a fresh
+// content-state identity.
+func (e *ScratchEditor) Reset(source []byte) {
+	e.Buffer = NewBuffer(source)
+	e.Cursor, e.Anchor = 0, 0
+	e.Affinity = AffinityLeading
+	e.preedit = Composition{}
+	e.revision = 0
+	e.nextRevision = 1
+	e.undo = nil
+	e.redo = nil
 }
 
 func (e *ScratchEditor) SetCursor(cursor int) {
@@ -256,7 +271,9 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 		return err
 	}
 	beforeRevision := e.revision
-	e.revision++
+	afterRevision := e.nextRevision
+	e.nextRevision++
+	e.revision = afterRevision
 	e.Cursor = start + len(text)
 	e.Anchor = e.Cursor
 	e.Affinity = AffinityLeading
@@ -264,7 +281,7 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 		start: start, deleted: deleted, inserted: append([]byte(nil), text...),
 		beforeCursor: beforeCursor, beforeAnchor: beforeAnchor,
 		afterCursor: e.Cursor, afterAnchor: e.Anchor,
-		beforeRevision: beforeRevision, afterRevision: e.revision,
+		beforeRevision: beforeRevision, afterRevision: afterRevision,
 	})
 	e.redo = nil
 	return nil
