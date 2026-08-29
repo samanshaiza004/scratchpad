@@ -141,3 +141,64 @@ func TestReconcileReloadsCleanAndConflictsDirtyDocuments(t *testing.T) {
 		t.Fatal("reload did not replace local state cleanly")
 	}
 }
+
+func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	a.ActiveDocument().Editor.SetSelection(1, 4)
+	a.Views[a.Active] = ViewState{ScrollY: 42}
+	sessionPath := filepath.Join(t.TempDir(), "session.json")
+	if err := a.SaveSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(nil)
+	if err := restored.RestoreSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	doc := restored.ActiveDocument()
+	anchor, cursor := doc.Editor.Selection()
+	if anchor != 1 || cursor != 4 || restored.Views[restored.Active].ScrollY != 42 {
+		t.Fatalf("restored selection=%d:%d view=%+v", anchor, cursor, restored.Views[restored.Active])
+	}
+}
+
+func TestRecoveryRoundTripRestoresDirtyRawBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("disk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	a.ActiveDocument().Editor.SetCursor(4)
+	if err := a.ActiveDocument().Insert([]byte{0xff, 'x'}); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDir := filepath.Join(t.TempDir(), "recovery")
+	if err := a.WriteRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(nil)
+	if err := restored.RestoreRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	doc := restored.ActiveDocument()
+	if !doc.Dirty() || string(doc.Editor.Buffer.Text()) != "disk\xffx" {
+		t.Fatalf("recovered dirty=%v bytes=%x", doc.Dirty(), doc.Editor.Buffer.Text())
+	}
+	if err := restored.ClearRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(recoveryDir, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("recovery manifest remains: %v", err)
+	}
+}
