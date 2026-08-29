@@ -116,19 +116,27 @@ parser selection, LSP.
 
 ## Gate C — file-native Scratchpad
 
-Objective: deliver a useful plain-text editor around ordinary files.
+Objective: deliver a useful plain-text editor around ordinary files. Gate C is
+the next implementation phase; Gate B and the editor storage architecture are
+closed and should not be reopened without new contradictory evidence.
 
 Prerequisites: Gate B storage/view decision.
 
-Implementation work:
+Implementation work, in order:
 
-- workspace/folder open;
-- file tree, open documents, stable tab identity;
-- open/save, dirty state, atomic replacement;
-- external change detection and reload/keep/compare conflict UX;
-- line endings, BOM, encoding, rename, hidden/ignored-file policy;
-- session restore and crash recovery as disposable state;
-- filename quick-open and current-file/workspace find.
+1. C1 — open actual files into `Document`, save from the canonical editor
+   buffer, establish UTF-8/invalid-UTF-8, BOM, CRLF/LF, disk fingerprint, dirty
+   state, Save As, and reload behavior. A no-op open/save should be
+   byte-identical where policy permits.
+2. C2 — add the open-document registry, stable file identity, tabs, active
+   document, independent view state, and dirty-close handling.
+3. C3 — treat file-watcher events as hints, re-read/fingerprint disk state,
+   reload clean documents, and require explicit conflict handling for dirty
+   documents. Never silently overwrite external changes.
+4. C4 — add disposable session restore and recovery copies for dirty buffers;
+   recovery must never become a hidden note database.
+5. C5 — add the file tree, create/rename/delete policy, filename quick-open,
+   current-file find, and asynchronous workspace search.
 
 Tests: pure conflict, revision, path, encoding, and command tests; Shirei
 snapshots for chrome/tree/tabs/dialogs; native smoke tests for watching,
@@ -144,6 +152,11 @@ Framework risks: file APIs are caches/pickers, not complete persistence policy;
 native watcher semantics differ by platform.
 
 Deferred: syntax parsing, autocomplete, diagnostics, Git UI, sync.
+
+After C5, complete long-line chunk navigation and reduce the measured shaping
+allocation cost before Markdown structure or language-service work. The
+existing bounded long-line fallback remains a safety mechanism, not finished
+editor behavior.
 
 ## Gate D — Markdown and structural prose
 

@@ -32,17 +32,9 @@ See:
 
 ## License status
 
-Scratchpad is intended to be free and open source, but this repository does not
-yet state whether “non-commercial” is an author/product intent or a legal
-restriction. No license is being implied until the maintainer makes that
-choice. Until then, the repository remains all-rights-reserved by default.
-
-## License status
-
-Scratchpad is intended to be free and open source, but this repository does not
-yet state whether “non-commercial” is an author/product intent or a legal
-restriction. No license is being implied until the maintainer makes that
-choice. Until then, the repository remains all-rights-reserved by default.
+Scratchpad is released under the [MIT License](LICENSE). “Non-commercial”
+describes the project's intent and does not restrict commercial use under the
+license.
 
 ## Run the scaffold
 
