@@ -1,0 +1,6 @@
+fixture	document_bytes	operation	wall_ms	allocs	alloc_bytes	heap_before	heap_after
+source-mixed-1m	1048576	first-paint	1.335	3857	814360	6412880	7227240
+source-mixed-1m	1048577	insert-middle	0.607	3222	741408	7058240	7799648
+source-mixed-1m	1150976	paste-100k	0.627	3223	1060880	7164752	8225632
+source-mixed-1m	1048576	selection-visible	1.270	7056	1506592	7709256	9215848
+source-mixed-1m	1048576	scroll-top-bottom	0.551	3242	744072	7684376	8428448

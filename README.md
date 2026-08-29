@@ -5,17 +5,17 @@ is intended to provide one continuous writing surface for notes, prose, tasks,
 and code without turning into an IDE or a proprietary note database.
 
 This repository currently contains the research record, a deliberately small
-Go scaffold, and the implementation gates. It does not contain a replacement
-editor engine, a syntax-highlighting system, Tree-sitter, LSP support, plugins,
-or sync logic.
+Go scaffold, and the implementation gates. Gate B established the scalable
+editor core; Gate C0 preflight is complete. The repository does not contain
+syntax highlighting, Tree-sitter, LSP support, plugins, or sync logic.
 
 ## Current status
 
 The first source audit of Shirei is complete. The central finding is that
 Shirei already contains a strong, well-tested editing behavior stack, but its
-current `TextArea` stores and shapes a whole bound string. Scratchpad will keep
-that behavior as the reference and measure it before deciding whether an
-editor-scale buffer and viewport are necessary.
+current `TextArea` stores and shapes a whole bound string. Gate B measured that
+scale failure and Scratchpad now uses its own editor-scale buffer and viewport
+while retaining Shirei as the behavioral reference.
 
 See:
 
@@ -29,6 +29,20 @@ See:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ownership and package boundaries.
 - [`docs/PLAN.md`](docs/PLAN.md) — ordered engineering gates.
 - [`docs/SHIREI-CONTRIBUTIONS.md`](docs/SHIREI-CONTRIBUTIONS.md) — upstream boundary and candidate work.
+
+## License status
+
+Scratchpad is intended to be free and open source, but this repository does not
+yet state whether “non-commercial” is an author/product intent or a legal
+restriction. No license is being implied until the maintainer makes that
+choice. Until then, the repository remains all-rights-reserved by default.
+
+## License status
+
+Scratchpad is intended to be free and open source, but this repository does not
+yet state whether “non-commercial” is an author/product intent or a legal
+restriction. No license is being implied until the maintainer makes that
+choice. Until then, the repository remains all-rights-reserved by default.
 
 ## Run the scaffold
 

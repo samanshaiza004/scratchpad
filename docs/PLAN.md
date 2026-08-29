@@ -4,6 +4,27 @@ The order below is intentionally evidence-driven. The main correction to the
 initial instinct is that a scalable editor decision comes before language
 architecture and before a feature-rich UI.
 
+## Gate C0 — preflight hardening
+
+Objective: enter file-native work with one content authority, explicit save
+guarantees, reproducible evidence, broader deterministic fixtures, differential
+fuzz coverage, and bounded long-line shaping.
+
+Status: complete. `document.Document` owns one `*editor.ScratchEditor`; the
+document no longer stores a `Source` shadow. Atomic replacement now preserves
+existing regular-file permissions, rejects symlink paths, flushes the parent
+directory on Unix, and requests write-through replacement on Windows. CI runs
+tests, vet, and command builds. Realistic benchmark TSV is retained under
+`docs/baselines/`, and `FuzzBufferDifferential` retains committed seeds.
+
+The editor view limits each synchronous Shirei shaping request to 64 KiB for a
+pathological logical line. This is a responsiveness fallback, not a claim that
+long-line horizontal navigation is complete.
+
+Deferred from C0: external-change conflict policy, file watching, encoding and
+line-ending policy, complete long-line chunk navigation, and all language or
+Markdown work.
+
 ## Gate 0 — source-pinned scaffold
 
 Objective: keep a tiny native application and a reproducible research baseline.

@@ -224,12 +224,9 @@ The real Shirei frame-path rerun was:
 
 These results preserve the scale result through the real view: the normal
 10 MiB middle edit remains in the low milliseconds, and the Unicode/bidi-heavy
-fixture does not introduce document-proportional work. A 2 MiB single-line
-fixture does not yet complete first paint within the bounded minute because
-the visible logical row is itself a 2 MiB shaping request. That is a concrete
-long-line rendering limitation for a later viewport/chunking pass, not a
-piece-index failure; it is intentionally not being solved by changing the
-buffer in this gate.
+fixture does not introduce document-proportional work. The later C0 preflight
+bounded the pathological logical-line request at 64 KiB; its measured result
+is recorded in the C0 addendum below.
 
 ## Decision
 

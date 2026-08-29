@@ -41,9 +41,9 @@ the observable behavior and keeps the storage representation replaceable.
   line metadata layout, or buffer can replace it without changing these APIs.
 - The former linear piece sequence remains as a test-only slice oracle for
   differential edit streams.
-- The proof does not yet promise visual bidi hit-testing, pixel caret geometry,
-  or native IME composition rectangles. Those belong to the Shirei-backed view
-  parity step.
+- The Shirei-backed view supplies visual bidi hit-testing, pixel caret geometry,
+  and native IME composition rectangles. A pathological logical line is
+  windowed at the view seam rather than shaped as one unbounded request.
 - Key decoding, multi-cursor editing, folding, syntax highlighting, and
   language services remain outside the Gate B core.
 
