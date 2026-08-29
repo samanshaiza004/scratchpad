@@ -5,6 +5,8 @@ package workspace
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -47,13 +49,16 @@ func (w Workspace) RelativePath(path string) (string, error) {
 	return rel, nil
 }
 
-// AtomicWriteFile writes a replacement beside path and renames it into place.
-// It is a baseline helper for the file-native gate; preserving permissions,
-// metadata, Windows replacement semantics, and conflict policy still require
-// platform-specific tests.
+// AtomicWriteFile writes a replacement beside path, flushes the file, closes
+// it, and atomically replaces path. On Unix it also flushes the parent
+// directory entry. On Windows the platform implementation requests
+// MOVEFILE_WRITE_THROUGH. A successful return is the strongest durability
+// contract this package can establish through the host OS; it is not a power-
+// loss proof for hardware or filesystems that misreport flush completion.
 func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
-	if mode == 0 {
-		mode = 0o644
+	targetMode, err := replacementMode(path, mode)
+	if err != nil {
+		return err
 	}
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".scratchpad-save-*")
@@ -63,13 +68,21 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
-	if err := tmp.Chmod(mode.Perm()); err != nil {
+	if err := tmp.Chmod(targetMode.Perm()); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
+	for written := 0; written < len(data); {
+		n, err := tmp.Write(data[written:])
+		if err != nil {
+			_ = tmp.Close()
+			return err
+		}
+		if n == 0 {
+			_ = tmp.Close()
+			return io.ErrShortWrite
+		}
+		written += n
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
@@ -78,5 +91,31 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := atomicReplace(tmpName, path); err != nil {
+		return err
+	}
+	if err := syncParentDirectory(dir); err != nil {
+		return fmt.Errorf("replacement completed but parent directory was not flushed: %w", err)
+	}
+	return nil
+}
+
+func replacementMode(path string, requested fs.FileMode) (fs.FileMode, error) {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return 0, fmt.Errorf("refusing to replace symlink %q", path)
+		}
+		if !info.Mode().IsRegular() {
+			return 0, fmt.Errorf("refusing to replace non-regular file %q", path)
+		}
+		return info.Mode(), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+	if requested == 0 {
+		requested = 0o644
+	}
+	return requested, nil
 }

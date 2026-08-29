@@ -50,19 +50,21 @@ There must not be `NoteDocument` and `CodeDocument` as competing authorities.
 Language and context providers may offer different projections and commands,
 but the editing surface and document ownership stay unified.
 
-The scaffold's `document.Document` uses a copied `[]byte` only as a small,
-testable placeholder. Gate B decides the serious mutable representation. The
-likely evaluation order is a byte-oriented line index plus a simple mutable
-buffer baseline, then a gap buffer/piece tree/rope only if workload measurements
-show that it is needed. Parser snapshots and undo storage are separate
-questions from the live editing representation.
+`document.Document` now owns one `*editor.ScratchEditor`; its `Buffer` is the
+only authoritative in-memory content. `Document.Revision()` delegates to the
+editor's byte-state revision, and `SavedRevision` determines dirty state.
+Document metadata, disk identity, and derived projections never copy the full
+text. Mutations should enter through the document editing methods so derived
+state is invalidated at the same seam; callers that work directly with the
+editor must still check the revision-tagged projection validity.
 
 ## Package boundaries
 
 Only packages with immediate scaffold value exist today:
 
-- `document/`: product-owned document/revision bookkeeping and the byte line
-  index baseline. No Shirei imports.
+- `document/`: product-owned document identity, revision bookkeeping, derived
+  projection tags, and the byte line index helper. Its only text authority is
+  the editor package; it has no Shirei imports.
 - `workspace/`: workspace-root validation, path containment, and a baseline
   atomic save helper. File watching, conflicts, ignored files, and sessions are
   later additions here or in clearly justified subpackages.
@@ -139,6 +141,33 @@ Every derived result is tagged with document revision and relevant settings
 (language, width, theme, or viewport). Stale asynchronous results never mutate
 the authoritative document.
 
+## Save semantics
+
+`workspace.AtomicWriteFile` provides atomic visibility by writing a temporary
+file in the destination directory, writing all bytes, syncing and closing the
+temporary file, then replacing the destination. Readers see either the old
+file or the complete replacement; they do not observe a partially written
+replacement. Existing regular-file permissions are preserved. Symlink paths
+are rejected explicitly rather than silently replacing a link or following it.
+
+On Unix, the parent directory is opened and synced after the rename, covering
+the directory-entry durability step described by the Linux `fsync(2)` manual
+page ([man7.org](https://man7.org/linux/man-pages/man2/fsync.2.html)). macOS
+uses the same directory-sync path, but its `fsync(2)` documentation warns that
+drive/OS power-loss behavior can still be weaker than an application can
+prove ([Apple fsync(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)).
+Windows uses `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING` and
+`MOVEFILE_WRITE_THROUGH`; Windows has no portable directory-handle equivalent
+for the Unix post-rename sync ([Microsoft MoveFileEx](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw),
+[Microsoft FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)).
+The implementation therefore claims atomic replacement and the strongest
+available OS flush request, not immunity from storage hardware that lies about
+flush completion or sudden power loss.
+
+The POSIX rename contract keeps the destination name visible throughout the
+replacement and leaves it unaffected when rename fails for reasons other than
+I/O failure ([The Open Group rename](https://pubs.opengroup.org/onlinepubs/9699919799/functions/rename.html)).
+
 ## File authority and conflicts
 
 The workspace layer owns:
@@ -154,8 +183,9 @@ The filesystem remains authoritative after a successful save. Scratchpad does
 not synchronize files, invent a note database, or require a cloud service.
 Sync tools operate on the ordinary folder outside the application.
 
-The scaffold only contains path validation and a baseline atomic write helper.
-The full policy is Gate C work and must be tested on all supported desktop
+The scaffold now contains path validation and the documented atomic-save
+primitive. External-change conflict policy, line endings, encoding, watchers,
+and recovery remain Gate C work and must be tested on supported desktop
 platforms.
 
 ## Unified commands

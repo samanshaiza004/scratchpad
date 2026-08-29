@@ -36,3 +36,72 @@ func TestWorkspacePathsAndAtomicWrite(t *testing.T) {
 		t.Fatalf("got %q", data)
 	}
 }
+
+func TestAtomicWritePreservesExistingPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteFile(path, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
+	}
+}
+
+func TestAtomicWriteUsesRequestedModeForNewFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "new.md")
+	if err := AtomicWriteFile(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("mode = %o, want 640", got)
+	}
+}
+
+func TestAtomicWriteRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.md")
+	link := filepath.Join(dir, "link.md")
+	if err := os.WriteFile(target, []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := AtomicWriteFile(link, []byte("replacement"), 0); err == nil {
+		t.Fatal("expected symlink replacement to be refused")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "real" {
+		t.Fatalf("target changed: %q, %v", got, err)
+	}
+}
+
+func TestAtomicWriteCleansTemporaryFileAfterRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target-dir")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteFile(target, []byte("data"), 0); err == nil {
+		t.Fatal("expected replacement of directory to fail")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "target-dir" {
+			t.Fatalf("temporary save artifact remains: %s", entry.Name())
+		}
+	}
+}
