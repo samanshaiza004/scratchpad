@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -200,5 +201,30 @@ func TestRecoveryRoundTripRestoresDirtyRawBytes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(recoveryDir, "manifest.json")); !os.IsNotExist(err) {
 		t.Fatalf("recovery manifest remains: %v", err)
+	}
+}
+
+func TestFindCurrentAndSearchWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("needle\nother needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	matches := a.FindCurrent(a.Active, []byte("needle"))
+	if len(matches) != 2 || matches[1].Line != 1 || matches[1].Column != 6 {
+		t.Fatalf("matches = %+v", matches)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var results int
+	for range a.SearchWorkspace(ctx, []byte("needle")) {
+		results++
+	}
+	if results != 2 {
+		t.Fatalf("workspace results = %d", results)
 	}
 }
