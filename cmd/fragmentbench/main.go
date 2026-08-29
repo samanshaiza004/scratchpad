@@ -1,6 +1,6 @@
-// fragmentbench measures the simple piece sequence after long edit sessions.
-// It exists to decide whether the Gate B proof needs a balanced tree; it is
-// not a claim that the current piece sequence is the final buffer.
+// fragmentbench measures the canonical deterministic fragmentation workload
+// after long edit sessions. The fixed seed makes regressions reproducible; it
+// is not a claim that one edit history represents every user workload.
 package main
 
 import (

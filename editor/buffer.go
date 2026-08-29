@@ -603,14 +603,16 @@ func split(root *pieceNode, at int, b *Buffer) (left, right *pieceNode) {
 	}
 	leftBytes := nodeBytes(root.left)
 	if at < leftBytes {
-		left, root.left = split(root.left, at, b)
+		left, rightSubtree := split(root.left, at, b)
+		root.left = nil
 		root.recompute()
-		return left, root
+		return left, merge(rightSubtree, root)
 	}
 	if at > leftBytes+root.piece.length {
-		root.right, right = split(root.right, at-leftBytes-root.piece.length, b)
+		leftSubtree, rightSubtree := split(root.right, at-leftBytes-root.piece.length, b)
+		root.right = nil
 		root.recompute()
-		return root, right
+		return merge(root, leftSubtree), rightSubtree
 	}
 	if at == leftBytes {
 		left = root.left

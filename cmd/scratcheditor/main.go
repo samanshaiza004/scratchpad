@@ -103,6 +103,11 @@ func fixtures(name string) ([]fixture, error) {
 			return []fixture{f}, nil
 		}
 	}
+	for _, f := range realisticFixtures() {
+		if f.Name == name {
+			return []fixture{f}, nil
+		}
+	}
 	return nil, fmt.Errorf("unknown fixture %q", name)
 }
 
@@ -117,17 +122,91 @@ func normal(target int) []byte {
 }
 
 func unicodeText(target int) []byte {
-	line := "// 日本語 e\u0301 café 👩‍💻 — مرحبا — नमस्ते\n"
+	return []byte(generatedUnicodeMixed(target))
+}
+
+func realisticFixtures() []fixture {
+	return []fixture{
+		{Name: "source-mixed-100k", Text: []byte(generatedSourceMixed(100 << 10))},
+		{Name: "source-mixed-1m", Text: []byte(generatedSourceMixed(1 << 20))},
+		{Name: "source-mixed-10m", Text: []byte(generatedSourceMixed(10 << 20))},
+		{Name: "prose-mixed-1m", Text: []byte(generatedProseMixed(1 << 20))},
+		{Name: "data-mixed-1m", Text: []byte(generatedDataMixed(1 << 20))},
+		{Name: "unicode-mixed-1m", Text: []byte(generatedUnicodeMixed(1 << 20))},
+	}
+}
+
+func generatedUnicodeMixed(target int) string {
+	lines := []string{
+		"// 日本語 e\u0301 café 👩‍💻 — مرحبا — नमस्ते\n",
+		"説明: ordinary Latin prose mixed with CJK and العربية.\n",
+		"עברית — русский — Ελληνικά — हिन्दी — português.\n",
+	}
 	var b strings.Builder
-	b.Grow(target + len(line))
-	for b.Len() < target {
-		b.WriteString(line)
+	b.Grow(target + len(lines[0]))
+	for i := 0; b.Len() < target; i++ {
+		b.WriteString(lines[i%len(lines)])
 	}
 	text := b.String()
 	for len(text) > target && !utf8.ValidString(text[:target]) {
 		target--
 	}
-	return []byte(text[:target])
+	return text[:target]
+}
+
+func generatedSourceMixed(target int) string {
+	lines := []string{
+		"package generated\n\n",
+		"import (\n\t\"fmt\"\n\t\"strings\"\n)\n\n",
+		"// This comment varies the source-like workload and its line lengths.\n",
+		"func parseRecord(input string, limit int) (string, error) {\n",
+		"\tif strings.TrimSpace(input) == \"\" { return \"\", fmt.Errorf(\"empty record\") }\n",
+		"\treturn input, nil\n}\n\n",
+		"type Record struct { Name string; Count int; Enabled bool }\n\n",
+	}
+	var b strings.Builder
+	b.Grow(target)
+	for i := 0; b.Len() < target; i++ {
+		b.WriteString(lines[i%len(lines)])
+		if i%11 == 0 {
+			b.WriteString("\t// varied identifier record_abcdefghijklmnopqrstuvwxyz\n")
+		}
+	}
+	return b.String()[:target]
+}
+
+func generatedProseMixed(target int) string {
+	paragraphs := []string{
+		"# Project notes\n\nScratchpad keeps ordinary files authoritative while making a calm continuous writing surface. This paragraph intentionally has varied prose length.\n\n",
+		"## Tasks\n\n- [ ] Review the saved revision\n- [x] Measure visible rows\n- [ ] Revisit the long line window\n\n",
+		"A useful reference is https://example.invalid/notes, and this text includes café, 日本語, مرحبا, and 👩‍💻 without interpreting any Markdown semantics.\n\n",
+		"```text\nplain fenced content remains just fixture text\nline two\n```\n\n",
+	}
+	var b strings.Builder
+	b.Grow(target)
+	for i := 0; b.Len() < target; i++ {
+		b.WriteString(paragraphs[i%len(paragraphs)])
+	}
+	text := b.String()
+	for len(text) > target && !utf8.ValidString(text[:target]) {
+		target--
+	}
+	return text[:target]
+}
+
+func generatedDataMixed(target int) string {
+	lines := []string{
+		`{"timestamp":"2026-08-28T12:34:56Z","level":"info","message":"opened workspace","count":12}` + "\n",
+		`{"config":{"enabled":true,"paths":["notes","src"],"limit":1048576},"tags":["local","plain-text"]}` + "\n",
+		`2026-08-28T12:35:01Z WARN worker=search duration_ms=184 result_count=27` + "\n",
+		`{"nested":{"record":{"name":"varied-value","numbers":[1,3,5,8,13]}}}` + "\n",
+	}
+	var b strings.Builder
+	b.Grow(target)
+	for i := 0; b.Len() < target; i++ {
+		b.WriteString(lines[i%len(lines)])
+	}
+	return b.String()[:target]
 }
 
 func setFilter(spec string) {
