@@ -76,6 +76,34 @@ func TestReorderKeepsStableDocumentIdentity(t *testing.T) {
 	}
 }
 
+func TestCloseDocumentRequiresExplicitDirtyDecision(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	id := a.Active
+	if err := a.Documents[id].Insert([]byte("!")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CloseDocument(id, false); err != ErrDirty {
+		t.Fatalf("close dirty error = %v, want ErrDirty", err)
+	}
+	if _, ok := a.Documents[id]; !ok {
+		t.Fatal("dirty document was closed without an explicit decision")
+	}
+	if err := a.CloseDocument(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Documents) != 0 || len(a.Order) != 0 {
+		t.Fatalf("documents=%d order=%d after discard", len(a.Documents), len(a.Order))
+	}
+}
+
 func TestWatcherWatchesOpenDocumentParentAndOnlyHints(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.txt")

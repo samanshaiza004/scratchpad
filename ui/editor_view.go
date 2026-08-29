@@ -267,9 +267,10 @@ func (v VisualLine) nextClusterBoundary(bounds []int, cluster int) int {
 }
 
 type EditorViewOptions struct {
-	Style     TextStyleAttrs
-	RowHeight float32
-	ScrollY   *float32
+	Style             TextStyleAttrs
+	RowHeight         float32
+	ScrollY           *float32
+	ScrollInitialized bool
 }
 
 // EditableDocumentView binds the existing Shirei-backed editor view to the
@@ -301,7 +302,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		PressAction()
 
 		scrollY := Use[float32]("editor-scroll-y")
-		if options.ScrollY != nil {
+		if options.ScrollY != nil && options.ScrollInitialized {
 			*scrollY = *options.ScrollY
 		}
 		firstVisible := Use[int]("editor-first-visible")

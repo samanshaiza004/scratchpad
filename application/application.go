@@ -26,6 +26,7 @@ const (
 )
 
 var ErrConflict = errors.New("document has an unresolved external-change conflict")
+var ErrDirty = errors.New("document has unsaved changes")
 
 type Conflict struct {
 	Base        []byte
@@ -35,7 +36,8 @@ type Conflict struct {
 }
 
 type ViewState struct {
-	ScrollY float32
+	ScrollY           float32
+	ScrollInitialized bool
 }
 
 type Application struct {
@@ -108,15 +110,14 @@ func (a *Application) OpenDocument(path string) error {
 	if a == nil {
 		return errors.New("nil application")
 	}
+	id := documentID(path)
+	if _, ok := a.Documents[id]; ok {
+		a.Active = id
+		return nil
+	}
 	snapshot, err := a.Store.Load(path)
 	if err != nil {
 		return err
-	}
-	id := documentID(path)
-	if existing, ok := a.Documents[id]; ok {
-		a.Active = id
-		_ = existing
-		return nil
 	}
 	if !a.HasWorkspace {
 		if err := a.OpenWorkspace(filepath.Dir(snapshot.Path)); err != nil {
@@ -280,6 +281,16 @@ func (a *Application) SaveActive() error {
 	return doc.Save(a.Store)
 }
 
+func (a *Application) SaveDocument(id DocumentID) error {
+	previous := a.Active
+	if !a.Activate(id) {
+		return errors.New("unknown document")
+	}
+	err := a.SaveActive()
+	a.Active = previous
+	return err
+}
+
 func (a *Application) SaveAs(id DocumentID, path string) error {
 	doc := a.Documents[id]
 	if doc == nil {
@@ -319,6 +330,54 @@ func (a *Application) Activate(id DocumentID) bool {
 	}
 	a.Active = id
 	return true
+}
+
+func (a *Application) Cycle(delta int) {
+	if len(a.Order) == 0 {
+		return
+	}
+	current := 0
+	for i, id := range a.Order {
+		if id == a.Active {
+			current = i
+			break
+		}
+	}
+	current = (current + delta) % len(a.Order)
+	if current < 0 {
+		current += len(a.Order)
+	}
+	a.Active = a.Order[current]
+}
+
+// CloseDocument removes a document only when its unsaved state has been
+// explicitly handled by the caller. Tabs are application views, so closing a
+// tab never changes the document's content authority before this check.
+func (a *Application) CloseDocument(id DocumentID, discard bool) error {
+	doc := a.Documents[id]
+	if doc == nil {
+		return errors.New("unknown document")
+	}
+	if doc.Dirty() && !discard {
+		return ErrDirty
+	}
+	delete(a.Documents, id)
+	delete(a.Views, id)
+	delete(a.Stale, id)
+	delete(a.Conflicts, id)
+	for i, existing := range a.Order {
+		if existing == id {
+			a.Order = append(a.Order[:i], a.Order[i+1:]...)
+			break
+		}
+	}
+	if a.Active == id {
+		a.Active = ""
+		if len(a.Order) > 0 {
+			a.Active = a.Order[len(a.Order)-1]
+		}
+	}
+	return nil
 }
 
 func (a *Application) ActiveDocument() *document.Document {

@@ -148,6 +148,45 @@ func TestEditableViewPublishesKeyboardAndIMEGeometry(t *testing.T) {
 	}
 }
 
+func TestEditableViewScrollsVisibleRows(t *testing.T) {
+	ResetInputSession()
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{500, 160}
+	e := editor.NewScratchEditor([]byte(strings.Repeat("line\n", 200)))
+	scope := new(int)
+	var scrollY float32
+	frame := func(scroll Vec2) {
+		GetInputState().MousePoint = Vec2{250, 80}
+		GetFrameInput().Mouse = 0
+		GetFrameInput().Scroll = scroll
+		GetFrameInput().Motion = Vec2{}
+		GetFrameInput().Key = KeyCodeNone
+		GetFrameInput().Text = ""
+		RunFrameFn(func() {
+			ContainerWithKey(scope, Attrs(Viewport), func() {
+				EditableView(scope, e, EditorViewOptions{
+					Style: DefaultTextStyle(), RowHeight: 20, ScrollY: &scrollY,
+				})
+			})
+		})
+	}
+	for range 3 {
+		frame(Vec2{})
+	}
+	before := scrollY
+	frame(Vec2{0, 100})
+	if scrollY <= before {
+		t.Fatalf("editor did not scroll: before=%v after=%v", before, scrollY)
+	}
+	for range 3 {
+		frame(Vec2{})
+	}
+	if scrollY <= before {
+		t.Fatalf("editor scroll did not persist: before=%v after=%v", before, scrollY)
+	}
+}
+
 func TestEditableViewTextParityWithTextArea(t *testing.T) {
 	if shaped := ShapeText("probe", DefaultTextStyle()); len(shaped.Lines) == 0 {
 		t.Skip("Shirei has no usable font in this headless unit-test context")

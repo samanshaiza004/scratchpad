@@ -175,6 +175,22 @@ Before Gate D, complete long-line chunk navigation and reduce the measured
 pathological-line shaping allocation cost. The current bounded fallback is a
 safety mechanism, not finished editor behavior.
 
+### C8 — workbench usability and native certification pass
+
+Status: implementation complete for the first workbench pass; native desktop
+certification remains a manual macOS task. The application now presents a
+two-column workspace with a bounded, scrollable file tree, a dominant editor,
+stable active/dirty tabs, close confirmation for dirty documents, temporary
+find/search surfaces, conflict comparison summary, and keyboard-first Save,
+Find, Quick Open, close, and tab-switch commands. The editor viewport has a
+headless regression test proving wheel scrolling changes and preserves its
+visible-row offset.
+
+This slice intentionally does not reopen the editor/storage design. Remaining
+native checks are picker behavior, IME/bidi interaction, external conflict UX,
+recovery restart, huge-file responsiveness, and idle CPU on macOS. Long-line
+chunk navigation remains required before Markdown or language work.
+
 ## Gate D — Markdown and structural prose
 
 Objective: prove the notes side without creating a note mode.
