@@ -255,5 +255,35 @@ storage + viewport
 The TextArea path remains the behavioral oracle. The parity artifact is
 specified in [`BEHAVIOR-PARITY.md`](BEHAVIOR-PARITY.md); it is intentionally not
 implemented by copying Shirei’s entire editor into Scratchpad. Gate C may now
-start with file-native product behavior; soft wrapping, long-line chunking,
-and all language work remain deferred.
+start with file-native product behavior; long-line caching, soft wrapping, and
+all language work remain deferred.
+
+## Long-line closeout
+
+The first C-closeout measurement changed the bounded pathological-line window
+from 64 KiB to deterministic 16 KiB chunks. The active caret selects the chunk
+containing it; `primary+Alt+Left/Right` advances one chunk and ordinary
+cluster-aware left/right motion continues to move within a chunk. This keeps
+the document authority and byte/rune mapping unchanged while making traversal
+of a multi-megabyte logical line explicit.
+
+On the same macOS development host, the single 2 MiB line measured:
+
+| Operation | Before | After |
+| --- | ---: | ---: |
+| first paint wall time | 57.606 ms | 9.399 ms |
+| first paint allocations | 198,086 | 34,843 |
+| first paint allocated bytes | 57,011,472 | 11,575,488 |
+| near-end edit wall time | 114.246 ms | 4.380 ms |
+| near-end edit allocated bytes | 57,011,696 | 2,383,880 |
+| visible selection allocated bytes | 186,923,648 | 44,462,880 |
+
+The focused aggregate chunk walk is still allocation-heavy because every
+chunk is reshaped as the caret traverses it: 1.316 s and 1.465 GB across the
+full 2 MiB traversal. That is bounded and responsive per frame, but remains a
+future long-line cache/allocation optimization rather than a reason to reopen
+the buffer architecture. The raw output is retained in
+[`docs/baselines/scratcheditor-longline-closeout.tsv`](baselines/scratcheditor-longline-closeout.tsv).
+
+The existing `scroll-top-bottom` operation remains bounded at 11.967 ms after
+the change, and the headless viewport scroll regression remains green.

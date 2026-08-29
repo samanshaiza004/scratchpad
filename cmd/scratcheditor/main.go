@@ -261,6 +261,10 @@ func runFixture(f fixture) []result {
 		active.SetSelection(0, min(100, len(f.Text)))
 		results = append(results, measure("selection-visible", input{}))
 	}
+	if wants("long-line-chunk-walk") && len(f.Text) > 16<<10 && !strings.Contains(f.Name, "mixed") {
+		reset(f.Text)
+		results = append(results, measureLongLineChunkWalk())
+	}
 	if wants("scroll-top-bottom") {
 		reset(f.Text)
 		results = append(results, measure("scroll-top-bottom", input{Scroll: Vec2{0, 1 << 20}}))
@@ -272,6 +276,27 @@ func runFixture(f fixture) []result {
 		windowSize = Vec2{windowWidth, windowHeight}
 	}
 	return results
+}
+
+func measureLongLineChunkWalk() result {
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	for scratchui.MoveLongLineChunk(active, true, false) {
+		GetFrameInput().Text = ""
+		GetFrameInput().Scroll = Vec2{}
+		RunFrameFn(rootView)
+	}
+	wall := time.Since(start)
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	return result{
+		Fixture: fixtureName, DocumentBytes: active.Buffer.ByteLen(), Operation: "long-line-chunk-walk",
+		Wall: wall, Allocs: after.Mallocs - before.Mallocs,
+		AllocBytes: after.TotalAlloc - before.TotalAlloc,
+		HeapBefore: before.HeapAlloc, HeapAfter: after.HeapAlloc,
+	}
 }
 
 func reset(source []byte) {

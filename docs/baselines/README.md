@@ -10,6 +10,14 @@ Environment for the recorded run:
 - Go: `go version` from the development macOS host;
 - Shirei: `v0.0.0-20260824003747-6df9f18e3c20` (`6df9f18`);
 - OS/architecture: macOS on the development host;
+
+The long-line closeout artifact was recorded with:
+
+- source revision: `b44d36a` plus the closeout working tree;
+- Go: `go1.27.0 darwin/arm64`;
+- Shirei: `v0.0.0-20260824003747-6df9f18e3c20` (`6df9f18`);
+- command: `GOCACHE=/tmp/scratchpad-gocache go run ./cmd/scratcheditor -fixture single-2m -operations first-paint,insert-near-9m,selection-visible,long-line-chunk-walk,scroll-top-bottom -out docs/baselines/scratcheditor-longline-closeout.tsv`;
+- artifact: `scratcheditor-longline-closeout.tsv`.
 - output format: TSV with fixture, document bytes, operation, wall time,
   allocation count/bytes, and heap before/after.
 

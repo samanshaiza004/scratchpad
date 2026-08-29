@@ -12,7 +12,13 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
-const maxShapingBytes = 64 << 10
+const (
+	// Long logical lines are presented as deterministic chunks. Keeping the
+	// chunk smaller than the old safety window materially reduces the amount
+	// of Shirei shaping and temporary glyph state per frame.
+	maxShapingBytes    = 16 << 10
+	longLineChunkBytes = maxShapingBytes
+)
 
 // VisualLine is the row-local bridge between the byte-oriented document and
 // Shirei's rune/cluster-oriented shaping model. It never needs the rest of
@@ -29,6 +35,8 @@ type VisualLine struct {
 	Layout          ShapedText
 	TruncatedBefore bool
 	TruncatedAfter  bool
+	ChunkIndex      int
+	ChunkCount      int
 
 	sourceBytes []int
 }
@@ -48,7 +56,7 @@ func BuildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextSt
 	if !ok {
 		return VisualLine{}, false
 	}
-	windowStart, windowEnd := boundedLineWindow(buffer, start, end, anchor)
+	windowStart, windowEnd, chunkIndex, chunkCount := boundedLineWindow(buffer, start, end, anchor)
 	data, err := buffer.Bytes(windowStart, windowEnd)
 	if err != nil {
 		return VisualLine{}, false
@@ -64,6 +72,8 @@ func BuildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextSt
 		Layout:          ShapeText(display, style),
 		TruncatedBefore: windowStart > start,
 		TruncatedAfter:  windowEnd < end,
+		ChunkIndex:      chunkIndex,
+		ChunkCount:      chunkCount,
 		sourceBytes:     sourceBytes,
 	}, true
 }
@@ -94,23 +104,23 @@ func displayText(source []byte) (string, []rune, []int) {
 		sourceBytes = append(sourceBytes, at+size)
 		at += size
 	}
-	return string(display), []rune(string(display)), sourceBytes
+	displayText := string(display)
+	return displayText, []rune(displayText), sourceBytes
 }
 
-func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowStart, windowEnd int) {
+func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowStart, windowEnd, chunkIndex, chunkCount int) {
 	if end-start <= maxShapingBytes {
-		return start, end
+		return start, end, 0, 1
 	}
 	anchor = maxInt(start, minInt(anchor, end))
-	windowStart = anchor - maxShapingBytes/2
-	if windowStart < start {
-		windowStart = start
+	lineBytes := end - start
+	chunkCount = (lineBytes + longLineChunkBytes - 1) / longLineChunkBytes
+	chunkIndex = (anchor - start) / longLineChunkBytes
+	if chunkIndex >= chunkCount {
+		chunkIndex = chunkCount - 1
 	}
-	windowEnd = windowStart + maxShapingBytes
-	if windowEnd > end {
-		windowEnd = end
-		windowStart = maxInt(start, windowEnd-maxShapingBytes)
-	}
+	windowStart = start + chunkIndex*longLineChunkBytes
+	windowEnd = minInt(end, windowStart+longLineChunkBytes)
 	for windowStart > start {
 		byteAt, ok := buffer.ByteAt(windowStart)
 		if ok && utf8.RuneStart(byteAt) {
@@ -125,7 +135,38 @@ func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowSta
 		}
 		windowEnd++
 	}
-	return windowStart, windowEnd
+	return windowStart, windowEnd, chunkIndex, chunkCount
+}
+
+// MoveLongLineChunk advances the caret by one bounded shaping chunk on the
+// current logical line. Ordinary left/right motion remains cluster-aware and
+// fine-grained; this operation gives a deterministic way to traverse a line
+// that cannot be represented by one Shirei shaping request.
+func MoveLongLineChunk(e *editor.ScratchEditor, forward, extend bool) bool {
+	line, ok := e.Buffer.LineAt(e.Cursor)
+	if !ok {
+		return false
+	}
+	start, end, ok := e.Buffer.LineRange(line)
+	if !ok || end-start <= longLineChunkBytes {
+		return false
+	}
+	target := e.Cursor
+	if forward {
+		target = minInt(end, target+longLineChunkBytes)
+	} else {
+		target = maxInt(start, target-longLineChunkBytes)
+	}
+	if target == e.Cursor {
+		return false
+	}
+	anchor := e.Anchor
+	if extend {
+		e.SetSelection(anchor, target)
+	} else {
+		e.SetCursor(target)
+	}
+	return true
 }
 
 func (v VisualLine) LocalByteToRune(offset int) int {
@@ -193,9 +234,10 @@ func (v VisualLine) HitTest(x float32) (int, editor.Affinity) {
 // lower or upper one, matching the side returned by HitTest.
 func (v VisualLine) CaretX(runeIndex int, affinity editor.Affinity) float32 {
 	runeIndex = maxInt(0, minInt(runeIndex, len(v.Runes)))
-	positions := make(map[int][]float32)
 	penX := float32(0)
 	bounds := v.clusterBounds()
+	var low, high float32
+	found := false
 	for lineIndex := range v.Layout.Lines {
 		line := &v.Layout.Lines[lineIndex]
 		for segmentIndex := range line.Segments {
@@ -207,55 +249,84 @@ func (v VisualLine) CaretX(runeIndex int, affinity editor.Affinity) float32 {
 					continue
 				}
 				after := v.nextClusterBoundary(bounds, cluster)
+				var candidates [2]float32
+				candidateCount := 0
 				if segment.Dir == LTR {
-					positions[cluster] = append(positions[cluster], penX)
-					positions[after] = append(positions[after], penX+glyph.XAdvance)
+					if cluster == runeIndex {
+						candidates[candidateCount] = penX
+						candidateCount++
+					}
+					if after == runeIndex {
+						candidates[candidateCount] = penX + glyph.XAdvance
+						candidateCount++
+					}
 				} else {
-					positions[cluster] = append(positions[cluster], penX+glyph.XAdvance)
-					positions[after] = append(positions[after], penX)
+					if cluster == runeIndex {
+						candidates[candidateCount] = penX + glyph.XAdvance
+						candidateCount++
+					}
+					if after == runeIndex {
+						candidates[candidateCount] = penX
+						candidateCount++
+					}
+				}
+				for i := 0; i < candidateCount; i++ {
+					x := candidates[i]
+					if !found {
+						low, high, found = x, x, true
+					} else {
+						if x < low {
+							low = x
+						}
+						if x > high {
+							high = x
+						}
+					}
 				}
 				penX += glyph.XAdvance
 			}
 		}
 	}
-	xs := positions[runeIndex]
-	if len(xs) == 0 {
+	if !found {
 		if runeIndex == len(v.Runes) {
 			return penX
 		}
 		return 0
 	}
-	selected := xs[0]
-	for _, x := range xs[1:] {
-		if affinity == editor.AffinityLeading && x < selected {
-			selected = x
-		}
-		if affinity == editor.AffinityTrailing && x > selected {
-			selected = x
-		}
+	if affinity == editor.AffinityLeading {
+		return low
 	}
-	return selected
+	return high
 }
 
 func (v VisualLine) clusterBounds() []int {
-	set := map[int]bool{0: true, len(v.Runes): true}
+	bounds := []int{0, len(v.Runes)}
 	for lineIndex := range v.Layout.Lines {
 		line := &v.Layout.Lines[lineIndex]
 		for segmentIndex := range line.Segments {
 			for glyphIndex := range line.Segments[segmentIndex].Glyphs {
 				cluster := int(line.Segments[segmentIndex].Glyphs[glyphIndex].Cluster)
 				if cluster >= 0 && cluster <= len(v.Runes) {
-					set[cluster] = true
+					bounds = append(bounds, cluster)
 				}
 			}
 		}
 	}
-	bounds := make([]int, 0, len(set))
-	for bound := range set {
-		bounds = append(bounds, bound)
+	for i, r := range v.Runes {
+		if r == '\n' {
+			// Newline boundaries remain caret stops even when the shaper omits
+			// a drawable glyph for the hard break.
+			bounds = append(bounds, i, i+1)
+		}
 	}
 	sort.Ints(bounds)
-	return bounds
+	unique := bounds[:0]
+	for _, bound := range bounds {
+		if len(unique) == 0 || unique[len(unique)-1] != bound {
+			unique = append(unique, bound)
+		}
+	}
+	return unique
 }
 
 func (v VisualLine) nextClusterBoundary(bounds []int, cluster int) int {
@@ -391,6 +462,10 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	primary := PrimaryMod()
 	if frame.Key != KeyCodeNone {
 		switch {
+		case frame.Key == KeyLeft && input.Modifiers&^ModShift == primary|ModAlt:
+			MoveLongLineChunk(e, false, shift)
+		case frame.Key == KeyRight && input.Modifiers&^ModShift == primary|ModAlt:
+			MoveLongLineChunk(e, true, shift)
 		case frame.Key == KeyLeft && input.Modifiers&^ModShift == 0:
 			e.MoveLeft(shift)
 		case frame.Key == KeyRight && input.Modifiers&^ModShift == 0:

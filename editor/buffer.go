@@ -81,6 +81,41 @@ func (b *Buffer) LineCount() int {
 	return b.newlines + 1
 }
 
+// LineAt returns the logical line containing a byte offset. The offset may be
+// the end of the buffer; an offset on a newline belongs to the line before it,
+// matching LineRange's line-end convention.
+func (b *Buffer) LineAt(offset int) (int, bool) {
+	if offset < 0 || offset > b.byteLen {
+		return 0, false
+	}
+	line := 0
+	node := b.root
+	for node != nil {
+		leftBytes := nodeBytes(node.left)
+		if offset < leftBytes {
+			node = node.left
+			continue
+		}
+		line += nodeNewlines(node.left)
+		offset -= leftBytes
+		if offset <= node.piece.length {
+			if node.piece.newlines == 0 {
+				return line, true
+			}
+			data := b.pieceBytes(node.piece)
+			for _, c := range data[:offset] {
+				if c == '\n' {
+					line++
+				}
+			}
+			return line, true
+		}
+		offset -= node.piece.length
+		node = node.right
+	}
+	return line, true
+}
+
 func (b *Buffer) Text() []byte {
 	return b.slice(0, b.byteLen)
 }

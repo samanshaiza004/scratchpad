@@ -31,6 +31,23 @@ func TestPieceBufferInsertDeleteAndLines(t *testing.T) {
 	}
 }
 
+func TestBufferLineAtMatchesLineRanges(t *testing.T) {
+	b := NewBuffer([]byte("one\ntwo\nthree"))
+	want := []int{0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2}
+	for offset, line := range want {
+		got, ok := b.LineAt(offset)
+		if !ok || got != line {
+			t.Fatalf("LineAt(%d) = %d, %v, want %d, true", offset, got, ok, line)
+		}
+	}
+	if _, ok := b.LineAt(-1); ok {
+		t.Fatal("LineAt(-1) succeeded")
+	}
+	if _, ok := b.LineAt(b.ByteLen() + 1); ok {
+		t.Fatal("LineAt(end+1) succeeded")
+	}
+}
+
 func TestLargeInsertDoesNotFlattenOriginal(t *testing.T) {
 	source := make([]byte, 1<<20)
 	for i := range source {

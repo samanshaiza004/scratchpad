@@ -74,6 +74,63 @@ func TestVisualLineBoundsPathologicalLineShaping(t *testing.T) {
 	}
 }
 
+func TestLongLineUsesDeterministicBoundedChunks(t *testing.T) {
+	source := []byte(strings.Repeat("x", maxShapingBytes*3+17))
+	b := editor.NewBuffer(source)
+	anchors := []int{0, maxShapingBytes - 1, maxShapingBytes, maxShapingBytes*2 + 1, len(source)}
+	wantCount := (len(source) + longLineChunkBytes - 1) / longLineChunkBytes
+	for _, anchor := range anchors {
+		visual, ok := BuildVisualLineAround(&b, 0, anchor, DefaultTextStyle())
+		if !ok {
+			t.Fatalf("BuildVisualLineAround(%d) failed", anchor)
+		}
+		wantIndex := anchor / longLineChunkBytes
+		if wantIndex >= wantCount {
+			wantIndex = wantCount - 1
+		}
+		if visual.ChunkIndex != wantIndex || visual.ChunkCount != wantCount {
+			t.Fatalf("anchor %d chunk = %d/%d, want %d/%d", anchor, visual.ChunkIndex, visual.ChunkCount, wantIndex, wantCount)
+		}
+		if anchor < visual.DocStart || anchor > visual.DocEnd {
+			t.Fatalf("anchor %d outside bounded window %d:%d", anchor, visual.DocStart, visual.DocEnd)
+		}
+		if len(visual.Text) > maxShapingBytes+utf8.UTFMax {
+			t.Fatalf("anchor %d shaped %d bytes, want at most %d plus boundary slack", anchor, len(visual.Text), maxShapingBytes)
+		}
+	}
+}
+
+func TestLongLineChunkNavigationTraversesWholeLine(t *testing.T) {
+	source := []byte(strings.Repeat("x", maxShapingBytes*3+17))
+	e := editor.NewScratchEditor(source)
+	steps := 0
+	for {
+		if !MoveLongLineChunk(e, true, false) {
+			break
+		}
+		steps++
+		visual, ok := BuildVisualLineAround(&e.Buffer, 0, e.Cursor, DefaultTextStyle())
+		if !ok || e.Cursor < visual.DocStart || e.Cursor > visual.DocEnd {
+			t.Fatalf("forward step %d cursor %d is not represented by its chunk", steps, e.Cursor)
+		}
+	}
+	if e.Cursor != len(source) {
+		t.Fatalf("forward navigation stopped at %d, want %d", e.Cursor, len(source))
+	}
+	wantSteps := (len(source) + longLineChunkBytes - 1) / longLineChunkBytes
+	if steps != wantSteps {
+		t.Fatalf("forward chunk steps = %d, want %d", steps, wantSteps)
+	}
+	for range steps {
+		if !MoveLongLineChunk(e, false, false) {
+			t.Fatal("backward chunk navigation stopped early")
+		}
+	}
+	if e.Cursor != 0 {
+		t.Fatalf("backward navigation stopped at %d, want 0", e.Cursor)
+	}
+}
+
 func TestVisualLineHitTestMatchesShireiReference(t *testing.T) {
 	b := editor.NewBuffer([]byte("abc אבג def"))
 	visual, ok := BuildVisualLine(&b, 0, DefaultTextStyle())

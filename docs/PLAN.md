@@ -17,13 +17,13 @@ directory on Unix, and requests write-through replacement on Windows. CI runs
 tests, vet, and command builds. Realistic benchmark TSV is retained under
 `docs/baselines/`, and `FuzzBufferDifferential` retains committed seeds.
 
-The editor view limits each synchronous Shirei shaping request to 64 KiB for a
-pathological logical line. This is a responsiveness fallback, not a claim that
-long-line horizontal navigation is complete.
+The editor view limits each synchronous Shirei shaping request to deterministic
+16 KiB chunks for a pathological logical line. Caret-driven chunk selection and
+explicit `primary+Alt+Left/Right` chunk navigation keep the request bounded;
+this remains a fixed-line limitation rather than soft wrapping.
 
 Deferred from C0: external-change conflict policy, file watching, encoding and
-line-ending policy, complete long-line chunk navigation, and all language or
-Markdown work.
+line-ending policy, and all language or Markdown work.
 
 ## Gate 0 — source-pinned scaffold
 
@@ -171,9 +171,13 @@ Acceptance: a user can open a folder or file, edit multiple ordinary files,
 save without unintended byte transformations, recover dirty work, and resolve
 external changes without silent overwrite.
 
-Before Gate D, complete long-line chunk navigation and reduce the measured
-pathological-line shaping allocation cost. The current bounded fallback is a
-safety mechanism, not finished editor behavior.
+The C-closeout long-line work is complete for the fixed-line baseline: shaping
+is deterministic and bounded to 16 KiB chunks, caret traversal can move across
+the entire logical line, and the visual bridge no longer allocates a per-glyph
+caret-position map. The remaining aggregate chunk-walk allocation cost is
+recorded as a targeted follow-up before any future long-line polish; it does
+not reopen Gate B or the buffer architecture. Native macOS IME, bidi, conflict,
+recovery, huge-file, and idle checks remain manual certification work.
 
 ### C8 — workbench usability and native certification pass
 
@@ -186,10 +190,11 @@ Find, Quick Open, close, and tab-switch commands. The editor viewport has a
 headless regression test proving wheel scrolling changes and preserves its
 visible-row offset.
 
-This slice intentionally does not reopen the editor/storage design. Remaining
-native checks are picker behavior, IME/bidi interaction, external conflict UX,
-recovery restart, huge-file responsiveness, and idle CPU on macOS. Long-line
-chunk navigation remains required before Markdown or language work.
+This slice intentionally does not reopen the editor/storage design. Picker
+navigation and the headless editor scroll regression are covered. Remaining
+native checks are IME/bidi interaction, external conflict UX, recovery restart,
+huge-file responsiveness, and idle CPU on macOS. Gate D is the next product
+phase; syntax highlighting and all language work remain deferred to Gate E.
 
 ## Gate D — Markdown and structural prose
 
