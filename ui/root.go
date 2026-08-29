@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -61,12 +62,19 @@ func RootView(state *application.Application) {
 type workbenchState struct {
 	ShowFolder    bool
 	ShowQuickOpen bool
-	FolderPath    string
 	FilePath      string
 	ShowFind      bool
 	ShowSearch    bool
 	ClosePending  application.DocumentID
 	ShowCompare   bool
+	FolderPicker  folderPickerState
+}
+
+type folderPickerState struct {
+	Cwd      string
+	Filter   string
+	Selected int
+	Result   string
 }
 
 func header(state *application.Application, shell *workbenchState) {
@@ -77,7 +85,7 @@ func header(state *application.Application, shell *workbenchState) {
 		}
 		Container(Attrs(Grow(1)), func() {})
 		if Button(NoIcon, "Open folder") {
-			shell.ShowFolder = true
+			openFolderPicker(state, shell)
 		}
 		if Button(NoIcon, "Quick open") {
 			shell.ShowQuickOpen = true
@@ -180,7 +188,7 @@ func emptyState(shell *workbenchState) {
 		Label("Open a folder or a file to begin. Your files remain ordinary files on disk.", FontSize(13), TextColor(220, 12, 35, 1))
 		Container(Attrs(Row, Gap(8)), func() {
 			if Button(NoIcon, "Open folder") {
-				shell.ShowFolder = true
+				openFolderPicker(nil, shell)
 			}
 			if Button(NoIcon, "Open file") {
 				shell.ShowQuickOpen = true
@@ -193,9 +201,8 @@ func openControls(state *application.Application, shell *workbenchState) {
 	if shell.ShowFolder {
 		Modal(560, func() { shell.ShowFolder = false }, func() {
 			Label("Open folder", FontWeight(WeightBold), FontSize(14))
-			DirectoryBrowseExt(&shell.FolderPath, FileBrowserAttrs{Title: "Browse folders", Dirs: true, Start: state.Workspace.Root, ShowHidden: true, MinWidth: 360})
-			if Button(NoIcon, "Open selected folder") && shell.FolderPath != "" {
-				if state.OpenPath(shell.FolderPath) == nil {
+			if folderPickerPanel(shell) {
+				if state.OpenPath(filepath.Clean(shell.FolderPicker.Result)) == nil {
 					shell.ShowFolder = false
 				}
 			}
@@ -216,6 +223,34 @@ func openControls(state *application.Application, shell *workbenchState) {
 			}
 		})
 	}
+}
+
+func openFolderPicker(state *application.Application, shell *workbenchState) {
+	start := ""
+	if state != nil && state.HasWorkspace {
+		start = state.Workspace.Root
+	}
+	if start == "" {
+		start, _ = os.UserHomeDir()
+	}
+	if start == "" {
+		start = "."
+	}
+	if abs, err := filepath.Abs(start); err == nil {
+		start = filepath.Clean(abs)
+	}
+	shell.FolderPicker = folderPickerState{Cwd: start, Selected: -1}
+	shell.ShowFolder = true
+}
+
+func folderPickerPanel(shell *workbenchState) bool {
+	return FileBrowserPanel(
+		&shell.FolderPicker.Cwd,
+		&shell.FolderPicker.Filter,
+		&shell.FolderPicker.Selected,
+		&shell.FolderPicker.Result,
+		FileBrowserAttrs{Title: "Open folder", Dirs: true, Width: 520, ShowHidden: true},
+	)
 }
 
 func conflictPanel(state *application.Application, shell *workbenchState) {
