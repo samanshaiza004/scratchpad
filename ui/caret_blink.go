@@ -3,8 +3,50 @@ package ui
 import (
 	"time"
 
+	"scratchpad/editor"
+
 	. "go.hasen.dev/shirei"
 )
+
+type editorCaretSnapshot struct {
+	cursor, anchor int
+	revision       uint64
+}
+
+func takeEditorCaretSnapshot(e *editor.ScratchEditor) editorCaretSnapshot {
+	return editorCaretSnapshot{cursor: e.Cursor, anchor: e.Anchor, revision: e.Revision()}
+}
+
+func (s editorCaretSnapshot) changed(e *editor.ScratchEditor) bool {
+	return s.cursor != e.Cursor || s.anchor != e.Anchor || s.revision != e.Revision()
+}
+
+// editorCaretInputActivity covers no-op motions as well as edits whose state
+// is applied asynchronously (notably paste). State comparison still catches
+// programmatic undo/redo and every actual caret or selection change.
+func editorCaretInputActivity() bool {
+	frame := GetFrameInput()
+	input := GetInputState()
+	if frame.Text != "" && input.Composition == "" {
+		return true
+	}
+	if IsClicked() || IsActive() {
+		return true
+	}
+	primary := PrimaryMod()
+	switch frame.Key {
+	case KeyLeft, KeyRight, KeyDeleteBackward, KeyDeleteForward, KeyEnter:
+		return true
+	case KeyA, KeyX, KeyV:
+		return input.Modifiers == primary
+	case KeyZ:
+		return input.Modifiers == primary || input.Modifiers == primary|ModShift
+	case KeyY:
+		return input.Modifiers == primary
+	default:
+		return false
+	}
+}
 
 const caretBlinkIntervalFallback = 500 * time.Millisecond
 

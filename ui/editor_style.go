@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"scratchpad/document"
 	"scratchpad/language"
 
 	. "go.hasen.dev/shirei"
@@ -49,4 +50,22 @@ func EditorTextStyle(rootLanguage language.ID) TextStyleAttrs {
 		style.FontFamilies = codeFontFamilies()
 	}
 	return style
+}
+
+func isDefaultEditorStyle(style TextStyleAttrs) bool {
+	defaultStyle := DefaultTextStyle()
+	return style.FontSize == defaultStyle.FontSize &&
+		style.FontAspect == defaultStyle.FontAspect &&
+		style.TextColor == defaultStyle.TextColor &&
+		style.Background == defaultStyle.Background &&
+		style.Underline == defaultStyle.Underline &&
+		style.Strike == defaultStyle.Strike &&
+		len(style.FontFamilies) == 0
+}
+
+func EditorTextStyleForDocument(doc *document.Document) TextStyleAttrs {
+	if doc == nil {
+		return DefaultTextStyle()
+	}
+	return EditorTextStyle(language.ID(doc.RootLanguage))
 }
