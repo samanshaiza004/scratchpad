@@ -21,6 +21,12 @@ const (
 	SelectionExpand   ID = "selection.expand"
 	CommentToggle     ID = "comment.toggle"
 	DocumentFormat    ID = "document.format"
+	EditUndo          ID = "edit.undo"
+	EditRedo          ID = "edit.redo"
+	EditCut           ID = "edit.cut"
+	EditCopy          ID = "edit.copy"
+	EditPaste         ID = "edit.paste"
+	EditSelectAll     ID = "edit.select-all"
 )
 
 var InitialVocabulary = []ID{
@@ -40,4 +46,10 @@ var InitialVocabulary = []ID{
 	SelectionExpand,
 	CommentToggle,
 	DocumentFormat,
+	EditUndo,
+	EditRedo,
+	EditCut,
+	EditCopy,
+	EditPaste,
+	EditSelectAll,
 }

@@ -76,8 +76,9 @@ Only packages with immediate scaffold value exist today:
   directory listing, and raw-byte search.
 - `application/`: the product coordinator for OpenPath, document registry,
   active/tab state, conflict resolution, session metadata, and recovery.
-- `language/`: root-language detection only. Parser/provider adapters arrive at
-  Gate E.
+- `language/`: root-language detection plus the replaceable concrete Markdown
+  projection adapter. Parser/provider seams for other languages remain a Gate
+  E decision.
 - `commands/`: stable command names, not keybinding or context behavior.
 - `ui/`: Shirei composition. It should translate application state into views;
   it should not become the document authority.
@@ -146,6 +147,13 @@ their respective moments. Everything else is disposable:
 Every derived result is tagged with document revision and relevant settings
 (language, width, theme, or viewport). Stale asynchronous results never mutate
 the authoritative document.
+
+Markdown projections are captured from `document.DocumentSnapshot` after the
+150 ms edit debounce. Snapshot capture copies piece descriptors; materializing
+bytes and parsing happen in bounded background workers. The application keeps
+one latest desired revision per document and at most two global projection
+workers. Goldmark types do not cross `language/markdown`, so changing the
+Markdown parser does not change document ownership or UI contracts.
 
 ## Save semantics
 

@@ -19,6 +19,7 @@ one into a real framework need.
 | LSP, plugins, sync, collaboration | Explicitly deferred product scope | Yes | No | No | Do not build or upstream. |
 | Headless custom-editor behavior coverage | Shirei has snapshot/headless support, but Scratchpad’s editor behavior is not yet built | Not yet | Potentially | Later | First build focused Scratchpad tests; propose generic harness improvements only when a concrete gap is encountered. |
 | Accessibility and multi-window support | Current Shirei README lists accessibility unavailable and one standard-decorated window | Product may care later | Framework capability | Not now | Track as framework roadmap context; do not widen scaffold scope. |
+| Native application menu | Scratchpad needs a real macOS `NSMenu`; the isolated adapter validates a semantic model, enforces the main thread, queues opaque IDs, and has unsupported-platform stubs | No | Yes | Yes | Published as a focused fork commit and [upstream PR](https://github.com/hasenj/go-shirei/pull/25); keep the Scratchpad command model independent of the adapter. |
 
 ## Contribution rule
 

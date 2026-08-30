@@ -203,10 +203,16 @@ Objective: prove the notes side without creating a note mode.
 
 Prerequisites: Gate C and a stable document/view model.
 
+Status: in progress. The first implementation keeps `Document` and
+`ScratchEditor.Buffer` authoritative and puts Goldmark v2 behind
+`language/markdown`. Projection capture is revision-tagged and debounced with
+bounded global concurrency; stale results remain visible but are not
+actionable.
+
 Implementation work:
 
-- heading outline and folding;
-- Markdown-aware todo, table, and link projections only in eligible regions;
+- heading outline, line-number gutter, and folding;
+- Markdown-aware todo and link projections only in eligible regions;
 - contextual unified commands such as `outline.toggle` and `item.toggle`.
 
 Tests: pure projection tests with nested/fenced/invalid Markdown and revision
@@ -221,7 +227,8 @@ still handles plain text and code files.
 Framework risks: folds/outline may need stable keyed identity and visible-range
 updates; do not make Shirei own Markdown semantics.
 
-Deferred: backlinks, graph view, rich text, collaboration.
+Deferred: tables, backlinks, graph view, rich text, collaboration, Markdown
+rendering, syntax highlighting, and Tree-sitter.
 
 ## Gate E — language-service proof
 

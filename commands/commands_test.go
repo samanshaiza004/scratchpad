@@ -3,7 +3,7 @@ package commands
 import "testing"
 
 func TestInitialVocabularyIsStableAndUnified(t *testing.T) {
-	if len(InitialVocabulary) != 16 {
+	if len(InitialVocabulary) != 22 {
 		t.Fatalf("got %d commands, want 16", len(InitialVocabulary))
 	}
 	seen := map[ID]bool{}

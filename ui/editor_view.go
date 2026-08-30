@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"time"
 	"unicode/utf8"
 
 	"scratchpad/document"
@@ -366,6 +367,11 @@ type EditorViewOptions struct {
 	RowHeight         float32
 	ScrollY           *float32
 	ScrollInitialized bool
+	Rows              *editor.RowMap
+	LineNumbers       bool
+	Foldable          func(logicalLine int) bool
+	FoldMarker        func(logicalLine int) string
+	OnFoldToggle      func(logicalLine int)
 }
 
 // EditableDocumentView binds the existing Shirei-backed editor view to the
@@ -374,6 +380,9 @@ type EditorViewOptions struct {
 func EditableDocumentView(key any, doc *document.Document, options EditorViewOptions) {
 	if doc == nil || doc.Editor == nil {
 		return
+	}
+	if isDefaultEditorStyle(options.Style) {
+		options.Style = EditorTextStyleForDocument(doc)
 	}
 	EditableView(key, doc.Editor, options)
 	doc.SyncEditorState()
@@ -391,6 +400,15 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 	if rowHeight <= 0 {
 		rowHeight = style.FontSize * 1.5
 	}
+	rows := editor.IdentityRowMap(e.Buffer.LineCount())
+	if options.Rows != nil {
+		rows = *options.Rows
+	}
+	gutterWidth := float32(0)
+	if options.LineNumbers {
+		digits := len(fmt.Sprintf("%d", e.Buffer.LineCount()))
+		gutterWidth = float32(digits*8 + 22)
+	}
 	ContainerWithKey(key, Attrs(Viewport, Expand, Focusable, Clip), func() {
 		AutoFocus()
 		FocusOnClick()
@@ -402,59 +420,90 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		}
 		firstVisible := Use[int]("editor-first-visible")
 		lastVisible := Use[int]("editor-last-visible")
+		caretBlink := Use[caretBlinkState]("editor-caret-blink")
+		beforeCaret := takeEditorCaretSnapshot(e)
 		if HasFocus() {
 			WantKeyboard()
-			processEditorInput(e, style, rowHeight, *scrollY)
+			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth)
 		}
+		caretActivity := beforeCaret.changed(e) || editorCaretInputActivity()
+		editorFocused := HasFocus() && GetHost().WindowFocused
 
 		VirtualListViewExt("editor-lines", VirtualListAttrs{
-			ItemCount:       e.Buffer.LineCount(),
-			ItemKey:         func(index int) any { return index },
+			ItemCount:       rows.Count(),
+			ItemKey:         func(index int) any { logical, _ := rows.Logical(index); return logical },
 			ItemHeight:      func(index int, width float32) float32 { return rowHeight },
 			OutScrollOffset: scrollY,
 			OutFirstVisible: firstVisible,
 			OutLastVisible:  lastVisible,
 			ItemView: func(index int, width float32) {
-				anchor := 0
-				if start, end, exists := e.Buffer.LineRange(index); exists && e.Cursor >= start && e.Cursor <= end {
-					anchor = e.Cursor
-				}
-				visual, ok := BuildVisualLineAround(&e.Buffer, index, anchor, style)
+				logical, ok := rows.Logical(index)
 				if !ok {
 					return
 				}
-				ContainerWithKey(index, Attrs(FixHeight(rowHeight), Expand, NoClip), func() {
-					selectionFrom, selectionTo := visibleSelection(visual, e)
-					ShapedTextLayout(visual.Layout, style, selectionFrom, selectionTo)
-
-					if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd {
-						localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)
-						x := visual.CaretX(localRune, e.Affinity)
-						composition := e.Composition()
-						showCaret := e.Cursor == e.Anchor && composition.Text == ""
-						caretColor := Vec4{0, 0, 20, 1}
-						if !showCaret {
-							caretColor[3] = 0
-						}
-						Container(Attrs(FloatVec(Vec2{x, 0}), MinSize(1, rowHeight), InFront, BackgroundVec(caretColor)), func() {
-							r := GetScreenRect()
-							caretPos := Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
-							if composition.Text != "" {
-								GetHost().CompositionPos = caretPos
-							} else {
-								GetHost().CaretPos = caretPos
-								GetHost().CaretHeight = r.Size[1]
-							}
-						})
-
-						if composition.Text != "" {
-							compositionStyle := style
-							compositionStyle.Underline = true
-							Container(Attrs(FloatVec(Vec2{x, 0}), NoClip, InFront), func() {
-								ShapedTextLayout(ShapeText(composition.Text, compositionStyle), compositionStyle, 0, 0)
+				anchor := 0
+				if start, end, exists := e.Buffer.LineRange(logical); exists && e.Cursor >= start && e.Cursor <= end {
+					anchor = e.Cursor
+				}
+				visual, ok := BuildVisualLineAround(&e.Buffer, logical, anchor, style)
+				if !ok {
+					return
+				}
+				ContainerWithKey(logical, Attrs(FixHeight(rowHeight), Expand, NoClip), func() {
+					Container(Attrs(Row, Expand, NoClip), func() {
+						if options.LineNumbers {
+							Container(Attrs(FixWidth(gutterWidth), FixHeight(rowHeight), Pad2(0, 8), CrossMid), func() {
+								if options.Foldable != nil && options.Foldable(logical) {
+									foldButton := ProcessButtonEvents(true)
+									marker := "▾"
+									if options.FoldMarker != nil {
+										marker = options.FoldMarker(logical)
+									}
+									Label(marker, FontSize(style.FontSize*0.85), TextColorVec(Vec4{0.42, 0.45, 0.5, 1}))
+									if foldButton.Clicked && options.OnFoldToggle != nil {
+										options.OnFoldToggle(logical)
+									}
+								}
+								Label(fmt.Sprintf("%*d", len(fmt.Sprintf("%d", e.Buffer.LineCount())), logical+1), FontSize(style.FontSize*0.85), TextColorVec(Vec4{0.42, 0.45, 0.5, 1}))
 							})
 						}
-					}
+						Container(Attrs(Grow(1), Expand, NoClip), func() {
+							selectionFrom, selectionTo := visibleSelection(visual, e)
+							ShapedTextLayout(visual.Layout, style, selectionFrom, selectionTo)
+
+							if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd {
+								localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)
+								x := visual.CaretX(localRune, e.Affinity)
+								composition := e.Composition()
+								ordinaryCaretEligible := editorFocused && e.Cursor == e.Anchor && composition.Text == ""
+								blinkVisible := caretBlink.sync(time.Now(), ordinaryCaretEligible, caretActivity, GetHost().HeadlessRender, RequestNextFrame)
+								showCaret := ordinaryCaretEligible && blinkVisible
+								caret := editorCaretGeometry(rowHeight, style)
+								caretColor := Vec4{0, 0, 20, 1}
+								if !showCaret {
+									caretColor[3] = 0
+								}
+								Container(Attrs(FloatVec(Vec2{x, caret.Y}), MinSize(caret.Width, caret.Height), InFront, BackgroundVec(caretColor)), func() {
+									r := GetScreenRect()
+									caretPos := Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
+									if composition.Text != "" {
+										GetHost().CompositionPos = caretPos
+									} else {
+										GetHost().CaretPos = caretPos
+										GetHost().CaretHeight = r.Size[1]
+									}
+								})
+
+								if composition.Text != "" {
+									compositionStyle := style
+									compositionStyle.Underline = true
+									Container(Attrs(FloatVec(Vec2{x, 0}), NoClip, InFront), func() {
+										ShapedTextLayout(ShapeText(composition.Text, compositionStyle), compositionStyle, 0, 0)
+									})
+								}
+							}
+						})
+					})
 				})
 			},
 		})
@@ -464,7 +513,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 	})
 }
 
-func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32) {
+func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32) {
 	frame := GetFrameInput()
 	input := GetInputState()
 	composition := e.Composition()
@@ -523,12 +572,19 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 
 	if IsClicked() || IsActive() {
 		content := GetContentRect()
-		line := int((input.MousePoint[1] - content.Origin[1] + scrollY) / rowHeight)
-		if line < 0 {
-			line = 0
+		visible := int((input.MousePoint[1] - content.Origin[1] + scrollY) / rowHeight)
+		if visible < 0 {
+			visible = 0
+		}
+		line, ok := rows.Logical(visible)
+		if !ok {
+			return
+		}
+		if input.MousePoint[0]-content.Origin[0] < gutterWidth {
+			return
 		}
 		if visual, ok := BuildVisualLineAround(&e.Buffer, line, e.Cursor, style); ok {
-			localRune, affinity := visual.HitTest(input.MousePoint[0] - content.Origin[0])
+			localRune, affinity := visual.HitTest(input.MousePoint[0] - content.Origin[0] - gutterWidth)
 			position := visual.DocStart + visual.LocalRuneToByte(localRune)
 			if IsClicked() && shift {
 				e.SetSelection(e.Anchor, position)

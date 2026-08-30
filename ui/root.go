@@ -3,14 +3,20 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"scratchpad/application"
 	"scratchpad/commands"
 	"scratchpad/document"
+	"scratchpad/editor"
+	"scratchpad/language/markdown"
 	"scratchpad/workspace"
+
+	"github.com/cli/browser"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -25,6 +31,7 @@ func RootView(state *application.Application) {
 	}
 	state.PollWatcher()
 	state.ReconcileStale()
+	state.PollDerived(time.Now())
 	state.MaybeWriteRecovery(state.RecoveryDir)
 
 	shell := Use[workbenchState]("workbench")
@@ -33,7 +40,7 @@ func RootView(state *application.Application) {
 		shell.SidebarInitialized = true
 	}
 	shell.WorkspaceWasOpen = state.HasWorkspace
-	if !state.HasWorkspace {
+	if !state.HasWorkspace && shell.SidebarMode == SidebarFiles {
 		shell.SidebarVisible = false
 	}
 	handleGlobalInput(state, shell)
@@ -42,7 +49,7 @@ func RootView(state *application.Application) {
 	Container(Attrs(Viewport, Expand, BackgroundVec(theme.Window), NoAnimate), func() {
 		menuBar(state, shell, theme)
 		Container(Attrs(Row, Grow(1), Expand, Gap(8), Pad2(0, 8)), func() {
-			if state.HasWorkspace && shell.SidebarVisible {
+			if shell.SidebarVisible && (state.HasWorkspace || shell.SidebarMode == SidebarOutline) {
 				sidebar(state, shell, theme)
 			}
 			Container(Attrs(Grow(1), Expand, Gap(0), Clip), func() {
@@ -59,13 +66,28 @@ func RootView(state *application.Application) {
 				if doc := state.ActiveDocument(); doc != nil {
 					id := state.Active
 					view := state.Views[id]
+					if view.LastRevision != 0 && view.LastRevision != doc.Revision() {
+						view.CollapsedHeadings = nil
+					}
+					rows := rowMapForDocument(doc, view)
 					Container(Attrs(Grow(1), Expand, Clip, BackgroundVec(theme.Paper)), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
 							Style: DefaultTextStyle(), RowHeight: 20, ScrollY: &view.ScrollY,
 							ScrollInitialized: view.ScrollInitialized,
+							LineNumbers:       true,
+							Rows:              &rows,
+							Foldable:          func(line int) bool { return foldForLine(doc, line) != nil },
+							FoldMarker: func(line int) string {
+								if view.CollapsedHeadings != nil && view.CollapsedHeadings[headingAtLine(doc, line)] {
+									return "▸"
+								}
+								return "▾"
+							},
+							OnFoldToggle: func(line int) { toggleFold(doc, &view, line) },
 						})
 					})
 					view.ScrollInitialized = true
+					view.LastRevision = doc.Revision()
 					state.Views[id] = view
 				}
 			})
@@ -93,7 +115,15 @@ type workbenchState struct {
 	ShowCompare        bool
 	PathPicker         folderPickerState
 	FolderPicker       folderPickerState // compatibility alias for existing tests
+	SidebarMode        SidebarMode
 }
+
+type SidebarMode uint8
+
+const (
+	SidebarFiles SidebarMode = iota
+	SidebarOutline
+)
 
 type folderPickerState struct {
 	Cwd      string
@@ -120,6 +150,9 @@ type searchState struct {
 }
 
 func menuBar(state *application.Application, shell *workbenchState, theme Theme) {
+	if nativeMenuBar(state, shell) {
+		return
+	}
 	Container(Attrs(Row, CrossMid, FixHeight(34), Pad2(0, 8), Gap(2), BackgroundVec(theme.Chrome), BorderWidth(1), BorderColorVec(theme.Border)), func() {
 		CtrlMenuButton(NoIcon, "File", func() {
 			if MenuItem(NoIcon, "Open…    "+primaryShortcut("O")) {
@@ -148,7 +181,10 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 			}
 		})
 		CtrlMenuButton(NoIcon, "View", func() {
-			if state.HasWorkspace && MenuItem(NoIcon, "Toggle Sidebar") {
+			if MenuItem(NoIcon, "Outline") {
+				executeCommand(state, shell, commands.OutlineToggle)
+			}
+			if (state.HasWorkspace || state.ActiveDocument() != nil) && MenuItem(NoIcon, "Toggle Sidebar") {
 				executeCommand(state, shell, commands.ViewToggleSidebar)
 			}
 			if state.HasWorkspace && MenuItem(NoIcon, "Refresh Workspace") {
@@ -196,12 +232,21 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 	}
 	Container(Attrs(FixWidth(248), Expand, Clip, BackgroundVec(theme.Sidebar), BorderWidth(1), BorderColorVec(theme.Border)), func() {
 		Container(Attrs(Row, CrossMid, FixHeight(34), Pad2(0, 10), BorderWidth(1), BorderColorVec(theme.Border)), func() {
-			Label("Workspace", FontWeight(WeightBold), FontSize(12), TextColorVec(theme.Ink))
+			if CtrlButton(NoIcon, "Files", shell.SidebarMode == SidebarFiles) {
+				shell.SidebarMode = SidebarFiles
+			}
+			if CtrlButton(NoIcon, "Outline", shell.SidebarMode == SidebarOutline) {
+				shell.SidebarMode = SidebarOutline
+			}
 			Container(Attrs(Grow(1)), func() {})
-			if CtrlButton(NoIcon, "Refresh", true) {
+			if shell.SidebarMode == SidebarFiles && CtrlButton(NoIcon, "Refresh", true) {
 				tree.Expanded = make(map[string]bool)
 			}
 		})
+		if shell.SidebarMode == SidebarOutline {
+			outlinePanel(state, theme)
+			return
+		}
 		if shell.ShowSearch {
 			workspaceSearchPanel(state, shell, theme)
 		}
@@ -211,6 +256,173 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 			ScrollBars()
 		})
 	})
+}
+
+func outlinePanel(state *application.Application, theme Theme) {
+	doc := state.ActiveDocument()
+	if doc == nil || doc.RootLanguage != "markdown" {
+		Container(Attrs(Grow(1), Pad(10)), func() { Label("Outline is available for Markdown files.", FontSize(11), TextColorVec(theme.Muted)) })
+		return
+	}
+	Container(Attrs(Viewport, Grow(1), Expand, Clip, Pad2(6, 4)), func() {
+		ScrollOnInput()
+		if !doc.Projections.Valid {
+			Label("Updating outline…", FontSize(11), TextColorVec(theme.Muted))
+		}
+		for _, heading := range doc.Projections.Headings {
+			Container(Attrs(Row, FixHeight(24), Expand, Pad2(0, float32(8+heading.Level*10))), func() {
+				button := ProcessButtonEvents(doc.Projections.Valid)
+				Label(heading.Text, FontSize(11), TextColorVec(theme.Ink))
+				if button.Clicked && doc.Projections.Valid {
+					doc.Editor.SetCursor(heading.StartByte)
+				}
+			})
+		}
+		if len(doc.Projections.Tasks) > 0 {
+			Label("Tasks", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Muted))
+			for _, task := range doc.Projections.Tasks {
+				outlineTask(state, doc, task, doc.Projections.Valid, theme)
+			}
+		}
+		if len(doc.Projections.Links) > 0 {
+			Label("Links", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Muted))
+			for _, link := range doc.Projections.Links {
+				outlineLink(state, doc, link, doc.Projections.Valid, theme)
+			}
+		}
+		ScrollBars()
+	})
+}
+
+func outlineTask(state *application.Application, doc *document.Document, task document.Task, enabled bool, theme Theme) {
+	Container(Attrs(Row, FixHeight(24), Expand, Pad2(0, 10), Gap(4)), func() {
+		if CtrlButton(NoIcon, checkbox(task.Checked), enabled) && enabled {
+			marker, err := doc.Editor.Buffer.Bytes(task.MarkerStart, task.MarkerEnd)
+			if err == nil && (string(marker) == "[ ]" || string(marker) == "[x]" || string(marker) == "[X]") {
+				replacement := []byte("[ ]")
+				if !task.Checked {
+					replacement = []byte("[x]")
+				}
+				_ = doc.Replace(task.MarkerStart, task.MarkerEnd, replacement)
+			}
+		}
+		button := ProcessButtonEvents(enabled)
+		Label(task.Text, FontSize(11), TextColorVec(theme.Ink))
+		if button.Clicked && enabled {
+			doc.Editor.SetCursor(task.StartByte)
+		}
+	})
+}
+
+func checkbox(checked bool) string {
+	if checked {
+		return "☑"
+	}
+	return "☐"
+}
+
+func outlineLink(state *application.Application, doc *document.Document, link document.Link, enabled bool, theme Theme) {
+	Container(Attrs(Row, FixHeight(24), Expand, Pad2(0, 10), Gap(4)), func() {
+		button := ProcessButtonEvents(enabled)
+		Label(link.Label, FontSize(11), TextColorVec(theme.Ink))
+		if button.Clicked && enabled {
+			doc.Editor.SetCursor(link.StartByte)
+		}
+		if CtrlButton(NoIcon, "Open", enabled) && enabled {
+			openLinkTarget(state, doc, link.Target)
+		}
+	})
+}
+
+func openLinkTarget(state *application.Application, doc *document.Document, target string) {
+	kind := markdown.LinkTargetKind(target)
+	if kind == "unsupported" {
+		return
+	}
+	if kind == "http" || kind == "https" || kind == "mailto" {
+		_ = browser.OpenURL(target)
+		return
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Path == "" || state == nil {
+		return
+	}
+	path := parsed.Path
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(filepath.Dir(doc.Path), path)
+	}
+	_ = state.OpenPath(path)
+}
+
+func rowMapForDocument(doc *document.Document, view application.ViewState) editor.RowMap {
+	if doc == nil || !doc.DerivedCurrent() || len(view.CollapsedHeadings) == 0 {
+		return editor.IdentityRowMap(doc.Editor.Buffer.LineCount())
+	}
+	hidden := make([]editor.HiddenLineRange, 0, len(view.CollapsedHeadings))
+	for _, fold := range doc.Projections.Folds {
+		if !view.CollapsedHeadings[fold.HeadingStart] {
+			continue
+		}
+		start, ok := doc.Editor.Buffer.LineAt(fold.StartByte)
+		if !ok {
+			continue
+		}
+		end, ok := doc.Editor.Buffer.LineAt(fold.EndByte)
+		if !ok || end <= start {
+			continue
+		}
+		hidden = append(hidden, editor.HiddenLineRange{Start: start, End: end})
+	}
+	return editor.NewRowMap(doc.Editor.Buffer.LineCount(), hidden)
+}
+
+func foldForLine(doc *document.Document, line int) *document.Fold {
+	if doc == nil || !doc.DerivedCurrent() {
+		return nil
+	}
+	start, _, ok := doc.Editor.Buffer.LineRange(line)
+	if !ok {
+		return nil
+	}
+	for i := range doc.Projections.Folds {
+		if doc.Projections.Folds[i].HeadingStart == start {
+			return &doc.Projections.Folds[i]
+		}
+	}
+	return nil
+}
+
+func headingAtLine(doc *document.Document, line int) int {
+	if doc == nil {
+		return -1
+	}
+	start, _, ok := doc.Editor.Buffer.LineRange(line)
+	if !ok {
+		return -1
+	}
+	for _, heading := range doc.Projections.Headings {
+		if heading.StartByte == start {
+			return heading.StartByte
+		}
+	}
+	return -1
+}
+
+func toggleFold(doc *document.Document, view *application.ViewState, line int) {
+	if doc == nil || view == nil || !doc.DerivedCurrent() {
+		return
+	}
+	heading := headingAtLine(doc, line)
+	if heading < 0 || foldForLine(doc, line) == nil {
+		return
+	}
+	if view.CollapsedHeadings == nil {
+		view.CollapsedHeadings = make(map[int]bool)
+	}
+	view.CollapsedHeadings[heading] = !view.CollapsedHeadings[heading]
+	if !view.CollapsedHeadings[heading] {
+		delete(view.CollapsedHeadings, heading)
+	}
 }
 
 type treeState struct {
@@ -725,11 +937,42 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.TabPrevious:
 		state.Cycle(-1)
 	case commands.ViewToggleSidebar:
-		if state.HasWorkspace {
+		if state.HasWorkspace || state.ActiveDocument() != nil {
 			shell.SidebarVisible = !shell.SidebarVisible
 		}
+	case commands.OutlineToggle:
+		shell.SidebarMode = SidebarOutline
+		shell.SidebarVisible = true
 	case commands.WorkspaceRefresh:
 		Use[treeState]("workspace-tree").Expanded = make(map[string]bool)
+	case commands.EditUndo:
+		if doc := state.ActiveDocument(); doc != nil {
+			_ = doc.Editor.Undo()
+		}
+	case commands.EditRedo:
+		if doc := state.ActiveDocument(); doc != nil {
+			_ = doc.Editor.Redo()
+		}
+	case commands.EditCut:
+		if doc := state.ActiveDocument(); doc != nil {
+			if text, err := doc.Editor.Cut(); err == nil && text != "" {
+				RequestTextCopy(text)
+			}
+		}
+	case commands.EditCopy:
+		if doc := state.ActiveDocument(); doc != nil {
+			if text := doc.Editor.Copy(); text != "" {
+				RequestTextCopy(text)
+			}
+		}
+	case commands.EditPaste:
+		if doc := state.ActiveDocument(); doc != nil {
+			RequestPaste()
+		}
+	case commands.EditSelectAll:
+		if doc := state.ActiveDocument(); doc != nil {
+			doc.Editor.SelectAll()
+		}
 	}
 }
 
