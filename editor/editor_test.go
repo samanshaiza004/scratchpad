@@ -48,6 +48,23 @@ func TestBufferLineAtMatchesLineRanges(t *testing.T) {
 	}
 }
 
+func TestBufferSnapshotSurvivesLaterEditsAndAddedStoreGrowth(t *testing.T) {
+	b := NewBuffer([]byte("alpha\nbeta\n"))
+	if err := b.Insert(b.ByteLen(), []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := b.Snapshot()
+	if err := b.Insert(0, []byte("prefix ")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Insert(b.ByteLen(), []byte(" tail")); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(snapshot.Materialize()); got != "alpha\nbeta\nfirst" {
+		t.Fatalf("snapshot changed after edits: %q", got)
+	}
+}
+
 func TestLargeInsertDoesNotFlattenOriginal(t *testing.T) {
 	source := make([]byte, 1<<20)
 	for i := range source {

@@ -37,10 +37,10 @@ type pieceNode struct {
 	pieces   int
 }
 
-// Buffer is a piece-backed byte buffer. Original file bytes remain in
-// original, inserted bytes append to added, and the balanced piece index is
-// the only mutable document structure. This representation is deliberately
-// replaceable behind the observable API below.
+// Buffer is a piece-backed byte buffer. Original file bytes remain immutable
+// in original, inserted bytes append to added without rewriting prior bytes,
+// and the balanced piece index is the only mutable document structure. This
+// representation is deliberately replaceable behind the observable API.
 type Buffer struct {
 	original []byte
 	added    []byte
@@ -48,6 +48,57 @@ type Buffer struct {
 	byteLen  int
 	newlines int
 	seed     uint64
+}
+
+// BufferSnapshot is an immutable view of the buffer's piece sequence. The
+// source stores are append-only/immutable for bytes already referenced by a
+// piece, so taking a snapshot copies only the piece descriptors. Materialize
+// is the intentionally explicit O(document-size) operation for background
+// consumers such as parsers.
+type BufferSnapshot struct {
+	original []byte
+	added    []byte
+	pieces   []piece
+	byteLen  int
+}
+
+// Snapshot captures the current piece sequence in O(piece count). The
+// returned value is independent of future tree edits and added-store growth.
+func (b *Buffer) Snapshot() BufferSnapshot {
+	snapshot := BufferSnapshot{
+		original: b.original,
+		added:    b.added,
+		byteLen:  b.byteLen,
+		pieces:   make([]piece, 0, nodePieces(b.root)),
+	}
+	var collect func(*pieceNode)
+	collect = func(node *pieceNode) {
+		if node == nil {
+			return
+		}
+		collect(node.left)
+		snapshot.pieces = append(snapshot.pieces, node.piece)
+		collect(node.right)
+	}
+	collect(b.root)
+	return snapshot
+}
+
+// Materialize returns the complete byte contents represented by the
+// snapshot. It allocates proportional to the document size and should not be
+// called on the interactive frame path.
+func (s BufferSnapshot) Materialize() []byte {
+	out := make([]byte, 0, s.byteLen)
+	for _, p := range s.pieces {
+		var source []byte
+		if p.source == originalSource {
+			source = s.original
+		} else {
+			source = s.added
+		}
+		out = append(out, source[p.start:p.start+p.length]...)
+	}
+	return out
 }
 
 func NewBuffer(source []byte) Buffer {
