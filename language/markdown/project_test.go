@@ -12,9 +12,12 @@ func TestProjectHeadingsAndRanges(t *testing.T) {
 	if got.Revision != 7 || len(got.Headings) != 2 {
 		t.Fatalf("projection = %+v", got)
 	}
+	if got.Headings[0].ID != "one" || got.Headings[1].ID != "title" {
+		t.Fatalf("heading IDs = %+v", got.Headings)
+	}
 	want := []document.Heading{
-		{Level: 1, Text: "One", StartByte: 0, EndByte: 5},
-		{Level: 2, Text: "Title", StartByte: 13, EndByte: 25},
+		{Level: 1, Text: "One", ID: "one", StartByte: 0, EndByte: 5},
+		{Level: 2, Text: "Title", ID: "title", StartByte: 13, EndByte: 25},
 	}
 	for i := range want {
 		if got.Headings[i] != want[i] {

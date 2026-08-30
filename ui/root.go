@@ -344,14 +344,35 @@ func openLinkTarget(state *application.Application, doc *document.Document, targ
 		return
 	}
 	parsed, err := url.Parse(target)
-	if err != nil || parsed.Path == "" || state == nil {
+	if err != nil || state == nil {
+		return
+	}
+	if parsed.Path == "" && parsed.Fragment != "" {
+		jumpToHeadingID(doc, parsed.Fragment)
+		return
+	}
+	if parsed.Path == "" {
 		return
 	}
 	path := parsed.Path
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(filepath.Dir(doc.Path), path)
 	}
-	_ = state.OpenPath(path)
+	if state.OpenPath(path) == nil && parsed.Fragment != "" {
+		jumpToHeadingID(state.ActiveDocument(), parsed.Fragment)
+	}
+}
+
+func jumpToHeadingID(doc *document.Document, id string) {
+	if doc == nil || !doc.DerivedCurrent() {
+		return
+	}
+	for _, heading := range doc.Projections.Headings {
+		if heading.ID == id {
+			doc.Editor.SetCursor(heading.StartByte)
+			return
+		}
+	}
 }
 
 func rowMapForDocument(doc *document.Document, view application.ViewState) editor.RowMap {

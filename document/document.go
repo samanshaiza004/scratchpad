@@ -65,6 +65,7 @@ type Projections struct {
 type Heading struct {
 	Level              int
 	Text               string
+	ID                 string
 	StartByte, EndByte int
 }
 

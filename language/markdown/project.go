@@ -16,7 +16,7 @@ import (
 
 // Project lowers only structural headings. It never owns or mutates source.
 func Project(source []byte, revision uint64) document.Projections {
-	root := parser.New(parser.WithExtensions(extension.NewTaskListItemParser())).Parse(source)
+	root := parser.New(parser.WithAutoHeadingID(), parser.WithExtensions(extension.NewTaskListItemParser())).Parse(source)
 	projection := document.Projections{Revision: revision}
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
@@ -27,8 +27,12 @@ func Project(source []byte, revision uint64) document.Projections {
 			return ast.WalkContinue, nil
 		}
 		start, end := headingRange(heading, source)
+		id := ""
+		if value, ok := heading.Attribute("id"); ok {
+			id = value.Str(nil)
+		}
 		projection.Headings = append(projection.Headings, document.Heading{
-			Level: heading.Level, Text: headingText(heading, source), StartByte: start, EndByte: end,
+			Level: heading.Level, Text: headingText(heading, source), ID: id, StartByte: start, EndByte: end,
 		})
 		return ast.WalkSkipChildren, nil
 	})
