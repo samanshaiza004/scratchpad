@@ -213,9 +213,15 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 	})
 }
 
-type treeState struct{ Expanded map[string]bool }
+type treeState struct {
+	Expanded map[string]bool
+	RowIDs   map[string]ContainerId // transient handles used by layout tests
+}
 
 func renderTree(state *application.Application, tree *treeState, relative string, depth int, theme Theme) {
+	if tree.RowIDs == nil {
+		tree.RowIDs = make(map[string]ContainerId)
+	}
 	entries, err := state.Workspace.List(relative)
 	if err != nil {
 		Label("Workspace unavailable: "+err.Error(), FontSize(11), TextColorVec(theme.Muted))
@@ -223,35 +229,40 @@ func renderTree(state *application.Application, tree *treeState, relative string
 	}
 	for _, entry := range entries {
 		entry := entry
-		ContainerWithKey(entry.Path, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), func() {
-			button := ProcessButtonEvents(false)
-			if button.Hovered {
-				ModAttrs(BackgroundVec(theme.Highlight))
-			}
-			if !entry.Dir && isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path)) {
-				ModAttrs(BackgroundVec(theme.Selection))
-			}
-			if entry.Dir {
-				arrow := "▸"
-				if tree.Expanded[entry.Path] {
-					arrow = "▾"
+		ContainerWithKey(entry.Path, Attrs(Expand), func() {
+			// Keep the item itself horizontal. Expanded children are siblings
+			// below it in this vertical subtree, never children of its row.
+			rowID := Container(Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), func() {
+				button := ProcessButtonEvents(false)
+				if button.Hovered {
+					ModAttrs(BackgroundVec(theme.Highlight))
 				}
-				Label(arrow+"  "+entry.Name, FontSize(12), TextColorVec(theme.Ink))
+				if !entry.Dir && isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path)) {
+					ModAttrs(BackgroundVec(theme.Selection))
+				}
+				if entry.Dir {
+					arrow := "▸"
+					if tree.Expanded[entry.Path] {
+						arrow = "▾"
+					}
+					Label(arrow+"  "+entry.Name, FontSize(12), TextColorVec(theme.Ink))
+					if button.Clicked {
+						tree.Expanded[entry.Path] = !tree.Expanded[entry.Path]
+					}
+					return
+				}
+				marker := "  "
+				if isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path)) {
+					marker = "● "
+				}
+				Label(marker+entry.Name, FontSize(12), TextColorVec(theme.Ink))
 				if button.Clicked {
-					tree.Expanded[entry.Path] = !tree.Expanded[entry.Path]
+					_ = state.OpenPath(filepath.Join(state.Workspace.Root, entry.Path))
 				}
-				if tree.Expanded[entry.Path] {
-					renderTree(state, tree, entry.Path, depth+1, theme)
-				}
-				return
-			}
-			marker := "  "
-			if isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path)) {
-				marker = "● "
-			}
-			Label(marker+entry.Name, FontSize(12), TextColorVec(theme.Ink))
-			if button.Clicked {
-				_ = state.OpenPath(filepath.Join(state.Workspace.Root, entry.Path))
+			})
+			tree.RowIDs[entry.Path] = rowID
+			if entry.Dir && tree.Expanded[entry.Path] {
+				renderTree(state, tree, entry.Path, depth+1, theme)
 			}
 		})
 	}
