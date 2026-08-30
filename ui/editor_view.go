@@ -8,6 +8,7 @@ import (
 
 	"scratchpad/document"
 	"scratchpad/editor"
+	"scratchpad/language"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -54,6 +55,14 @@ func BuildVisualLine(buffer *editor.Buffer, line int, style TextStyleAttrs) (Vis
 // lines it is centered on anchor when possible, so the active caret remains
 // visible without asking Shirei to shape megabytes synchronously.
 func BuildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs) (VisualLine, bool) {
+	return buildVisualLineAround(buffer, line, anchor, style, nil, nil)
+}
+
+type EditorPresentationSource func(startByte, endByte int) []document.PresentationSpan
+
+type EditorPresentationStyler func(kind document.PresentationKind, base TextStyleAttrs) []TextStyleFn
+
+func buildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, presentation EditorPresentationSource, styler EditorPresentationStyler) (VisualLine, bool) {
 	start, end, ok := buffer.LineRange(line)
 	if !ok {
 		return VisualLine{}, false
@@ -64,20 +73,53 @@ func BuildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextSt
 		return VisualLine{}, false
 	}
 	display, runes, sourceBytes := displayText(data)
-	return VisualLine{
+	visual := VisualLine{
 		DocStart:        windowStart,
 		DocEnd:          windowEnd,
 		LogicalStart:    start,
 		LogicalEnd:      end,
 		Text:            display,
 		Runes:           runes,
-		Layout:          ShapeText(display, style),
 		TruncatedBefore: windowStart > start,
 		TruncatedAfter:  windowEnd < end,
 		ChunkIndex:      chunkIndex,
 		ChunkCount:      chunkCount,
 		sourceBytes:     sourceBytes,
-	}, true
+	}
+	if presentation != nil && styler != nil {
+		textSpans := presentationTextSpans(visual, presentation(windowStart, windowEnd), style, styler)
+		visual.Layout = ShapeText(display, style, textSpans...)
+	} else {
+		visual.Layout = ShapeText(display, style)
+	}
+	return visual, true
+}
+
+func presentationTextSpans(visual VisualLine, sourceSpans []document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler) []TextSpan {
+	if len(sourceSpans) == 0 {
+		return nil
+	}
+	spans := make([]TextSpan, 0, len(sourceSpans))
+	for _, sourceSpan := range sourceSpans {
+		start := maxInt(sourceSpan.StartByte, visual.DocStart)
+		end := minInt(sourceSpan.EndByte, visual.DocEnd)
+		if start >= end {
+			continue
+		}
+		from := visual.LocalByteToRune(start - visual.DocStart)
+		to := visual.LocalByteToRune(end - visual.DocStart)
+		if from >= to {
+			continue
+		}
+		mods := styler(sourceSpan.Kind, base)
+		if len(mods) > 0 {
+			spans = append(spans, Span(from, to, mods...))
+		}
+	}
+	if len(spans) == 0 {
+		return nil
+	}
+	return spans
 }
 
 // displayText creates the Unicode projection used by Shirei while retaining
@@ -372,6 +414,8 @@ type EditorViewOptions struct {
 	Foldable          func(logicalLine int) bool
 	FoldMarker        func(logicalLine int) string
 	OnFoldToggle      func(logicalLine int)
+	Presentation      EditorPresentationSource
+	PresentationStyle EditorPresentationStyler
 }
 
 // EditableDocumentView binds the existing Shirei-backed editor view to the
@@ -383,6 +427,10 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 	}
 	if isDefaultEditorStyle(options.Style) {
 		options.Style = EditorTextStyleForDocument(doc)
+	}
+	if options.Presentation == nil && language.ID(doc.RootLanguage) == language.Markdown && doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision() {
+		options.Presentation = doc.Projections.Markdown.SpansIn
+		options.PresentationStyle = MarkdownPresentationStyle
 	}
 	EditableView(key, doc.Editor, options)
 	doc.SyncEditorState()
@@ -445,7 +493,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				if start, end, exists := e.Buffer.LineRange(logical); exists && e.Cursor >= start && e.Cursor <= end {
 					anchor = e.Cursor
 				}
-				visual, ok := BuildVisualLineAround(&e.Buffer, logical, anchor, style)
+				visual, ok := buildVisualLineAround(&e.Buffer, logical, anchor, style, options.Presentation, options.PresentationStyle)
 				if !ok {
 					return
 				}

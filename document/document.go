@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"sort"
 
 	"scratchpad/editor"
 	"scratchpad/workspace"
@@ -60,6 +61,102 @@ type Projections struct {
 	Folds    []Fold
 	Tasks    []Task
 	Links    []Link
+	Markdown MarkdownPresentation
+}
+
+// PresentationKind identifies a source-preserving Markdown presentation
+// span. It deliberately contains no colors, fonts, or UI types: the editor
+// remains the source authority and the UI owns the visual treatment.
+type PresentationKind uint8
+
+const (
+	PresentationSyntax PresentationKind = iota
+	PresentationHeading
+	PresentationStrong
+	PresentationEmphasis
+	PresentationInlineCode
+	PresentationLink
+	PresentationStrike
+	PresentationCodeBlock
+	PresentationBlockquote
+	PresentationListMarker
+	PresentationTaskMarker
+)
+
+// PresentationSpan is a half-open source-byte range. Spans may overlap when
+// Markdown constructs nest; consumers should apply them in projection order.
+type PresentationSpan struct {
+	StartByte int
+	EndByte   int
+	Kind      PresentationKind
+}
+
+// MarkdownPresentation is a disposable, immutable-by-convention projection
+// for one source revision. Its index keeps visible-row range queries bounded
+// by the matching spans rather than requiring a document-wide scan.
+type MarkdownPresentation struct {
+	Revision uint64
+	Spans    []PresentationSpan
+	maxEnds  []int
+}
+
+// NewMarkdownPresentation normalizes and indexes source spans produced by the
+// Markdown adapter. The input slice is copied so a worker can safely publish a
+// completed projection without retaining a mutable builder buffer.
+func NewMarkdownPresentation(revision uint64, spans []PresentationSpan) MarkdownPresentation {
+	filtered := make([]PresentationSpan, 0, len(spans))
+	for _, span := range spans {
+		if span.StartByte < 0 {
+			span.StartByte = 0
+		}
+		if span.EndByte <= span.StartByte {
+			continue
+		}
+		filtered = append(filtered, span)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].StartByte == filtered[j].StartByte {
+			if filtered[i].EndByte == filtered[j].EndByte {
+				return filtered[i].Kind < filtered[j].Kind
+			}
+			return filtered[i].EndByte < filtered[j].EndByte
+		}
+		return filtered[i].StartByte < filtered[j].StartByte
+	})
+	maxEnds := make([]int, len(filtered))
+	for i, span := range filtered {
+		maxEnds[i] = span.EndByte
+		if i > 0 && maxEnds[i-1] > maxEnds[i] {
+			maxEnds[i] = maxEnds[i-1]
+		}
+	}
+	return MarkdownPresentation{Revision: revision, Spans: filtered, maxEnds: maxEnds}
+}
+
+// SpansIn returns source spans intersecting [startByte, endByte). The returned
+// slice is independent so callers can clip or reorder it for one visible row.
+func (p MarkdownPresentation) SpansIn(startByte, endByte int) []PresentationSpan {
+	if startByte < 0 {
+		startByte = 0
+	}
+	if endByte <= startByte || len(p.Spans) == 0 {
+		return nil
+	}
+	endIndex := sort.Search(len(p.Spans), func(i int) bool { return p.Spans[i].StartByte >= endByte })
+	startIndex := 0
+	if len(p.maxEnds) == len(p.Spans) {
+		startIndex = sort.Search(endIndex, func(i int) bool { return p.maxEnds[i] > startByte })
+	}
+	result := make([]PresentationSpan, 0, endIndex-startIndex)
+	for _, span := range p.Spans[startIndex:endIndex] {
+		if span.EndByte > startByte && span.StartByte < endByte {
+			result = append(result, span)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 type Heading struct {

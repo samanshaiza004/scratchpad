@@ -16,50 +16,11 @@ import (
 
 // Project lowers only structural headings. It never owns or mutates source.
 func Project(source []byte, revision uint64) document.Projections {
-	root := parser.New(parser.WithAutoHeadingID(), parser.WithExtensions(extension.NewTaskListItemParser())).Parse(source)
+	root := parser.New(parser.WithAutoHeadingID(), parser.WithExtensions(
+		extension.NewTaskListItemParser(), extension.NewStrikethroughParser(),
+	)).Parse(source)
 	projection := document.Projections{Revision: revision}
-	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
-		}
-		heading, ok := node.(*ast.Heading)
-		if !ok {
-			return ast.WalkContinue, nil
-		}
-		start, end := headingRange(heading, source)
-		id := ""
-		if value, ok := heading.Attribute("id"); ok {
-			id = value.Str(nil)
-		}
-		projection.Headings = append(projection.Headings, document.Heading{
-			Level: heading.Level, Text: headingText(heading, source), ID: id, StartByte: start, EndByte: end,
-		})
-		return ast.WalkSkipChildren, nil
-	})
-	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
-		}
-		if item, ok := node.(*ast.ListItem); ok && extension.IsTask(item) {
-			if start, markerStart, markerEnd, checked, ok := taskRange(item, source); ok {
-				projection.Tasks = append(projection.Tasks, document.Task{
-					Text: nodeText(item, source), Checked: checked,
-					StartByte: start, EndByte: lineEnd(source, start), MarkerStart: markerStart, MarkerEnd: markerEnd,
-				})
-			}
-		}
-		switch link := node.(type) {
-		case *ast.Link:
-			if start, end, ok := inlineRange(link.Pos(), source, '['); ok {
-				projection.Links = append(projection.Links, document.Link{Label: nodeText(link, source), Target: link.Destination.Value(source), StartByte: start, EndByte: end})
-			}
-		case *ast.AutoLink:
-			if start, end, ok := inlineRange(link.Pos(), source, '<'); ok {
-				projection.Links = append(projection.Links, document.Link{Label: link.Label.Value(source), Target: link.Destination.Value(source), StartByte: start, EndByte: end})
-			}
-		}
-		return ast.WalkContinue, nil
-	})
+	projection.Markdown = collectPresentation(root, source, revision, &projection)
 	for i, heading := range projection.Headings {
 		start := heading.EndByte
 		if start < len(source) && source[start] == '\n' {
