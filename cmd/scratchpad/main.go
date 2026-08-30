@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go.hasen.dev/shirei"
 	"go.hasen.dev/shirei/app"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 func main() {
 	flag.Parse()
 	state := application.New(nil)
+	state.SetWake(shirei.RequestNextFrame)
 	stateDir, _ := application.DefaultStateDir()
 	sessionPath := filepath.Join(stateDir, "session.json")
 	recoveryDir := filepath.Join(stateDir, "recovery")

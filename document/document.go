@@ -56,20 +56,50 @@ type InjectedRegion struct {
 type Projections struct {
 	Revision uint64
 	Valid    bool
-	Symbols  []Symbol
+	Headings []Heading
 	Folds    []Fold
+	Tasks    []Task
+	Links    []Link
 }
 
-type Symbol struct {
-	Name      string
-	StartByte int
-	EndByte   int
+type Heading struct {
+	Level              int
+	Text               string
+	StartByte, EndByte int
 }
 
 type Fold struct {
-	StartByte int
-	EndByte   int
+	HeadingStart       int
+	StartByte, EndByte int
 }
+
+type Task struct {
+	Text                   string
+	Checked                bool
+	StartByte, EndByte     int
+	MarkerStart, MarkerEnd int
+}
+
+type Link struct {
+	Label, Target      string
+	StartByte, EndByte int
+}
+
+// DocumentSnapshot is a cheap, immutable capture of the editor state. The
+// bytes are materialized only by consumers that explicitly request them.
+type DocumentSnapshot struct {
+	Revision uint64
+	Buffer   editor.BufferSnapshot
+}
+
+func (d *Document) Snapshot() DocumentSnapshot {
+	if d == nil || d.Editor == nil {
+		return DocumentSnapshot{}
+	}
+	return DocumentSnapshot{Revision: d.Revision(), Buffer: d.Editor.Buffer.Snapshot()}
+}
+
+func (s DocumentSnapshot) Materialize() []byte { return s.Buffer.Materialize() }
 
 // New creates a document with one editor-owned copy of source.
 func New(path string, source []byte, rootLanguage string) *Document {
@@ -185,6 +215,22 @@ func (d *Document) Delete(start, end int) error {
 		d.observedRevision = d.Revision()
 		d.InvalidateDerived()
 	}
+	return nil
+}
+
+// Replace performs one ordinary undoable source edit. Derived consumers use
+// this seam for actions such as task toggles; Document remains the owner of
+// invalidation while ScratchEditor remains the content authority.
+func (d *Document) Replace(start, end int, text []byte) error {
+	if d == nil || d.Editor == nil || start < 0 || end < start || end > d.Editor.Buffer.ByteLen() {
+		return errors.New("document replace range outside buffer")
+	}
+	d.Editor.SetSelection(start, end)
+	if err := d.Editor.Insert(text); err != nil {
+		return err
+	}
+	d.observedRevision = d.Revision()
+	d.InvalidateDerived()
 	return nil
 }
 

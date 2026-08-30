@@ -38,24 +38,31 @@ type Conflict struct {
 type ViewState struct {
 	ScrollY           float32
 	ScrollInitialized bool
+	CollapsedHeadings map[int]bool
+	LastRevision      uint64
 }
 
 type Application struct {
-	Store           workspace.FileStore
-	Workspace       workspace.Workspace
-	HasWorkspace    bool
-	Documents       map[DocumentID]*document.Document
-	Order           []DocumentID
-	Active          DocumentID
-	Views           map[DocumentID]ViewState
-	Watcher         workspace.Watcher
-	watchEvents     <-chan workspace.WatchEvent
-	Stale           map[DocumentID]bool
-	Conflicts       map[DocumentID]Conflict
-	RecoveryDir     string
-	lastRecovery    time.Time
-	recoveryRunning bool
-	recoveryDone    chan error
+	Store                workspace.FileStore
+	Workspace            workspace.Workspace
+	HasWorkspace         bool
+	Documents            map[DocumentID]*document.Document
+	Order                []DocumentID
+	Active               DocumentID
+	Views                map[DocumentID]ViewState
+	Watcher              workspace.Watcher
+	watchEvents          <-chan workspace.WatchEvent
+	Stale                map[DocumentID]bool
+	Conflicts            map[DocumentID]Conflict
+	RecoveryDir          string
+	lastRecovery         time.Time
+	recoveryRunning      bool
+	recoveryDone         chan error
+	derived              map[DocumentID]*projectionState
+	derivedResults       chan projectionResult
+	derivedRunning       int
+	derivedWake          func()
+	derivedWakeScheduled int32
 }
 
 func New(store workspace.FileStore) *Application {
@@ -233,6 +240,10 @@ func (a *Application) ReloadDisk(id DocumentID) error {
 	doc := a.Documents[id]
 	doc.Reload(conflict.Disk, conflict.DiskVersion, conflict.DiskMode)
 	delete(a.Conflicts, id)
+	if state := a.derived[id]; state != nil {
+		state.closed = true
+	}
+	delete(a.derived, id)
 	return nil
 }
 
@@ -360,6 +371,10 @@ func (a *Application) CloseDocument(id DocumentID, discard bool) error {
 	delete(a.Views, id)
 	delete(a.Stale, id)
 	delete(a.Conflicts, id)
+	if state := a.derived[id]; state != nil {
+		state.closed = true
+	}
+	delete(a.derived, id)
 	for i, existing := range a.Order {
 		if existing == id {
 			a.Order = append(a.Order[:i], a.Order[i+1:]...)
