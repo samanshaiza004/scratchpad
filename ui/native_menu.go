@@ -4,7 +4,7 @@ import (
 	"scratchpad/application"
 	"scratchpad/commands"
 
-	nativemenu "github.com/samanshaiza004/go-shirei/ext/menu"
+	nativemenu "go.hasen.dev/shirei/ext/menu"
 )
 
 // nativeMenuBar reconciles the application menu only on platforms where the
@@ -46,7 +46,10 @@ func nativeMenuBar(state *application.Application, shell *workbenchState) bool {
 			{Kind: nativemenu.CommandItem, ID: "help.about", Label: "Scratchpad", Enabled: true, Role: nativemenu.RoleAbout},
 		}},
 	}}
-	ids, _ := nativemenu.Update(model)
+	ids, err := nativemenu.Update(model)
+	if err != nil {
+		return false
+	}
 	for _, id := range ids {
 		executeCommand(state, shell, commands.ID(id))
 	}
