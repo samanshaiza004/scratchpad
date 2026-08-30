@@ -203,11 +203,14 @@ Objective: prove the notes side without creating a note mode.
 
 Prerequisites: Gate C and a stable document/view model.
 
-Status: in progress. The first implementation keeps `Document` and
+Status: implementation complete for the current structural-prose scope. The
+implementation keeps `Document` and
 `ScratchEditor.Buffer` authoritative and puts Goldmark v2 behind
 `language/markdown`. Projection capture is revision-tagged and debounced with
 bounded global concurrency; stale results remain visible but are not
-actionable.
+actionable. Headings, Outline navigation, folding, line numbers, task toggles,
+links, and heading fragments are implemented. Native cross-platform menu and
+visual certification remain release-hardening work.
 
 Implementation work:
 
