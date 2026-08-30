@@ -479,20 +479,24 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 								blinkVisible := caretBlink.sync(time.Now(), ordinaryCaretEligible, caretActivity, GetHost().HeadlessRender, RequestNextFrame)
 								showCaret := ordinaryCaretEligible && blinkVisible
 								caret := editorCaretGeometry(rowHeight, style)
-								caretColor := Vec4{0, 0, 20, 1}
-								if !showCaret {
-									caretColor[3] = 0
-								}
-								Container(Attrs(FloatVec(Vec2{x, caret.Y}), MinSize(caret.Width, caret.Height), InFront, BackgroundVec(caretColor)), func() {
-									r := GetScreenRect()
-									caretPos := Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
-									if composition.Text != "" {
-										GetHost().CompositionPos = caretPos
-									} else {
-										GetHost().CaretPos = caretPos
-										GetHost().CaretHeight = r.Size[1]
+								if composition.Text != "" {
+									// Keep the established full-row IME anchor independent
+									// from the narrowed ordinary insertion caret.
+									Container(Attrs(FloatVec(Vec2{x, 0}), MinSize(1, rowHeight), InFront, BackgroundVec(Vec4{0, 0, 20, 0})), func() {
+										r := GetScreenRect()
+										GetHost().CompositionPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
+									})
+								} else {
+									caretColor := Vec4{0, 0, 20, 1}
+									if !showCaret {
+										caretColor[3] = 0
 									}
-								})
+									Container(Attrs(FloatVec(Vec2{x, caret.Y}), MinSize(caret.Width, caret.Height), InFront, BackgroundVec(caretColor)), func() {
+										r := GetScreenRect()
+										GetHost().CaretPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
+										GetHost().CaretHeight = r.Size[1]
+									})
+								}
 
 								if composition.Text != "" {
 									compositionStyle := style
