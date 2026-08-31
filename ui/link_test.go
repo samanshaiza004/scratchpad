@@ -28,3 +28,15 @@ func TestResolveLocalLinkPathPreservesEncodedPercent(t *testing.T) {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
 }
+
+func TestResolveLocalLinkPathRecognizesWindowsPaths(t *testing.T) {
+	for _, target := range []string{`C:\\work\\notes.md`, `\\server\share\notes.md`} {
+		got, err := resolveLocalLinkPath("/tmp/README.md", target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != filepath.Clean(target) {
+			t.Fatalf("path = %q, want %q", got, filepath.Clean(target))
+		}
+	}
+}

@@ -345,25 +345,24 @@ func openLinkTarget(state *application.Application, doc *document.Document, targ
 	if err != nil {
 		return
 	}
-	if parsed.Path == "" && parsed.Fragment != "" {
+	if !isWindowsFilePath(target) && parsed.Path == "" && parsed.Fragment != "" {
 		jumpToHeadingID(doc, parsed.Fragment)
 		return
 	}
-	if parsed.Path == "" {
+	if !isWindowsFilePath(target) && parsed.Path == "" {
 		return
 	}
 	path, err := resolveLocalLinkPath(doc.Path, target)
 	if err != nil {
 		return
 	}
-	if state.OpenPath(path) == nil && parsed.Fragment != "" {
+	if state.OpenPath(path) == nil && !isWindowsFilePath(target) && parsed.Fragment != "" {
 		jumpToHeadingID(state.ActiveDocument(), parsed.Fragment)
 	}
 }
 
 func resolveLocalLinkPath(documentPath, target string) (string, error) {
-	isWindowsPath := (len(target) >= 3 && ((target[0] >= 'a' && target[0] <= 'z') || (target[0] >= 'A' && target[0] <= 'Z')) && target[1] == ':' && (target[2] == '\\' || target[2] == '/')) || strings.HasPrefix(target, `\\`) || strings.HasPrefix(target, "//")
-	if isWindowsPath {
+	if isWindowsFilePath(target) {
 		return filepath.Clean(target), nil
 	}
 	parsed, err := url.Parse(target)
@@ -378,6 +377,13 @@ func resolveLocalLinkPath(documentPath, target string) (string, error) {
 		path = filepath.Join(filepath.Dir(documentPath), path)
 	}
 	return filepath.Clean(path), nil
+}
+
+func isWindowsFilePath(target string) bool {
+	if strings.HasPrefix(target, `\\`) || strings.HasPrefix(target, "//") {
+		return true
+	}
+	return len(target) >= 3 && ((target[0] >= 'a' && target[0] <= 'z') || (target[0] >= 'A' && target[0] <= 'Z')) && target[1] == ':' && (target[2] == '\\' || target[2] == '/')
 }
 
 func jumpToHeadingID(doc *document.Document, id string) {
