@@ -9,11 +9,11 @@ require github.com/fsnotify/fsnotify v1.9.0
 require (
 	github.com/cli/browser v1.3.0
 	github.com/yuin/goldmark/v2 v2.0.0
-	go.hasen.dev/shirei/ext/menu v0.0.0-20260830210300-1878982042b0
+	go.hasen.dev/shirei/ext/menu v0.0.0-20260831002408-c121d336620b
 	golang.org/x/sys v0.46.0
 )
 
-replace go.hasen.dev/shirei/ext/menu => github.com/samanshaiza004/go-shirei/ext/menu v0.0.0-20260830210300-1878982042b0
+replace go.hasen.dev/shirei/ext/menu => github.com/samanshaiza004/go-shirei/ext/menu v0.0.0-20260831002408-c121d336620b
 
 require (
 	github.com/anthonynsimon/bild v0.14.0 // indirect

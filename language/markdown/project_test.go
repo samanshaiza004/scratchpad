@@ -46,3 +46,42 @@ func TestProjectLowersTasksAndLinksWithoutChangingSource(t *testing.T) {
 		t.Fatalf("links = %+v", got.Links)
 	}
 }
+
+func TestProjectLowersReferenceLinks(t *testing.T) {
+	source := []byte("Read [full][guide], [collapsed][], and [shortcut].\n\n[guide]: docs/guide%20one.md\n[collapsed]: other.md\n[shortcut]: third.md\n")
+	got := Project(source, 4)
+	if len(got.Links) != 3 {
+		t.Fatalf("links = %+v", got.Links)
+	}
+	want := []struct {
+		target string
+		text   string
+		raw    string
+	}{
+		{target: "docs/guide%20one.md", text: "full", raw: "[full][guide]"},
+		{target: "other.md", text: "collapsed", raw: "[collapsed][]"},
+		{target: "third.md", text: "shortcut", raw: "[shortcut]"},
+	}
+	for i, want := range want {
+		if got.Links[i].Target != want.target || got.Links[i].Label != want.text {
+			t.Fatalf("link %d = %+v, want target %q label %q", i, got.Links[i], want.target, want.text)
+		}
+		if string(source[got.Links[i].StartByte:got.Links[i].EndByte]) != want.raw {
+			t.Fatalf("link %d source = %q, want %q", i, source[got.Links[i].StartByte:got.Links[i].EndByte], want.raw)
+		}
+	}
+}
+
+func TestLinkTargetKindRecognizesAllowedAndWindowsPaths(t *testing.T) {
+	for target, want := range map[string]string{
+		"https://example.com":       "https",
+		"mailto:person@example.com": "mailto",
+		"ftp://example.com/file":    "unsupported",
+		`C:\\work\\notes.md`:        "path",
+		`\\server\share\notes.md`:   "path",
+	} {
+		if got := LinkTargetKind(target); got != want {
+			t.Fatalf("LinkTargetKind(%q) = %q, want %q", target, got, want)
+		}
+	}
+}

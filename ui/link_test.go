@@ -1,0 +1,30 @@
+package ui
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestResolveLocalLinkPathDecodesEscapedPath(t *testing.T) {
+	base := filepath.Join("/tmp", "notes", "README.md")
+	got, err := resolveLocalLinkPath(base, "docs/guide%20one.md#start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(filepath.Dir(base), "docs", "guide one.md")
+	if got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+}
+
+func TestResolveLocalLinkPathPreservesEncodedPercent(t *testing.T) {
+	base := filepath.Join("/tmp", "notes", "README.md")
+	got, err := resolveLocalLinkPath(base, "docs/%2520.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(filepath.Dir(base), "docs", "%20.md")
+	if got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+}

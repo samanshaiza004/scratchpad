@@ -232,12 +232,7 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 	}
 	Container(Attrs(FixWidth(248), Expand, Clip, BackgroundVec(theme.Sidebar), BorderWidth(1), BorderColorVec(theme.Border)), func() {
 		Container(Attrs(Row, CrossMid, FixHeight(34), Pad2(0, 10), BorderWidth(1), BorderColorVec(theme.Border)), func() {
-			if CtrlButton(NoIcon, "Files", shell.SidebarMode == SidebarFiles) {
-				shell.SidebarMode = SidebarFiles
-			}
-			if CtrlButton(NoIcon, "Outline", shell.SidebarMode == SidebarOutline) {
-				shell.SidebarMode = SidebarOutline
-			}
+			SegmentedControl(&shell.SidebarMode, Cell("Files", SidebarFiles), Cell("Outline", SidebarOutline))
 			Container(Attrs(Grow(1)), func() {})
 			if shell.SidebarMode == SidebarFiles && CtrlButton(NoIcon, "Refresh", true) {
 				tree.Expanded = make(map[string]bool)
@@ -343,8 +338,11 @@ func openLinkTarget(state *application.Application, doc *document.Document, targ
 		_ = browser.OpenURL(target)
 		return
 	}
+	if state == nil {
+		return
+	}
 	parsed, err := url.Parse(target)
-	if err != nil || state == nil {
+	if err != nil {
 		return
 	}
 	if parsed.Path == "" && parsed.Fragment != "" {
@@ -354,13 +352,32 @@ func openLinkTarget(state *application.Application, doc *document.Document, targ
 	if parsed.Path == "" {
 		return
 	}
-	path := parsed.Path
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(filepath.Dir(doc.Path), path)
+	path, err := resolveLocalLinkPath(doc.Path, target)
+	if err != nil {
+		return
 	}
 	if state.OpenPath(path) == nil && parsed.Fragment != "" {
 		jumpToHeadingID(state.ActiveDocument(), parsed.Fragment)
 	}
+}
+
+func resolveLocalLinkPath(documentPath, target string) (string, error) {
+	isWindowsPath := (len(target) >= 3 && ((target[0] >= 'a' && target[0] <= 'z') || (target[0] >= 'A' && target[0] <= 'Z')) && target[1] == ':' && (target[2] == '\\' || target[2] == '/')) || strings.HasPrefix(target, `\\`) || strings.HasPrefix(target, "//")
+	if isWindowsPath {
+		return filepath.Clean(target), nil
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Path == "" {
+		return "", fmt.Errorf("invalid local link path %q", target)
+	}
+	path, err := url.PathUnescape(parsed.EscapedPath())
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(filepath.Dir(documentPath), path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func jumpToHeadingID(doc *document.Document, id string) {

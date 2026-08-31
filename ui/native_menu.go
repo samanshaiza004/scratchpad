@@ -14,7 +14,7 @@ func nativeMenuBar(state *application.Application, shell *workbenchState) bool {
 	if !nativemenu.Supported() {
 		return false
 	}
-	model := nativemenu.Model{Menus: []nativemenu.Menu{
+	model := nativemenu.Model{ApplicationName: "Scratchpad", Menus: []nativemenu.Menu{
 		{Label: "File", Items: []nativemenu.Item{
 			commandItem(commands.FileOpen, "Open…", "o", true),
 			commandItem(commands.QuickOpen, "Quick Open…", "p", true),

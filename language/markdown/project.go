@@ -144,9 +144,57 @@ func inlineRange(position int, source []byte, opener byte) (int, int, bool) {
 	return 0, 0, false
 }
 
+func linkSourceRange(link *ast.Link, source []byte) (int, int, bool) {
+	if link == nil || link.Pos() < 0 || link.Pos() >= len(source) || source[link.Pos()] != '[' {
+		return 0, 0, false
+	}
+	if link.Reference == nil {
+		return inlineRange(link.Pos(), source, '[')
+	}
+	close := matchingBracket(source, link.Pos())
+	if close < 0 {
+		return 0, 0, false
+	}
+	end := close + 1
+	if link.Reference.ReferenceLinkKind == ast.ReferenceLinkKindFull || link.Reference.ReferenceLinkKind == ast.ReferenceLinkKindCollapsed {
+		if close+1 >= len(source) || source[close+1] != '[' {
+			return 0, 0, false
+		}
+		refClose := matchingBracket(source, close+1)
+		if refClose < 0 {
+			return 0, 0, false
+		}
+		end = refClose + 1
+	}
+	return link.Pos(), end, true
+}
+
+func matchingBracket(source []byte, start int) int {
+	depth := 0
+	for at := start; at < len(source); at++ {
+		if source[at] == '\\' {
+			at++
+			continue
+		}
+		switch source[at] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return at
+			}
+		}
+	}
+	return -1
+}
+
 // LinkTargetKind is kept small and policy-free in the parser package. The UI
 // can use it to decide whether to dispatch an external open action.
 func LinkTargetKind(target string) string {
+	if windowsFilePath(target) {
+		return "path"
+	}
 	parsed, err := url.Parse(target)
 	if err != nil || parsed.Scheme == "" {
 		return "path"
@@ -155,6 +203,13 @@ func LinkTargetKind(target string) string {
 		return parsed.Scheme
 	}
 	return "unsupported"
+}
+
+func windowsFilePath(target string) bool {
+	if strings.HasPrefix(target, `\\`) || strings.HasPrefix(target, "//") {
+		return true
+	}
+	return len(target) >= 3 && ((target[0] >= 'a' && target[0] <= 'z') || (target[0] >= 'A' && target[0] <= 'Z')) && target[1] == ':' && (target[2] == '\\' || target[2] == '/')
 }
 
 func displayInvalid(source []byte) string {
