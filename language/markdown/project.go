@@ -14,7 +14,7 @@ import (
 	"scratchpad/document"
 )
 
-// Project lowers only structural headings. It never owns or mutates source.
+// Project lowers Markdown structure and presentation spans. It never owns or mutates source.
 func Project(source []byte, revision uint64) document.Projections {
 	root := parser.New(parser.WithAutoHeadingID(), parser.WithExtensions(
 		extension.NewTaskListItemParser(), extension.NewStrikethroughParser(),

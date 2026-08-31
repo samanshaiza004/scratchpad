@@ -502,7 +502,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 						if options.LineNumbers {
 							Container(Attrs(FixWidth(gutterWidth), FixHeight(rowHeight), Pad2(0, 8), CrossMid), func() {
 								if options.Foldable != nil && options.Foldable(logical) {
-									foldButton := ProcessButtonEvents(true)
+									foldButton := ProcessButtonEvents(false)
 									marker := "▾"
 									if options.FoldMarker != nil {
 										marker = options.FoldMarker(logical)

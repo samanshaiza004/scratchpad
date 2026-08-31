@@ -194,8 +194,9 @@ test proving wheel scrolling changes and preserves its visible-row offset.
 This slice intentionally does not reopen the editor/storage design. Picker
 navigation and the headless editor scroll regression are covered. Remaining
 native checks are IME/bidi interaction, external conflict UX, recovery restart,
-huge-file responsiveness, and idle CPU on macOS. Gate D is the next product
-phase; syntax highlighting and all language work remain deferred to Gate E.
+huge-file responsiveness, and idle CPU on macOS. Gate D is complete; Gate E is
+the next product phase. Syntax highlighting and all language work remain
+deferred to Gate E.
 
 ## Gate D — Markdown and structural prose
 
@@ -203,14 +204,15 @@ Objective: prove the notes side without creating a note mode.
 
 Prerequisites: Gate C and a stable document/view model.
 
-Status: implementation complete for the current structural-prose scope. The
+Status: complete for the current structural-prose scope. The
 implementation keeps `Document` and
 `ScratchEditor.Buffer` authoritative and puts Goldmark v2 behind
 `language/markdown`. Projection capture is revision-tagged and debounced with
 bounded global concurrency; stale results remain visible but are not
 actionable. Headings, Outline navigation, folding, line numbers, task toggles,
 links, and heading fragments are implemented. Native cross-platform menu and
-visual certification remain release-hardening work.
+visual certification remain release-hardening work. Gate E is now the next
+implementation phase; this plan does not reopen Gate D or the editor core.
 
 Implementation work:
 
