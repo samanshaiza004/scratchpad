@@ -5,8 +5,9 @@ is intended to provide one continuous writing surface for notes, prose, tasks,
 and code without turning into an IDE or a proprietary note database.
 
 This repository contains a native Go editor with the Gate B scalable editor
-core and the first file-native Gate C slices. The repository does not contain
-syntax highlighting, Tree-sitter, LSP support, plugins, or sync logic.
+core, the file-native Gate C slices, and the first Gate E language-service
+proof for Go and TypeScript/TSX. It does not contain LSP support, plugins, or
+sync logic.
 
 ## Current status
 

@@ -6,7 +6,10 @@ on:
 
 jobs:
   go:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -23,3 +26,4 @@ jobs:
           go build ./cmd/scratcheditor
           go build ./cmd/fragmentbench
           go build ./cmd/textbench
+          go build -tags treesitter_cgo ./cmd/treebench

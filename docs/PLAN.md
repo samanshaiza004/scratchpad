@@ -260,9 +260,15 @@ parse is pending.
 Benchmarks: incremental parse, highlight conversion, memory, grammar payload /
 binary size, startup, and cross-build/package time.
 
-Acceptance: one provider works on Markdown plus Go or Rust, the build story is
-documented for macOS/Windows/Linux, and unsupported languages remain usable
-plain text.
+Status: in progress. E0 selected the official Tree-sitter C runtime
+provisionally after a deterministic Go bake-off; E1 provides the concrete Go
+adapter, E2 provides the shared revision-safe coordinator, E3 composes fenced
+Go through Goldmark, and E4 provides TypeScript/TSX adapters. The decision
+record and platform build evidence are in [`GATE-E-RESULTS.md`](GATE-E-RESULTS.md).
+
+Acceptance: one selected backend works on Go and TypeScript/TSX, composes Go
+inside Markdown, the build story is documented for macOS/Windows/Linux, and
+unsupported languages remain usable plain text.
 
 Framework risks: rune-indexed spans versus byte-offset parsers; parser work may
 starve frames; a generic visible-span primitive may be missing.

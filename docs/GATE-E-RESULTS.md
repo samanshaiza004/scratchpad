@@ -62,3 +62,47 @@ The benchmark is deliberately not a synthetic score. Runtime latency, memory,
 allocations, binary size, and packaging are recorded as separate evidence.
 The `root_end` field describes the edited tree; `edited_bytes` makes that
 explicit.
+
+## E4 language and packaging evidence
+
+The selected official backend also parses TypeScript and TSX using the pinned
+TypeScript grammar with the compatible JavaScript query layer. TypeScript uses
+the JavaScript highlights/tags assets plus the TypeScript assets; TSX adds the
+pinned JavaScript JSX highlights asset. The `.tsx` extension selects the TSX
+grammar while `.ts`, `.mts`, and `.cts` select the TypeScript grammar.
+
+The Go adapter and the TypeScript adapter share only the application-internal
+`languageAnalyzer` contract. Both use the same revision-tagged
+`editor.SourceEdit` chain, fresh-parse fallback, byte-oriented document
+projection, and Scratchpad-owned fold policy. Goldmark remains the root parser
+for Markdown, including the conservative fresh-parse fenced-Go composition.
+
+Recorded local macOS builds (`darwin/arm64`, Go 1.27.0):
+
+```text
+go build -tags treesitter_cgo -o /tmp/scratchpad-treebench-cgo ./cmd/treebench
+go build -tags treesitter_pure -o /tmp/scratchpad-treebench-pure ./cmd/treebench
+go build -o /tmp/scratchpad-main ./cmd/scratchpad
+```
+
+The resulting binaries were 36,985,474 bytes (official benchmark),
+32,975,986 bytes (pure benchmark), and 33,180,466 bytes (Scratchpad). The
+Scratchpad binary uses the official CGO adapter on cgo-capable builds; the
+benchmark binary's `treesitter_cgo` tag is needed only for the bake-off entry
+point.
+
+The CI matrix builds and tests on `ubuntu-latest`, `macos-latest`, and
+`windows-latest`, and builds `cmd/treebench` with `treesitter_cgo`. This is
+build coverage, not a claim of native interaction certification. No Windows or
+Linux desktop smoke session has been performed on this host.
+
+Known limitations at E4:
+
+- the pure-Go runtime remains non-selected because its Go tag query requires
+  removing `#set-adjacent!` and does not match the official tag capture stream;
+- parser-level cancellation is not used; stale revision results are rejected;
+- fold rules are Scratchpad-owned and intentionally cover only the initial
+  syntax-node families;
+- JavaScript root files are still plain text until a JavaScript-specific
+  product adapter is justified; TypeScript's JavaScript query dependencies are
+  bundled for TypeScript/TSX only.

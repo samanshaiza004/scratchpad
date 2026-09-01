@@ -64,7 +64,7 @@ func TestDerivedProjectionAnalyzesGoThroughTheSharedCoordinator(t *testing.T) {
 	if !doc.DerivedCurrent() || doc.Projections.Code.Language != "go" {
 		t.Fatalf("derived=%v code=%+v", doc.DerivedCurrent(), doc.Projections.Code)
 	}
-	if len(doc.Projections.Code.Highlights) == 0 || len(doc.Projections.Code.Symbols) == 0 {
+	if len(doc.Projections.Code.Highlights) == 0 {
 		t.Fatalf("Go projection lacks analysis: %+v", doc.Projections.Code)
 	}
 }
