@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"scratchpad/document"
+	"scratchpad/editor"
 
 	. "go.hasen.dev/shirei"
 )
@@ -64,6 +65,22 @@ func TestCodeSyntaxPresentationDoesNotChangeFontMetrics(t *testing.T) {
 			len(style.FontFamilies) != len(base.FontFamilies) {
 			t.Errorf("%v changed font metrics: base=%+v styled=%+v", kind, base, style)
 		}
+	}
+}
+
+func TestVisualLineCarriesResolvedPresentationStylesToLayout(t *testing.T) {
+	buffer := editor.NewBuffer([]byte("func main() {}"))
+	visual, ok := buildVisualLineAround(&buffer, 0, 0, DefaultTextStyle(), func(start, end int) []document.PresentationSpan {
+		return []document.PresentationSpan{{StartByte: 0, EndByte: 4, Kind: document.PresentationCodeKeyword}}
+	}, MarkdownPresentationStyle)
+	if !ok || len(visual.layoutSpans) != 1 {
+		t.Fatalf("visual=%+v, layout spans=%+v", visual, visual.layoutSpans)
+	}
+	if visual.layoutSpans[0].From != 0 || visual.layoutSpans[0].To != 4 {
+		t.Fatalf("layout span range=%+v", visual.layoutSpans[0])
+	}
+	if visual.layoutSpans[0].Style.TextColor != DefaultSyntaxTheme().Keyword {
+		t.Fatalf("layout span color=%v, want=%v", visual.layoutSpans[0].Style.TextColor, DefaultSyntaxTheme().Keyword)
 	}
 }
 

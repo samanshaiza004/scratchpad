@@ -27,6 +27,10 @@ type Document struct {
 	RootLanguage     string
 	Injected         []InjectedRegion
 	Projections      Projections
+	// DisplayCode is a paint-only syntax cache. It may be rebased to the
+	// current revision while semantic projections are being recomputed.
+	DisplayCode    CodeProjection
+	hasDisplayCode bool
 	DerivedRevision  uint64
 	observedRevision uint64
 	base             []byte
@@ -447,9 +451,43 @@ func (d *Document) Replace(start, end int, text []byte) error {
 // editor revision. Callers may also leave old values in place, but they must
 // treat DerivedCurrent as the validity check.
 func (d *Document) InvalidateDerived() {
+	if d == nil || d.Editor == nil {
+		return
+	}
+	if d.hasDisplayCode && d.DisplayCode.Revision != d.Revision() {
+		edits, ok := d.Editor.EditsSince(d.DisplayCode.Revision)
+		if !ok {
+			d.DisplayCode = CodeProjection{}
+			d.hasDisplayCode = false
+		} else {
+			d.DisplayCode = rebaseDisplayCode(d.DisplayCode, edits, d.Revision())
+		}
+	}
 	d.DerivedRevision = 0
 	d.Injected = nil
 	d.Projections.Valid = false
+}
+
+func rebaseDisplayCode(code CodeProjection, edits []editor.SourceEdit, revision uint64) CodeProjection {
+	highlights := code.Highlights
+	for _, edit := range edits {
+		shift := edit.NewEndByte - edit.OldEndByte
+		next := make([]HighlightSpan, 0, len(highlights))
+		for _, span := range highlights {
+			switch {
+			case span.EndByte <= edit.StartByte:
+				next = append(next, span)
+			case span.StartByte >= edit.OldEndByte:
+				span.StartByte += shift
+				span.EndByte += shift
+				next = append(next, span)
+			// A token touching the changed range is unsafe to display until
+			// the parser has revalidated it.
+			}
+		}
+		highlights = next
+	}
+	return NewCodeProjection(revision, code.Language, highlights, nil, nil)
 }
 
 // DerivedCurrent reports whether disposable projections match current text.
@@ -468,8 +506,25 @@ func (d *Document) SetDerived(injected []InjectedRegion, projections Projections
 	}
 	d.Injected = injected
 	d.Projections = projections
+	if projections.Code.Language != "" {
+		d.DisplayCode = NewCodeProjection(projections.Code.Revision, projections.Code.Language, projections.Code.Highlights, nil, nil)
+		d.hasDisplayCode = true
+	} else {
+		d.DisplayCode = CodeProjection{}
+		d.hasDisplayCode = false
+	}
 	d.DerivedRevision = d.Revision()
 	return true
+}
+
+// DisplayCodeProjection returns the latest safe syntax spans for painting.
+// Unlike Projections.Code, this result may describe a rebased intermediate
+// revision and must never drive navigation, folds, or other actions.
+func (d *Document) DisplayCodeProjection() (CodeProjection, bool) {
+	if d == nil || !d.hasDisplayCode {
+		return CodeProjection{}, false
+	}
+	return d.DisplayCode, true
 }
 
 // MarkSaved records that the current revision has been persisted.

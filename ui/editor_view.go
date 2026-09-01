@@ -36,6 +36,7 @@ type VisualLine struct {
 	Text            string
 	Runes           []rune
 	Layout          ShapedText
+	layoutSpans     []StyleSpan
 	TruncatedBefore bool
 	TruncatedAfter  bool
 	ChunkIndex      int
@@ -87,12 +88,41 @@ func buildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextSt
 		sourceBytes:     sourceBytes,
 	}
 	if presentation != nil && styler != nil {
-		textSpans := presentationTextSpans(visual, presentation(windowStart, windowEnd), style, styler)
+		sourceSpans := presentation(windowStart, windowEnd)
+		textSpans := presentationTextSpans(visual, sourceSpans, style, styler)
+		visual.layoutSpans = presentationStyleSpans(visual, sourceSpans, style, styler)
 		visual.Layout = ShapeText(display, style, textSpans...)
 	} else {
 		visual.Layout = ShapeText(display, style)
 	}
 	return visual, true
+}
+
+func presentationStyleSpans(visual VisualLine, sourceSpans []document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler) []StyleSpan {
+	if len(sourceSpans) == 0 {
+		return nil
+	}
+	spans := make([]StyleSpan, 0, len(sourceSpans))
+	for _, sourceSpan := range sourceSpans {
+		start := maxInt(sourceSpan.StartByte, visual.DocStart)
+		end := minInt(sourceSpan.EndByte, visual.DocEnd)
+		if start >= end {
+			continue
+		}
+		from := visual.LocalByteToRune(start - visual.DocStart)
+		to := visual.LocalByteToRune(end - visual.DocStart)
+		if from >= to {
+			continue
+		}
+		mods := styler(sourceSpan.Kind, base)
+		if len(mods) > 0 {
+			spans = append(spans, ResolveSpan(from, to, base, mods...))
+		}
+	}
+	if len(spans) == 0 {
+		return nil
+	}
+	return spans
 }
 
 func presentationTextSpans(visual VisualLine, sourceSpans []document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler) []TextSpan {
@@ -429,26 +459,28 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 		options.Style = EditorTextStyleForDocument(doc)
 	}
 	if options.Presentation == nil && language.ID(doc.RootLanguage) == language.Markdown && doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision() {
+		code := doc.Projections.Code
 		options.Presentation = func(startByte, endByte int) []document.PresentationSpan {
 			spans := doc.Projections.Markdown.SpansIn(startByte, endByte)
-			code := doc.Projections.Code.HighlightsIn(startByte, endByte)
-			for _, span := range code {
+			for _, span := range code.HighlightsIn(startByte, endByte) {
 				spans = append(spans, document.PresentationSpan{StartByte: span.StartByte, EndByte: span.EndByte, Kind: codePresentationKind(span.Kind)})
 			}
 			return spans
 		}
 		options.PresentationStyle = MarkdownPresentationStyle
 	}
-	if options.Presentation == nil && doc.DerivedCurrent() && doc.Projections.Code.Revision == doc.Revision() {
-		options.Presentation = func(startByte, endByte int) []document.PresentationSpan {
-			code := doc.Projections.Code.HighlightsIn(startByte, endByte)
-			spans := make([]document.PresentationSpan, 0, len(code))
-			for _, span := range code {
-				spans = append(spans, document.PresentationSpan{StartByte: span.StartByte, EndByte: span.EndByte, Kind: codePresentationKind(span.Kind)})
+	if options.Presentation == nil {
+		code, ok := doc.DisplayCodeProjection()
+		if ok {
+			options.Presentation = func(startByte, endByte int) []document.PresentationSpan {
+				spans := make([]document.PresentationSpan, 0, len(code.Highlights))
+				for _, span := range code.HighlightsIn(startByte, endByte) {
+					spans = append(spans, document.PresentationSpan{StartByte: span.StartByte, EndByte: span.EndByte, Kind: codePresentationKind(span.Kind)})
+				}
+				return spans
 			}
-			return spans
+			options.PresentationStyle = MarkdownPresentationStyle
 		}
-		options.PresentationStyle = MarkdownPresentationStyle
 	}
 	EditableView(key, doc.Editor, options)
 	doc.SyncEditorState()
@@ -574,7 +606,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 						}
 						Container(Attrs(Grow(1), Expand, NoClip), func() {
 							selectionFrom, selectionTo := visibleSelection(visual, e)
-							ShapedTextLayout(visual.Layout, style, selectionFrom, selectionTo)
+							ShapedTextLayout(visual.Layout, style, selectionFrom, selectionTo, visual.layoutSpans...)
 
 							if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd {
 								localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)

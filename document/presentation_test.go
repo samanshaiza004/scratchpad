@@ -27,6 +27,37 @@ func TestMarkdownPresentationSpansInDoesNotReturnDisjointRanges(t *testing.T) {
 	}
 }
 
+func TestDisplayCodeRebasesOnlySafeHighlightSpans(t *testing.T) {
+	doc := New("main.go", []byte("package main\nfunc main() {}\n"), "go")
+	doc.SetDerived(nil, Projections{
+		Revision: doc.Revision(),
+		Code: NewCodeProjection(doc.Revision(), "go", []HighlightSpan{
+			{StartByte: 0, EndByte: 7, Kind: HighlightKeyword},
+			{StartByte: 13, EndByte: 17, Kind: HighlightKeyword},
+		}, nil, nil),
+	})
+
+	doc.Editor.SetCursor(0)
+	if err := doc.Insert([]byte("// comment\n")); err != nil {
+		t.Fatal(err)
+	}
+	display, ok := doc.DisplayCodeProjection()
+	if !ok || display.Revision != doc.Revision() {
+		t.Fatalf("display projection = %+v, ok=%v", display, ok)
+	}
+	if len(display.Highlights) != 2 || display.Highlights[0].StartByte != 11 || display.Highlights[1].StartByte != 24 {
+		t.Fatalf("rebased highlights = %+v", display.Highlights)
+	}
+
+	if err := doc.Replace(24, 25, []byte("X")); err != nil {
+		t.Fatal(err)
+	}
+	display, ok = doc.DisplayCodeProjection()
+	if !ok || len(display.Highlights) != 1 || display.Highlights[0].StartByte != 11 {
+		t.Fatalf("intersecting highlight was not dropped: %+v, ok=%v", display.Highlights, ok)
+	}
+}
+
 func BenchmarkMarkdownPresentationSpansIn(b *testing.B) {
 	for _, test := range []struct {
 		name  string
