@@ -55,7 +55,7 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 	case document.PresentationCodeComment:
 		return []TextStyleFn{TextColorVec(syntax.Comment)}
 	case document.PresentationCodeKeyword:
-		return []TextStyleFn{TextColorVec(syntax.Keyword), FontWeight(WeightBold)}
+		return []TextStyleFn{TextColorVec(syntax.Keyword)}
 	case document.PresentationCodeString:
 		return []TextStyleFn{TextColorVec(syntax.String)}
 	case document.PresentationCodeNumber:
