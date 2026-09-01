@@ -429,11 +429,68 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 		options.Style = EditorTextStyleForDocument(doc)
 	}
 	if options.Presentation == nil && language.ID(doc.RootLanguage) == language.Markdown && doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision() {
-		options.Presentation = doc.Projections.Markdown.SpansIn
+		options.Presentation = func(startByte, endByte int) []document.PresentationSpan {
+			spans := doc.Projections.Markdown.SpansIn(startByte, endByte)
+			code := doc.Projections.Code.HighlightsIn(startByte, endByte)
+			for _, span := range code {
+				spans = append(spans, document.PresentationSpan{StartByte: span.StartByte, EndByte: span.EndByte, Kind: codePresentationKind(span.Kind)})
+			}
+			return spans
+		}
+		options.PresentationStyle = MarkdownPresentationStyle
+	}
+	if options.Presentation == nil && doc.DerivedCurrent() && doc.Projections.Code.Revision == doc.Revision() {
+		options.Presentation = func(startByte, endByte int) []document.PresentationSpan {
+			code := doc.Projections.Code.HighlightsIn(startByte, endByte)
+			spans := make([]document.PresentationSpan, 0, len(code))
+			for _, span := range code {
+				spans = append(spans, document.PresentationSpan{StartByte: span.StartByte, EndByte: span.EndByte, Kind: codePresentationKind(span.Kind)})
+			}
+			return spans
+		}
 		options.PresentationStyle = MarkdownPresentationStyle
 	}
 	EditableView(key, doc.Editor, options)
 	doc.SyncEditorState()
+}
+
+func codePresentationKind(kind document.HighlightKind) document.PresentationKind {
+	switch kind {
+	case document.HighlightComment:
+		return document.PresentationCodeComment
+	case document.HighlightKeyword:
+		return document.PresentationCodeKeyword
+	case document.HighlightString:
+		return document.PresentationCodeString
+	case document.HighlightNumber:
+		return document.PresentationCodeNumber
+	case document.HighlightType:
+		return document.PresentationCodeType
+	case document.HighlightFunction:
+		return document.PresentationCodeFunction
+	case document.HighlightMethod:
+		return document.PresentationCodeMethod
+	case document.HighlightVariable:
+		return document.PresentationCodeVariable
+	case document.HighlightConstant:
+		return document.PresentationCodeConstant
+	case document.HighlightProperty:
+		return document.PresentationCodeProperty
+	case document.HighlightOperator:
+		return document.PresentationCodeOperator
+	case document.HighlightPunctuation:
+		return document.PresentationCodePunctuation
+	case document.HighlightBuiltin:
+		return document.PresentationCodeBuiltin
+	case document.HighlightParameter:
+		return document.PresentationCodeParameter
+	case document.HighlightTag:
+		return document.PresentationCodeTag
+	case document.HighlightAttribute:
+		return document.PresentationCodeAttribute
+	default:
+		return document.PresentationSyntax
+	}
 }
 
 // EditableView is the fixed-height Shirei view for ScratchEditor. It shapes

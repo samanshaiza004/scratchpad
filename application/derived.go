@@ -150,6 +150,9 @@ drained:
 			if result.err == nil {
 				if rootLanguage == language.Markdown {
 					result.projections = markdown.Project(data, revision)
+					if len(result.projections.Injected) > 0 {
+						result.err = projectInjectedGo(result.projections.Injected, data, revision, &result.projections)
+					}
 				} else if result.runtime != nil {
 					code, err := result.runtime.Analyze(data, revision, edits)
 					result.err = err
@@ -162,6 +165,45 @@ drained:
 		state.desiredRevision = 0
 		state.hasDesired = false
 	}
+}
+
+func projectInjectedGo(regions []document.InjectedRegion, source []byte, revision uint64, projection *document.Projections) error {
+	var highlights []document.HighlightSpan
+	var symbols []document.Symbol
+	var folds []document.LanguageFold
+	for _, region := range regions {
+		if region.Language != "go" || region.StartByte < 0 || region.EndByte > len(source) || region.StartByte >= region.EndByte {
+			continue
+		}
+		adapter, err := treesitter.NewGoAdapter()
+		if err != nil {
+			return err
+		}
+		code, err := adapter.Analyze(source[region.StartByte:region.EndByte], revision, nil)
+		adapter.Close()
+		if err != nil {
+			return err
+		}
+		for _, span := range code.Highlights {
+			span.StartByte += region.StartByte
+			span.EndByte += region.StartByte
+			highlights = append(highlights, span)
+		}
+		for _, symbol := range code.Symbols {
+			symbol.StartByte += region.StartByte
+			symbol.EndByte += region.StartByte
+			symbols = append(symbols, symbol)
+		}
+		for _, fold := range code.Folds {
+			fold.StartByte += region.StartByte
+			fold.EndByte += region.StartByte
+			folds = append(folds, fold)
+		}
+	}
+	if len(highlights) > 0 || len(symbols) > 0 || len(folds) > 0 {
+		projection.Code = document.NewCodeProjection(revision, "go", highlights, symbols, folds)
+	}
+	return nil
 }
 
 func analysisLanguage(id language.ID) language.ID {

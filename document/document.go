@@ -57,6 +57,7 @@ type InjectedRegion struct {
 type Projections struct {
 	Revision uint64
 	Valid    bool
+	Injected []InjectedRegion
 	Headings []Heading
 	Folds    []Fold
 	Tasks    []Task
@@ -175,6 +176,22 @@ const (
 	PresentationBlockquote
 	PresentationListMarker
 	PresentationTaskMarker
+	PresentationCodeComment
+	PresentationCodeKeyword
+	PresentationCodeString
+	PresentationCodeNumber
+	PresentationCodeType
+	PresentationCodeFunction
+	PresentationCodeMethod
+	PresentationCodeVariable
+	PresentationCodeConstant
+	PresentationCodeProperty
+	PresentationCodeOperator
+	PresentationCodePunctuation
+	PresentationCodeBuiltin
+	PresentationCodeParameter
+	PresentationCodeTag
+	PresentationCodeAttribute
 )
 
 // PresentationSpan is a half-open source-byte range. Spans may overlap when
@@ -446,6 +463,9 @@ func (d *Document) SetDerived(injected []InjectedRegion, projections Projections
 		return false
 	}
 	projections.Valid = true
+	if injected == nil {
+		injected = projections.Injected
+	}
 	d.Injected = injected
 	d.Projections = projections
 	d.DerivedRevision = d.Revision()

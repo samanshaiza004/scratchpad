@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/extension"
@@ -82,6 +83,14 @@ func collectStructuralProjection(node ast.Node, source []byte, projection *docum
 		return
 	}
 	switch node := node.(type) {
+	case *ast.CodeBlock:
+		if node.CodeBlockKind == ast.CodeBlockKindFenced {
+			if lang, ok := node.Language(source); ok && strings.EqualFold(strings.TrimSpace(lang), "go") {
+				if start, end, ok := fencedCodeRange(node); ok {
+					projection.Injected = append(projection.Injected, document.InjectedRegion{StartByte: start, EndByte: end, Language: "go"})
+				}
+			}
+		}
 	case *ast.Heading:
 		start, end := headingRange(node, source)
 		id := ""
@@ -109,6 +118,23 @@ func collectStructuralProjection(node ast.Node, source []byte, projection *docum
 			projection.Links = append(projection.Links, document.Link{Label: node.Label.Value(source), Target: node.Destination.Value(source), StartByte: start, EndByte: end})
 		}
 	}
+}
+
+func fencedCodeRange(block *ast.CodeBlock) (int, int, bool) {
+	segments := block.Value.Segments()
+	if len(segments) == 0 {
+		return 0, 0, false
+	}
+	start, end := segments[0].Start, segments[0].Stop
+	for _, segment := range segments[1:] {
+		if segment.Start < start {
+			start = segment.Start
+		}
+		if segment.Stop > end {
+			end = segment.Stop
+		}
+	}
+	return start, end, start < end
 }
 
 type presentationNodeRange struct {

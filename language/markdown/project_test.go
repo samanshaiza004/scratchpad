@@ -85,3 +85,18 @@ func TestLinkTargetKindRecognizesAllowedAndWindowsPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectEmitsOnlySupportedFencedGoRegions(t *testing.T) {
+	source := []byte("```go\nfunc main() {}\n```\n\n```rust\nfn main() {}\n```\n")
+	got := Project(source, 11)
+	if len(got.Injected) != 1 {
+		t.Fatalf("injected regions = %+v", got.Injected)
+	}
+	region := got.Injected[0]
+	if region.Language != "go" || string(source[region.StartByte:region.EndByte]) != "func main() {}\n" {
+		t.Fatalf("Go region = %+v source=%q", region, source[region.StartByte:region.EndByte])
+	}
+	if region.StartByte < 0 || region.EndByte > len(source) || region.StartByte >= region.EndByte {
+		t.Fatalf("invalid region = %+v", region)
+	}
+}

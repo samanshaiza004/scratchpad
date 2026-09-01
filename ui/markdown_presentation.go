@@ -28,6 +28,24 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 		return []TextStyleFn{TextColorVec(theme.Muted)}
 	case document.PresentationTaskMarker:
 		return []TextStyleFn{TextColorVec(theme.Focus), FontWeight(WeightBold)}
+	case document.PresentationCodeComment:
+		return []TextStyleFn{TextColorVec(Vec4{0.38, 0.48, 0.42, 1})}
+	case document.PresentationCodeKeyword:
+		return []TextStyleFn{TextColorVec(Vec4{0.72, 0.32, 0.62, 1}), FontWeight(WeightBold)}
+	case document.PresentationCodeString:
+		return []TextStyleFn{TextColorVec(Vec4{0.58, 0.32, 0.16, 1})}
+	case document.PresentationCodeNumber:
+		return []TextStyleFn{TextColorVec(Vec4{0.22, 0.42, 0.68, 1})}
+	case document.PresentationCodeType:
+		return []TextStyleFn{TextColorVec(Vec4{0.22, 0.45, 0.58, 1})}
+	case document.PresentationCodeFunction, document.PresentationCodeMethod:
+		return []TextStyleFn{TextColorVec(Vec4{0.12, 0.38, 0.62, 1})}
+	case document.PresentationCodeVariable,
+		document.PresentationCodeConstant, document.PresentationCodeProperty,
+		document.PresentationCodeOperator, document.PresentationCodePunctuation,
+		document.PresentationCodeBuiltin, document.PresentationCodeParameter,
+		document.PresentationCodeTag, document.PresentationCodeAttribute:
+		return nil
 	default:
 		return nil
 	}

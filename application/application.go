@@ -242,8 +242,11 @@ func (a *Application) ReloadDisk(id DocumentID) error {
 	delete(a.Conflicts, id)
 	if state := a.derived[id]; state != nil {
 		state.closed = true
+		if !state.running && state.runtime != nil {
+			state.runtime.Close()
+			delete(a.derived, id)
+		}
 	}
-	delete(a.derived, id)
 	return nil
 }
 
@@ -373,8 +376,11 @@ func (a *Application) CloseDocument(id DocumentID, discard bool) error {
 	delete(a.Conflicts, id)
 	if state := a.derived[id]; state != nil {
 		state.closed = true
+		if !state.running && state.runtime != nil {
+			state.runtime.Close()
+			delete(a.derived, id)
+		}
 	}
-	delete(a.derived, id)
 	for i, existing := range a.Order {
 		if existing == id {
 			a.Order = append(a.Order[:i], a.Order[i+1:]...)
