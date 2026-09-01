@@ -62,6 +62,100 @@ type Projections struct {
 	Tasks    []Task
 	Links    []Link
 	Markdown MarkdownPresentation
+	Code     CodeProjection
+}
+
+// HighlightKind is a parser-neutral semantic token category. It contains no
+// colors, fonts, parser nodes, or Shirei types.
+type HighlightKind string
+
+const (
+	HighlightComment     HighlightKind = "comment"
+	HighlightKeyword     HighlightKind = "keyword"
+	HighlightString      HighlightKind = "string"
+	HighlightNumber      HighlightKind = "number"
+	HighlightType        HighlightKind = "type"
+	HighlightFunction    HighlightKind = "function"
+	HighlightMethod      HighlightKind = "function.method"
+	HighlightVariable    HighlightKind = "variable"
+	HighlightConstant    HighlightKind = "constant"
+	HighlightProperty    HighlightKind = "property"
+	HighlightOperator    HighlightKind = "operator"
+	HighlightPunctuation HighlightKind = "punctuation"
+	HighlightBuiltin     HighlightKind = "builtin"
+	HighlightParameter   HighlightKind = "parameter"
+	HighlightTag         HighlightKind = "tag"
+	HighlightAttribute   HighlightKind = "attribute"
+)
+
+type HighlightSpan struct {
+	StartByte int
+	EndByte   int
+	Kind      HighlightKind
+}
+
+type Symbol struct {
+	Name      string
+	Kind      string
+	StartByte int
+	EndByte   int
+}
+
+type LanguageFold struct {
+	StartByte int
+	EndByte   int
+}
+
+// CodeProjection is disposable language-derived data. Its spans are indexed
+// by source byte range so the UI can request only the visible portion.
+type CodeProjection struct {
+	Revision   uint64
+	Language   string
+	Highlights []HighlightSpan
+	Symbols    []Symbol
+	Folds      []LanguageFold
+	maxEnds    []int
+}
+
+func NewCodeProjection(revision uint64, language string, highlights []HighlightSpan, symbols []Symbol, folds []LanguageFold) CodeProjection {
+	filtered := make([]HighlightSpan, 0, len(highlights))
+	for _, span := range highlights {
+		if span.StartByte < 0 {
+			span.StartByte = 0
+		}
+		if span.EndByte > span.StartByte && span.Kind != "" {
+			filtered = append(filtered, span)
+		}
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].StartByte == filtered[j].StartByte {
+			return filtered[i].EndByte < filtered[j].EndByte
+		}
+		return filtered[i].StartByte < filtered[j].StartByte
+	})
+	maxEnds := make([]int, len(filtered))
+	for i, span := range filtered {
+		maxEnds[i] = span.EndByte
+		if i > 0 && maxEnds[i-1] > maxEnds[i] {
+			maxEnds[i] = maxEnds[i-1]
+		}
+	}
+	return CodeProjection{Revision: revision, Language: language, Highlights: filtered, Symbols: append([]Symbol(nil), symbols...), Folds: append([]LanguageFold(nil), folds...), maxEnds: maxEnds}
+}
+
+func (p CodeProjection) HighlightsIn(startByte, endByte int) []HighlightSpan {
+	if endByte <= startByte || len(p.Highlights) == 0 {
+		return nil
+	}
+	endIndex := sort.Search(len(p.Highlights), func(i int) bool { return p.Highlights[i].StartByte >= endByte })
+	startIndex := sort.Search(endIndex, func(i int) bool { return p.maxEnds[i] > startByte })
+	result := make([]HighlightSpan, 0, endIndex-startIndex)
+	for _, span := range p.Highlights[startIndex:endIndex] {
+		if span.EndByte > startByte && span.StartByte < endByte {
+			result = append(result, span)
+		}
+	}
+	return result
 }
 
 // PresentationKind identifies a source-preserving Markdown presentation
