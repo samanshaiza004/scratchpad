@@ -592,7 +592,7 @@ func emptyState(state *application.Application, shell *workbenchState, theme The
 					executeCommand(state, shell, commands.FileOpen)
 				}
 				if CtrlButton(NoIcon, "Quick open", true) {
-					shell.ShowQuickOpen = true
+					executeCommand(state, shell, commands.QuickOpen)
 				}
 			})
 		})
@@ -949,6 +949,7 @@ func openPathPicker(state *application.Application, shell *workbenchState) {
 	if abs, err := filepath.Abs(start); err == nil {
 		start = filepath.Clean(abs)
 	}
+	ClearFocus()
 	shell.PathPicker = folderPickerState{Cwd: start, Selected: -1}
 	shell.OpenEpoch++
 	shell.ShowOpen = true
@@ -970,6 +971,7 @@ func openFolderPicker(state *application.Application, shell *workbenchState) {
 	if abs, err := filepath.Abs(start); err == nil {
 		start = filepath.Clean(abs)
 	}
+	ClearFocus()
 	shell.FolderPicker = folderPickerState{Cwd: start, Selected: -1}
 	shell.ShowFolder = true
 }
@@ -1098,12 +1100,14 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		}
 	case commands.DocumentFind:
 		if !shell.ShowFind {
+			ClearFocus()
 			shell.FindEpoch++
 		}
 		shell.ShowFind = true
 		shell.ShowSearch = false
 	case commands.QuickOpen:
 		if !shell.ShowQuickOpen {
+			ClearFocus()
 			shell.QuickOpenEpoch++
 		}
 		shell.ShowQuickOpen = true
@@ -1166,6 +1170,7 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.DocumentGoToLine:
 		spec := commandString(args)
 		if spec == "" {
+			ClearFocus()
 			shell.ShowGoToLine = true
 			shell.GoToLineError = ""
 			return true

@@ -65,6 +65,30 @@ func TestFileOpenWithoutArgumentsOpensPicker(t *testing.T) {
 	}
 }
 
+func TestCtrlOInvokesFileOpenCommand(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "README.md")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	active := state.Active
+	shell := &workbenchState{}
+	ResetInputSession()
+	GetFrameInput().Key = KeyO
+	GetInputState().Modifiers = PrimaryMod()
+	handleGlobalInput(state, shell)
+	if !shell.ShowOpen {
+		t.Fatal("Ctrl+O did not open the picker")
+	}
+	if state.Active != active {
+		t.Fatalf("Ctrl+O changed active document from %q to %q", active, state.Active)
+	}
+}
+
 func TestFolderClickUsesPersistentWorkbenchTreeState(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
@@ -105,6 +129,17 @@ func TestOpenPickerCanTypeOnFirstAndSecondOpening(t *testing.T) {
 	GetFrameInput().Mouse = 0
 	GetFrameInput().Key = KeyCodeNone
 	GetFrameInput().Text = ""
+	var editorID ContainerId
+	ResetInputSession()
+	RunFrameFn(func() {
+		ContainerWithKey(scope, Attrs(Viewport), func() {
+			editorID = Container(Attrs(Focusable), func() {})
+		})
+	})
+	FocusImmediateOn(editorID)
+	if !IdHasFocus(editorID) {
+		t.Fatal("test editor did not receive focus")
+	}
 	run := func(text string) {
 		GetFrameInput().Mouse = 0
 		GetFrameInput().Key = KeyCodeNone
@@ -113,8 +148,10 @@ func TestOpenPickerCanTypeOnFirstAndSecondOpening(t *testing.T) {
 			ContainerWithKey(scope, Attrs(Viewport), func() { openControls(state, shell, DefaultTheme()) })
 		})
 	}
-	ResetInputSession()
 	openPathPicker(state, shell)
+	if IdHasFocus(editorID) {
+		t.Fatal("opening picker did not clear editor focus")
+	}
 	run("")
 	run("")
 	run("")
