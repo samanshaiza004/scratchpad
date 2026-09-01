@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"sync"
+
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
 )
@@ -12,10 +14,25 @@ const (
 	workstationButtonToolbar
 )
 
+var installChromeOnce sync.Once
+
+func installWorkstationChrome() {
+	installChromeOnce.Do(func() {
+		SetDefaultScrollBar(workstationScrollBar)
+		selection := DefaultTheme().Selection
+		selection[3] = 0.58
+		SelectionColor = selection
+	})
+}
+
 // RaisedFrame builds the directional workstation bevel used by elevated
 // machinery. outer controls placement/size; face controls the content layout.
 func RaisedFrame(theme Theme, outer, face AttrSet, fn func()) ContainerId {
-	return Container(AttrsWith(outer,
+	return raisedFrameWithKey(nil, theme, outer, face, fn)
+}
+
+func raisedFrameWithKey(key any, theme Theme, outer, face AttrSet, fn func()) ContainerId {
+	return ContainerWithKey(key, AttrsWith(outer,
 		BackgroundVec(theme.DarkShadow), Pad4(0, 1, 1, 0), NoAnimate,
 	), func() {
 		Container(Attrs(Grow(1), Expand, BackgroundVec(theme.Light), Pad4(1, 0, 0, 1), NoAnimate), func() {
@@ -42,7 +59,9 @@ func InsetFrame(theme Theme, outer, well AttrSet, fn func()) ContainerId {
 
 // PaperWell seats the flat document surface inside a restrained inset edge.
 func PaperWell(theme Theme, outer, paper AttrSet, fn func()) ContainerId {
-	return InsetFrame(theme, outer, AttrsWith(paper, BackgroundVec(theme.Paper)), fn)
+	paperTheme := theme
+	paperTheme.ChromeInset = theme.Paper
+	return InsetFrame(paperTheme, outer, paper, fn)
 }
 
 // ChromeBar paints a shallow vertical material gradient without elevating the
@@ -89,6 +108,22 @@ func WorkstationButton(theme Theme, label string, enabled bool) bool {
 func WorkstationToolButton(theme Theme, label string, enabled bool) bool {
 	clicked, _ := workstationButton(theme, label, enabled, workstationButtonToolbar)
 	return clicked
+}
+
+// WorkstationMenuButton keeps Shirei's proven menu interaction and popup
+// behavior while giving the trigger the same compact chrome as the workbench.
+// Popup colors remain framework-owned in Shirei v0.6.7.
+func WorkstationMenuButton(theme Theme, label string, fn func()) {
+	MenuButtonExt(label, ButtonAttrs{
+		Accent:   theme.ChromeRaised,
+		TextSize: 11,
+	}, ButtonLook{
+		TextSize:      11,
+		PushDown:      0,
+		TopBoost:      3,
+		ElevationDrop: 6,
+		PadScale:      0.62,
+	}, fn)
 }
 
 func workstationButton(theme Theme, label string, enabled bool, strength workstationButtonStrength) (bool, ContainerId) {
@@ -191,6 +226,40 @@ func WorkstationRow(theme Theme, attrs AttrSet, selected, disabled bool, fn func
 		fn()
 	})
 	return state
+}
+
+// FloatingSurface reserves the stronger edge and shadow treatment for UI that
+// is genuinely elevated above the workbench: menus, pickers, and dialogs.
+func FloatingSurface(theme Theme, outer, face AttrSet, fn func()) ContainerId {
+	return floatingSurfaceWithKey(nil, theme, outer, face, fn)
+}
+
+func floatingSurfaceWithKey(key any, theme Theme, outer, face AttrSet, fn func()) ContainerId {
+	skin := theme
+	skin.ChromeRaised = theme.Popup
+	return raisedFrameWithKey(key, skin, AttrsWith(outer, BoxShadow(8), Corners(3)), AttrsWith(face, Corners(2)), fn)
+}
+
+// WorkstationModal is Scratchpad's downstream modal shell. It keeps Shirei's
+// focus trap and universal dismissal behavior while replacing the framework's
+// fixed white card with the product material vocabulary.
+func WorkstationModal(theme Theme, width float32, dismiss func(), fn func()) {
+	Popup(func() {
+		var cardID ContainerId
+		var cardFirst bool
+		Container(Attrs(Float(0, 0), FixSizeVec(GetHost().WindowSize), FocusTrap, Center, Background(210, 18, 12, 0.32), NoAnimate), func() {
+			cardID = FloatingSurface(theme, Attrs(FixWidth(width)), Attrs(Gap(10), Pad(14)), func() {
+				cardFirst = FirstRender()
+				fn()
+			})
+			if dismiss != nil && GetFrameInput().Key == KeyEscape {
+				dismiss()
+			}
+			if dismiss != nil && !cardFirst && GetFrameInput().Mouse == MouseClick && !IdIsHovered(cardID) {
+				dismiss()
+			}
+		})
+	})
 }
 
 // workstationScrollBar uses Shirei's public custom scrollbar painter. The

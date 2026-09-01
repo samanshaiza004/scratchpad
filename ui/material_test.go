@@ -1,7 +1,11 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+
+	"scratchpad/application"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -134,5 +138,61 @@ func TestWorkstationButtonClickBehavior(t *testing.T) {
 	frame()
 	if !clicked {
 		t.Fatal("workstation button did not preserve Shirei click behavior")
+	}
+}
+
+func TestWorkstationTabsActivateAndCloseDocuments(t *testing.T) {
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "first.txt")
+	secondPath := filepath.Join(root, "second.txt")
+	if err := os.WriteFile(firstPath, []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenPath(firstPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.OpenPath(secondPath); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{}
+	theme := DefaultTheme()
+	scope := new(int)
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{520, 100}
+	ResetInputSession()
+	frame := func() {
+		RunFrameFn(func() {
+			ContainerWithKey(scope, Attrs(Viewport), func() {
+				tabs(state, shell, theme)
+			})
+		})
+	}
+	click := func(id ContainerId) {
+		rect := GetResolvedRectOf(id)
+		GetInputState().MousePoint = Vec2{rect.Origin[0] + 8, rect.Origin[1] + rect.Size[1]/2}
+		GetInputState().MouseButton = MousePrimary
+		GetFrameInput().Mouse = MouseClick
+		frame()
+		GetFrameInput().Mouse = MouseRelease
+		frame()
+	}
+
+	frame()
+	frame()
+	first := state.Order[0]
+	click(shell.TabIDs[first])
+	if state.Active != first {
+		t.Fatalf("active document = %q, want %q", state.Active, first)
+	}
+
+	closeID := shell.TabCloseIDs[first]
+	click(closeID)
+	if _, ok := state.Documents[first]; ok {
+		t.Fatalf("document %q remained open after clicking its tab close control", first)
 	}
 }

@@ -41,13 +41,13 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 	case document.PresentationEmphasis:
 		return []TextStyleFn{FontStyle(StyleItalic)}
 	case document.PresentationInlineCode:
-		return []TextStyleFn{Fonts(codeFontFamilies()...), TextBackgroundVec(Vec4{50, 18, 87, 1})}
+		return []TextStyleFn{Fonts(codeFontFamilies()...), TextBackgroundVec(theme.Highlight)}
 	case document.PresentationLink:
 		return []TextStyleFn{TextColorVec(theme.Focus), TextUnderline(true)}
 	case document.PresentationStrike:
 		return []TextStyleFn{TextStrike(true)}
 	case document.PresentationCodeBlock:
-		return []TextStyleFn{Fonts(codeFontFamilies()...), TextBackgroundVec(Vec4{50, 12, 78, 1})}
+		return []TextStyleFn{Fonts(codeFontFamilies()...), TextBackgroundVec(theme.ChromeInset)}
 	case document.PresentationBlockquote, document.PresentationListMarker, document.PresentationSyntax:
 		return []TextStyleFn{TextColorVec(theme.Muted)}
 	case document.PresentationTaskMarker:
