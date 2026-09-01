@@ -644,7 +644,7 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 		return
 	}
 	search := Use[searchState]("current-find")
-	Container(Attrs(Row, CrossMid, Gap(6), FixHeight(34), Pad2(3, 8), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border)), func() {
+	Container(Attrs(Row, CrossMid, Gap(6), FixHeight(34), Pad2(3, 8), BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Border)), func() {
 		Label("Find", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
 		input := CtrlTextInputAttrs()
 		input.MinWidth = 260
@@ -673,7 +673,7 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 
 func workspaceSearchPanel(state *application.Application, shell *workbenchState, theme Theme) {
 	search := Use[searchState]("workspace-search")
-	Container(Attrs(Gap(5), Pad2(6, 8), BackgroundVec(theme.Inset)), func() {
+	Container(Attrs(Gap(5), Pad2(6, 8), BackgroundVec(theme.ChromeInset)), func() {
 		Container(Attrs(Row, CrossMid, Gap(4)), func() {
 			input := CtrlTextInputAttrs()
 			input.MinWidth = 140
@@ -732,7 +732,7 @@ func conflictPanel(state *application.Application, shell *workbenchState, theme 
 		}
 	})
 	if shell.ShowCompare {
-		Container(Attrs(Row, CrossMid, Gap(8), FixHeight(28), Pad2(2, 8), BackgroundVec(theme.Raised)), func() {
+		Container(Attrs(Row, CrossMid, Gap(8), FixHeight(28), Pad2(2, 8), BackgroundVec(theme.ChromeRaised)), func() {
 			localBytes := 0
 			if doc := state.ActiveDocument(); doc != nil {
 				localBytes = len(doc.Editor.Buffer.Text())
@@ -920,7 +920,7 @@ func quickOpenPopup(state *application.Application, shell *workbenchState, theme
 		return
 	}
 	Popup(func() {
-		Container(Attrs(Float(0, 42), FixWidth(620), MaxHeight(520), Pad(10), Gap(5), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3)), func() {
+		Container(Attrs(Float(0, 42), FixWidth(620), MaxHeight(520), Pad(10), Gap(5), BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3)), func() {
 			ContainerWithKey(fmt.Sprintf("quick-open-field-%d", shell.QuickOpenEpoch), Attrs(Focusable), func() {
 				Focus()
 				accepted := FileSelector(FileSelectorAttrs{Selection: &quick.Result, Query: &quick.Query, Candidates: quick.Candidates, Root: state.Workspace.Root, Width: 580, MaxRows: 14, Hint: func(n int) string { return fmt.Sprintf("%d files", n) }})
@@ -1435,7 +1435,7 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 	}
 	Popup(func() {
 		var menuID ContainerId
-		ContainerWithKey(fmt.Sprintf("context-menu-%d", menu.Generation), Attrs(FixWidth(260), Gap(1), Pad(6), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
+		ContainerWithKey(fmt.Sprintf("context-menu-%d", menu.Generation), Attrs(FixWidth(260), Gap(1), Pad(6), BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
 			ModAttrs(FloatVec(menu.Position))
 			menuID = CurrentId()
 			shell.ContextMenu.MenuID = menuID
@@ -1500,7 +1500,7 @@ func workspaceRelative(state *application.Application, path string) string {
 func recentPopup(state *application.Application, shell *workbenchState, theme Theme) {
 	Popup(func() {
 		var popupID ContainerId
-		ContainerWithKey("recent-files-popup", Attrs(FixWidth(360), Gap(1), Pad(6), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
+		ContainerWithKey("recent-files-popup", Attrs(FixWidth(360), Gap(1), Pad(6), BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
 			ModAttrs(Float(8, 38))
 			popupID = CurrentId()
 			Label("Open Recent", FontWeight(WeightBold), FontSize(12), TextColorVec(theme.Ink))
