@@ -260,18 +260,21 @@ parse is pending.
 Benchmarks: incremental parse, highlight conversion, memory, grammar payload /
 binary size, startup, and cross-build/package time.
 
-Status: in progress. E0 selected the official Tree-sitter C runtime
-provisionally after a deterministic Go bake-off; E1 provides the concrete Go
-adapter, E2 provides the shared revision-safe coordinator, E3 composes fenced
-Go through Goldmark, and E4 provides TypeScript/TSX adapters. The decision
-record and platform build evidence are in [`GATE-E-RESULTS.md`](GATE-E-RESULTS.md).
+Status: complete for the automated language-service proof. E0 selected the
+official Tree-sitter C runtime provisionally after a deterministic Go bake-off;
+E1 provides the concrete Go adapter, E2 provides the shared revision-safe
+coordinator, E3 composes fenced Go through Goldmark, and E4 provides
+TypeScript/TSX adapters. The decision record and platform build evidence are
+in [`GATE-E-RESULTS.md`](GATE-E-RESULTS.md).
 
 Acceptance: one selected backend works on Go and TypeScript/TSX, composes Go
 inside Markdown, the build story is documented for macOS/Windows/Linux, and
 unsupported languages remain usable plain text.
 
 Framework risks: rune-indexed spans versus byte-offset parsers; parser work may
-starve frames; a generic visible-span primitive may be missing.
+starve frames; a generic visible-span primitive may be missing. Native macOS
+interaction smoke remains release-hardening work; no Windows/Linux desktop
+session is claimed by this automated gate.
 
 Deferred: LSP, autocomplete, diagnostics, format-on-save, debugging.
 

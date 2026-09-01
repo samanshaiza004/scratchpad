@@ -11,8 +11,7 @@ upstream grammar asset.
 
 Environment for the recorded run:
 
-- Scratchpad commit: `03389a5ad5883c075fff7efc86cf646d645bca7b` plus the
-  uncommitted E0 harness changes that became the next commit.
+- Scratchpad commit: `872824c` (`Add Tree-sitter runtime and grammar bake-off`).
 - Go: `go1.27.0`, `darwin/arm64`.
 - Shirei: `go.hasen.dev/shirei v0.6.7`.
 - Goldmark: `github.com/yuin/goldmark/v2 v2.0.0`.
@@ -106,3 +105,28 @@ Known limitations at E4:
 - JavaScript root files are still plain text until a JavaScript-specific
   product adapter is justified; TypeScript's JavaScript query dependencies are
   bundled for TypeScript/TSX only.
+
+## E5 certification
+
+Automated certification passed on the recorded macOS host:
+
+- Go root analysis publishes revision-tagged highlights, tags-derived symbols,
+  and Scratchpad-owned folds.
+- TypeScript and TSX query layering publishes the same byte-oriented result
+  contract, including JSX tags/attributes for TSX.
+- Fenced Go inside Markdown is freshly parsed from Goldmark's region and
+  translated back to document offsets; unsupported fences remain plain text.
+- Incremental and fresh Go projections are compared in tests, and unavailable
+  edit chains use a fresh-parse fallback.
+- Parsing runs in the existing debounced, globally bounded coordinator; stale
+  results are rejected and completion wakes the application without touching
+  Shirei from a worker.
+- Visible code spans use the existing logical-row byte-to-rune bridge, so no
+  full-document Unicode conversion or separate syntax renderer was added.
+- `go test ./...`, `go test -tags treesitter_pure ./...`, the required race
+  tests, `go vet ./...`, and all command builds passed.
+
+The remaining native certification item is manual desktop interaction while a
+parse is pending. It is not claimed here because this run was automated and
+headless; it belongs to release-hardening rather than a new parser architecture
+slice.

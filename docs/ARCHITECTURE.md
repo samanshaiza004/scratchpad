@@ -118,7 +118,7 @@ Language is modeled as a root grammar plus nested/injected regions and
 contextual projections. A Markdown heading is not a global meaning of `#`; a
 todo marker or table row is active only in its language/prose context.
 
-The eventual provider seam should be query-oriented:
+The current internal provider seam is query-oriented:
 
 - input: immutable document view/snapshot, root language, visible range, and
   relevant change information;
@@ -127,9 +127,11 @@ The eventual provider seam should be query-oriented:
 - lifecycle: asynchronous, cancellable, revision-tagged results that are
   discarded when stale.
 
-This is intentionally not a fixed interface yet. It must be tested with two
-implementations before it becomes a package contract. Tree-sitter, pure-Go
-parsing, Wasm, or a fallback provider are adapters behind it.
+The application keeps the interface private to its language coordinator. The
+document-facing concepts are parser-neutral byte spans, symbols, folds,
+injections, and revision tags; Tree-sitter runtimes, Goldmark, parser trees,
+and Shirei types remain behind their adapters. A backend must fall back to a
+fresh parse when its edit journal chain is unavailable.
 
 ## Derived state and caches
 

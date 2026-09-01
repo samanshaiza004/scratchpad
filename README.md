@@ -62,7 +62,8 @@ the replace directive is a local development choice and need not be committed.
 ## Working rules
 
 - Ordinary files remain authoritative; Scratchpad state is disposable.
-- Do not add Tree-sitter or another parser until the language-service gate.
+- Keep parser adapters behind the language-service seam; unsupported files stay
+  ordinary plain text.
 - Do not build a temporary regex syntax highlighter.
 - Measure the editor path before replacing Shirei behavior.
 - Keep `document` independent of Shirei wherever the product model permits.

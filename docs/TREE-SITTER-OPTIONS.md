@@ -80,7 +80,14 @@ modes.
 - Whether the official callback input path and a future mutable buffer avoid
   whole-document flattening.
 
-## Proposed seam, deliberately not frozen
+## Gate E outcome
+
+Gate E ran the focused proof with Go, TypeScript, and TSX while keeping
+Goldmark as the Markdown root parser. The official C runtime is the
+provisional product backend; the pure-Go candidate remains isolated behind
+`treesitter_pure` for future parity work.
+
+## Proposed seam
 
 The final API should be shaped by the first two adapters. Conceptually, a
 provider receives a consistent document snapshot plus a visible byte range and
@@ -88,5 +95,7 @@ can return syntax spans and structural projections such as symbols and folds.
 It should also expose invalidation/change information without making the
 document depend on a parser tree.
 
-Do not freeze the exact `LanguageProvider` method set from this document. One
-adapter is a hypothesis; two working adapters are evidence for an interface.
+The application now keeps this seam private to its language coordinator. The
+document-facing concepts are parser-neutral byte spans, symbols, folds,
+injections, and revision tags; parser trees and runtime-specific types remain
+behind their adapters.
