@@ -104,6 +104,37 @@ func TestCloseDocumentRequiresExplicitDirtyDecision(t *testing.T) {
 	}
 }
 
+func TestReopenClosedRestoresFileWithoutChangingDirtyPolicy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	id := a.Active
+	if err := a.Documents[id].Insert([]byte("!")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CloseDocument(id, false); err != ErrDirty {
+		t.Fatalf("dirty close error = %v, want ErrDirty", err)
+	}
+	if err := a.CloseDocument(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.RecentlyClosedPaths(); len(got) != 1 || got[0] != path {
+		t.Fatalf("closed paths = %v", got)
+	}
+	if err := a.ReopenClosed(); err != nil {
+		t.Fatal(err)
+	}
+	if a.ActiveDocument() == nil || string(a.ActiveDocument().Editor.Buffer.Text()) != "hello" {
+		t.Fatalf("reopened document = %#v", a.ActiveDocument())
+	}
+}
+
 func TestWatcherWatchesOpenDocumentParentAndOnlyHints(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.txt")

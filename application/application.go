@@ -63,6 +63,8 @@ type Application struct {
 	derivedRunning       int
 	derivedWake          func()
 	derivedWakeScheduled int32
+	recent               []string
+	closed               []string
 }
 
 func New(store workspace.FileStore) *Application {
@@ -120,6 +122,7 @@ func (a *Application) OpenDocument(path string) error {
 	id := documentID(path)
 	if _, ok := a.Documents[id]; ok {
 		a.Active = id
+		a.recordRecent(a.Documents[id].Path)
 		return nil
 	}
 	snapshot, err := a.Store.Load(path)
@@ -137,6 +140,7 @@ func (a *Application) OpenDocument(path string) error {
 			return err
 		}
 	}
+	a.recordRecent(doc.Path)
 	return nil
 }
 
@@ -245,6 +249,59 @@ func (a *Application) ReloadDisk(id DocumentID) error {
 	}
 	delete(a.derived, id)
 	return nil
+}
+
+// RecentPaths returns the most recently opened file paths, newest first. The
+// list is metadata only; document contents never enter it.
+func (a *Application) RecentPaths() []string {
+	return append([]string(nil), a.recent...)
+}
+
+// RecentlyClosedPaths returns paths eligible for ReopenClosed, newest first.
+func (a *Application) RecentlyClosedPaths() []string {
+	return append([]string(nil), a.closed...)
+}
+
+// ReopenClosed reopens the newest closed file that still exists. A failed
+// reopen remains available so a transient filesystem problem is not destructive.
+func (a *Application) ReopenClosed() error {
+	if len(a.closed) == 0 {
+		return errors.New("no closed document")
+	}
+	path := a.closed[0]
+	if err := a.OpenPath(path); err != nil {
+		return err
+	}
+	a.closed = a.closed[1:]
+	return nil
+}
+
+func (a *Application) recordRecent(path string) {
+	path = filepath.Clean(path)
+	for i, existing := range a.recent {
+		if existing == path {
+			a.recent = append(a.recent[:i], a.recent[i+1:]...)
+			break
+		}
+	}
+	a.recent = append([]string{path}, a.recent...)
+	if len(a.recent) > 20 {
+		a.recent = a.recent[:20]
+	}
+}
+
+func (a *Application) recordClosed(path string) {
+	path = filepath.Clean(path)
+	for i, existing := range a.closed {
+		if existing == path {
+			a.closed = append(a.closed[:i], a.closed[i+1:]...)
+			break
+		}
+	}
+	a.closed = append([]string{path}, a.closed...)
+	if len(a.closed) > 20 {
+		a.closed = a.closed[:20]
+	}
 }
 
 func (a *Application) KeepEditing(id DocumentID) error {
@@ -387,6 +444,7 @@ func (a *Application) CloseDocument(id DocumentID, discard bool) error {
 			a.Active = a.Order[len(a.Order)-1]
 		}
 	}
+	a.recordClosed(doc.Path)
 	return nil
 }
 
