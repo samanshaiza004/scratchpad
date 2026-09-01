@@ -5,8 +5,10 @@ import (
 	"time"
 
 	"scratchpad/document"
+	"scratchpad/editor"
 	"scratchpad/language"
 	"scratchpad/language/markdown"
+	"scratchpad/language/treesitter"
 )
 
 const projectionDebounce = 150 * time.Millisecond
@@ -15,6 +17,9 @@ type projectionResult struct {
 	id          DocumentID
 	revision    uint64
 	projections document.Projections
+	parsed      uint64
+	runtime     languageAnalyzer
+	err         error
 }
 
 type projectionState struct {
@@ -25,6 +30,17 @@ type projectionState struct {
 	due             time.Time
 	running         bool
 	closed          bool
+	parsedRevision  uint64
+	hasParsed       bool
+	runtime         languageAnalyzer
+}
+
+// languageAnalyzer is the small application-internal seam shared by the
+// concrete Markdown and Tree-sitter adapters. Parser implementations and
+// parser trees do not cross into Document or the UI.
+type languageAnalyzer interface {
+	Analyze(source []byte, revision uint64, edits []editor.SourceEdit) (document.CodeProjection, error)
+	Close()
 }
 
 // SetWake installs the UI wake seam. It is intentionally a callback rather
@@ -35,7 +51,7 @@ func (a *Application) SetWake(wake func()) {
 }
 
 // PollDerived advances debouncing, bounded worker scheduling, and publication
-// of Markdown projections. Call it from the application/frame goroutine.
+// of language projections. Call it from the application/frame goroutine.
 func (a *Application) PollDerived(now time.Time) {
 	if a == nil {
 		return
@@ -47,7 +63,21 @@ func (a *Application) PollDerived(now time.Time) {
 			a.derivedRunning--
 			state, exists := a.derived[result.id]
 			doc := a.Documents[result.id]
-			if exists && doc != nil && !state.closed && result.revision == doc.Revision() {
+			if exists && result.runtime != nil {
+				state.runtime = result.runtime
+			}
+			if exists && result.runtime != nil {
+				state.parsedRevision = result.parsed
+				state.hasParsed = true
+			}
+			if exists && state.closed {
+				if state.runtime != nil {
+					state.runtime.Close()
+				}
+				delete(a.derived, result.id)
+				continue
+			}
+			if exists && doc != nil && result.err == nil && result.revision == doc.Revision() {
 				doc.SetDerived(nil, result.projections)
 				state.seenRevision = result.revision
 				state.hasSeen = true
@@ -61,7 +91,7 @@ func (a *Application) PollDerived(now time.Time) {
 	}
 drained:
 	for id, doc := range a.Documents {
-		if doc == nil || doc.RootLanguage != string(language.Markdown) {
+		if doc == nil || analysisLanguage(language.ID(doc.RootLanguage)) == "" {
 			continue
 		}
 		state := a.derived[id]
@@ -81,6 +111,12 @@ drained:
 	for id, state := range a.derived {
 		doc := a.Documents[id]
 		if state.closed || doc == nil {
+			if state.running {
+				continue
+			}
+			if state.runtime != nil {
+				state.runtime.Close()
+			}
 			delete(a.derived, id)
 			continue
 		}
@@ -97,14 +133,52 @@ drained:
 		}
 		state.running = true
 		a.derivedRunning++
-		go func(id DocumentID, revision uint64, snapshot document.DocumentSnapshot) {
+		var edits []editor.SourceEdit
+		if state.hasParsed {
+			edits, _ = doc.Editor.EditsSince(state.parsedRevision)
+		}
+		runtime := state.runtime
+		rootLanguage := language.ID(doc.RootLanguage)
+		go func(id DocumentID, revision uint64, snapshot document.DocumentSnapshot, rootLanguage language.ID, edits []editor.SourceEdit, runtime languageAnalyzer) {
 			data := snapshot.Materialize()
-			result := projectionResult{id: id, revision: revision, projections: markdown.Project(data, revision)}
+			var result projectionResult
+			result.id, result.revision, result.parsed = id, revision, revision
+			result.runtime = runtime
+			if result.runtime == nil {
+				result.runtime, result.err = newLanguageAnalyzer(rootLanguage)
+			}
+			if result.err == nil {
+				if rootLanguage == language.Markdown {
+					result.projections = markdown.Project(data, revision)
+				} else if result.runtime != nil {
+					code, err := result.runtime.Analyze(data, revision, edits)
+					result.err = err
+					result.projections = document.Projections{Revision: revision, Code: code}
+				}
+			}
 			a.derivedResults <- result
 			a.wakeDerived()
-		}(id, revision, snapshot)
+		}(id, revision, snapshot, rootLanguage, edits, runtime)
 		state.desiredRevision = 0
 		state.hasDesired = false
+	}
+}
+
+func analysisLanguage(id language.ID) language.ID {
+	switch id {
+	case language.Markdown, language.Go:
+		return id
+	default:
+		return ""
+	}
+}
+
+func newLanguageAnalyzer(id language.ID) (languageAnalyzer, error) {
+	switch id {
+	case language.Go:
+		return treesitter.NewGoAdapter()
+	default:
+		return nil, nil
 	}
 }
 

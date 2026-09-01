@@ -42,6 +42,33 @@ func TestDerivedProjectionDebouncesAndPublishesLatestRevision(t *testing.T) {
 	}
 }
 
+func TestDerivedProjectionAnalyzesGoThroughTheSharedCoordinator(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/main.go"
+	if err := writeTestFile(path, []byte("package main\n\nfunc main() {\n}\n")); err != nil {
+		t.Fatal(err)
+	}
+	a := New(workspace.NewOSFileStore())
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	doc := a.ActiveDocument()
+	now := time.Now()
+	a.PollDerived(now)
+	a.PollDerived(now.Add(projectionDebounce))
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !doc.DerivedCurrent() {
+		time.Sleep(time.Millisecond)
+		a.PollDerived(time.Now())
+	}
+	if !doc.DerivedCurrent() || doc.Projections.Code.Language != "go" {
+		t.Fatalf("derived=%v code=%+v", doc.DerivedCurrent(), doc.Projections.Code)
+	}
+	if len(doc.Projections.Code.Highlights) == 0 || len(doc.Projections.Code.Symbols) == 0 {
+		t.Fatalf("Go projection lacks analysis: %+v", doc.Projections.Code)
+	}
+}
+
 func writeTestFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
