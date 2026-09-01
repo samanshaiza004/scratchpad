@@ -261,11 +261,14 @@ Benchmarks: incremental parse, highlight conversion, memory, grammar payload /
 binary size, startup, and cross-build/package time.
 
 Status: complete for the automated language-service proof. E0 selected the
-official Tree-sitter C runtime provisionally after a deterministic Go bake-off;
-E1 provides the concrete Go adapter, E2 provides the shared revision-safe
-coordinator, E3 composes fenced Go through Goldmark, and E4 provides
-TypeScript/TSX adapters. The decision record and platform build evidence are
-in [`GATE-E-RESULTS.md`](GATE-E-RESULTS.md).
+official Tree-sitter C runtime after a deterministic Go bake-off; E1 provides
+the concrete Go adapter, E2 provides the shared revision-safe coordinator, E3
+composes fenced Go through Goldmark, and E4 provides TypeScript/TSX adapters.
+E6 makes the packaging consequence explicit: official desktop artifacts are
+built natively per macOS, Windows, and Linux target with CGO, while
+`treesitter_pure` is an explicit developer/compatibility build with reduced
+language coverage. The decision record and platform build evidence are in
+[`GATE-E-RESULTS.md`](GATE-E-RESULTS.md).
 
 Acceptance: one selected backend works on Go and TypeScript/TSX, composes Go
 inside Markdown, the build story is documented for macOS/Windows/Linux, and
@@ -277,6 +280,19 @@ interaction smoke remains release-hardening work; no Windows/Linux desktop
 session is claimed by this automated gate.
 
 Deferred: LSP, autocomplete, diagnostics, format-on-save, debugging.
+
+### E6 — release packaging contract
+
+Status: complete. Backend identity and capabilities are observable through
+`scratchpad --version` and `treesitter.Capabilities()`. Explicit
+`treesitter_release` builds fail unless the official CGO backend provides Go,
+TypeScript, and TSX. Native CI runners build and upload the official per-OS
+artifacts; an explicit no-CGO Windows compatibility build exercises the pure
+Go fallback and is never treated as a release artifact.
+
+This closes the packaging consequence of Gate E without reopening parser or
+editor architecture. Cross-CGO toolchain engineering remains deferred to
+release hardening if a single-host release workflow later becomes necessary.
 
 ## Gate F — unified contextual commands
 

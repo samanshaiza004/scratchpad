@@ -91,9 +91,10 @@ benchmark binary's `treesitter_cgo` tag is needed only for the bake-off entry
 point.
 
 The CI matrix builds and tests on `ubuntu-latest`, `macos-latest`, and
-`windows-latest`, and builds `cmd/treebench` with `treesitter_cgo`. This is
-build coverage, not a claim of native interaction certification. No Windows or
-Linux desktop smoke session has been performed on this host.
+`windows-latest` with `CGO_ENABLED=1` and the explicit `treesitter_release`
+guard. It uploads one Scratchpad binary from each native runner. This is
+native source/build coverage, not a claim of native interaction certification;
+no Windows or Linux desktop smoke session has been performed on this host.
 
 Known limitations at E4:
 
@@ -130,3 +131,44 @@ The remaining native certification item is manual desktop interaction while a
 parse is pending. It is not claimed here because this run was automated and
 headless; it belongs to release-hardening rather than a new parser architecture
 slice.
+
+## E6 release packaging contract
+
+The official product backend is `tree-sitter-cgo`. This preserves the measured
+correctness and interactive performance of the official Tree-sitter runtime,
+but narrows Scratchpad's distribution envelope: official desktop binaries are
+built natively per target on macOS, Windows, and Linux. Single-host
+cross-compilation with the complete language-service set is not a supported
+release workflow because CGO requires a target C toolchain and the Shirei
+platform backend may have its own native requirements.
+
+Backend identity is exposed by `scratchpad --version` and by the internal
+`treesitter.Capabilities()` report:
+
+| Build | Backend | Go | TypeScript | TSX |
+| --- | --- | --- | --- | --- |
+| native default / `treesitter_release` | `tree-sitter-cgo` | yes | yes | yes |
+| explicit `treesitter_pure` no-CGO compatibility | `gotreesitter` | yes | no | no |
+| explicit `treesitter_none` | `none` | no | no | no |
+
+The `treesitter_release` build guard fails compilation unless the official
+backend and all three language capabilities are present. CI therefore treats
+the native per-OS builds as release artifacts rather than presenting a
+successful no-CGO compatibility build as equivalent. The no-CGO Windows
+cross-build remains an intentional compatibility check, not a release artifact.
+An untagged no-CGO build fails explicitly; developers must opt into
+`treesitter_pure` or `treesitter_none` rather than inheriting a backend from
+the toolchain environment.
+
+Exact verification commands:
+
+```text
+go test -tags treesitter_release ./...
+go build -tags treesitter_release -o /tmp/scratchpad-release ./cmd/scratchpad
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags treesitter_pure -o /tmp/scratchpad-windows-pure.exe ./cmd/scratchpad
+```
+
+The backend decision remains hard-gated on correctness, incremental behavior,
+and packaging feasibility before latency or binary-size comparisons. The pure
+runtime is an explicit developer fallback, not a silently selected equivalent
+of the official product.

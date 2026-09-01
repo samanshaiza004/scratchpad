@@ -21,6 +21,9 @@ func Run(item Item) string {
 `)
 
 func TestGoAdapterPublishesByteOrientedAnalysis(t *testing.T) {
+	if Capabilities().Backend == BackendNone {
+		t.Skip("Tree-sitter backend disabled")
+	}
 	adapter, err := NewGoAdapter()
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +53,9 @@ func TestGoAdapterPublishesByteOrientedAnalysis(t *testing.T) {
 }
 
 func TestGoAdapterIncrementalMatchesFreshProjectionShape(t *testing.T) {
+	if Capabilities().Backend == BackendNone {
+		t.Skip("Tree-sitter backend disabled")
+	}
 	ed := editor.NewScratchEditor(goAdapterFixture)
 	initial, err := NewGoAdapter()
 	if err != nil {

@@ -1,4 +1,4 @@
-//go:build cgo && !treesitter_pure
+//go:build cgo && !treesitter_pure && !treesitter_none
 
 package treesitter
 

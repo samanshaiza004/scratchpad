@@ -43,6 +43,7 @@ Prerequisite: Go 1.25 or newer, matching the current Shirei module declaration.
 ```bash
 go test ./...
 go run ./cmd/scratchpad
+go run ./cmd/scratchpad --version
 ```
 
 The current window is intentionally plain: it proves that Scratchpad can
@@ -58,6 +59,13 @@ go mod edit -replace=go.hasen.dev/shirei=/path/to/go-shirei
 
 The committed module requirement is pinned to the audited Shirei snapshot;
 the replace directive is a local development choice and need not be committed.
+
+Official desktop builds use the native `tree-sitter-cgo` backend and are built
+on native macOS, Windows, and Linux CI runners. Single-host cross-compilation
+with the full language-service set is not a supported release workflow. An
+explicit `-tags treesitter_pure` build is available for development and
+compatibility testing; it intentionally provides Go only and does not claim
+TypeScript or TSX support.
 
 ## Working rules
 

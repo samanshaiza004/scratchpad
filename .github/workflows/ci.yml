@@ -10,6 +10,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: 1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -17,13 +19,35 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Test
-        run: go test ./...
+        run: go test -tags treesitter_release ./...
       - name: Vet
         run: go vet ./...
       - name: Build commands
         run: |
-          go build ./cmd/scratchpad
-          go build ./cmd/scratcheditor
-          go build ./cmd/fragmentbench
-          go build ./cmd/textbench
+          go build -tags treesitter_release -o scratchpad-${{ matrix.os }} ./cmd/scratchpad
+          go build -tags treesitter_release ./cmd/scratcheditor
+          go build -tags treesitter_release ./cmd/fragmentbench
+          go build -tags treesitter_release ./cmd/textbench
           go build -tags treesitter_cgo ./cmd/treebench
+      - name: Upload native release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scratchpad-${{ matrix.os }}
+          path: scratchpad-${{ matrix.os }}
+
+  no-cgo-compatibility:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+      GOOS: windows
+      GOARCH: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build explicit pure-Go compatibility artifact
+        run: go build -tags treesitter_pure -o scratchpad-no-cgo.exe ./cmd/scratchpad
+      - name: Verify pure-Go capability report compiles
+        run: GOOS=linux go test -tags treesitter_pure ./language/treesitter

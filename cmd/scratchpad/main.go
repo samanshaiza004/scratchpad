@@ -9,12 +9,19 @@ import (
 	"path/filepath"
 
 	"scratchpad/application"
+	"scratchpad/language/treesitter"
 	"scratchpad/ui"
 	"scratchpad/workspace"
 )
 
 func main() {
+	version := flag.Bool("version", false, "print build and language-service capabilities")
 	flag.Parse()
+	if *version {
+		caps := treesitter.Capabilities()
+		fmt.Printf("Scratchpad dev\nTree-sitter: %s\nGo: %t\nTypeScript: %t\nTSX: %t\n", caps.Backend, caps.Go, caps.TypeScript, caps.TSX)
+		return
+	}
 	state := application.New(nil)
 	state.SetWake(shirei.RequestNextFrame)
 	stateDir, _ := application.DefaultStateDir()
