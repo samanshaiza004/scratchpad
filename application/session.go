@@ -20,6 +20,7 @@ type Session struct {
 	Workspace string            `json:"workspace"`
 	Documents []SessionDocument `json:"documents"`
 	Active    DocumentID        `json:"active"`
+	Recent    []string          `json:"recent,omitempty"`
 }
 
 type SessionDocument struct {
@@ -58,7 +59,7 @@ func DefaultStateDir() (string, error) {
 }
 
 func (a *Application) Session() Session {
-	session := Session{Active: a.Active}
+	session := Session{Active: a.Active, Recent: a.RecentPaths()}
 	if a.HasWorkspace {
 		session.Workspace = a.Workspace.Root
 	}
@@ -121,6 +122,7 @@ func (a *Application) RestoreSession(path string) error {
 	if session.Active != "" {
 		a.Activate(session.Active)
 	}
+	a.recent = append([]string(nil), session.Recent...)
 	return nil
 }
 

@@ -6,8 +6,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"scratchpad/application"
 	"scratchpad/commands"
@@ -54,7 +56,7 @@ func RootView(state *application.Application) {
 			}
 			Container(Attrs(Grow(1), Expand, Gap(0), Clip), func() {
 				if len(state.Order) == 0 {
-					emptyState(shell, theme)
+					emptyState(state, shell, theme)
 					return
 				}
 				if len(state.Order) > 1 {
@@ -103,19 +105,29 @@ type workbenchState struct {
 	ShowQuickOpen      bool
 	ShowSaveAs         bool
 	ShowFind           bool
+	ShowGoToLine       bool
+	ShowRecent         bool
 	ShowSearch         bool
 	SidebarVisible     bool
 	SidebarInitialized bool
 	WorkspaceWasOpen   bool
 	FindEpoch          uint64
 	QuickOpenEpoch     uint64
+	OpenEpoch          uint64
 	FilePath           string
+	FindQuery          string
+	GoToLineText       string
+	GoToLineError      string
 	SaveAsPath         string
 	ClosePending       application.DocumentID
 	ShowCompare        bool
 	PathPicker         folderPickerState
 	FolderPicker       folderPickerState // compatibility alias for existing tests
 	SidebarMode        SidebarMode
+	Tree               treeState
+	ContextMenu        contextMenuState
+	CloseQueue         []application.DocumentID
+	RevealPath         func(string) error
 }
 
 type SidebarMode uint8
@@ -131,6 +143,32 @@ type folderPickerState struct {
 	Selected int
 	Result   string
 }
+
+type contextMenuKind uint8
+
+const (
+	contextMenuTab contextMenuKind = iota
+	contextMenuTree
+)
+
+type contextMenuState struct {
+	Open       bool
+	Generation uint64
+	MenuID     ContainerId
+	Kind       contextMenuKind
+	ID         application.DocumentID
+	Path       string
+	IsDir      bool
+	Position   Vec2
+}
+
+type closeDecision uint8
+
+const (
+	closePrompt closeDecision = iota
+	closeSave
+	closeDiscard
+)
 
 type quickOpenState struct {
 	Query      string
@@ -160,6 +198,12 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 			}
 			if MenuItem(NoIcon, "Quick Open…    "+primaryShortcut("P")) {
 				executeCommand(state, shell, commands.QuickOpen)
+			}
+			if MenuItem(NoIcon, "Open Recent") {
+				executeCommand(state, shell, commands.FileOpenRecent)
+			}
+			if MenuItem(NoIcon, "Reopen Closed") {
+				executeCommand(state, shell, commands.DocumentReopenClosed)
 			}
 			MenuSeparator()
 			if MenuItem(NoIcon, "Save    "+primaryShortcut("S")) {
@@ -201,6 +245,9 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 			if MenuItem(NoIcon, "Previous Document") {
 				executeCommand(state, shell, commands.TabPrevious)
 			}
+			if MenuItem(NoIcon, "Go to Line…") {
+				executeCommand(state, shell, commands.DocumentGoToLine)
+			}
 		})
 		CtrlMenuButton(NoIcon, "Help", func() { MenuItem(NoIcon, "Scratchpad") })
 		Container(Attrs(Grow(1)), func() {})
@@ -226,7 +273,7 @@ func documentTitle(state *application.Application) string {
 }
 
 func sidebar(state *application.Application, shell *workbenchState, theme Theme) {
-	tree := Use[treeState]("workspace-tree")
+	tree := &shell.Tree
 	if tree.Expanded == nil {
 		tree.Expanded = make(map[string]bool)
 	}
@@ -239,7 +286,7 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 			}
 		})
 		if shell.SidebarMode == SidebarOutline {
-			outlinePanel(state, theme)
+			outlinePanel(state, shell, theme)
 			return
 		}
 		if shell.ShowSearch {
@@ -247,13 +294,13 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 		}
 		Container(Attrs(Viewport, Grow(1), Expand, Clip, Pad2(6, 4)), func() {
 			ScrollOnInput()
-			renderTree(state, tree, "", 0, theme)
+			renderTreeWithShell(state, tree, shell, "", 0, theme)
 			ScrollBars()
 		})
 	})
 }
 
-func outlinePanel(state *application.Application, theme Theme) {
+func outlinePanel(state *application.Application, shell *workbenchState, theme Theme) {
 	doc := state.ActiveDocument()
 	if doc == nil || doc.RootLanguage != "markdown" {
 		Container(Attrs(Grow(1), Pad(10)), func() { Label("Outline is available for Markdown files.", FontSize(11), TextColorVec(theme.Muted)) })
@@ -282,7 +329,7 @@ func outlinePanel(state *application.Application, theme Theme) {
 		if len(doc.Projections.Links) > 0 {
 			Label("Links", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Muted))
 			for _, link := range doc.Projections.Links {
-				outlineLink(state, doc, link, doc.Projections.Valid, theme)
+				outlineLink(state, shell, doc, link, doc.Projections.Valid, theme)
 			}
 		}
 		ScrollBars()
@@ -316,7 +363,7 @@ func checkbox(checked bool) string {
 	return "☐"
 }
 
-func outlineLink(state *application.Application, doc *document.Document, link document.Link, enabled bool, theme Theme) {
+func outlineLink(state *application.Application, shell *workbenchState, doc *document.Document, link document.Link, enabled bool, theme Theme) {
 	Container(Attrs(Row, FixHeight(24), Expand, Pad2(0, 10), Gap(4)), func() {
 		button := ProcessButtonEvents(enabled)
 		Label(link.Label, FontSize(11), TextColorVec(theme.Ink))
@@ -324,12 +371,12 @@ func outlineLink(state *application.Application, doc *document.Document, link do
 			doc.Editor.SetCursor(link.StartByte)
 		}
 		if CtrlButton(NoIcon, "Open", enabled) && enabled {
-			openLinkTarget(state, doc, link.Target)
+			openLinkTarget(state, shell, doc, link.Target)
 		}
 	})
 }
 
-func openLinkTarget(state *application.Application, doc *document.Document, target string) {
+func openLinkTarget(state *application.Application, shell *workbenchState, doc *document.Document, target string) {
 	kind := markdown.LinkTargetKind(target)
 	if kind == "unsupported" {
 		return
@@ -356,7 +403,7 @@ func openLinkTarget(state *application.Application, doc *document.Document, targ
 	if err != nil {
 		return
 	}
-	if state.OpenPath(path) == nil && !isWindowsFilePath(target) && parsed.Fragment != "" {
+	if executeCommand(state, shell, commands.FileOpen, path) && !isWindowsFilePath(target) && parsed.Fragment != "" {
 		jumpToHeadingID(state.ActiveDocument(), parsed.Fragment)
 	}
 }
@@ -475,6 +522,12 @@ type treeState struct {
 }
 
 func renderTree(state *application.Application, tree *treeState, relative string, depth int, theme Theme) {
+	shell := &workbenchState{Tree: *tree}
+	renderTreeWithShell(state, &shell.Tree, shell, relative, depth, theme)
+	*tree = shell.Tree
+}
+
+func renderTreeWithShell(state *application.Application, tree *treeState, shell *workbenchState, relative string, depth int, theme Theme) {
 	if tree.RowIDs == nil {
 		tree.RowIDs = make(map[string]ContainerId)
 	}
@@ -490,6 +543,7 @@ func renderTree(state *application.Application, tree *treeState, relative string
 			// below it in this vertical subtree, never children of its row.
 			rowID := Container(Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), func() {
 				button := ProcessButtonEvents(false)
+				secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
 				if button.Hovered {
 					ModAttrs(BackgroundVec(theme.Highlight))
 				}
@@ -502,8 +556,10 @@ func renderTree(state *application.Application, tree *treeState, relative string
 						arrow = "▾"
 					}
 					Label(arrow+"  "+entry.Name, FontSize(12), TextColorVec(theme.Ink))
-					if button.Clicked {
-						tree.Expanded[entry.Path] = !tree.Expanded[entry.Path]
+					if secondaryClick && button.Hovered {
+						openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), true)
+					} else if button.Clicked {
+						executeCommand(state, shell, commands.WorkspaceToggleFolder, entry.Path)
 					}
 					return
 				}
@@ -512,29 +568,31 @@ func renderTree(state *application.Application, tree *treeState, relative string
 					marker = "● "
 				}
 				Label(marker+entry.Name, FontSize(12), TextColorVec(theme.Ink))
-				if button.Clicked {
-					_ = state.OpenPath(filepath.Join(state.Workspace.Root, entry.Path))
+				if secondaryClick && button.Hovered {
+					openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), false)
+				} else if button.Clicked {
+					executeCommand(state, shell, commands.FileOpen, filepath.Join(state.Workspace.Root, entry.Path))
 				}
 			})
 			tree.RowIDs[entry.Path] = rowID
 			if entry.Dir && tree.Expanded[entry.Path] {
-				renderTree(state, tree, entry.Path, depth+1, theme)
+				renderTreeWithShell(state, tree, shell, entry.Path, depth+1, theme)
 			}
 		})
 	}
 }
 
-func emptyState(shell *workbenchState, theme Theme) {
+func emptyState(state *application.Application, shell *workbenchState, theme Theme) {
 	Container(Attrs(Grow(1), Expand, Center, BackgroundVec(theme.Paper), Pad(28)), func() {
 		Container(Attrs(FixWidth(560), Gap(8)), func() {
 			Label("A quiet place for files, notes, and code.", FontWeight(WeightBold), FontSize(20), TextColorVec(theme.Ink))
 			Label("Open a file for a focused editor, or a folder for the workspace tree.", FontSize(13), TextColorVec(theme.Muted))
 			Container(Attrs(Row, Gap(8)), func() {
 				if CtrlButton(NoIcon, "Open…", true) {
-					openPathPicker(nil, shell)
+					executeCommand(state, shell, commands.FileOpen)
 				}
 				if CtrlButton(NoIcon, "Quick open", true) {
-					shell.ShowQuickOpen = true
+					executeCommand(state, shell, commands.QuickOpen)
 				}
 			})
 		})
@@ -549,6 +607,8 @@ func tabs(state *application.Application, shell *workbenchState, theme Theme) {
 			active := id == state.Active
 			ContainerWithKey(id, Attrs(Row, CrossMid, FixHeight(27), Pad2(0, 8), Gap(6), BackgroundIf(active, theme.Paper), BorderWidth(1), BorderColorVec(theme.Border)), func() {
 				button := ProcessButtonEvents(false)
+				secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
+				middleClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseTertiary
 				if button.Hovered && !active {
 					ModAttrs(BackgroundVec(theme.Highlight))
 				}
@@ -563,11 +623,15 @@ func tabs(state *application.Application, shell *workbenchState, theme Theme) {
 					}
 					Label("×", FontSize(13), TextColorVec(theme.Muted))
 					if closeButton.Clicked {
-						requestClose(state, shell, id)
+						executeCommand(state, shell, commands.DocumentClose, id)
 					}
 				})
-				if button.Clicked {
-					state.Activate(id)
+				if middleClick && button.Hovered {
+					executeCommand(state, shell, commands.DocumentClose, id)
+				} else if secondaryClick && button.Hovered {
+					openTabContextMenu(shell, id, doc.Path)
+				} else if button.Clicked {
+					executeCommand(state, shell, commands.DocumentActivate, id)
 				}
 			})
 		}
@@ -585,11 +649,11 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 		input := CtrlTextInputAttrs()
 		input.MinWidth = 260
 		ContainerWithKey(fmt.Sprintf("find-field-%d", shell.FindEpoch), Attrs(Grow(1)), func() {
-			TextInputExt(&search.Query, input)
+			TextInputExt(&shell.FindQuery, input)
 		})
 		search.Current = nil
-		if state.Active != "" && search.Query != "" {
-			search.Current = state.FindCurrent(state.Active, []byte(search.Query))
+		if state.Active != "" && shell.FindQuery != "" {
+			search.Current = state.FindCurrent(state.Active, []byte(shell.FindQuery))
 			Label(fmt.Sprintf("%d matches", len(search.Current)), FontSize(10), TextColorVec(theme.Muted))
 		}
 		Container(Attrs(Grow(1)), func() {})
@@ -598,9 +662,10 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 		}
 	})
 	if len(search.Current) > 0 && GetFrameInput().Key == KeyEnter {
-		match := search.Current[0]
-		if doc := state.ActiveDocument(); doc != nil {
-			doc.Editor.SetSelection(match.Start, match.End)
+		if GetInputState().Modifiers&ModShift != 0 {
+			executeCommand(state, shell, commands.DocumentFindPrevious)
+		} else {
+			executeCommand(state, shell, commands.DocumentFindNext)
 		}
 		GetFrameInput().Key = KeyCodeNone
 	}
@@ -694,16 +759,15 @@ func closePanel(state *application.Application, shell *workbenchState, theme The
 		Label("Unsaved changes", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
 		Label(filepathBase(doc.Path)+" has not been saved.", FontSize(10), TextColorVec(theme.Muted))
 		Container(Attrs(Grow(1)), func() {})
-		if CtrlButton(NoIcon, "Save and close", true) && state.SaveDocument(shell.ClosePending) == nil {
-			_ = state.CloseDocument(shell.ClosePending, false)
-			shell.ClosePending = ""
+		if CtrlButton(NoIcon, "Save and close", true) {
+			executeCommand(state, shell, commands.DocumentClose, shell.ClosePending, closeSave)
 		}
 		if CtrlButton(NoIcon, "Discard", true) {
-			_ = state.CloseDocument(shell.ClosePending, true)
-			shell.ClosePending = ""
+			executeCommand(state, shell, commands.DocumentClose, shell.ClosePending, closeDiscard)
 		}
 		if CtrlButton(NoIcon, "Cancel", true) {
 			shell.ClosePending = ""
+			shell.CloseQueue = nil
 		}
 	})
 }
@@ -759,7 +823,7 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 		Modal(560, func() { shell.ShowFolder = false }, func() {
 			Label("Open folder", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
 			if folderPickerPanel(shell) {
-				if state.OpenPath(filepath.Clean(shell.FolderPicker.Result)) == nil {
+				if executeCommand(state, shell, commands.FileOpen, filepath.Clean(shell.FolderPicker.Result)) {
 					shell.ShowFolder = false
 				}
 			}
@@ -768,12 +832,14 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 	if shell.ShowOpen {
 		Modal(620, func() { shell.ShowOpen = false; shell.ShowFolder = false }, func() {
 			Label("Open file or folder", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
-			if FileBrowserPanel(&shell.PathPicker.Cwd, &shell.PathPicker.Filter, &shell.PathPicker.Selected, &shell.PathPicker.Result, FileBrowserAttrs{Title: "Open", Dirs: true, Files: true, Start: shell.PathPicker.Cwd, Width: 580, ShowHidden: true}) {
-				if state.OpenPath(filepath.Clean(shell.PathPicker.Result)) == nil {
-					shell.ShowOpen = false
-					shell.ShowFolder = false
+			ContainerWithKey(fmt.Sprintf("open-picker-%d", shell.OpenEpoch), Attrs(), func() {
+				if FileBrowserPanel(&shell.PathPicker.Cwd, &shell.PathPicker.Filter, &shell.PathPicker.Selected, &shell.PathPicker.Result, FileBrowserAttrs{Title: "Open", Dirs: true, Files: true, Start: shell.PathPicker.Cwd, Width: 580, ShowHidden: true}) {
+					if executeCommand(state, shell, commands.FileOpen, filepath.Clean(shell.PathPicker.Result)) {
+						shell.ShowOpen = false
+						shell.ShowFolder = false
+					}
 				}
-			}
+			})
 		})
 	}
 	if shell.ShowSaveAs {
@@ -795,6 +861,33 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 	if shell.ShowQuickOpen {
 		quickOpenPopup(state, shell, theme)
 	}
+	if shell.ShowRecent {
+		recentPopup(state, shell, theme)
+	}
+	if shell.ShowGoToLine {
+		Modal(420, func() { shell.ShowGoToLine = false }, func() {
+			Label("Go to Line", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
+			field := DefaultTextInputAttrs()
+			field.MinWidth = 360
+			TextInputExt(&shell.GoToLineText, field)
+			if shell.GoToLineError != "" {
+				Label(shell.GoToLineError, FontSize(11), TextColorVec(theme.Warning))
+			}
+			Container(Attrs(Row, Gap(6)), func() {
+				if Button(NoIcon, "Go") {
+					executeCommand(state, shell, commands.DocumentGoToLine, shell.GoToLineText)
+				}
+				if Button(NoIcon, "Cancel") {
+					shell.ShowGoToLine = false
+				}
+			})
+			if GetFrameInput().Key == KeyEnter {
+				executeCommand(state, shell, commands.DocumentGoToLine, shell.GoToLineText)
+				GetFrameInput().Key = KeyCodeNone
+			}
+		})
+	}
+	contextMenu(state, shell, theme)
 }
 
 func quickOpenPopup(state *application.Application, shell *workbenchState, theme Theme) {
@@ -832,7 +925,7 @@ func quickOpenPopup(state *application.Application, shell *workbenchState, theme
 				Focus()
 				accepted := FileSelector(FileSelectorAttrs{Selection: &quick.Result, Query: &quick.Query, Candidates: quick.Candidates, Root: state.Workspace.Root, Width: 580, MaxRows: 14, Hint: func(n int) string { return fmt.Sprintf("%d files", n) }})
 				if accepted && quick.Result != "" {
-					if state.OpenPath(quick.Result) == nil {
+					if executeCommand(state, shell, commands.FileOpen, quick.Result) {
 						shell.ShowQuickOpen = false
 						quick.Result = ""
 					}
@@ -856,7 +949,9 @@ func openPathPicker(state *application.Application, shell *workbenchState) {
 	if abs, err := filepath.Abs(start); err == nil {
 		start = filepath.Clean(abs)
 	}
+	ClearFocus()
 	shell.PathPicker = folderPickerState{Cwd: start, Selected: -1}
+	shell.OpenEpoch++
 	shell.ShowOpen = true
 }
 
@@ -876,6 +971,7 @@ func openFolderPicker(state *application.Application, shell *workbenchState) {
 	if abs, err := filepath.Abs(start); err == nil {
 		start = filepath.Clean(abs)
 	}
+	ClearFocus()
 	shell.FolderPicker = folderPickerState{Cwd: start, Selected: -1}
 	shell.ShowFolder = true
 }
@@ -885,11 +981,33 @@ func folderPickerPanel(shell *workbenchState) bool {
 }
 
 func requestClose(state *application.Application, shell *workbenchState, id application.DocumentID) {
+	shell.CloseQueue = nil
+	requestNextClose(state, shell, id)
+}
+
+func requestNextClose(state *application.Application, shell *workbenchState, id application.DocumentID) {
 	if state.Status(id) == application.StatusSynced {
 		_ = state.CloseDocument(id, false)
 		return
 	}
 	shell.ClosePending = id
+}
+
+func requestCloseMany(state *application.Application, shell *workbenchState, ids []application.DocumentID) {
+	shell.CloseQueue = append([]application.DocumentID(nil), ids...)
+	continueCloseQueue(state, shell)
+}
+
+func continueCloseQueue(state *application.Application, shell *workbenchState) {
+	if shell.ClosePending != "" || len(shell.CloseQueue) == 0 {
+		return
+	}
+	id := shell.CloseQueue[0]
+	shell.CloseQueue = shell.CloseQueue[1:]
+	requestNextClose(state, shell, id)
+	if shell.ClosePending == "" {
+		continueCloseQueue(state, shell)
+	}
 }
 
 func handleGlobalInput(state *application.Application, shell *workbenchState) {
@@ -927,9 +1045,21 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 			executeCommand(state, shell, commands.DocumentClose)
 		case KeyTab:
 			executeCommand(state, shell, commands.TabNext)
+		case KeyG:
+			executeCommand(state, shell, commands.DocumentGoToLine)
 		default:
 			return
 		}
+		frame.Key = KeyCodeNone
+		return
+	}
+	if mods == 0 && frame.Key == KeyF3 {
+		executeCommand(state, shell, commands.DocumentFindNext)
+		frame.Key = KeyCodeNone
+		return
+	}
+	if mods == ModShift && frame.Key == KeyF3 {
+		executeCommand(state, shell, commands.DocumentFindPrevious)
 		frame.Key = KeyCodeNone
 		return
 	}
@@ -946,10 +1076,21 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	}
 }
 
-func executeCommand(state *application.Application, shell *workbenchState, id commands.ID) {
+func executeCommand(state *application.Application, shell *workbenchState, id commands.ID, args ...any) bool {
+	if strings.HasPrefix(string(id), string(commands.FileOpenRecent)+":") {
+		path, err := url.QueryUnescape(strings.TrimPrefix(string(id), string(commands.FileOpenRecent)+":"))
+		if err == nil {
+			return executeCommand(state, shell, commands.FileOpenRecent, path)
+		}
+		return false
+	}
 	switch id {
 	case commands.FileOpen:
+		if path := explicitCommandPath(args); path != "" {
+			return state.OpenPath(path) == nil
+		}
 		openPathPicker(state, shell)
+		return true
 	case commands.FileSave:
 		_ = state.SaveActive()
 	case commands.FileSaveAs:
@@ -959,12 +1100,14 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		}
 	case commands.DocumentFind:
 		if !shell.ShowFind {
+			ClearFocus()
 			shell.FindEpoch++
 		}
 		shell.ShowFind = true
 		shell.ShowSearch = false
 	case commands.QuickOpen:
 		if !shell.ShowQuickOpen {
+			ClearFocus()
 			shell.QuickOpenEpoch++
 		}
 		shell.ShowQuickOpen = true
@@ -973,9 +1116,78 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		shell.ShowSearch = true
 		shell.ShowFind = false
 	case commands.DocumentClose:
-		if state.Active != "" {
-			requestClose(state, shell, state.Active)
+		target := commandDocumentID(state, args)
+		if target == "" {
+			target = state.Active
 		}
+		if target != "" {
+			decision := closePrompt
+			if len(args) > 1 {
+				decision, _ = args[1].(closeDecision)
+			}
+			if decision == closeSave {
+				if err := state.SaveDocument(target); err != nil {
+					return false
+				}
+			} else if decision == closeDiscard {
+				if err := state.CloseDocument(target, true); err != nil {
+					return false
+				}
+				shell.ClosePending = ""
+				continueCloseQueue(state, shell)
+				return true
+			}
+			if decision == closeSave {
+				if err := state.CloseDocument(target, false); err != nil {
+					return false
+				}
+				shell.ClosePending = ""
+				continueCloseQueue(state, shell)
+				return true
+			}
+			requestClose(state, shell, target)
+		}
+	case commands.DocumentActivate:
+		if target := commandDocumentID(state, args); target != "" {
+			state.Activate(target)
+		}
+	case commands.DocumentCloseOthers:
+		target := commandDocumentID(state, args)
+		if target == "" {
+			target = state.Active
+		}
+		var ids []application.DocumentID
+		for _, id := range state.Order {
+			if id != target {
+				ids = append(ids, id)
+			}
+		}
+		requestCloseMany(state, shell, ids)
+	case commands.DocumentCloseAll:
+		requestCloseMany(state, shell, append([]application.DocumentID(nil), state.Order...))
+	case commands.DocumentReopenClosed:
+		_ = state.ReopenClosed()
+	case commands.DocumentGoToLine:
+		spec := commandString(args)
+		if spec == "" {
+			ClearFocus()
+			shell.ShowGoToLine = true
+			shell.GoToLineError = ""
+			return true
+		}
+		if doc := state.ActiveDocument(); doc != nil {
+			if err := moveToLine(doc, spec); err != nil {
+				shell.ShowGoToLine = true
+				shell.GoToLineError = err.Error()
+				return false
+			}
+			shell.ShowGoToLine = false
+			shell.GoToLineError = ""
+		}
+	case commands.DocumentFindNext:
+		findCurrent(state, shell, false)
+	case commands.DocumentFindPrevious:
+		findCurrent(state, shell, true)
 	case commands.TabNext:
 		state.Cycle(1)
 	case commands.TabPrevious:
@@ -988,7 +1200,45 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		shell.SidebarMode = SidebarOutline
 		shell.SidebarVisible = true
 	case commands.WorkspaceRefresh:
-		Use[treeState]("workspace-tree").Expanded = make(map[string]bool)
+		shell.Tree.Expanded = make(map[string]bool)
+	case commands.WorkspaceToggleFolder:
+		if relative := commandString(args); relative != "" {
+			tree := &shell.Tree
+			if tree.Expanded == nil {
+				tree.Expanded = make(map[string]bool)
+			}
+			tree.Expanded[relative] = !tree.Expanded[relative]
+		}
+	case commands.FileOpenRecent:
+		if path := explicitCommandPath(args); path != "" {
+			if state.OpenPath(path) == nil {
+				shell.ShowRecent = false
+				return true
+			}
+		} else {
+			shell.ShowRecent = true
+			shell.ShowQuickOpen = false
+			shell.ShowFind = false
+			return true
+		}
+	case commands.FileCopyPath:
+		if path := commandPath(state, args); path != "" {
+			RequestTextCopy(path)
+		}
+	case commands.FileCopyRelativePath:
+		if path := commandPath(state, args); path != "" {
+			RequestTextCopy(relativePath(state, path))
+		}
+	case commands.FileReveal:
+		if path := commandPath(state, args); path != "" {
+			reveal := shell.RevealPath
+			if reveal == nil {
+				reveal = revealPath
+			}
+			_ = reveal(path)
+		}
+	case commands.FileRevealActive:
+		revealActiveFile(state, shell)
 	case commands.EditUndo:
 		if doc := state.ActiveDocument(); doc != nil {
 			_ = doc.Editor.Undo()
@@ -1018,6 +1268,281 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 			doc.Editor.SelectAll()
 		}
 	}
+	return false
+}
+
+func commandString(args []any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	if value, ok := args[0].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func commandDocumentID(state *application.Application, args []any) application.DocumentID {
+	if len(args) == 0 {
+		return ""
+	}
+	switch value := args[0].(type) {
+	case application.DocumentID:
+		if state.Documents[value] != nil {
+			return value
+		}
+	case string:
+		for id, doc := range state.Documents {
+			if doc.Path == value {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+func explicitCommandPath(args []any) string {
+	if len(args) > 0 {
+		if value, ok := args[0].(string); ok && value != "" {
+			return filepath.Clean(value)
+		}
+	}
+	return ""
+}
+
+func commandPath(state *application.Application, args []any) string {
+	if path := explicitCommandPath(args); path != "" {
+		return path
+	}
+	if doc := state.ActiveDocument(); doc != nil {
+		return doc.Path
+	}
+	return ""
+}
+
+func relativePath(state *application.Application, path string) string {
+	if state.HasWorkspace {
+		if relative, err := state.Workspace.RelativePath(path); err == nil {
+			return relative
+		}
+		return path
+	}
+	return filepath.Base(path)
+}
+
+func moveToLine(doc *document.Document, spec string) error {
+	parts := strings.FieldsFunc(strings.TrimSpace(spec), func(r rune) bool { return r == ':' || r == ',' })
+	if len(parts) == 0 || len(parts) > 2 {
+		return fmt.Errorf("enter a line or line:column")
+	}
+	line, err := strconv.Atoi(parts[0])
+	if err != nil || line < 1 {
+		return fmt.Errorf("line must be a positive number")
+	}
+	column := 1
+	if len(parts) == 2 {
+		column, err = strconv.Atoi(parts[1])
+		if err != nil || column < 1 {
+			return fmt.Errorf("column must be a positive number")
+		}
+	}
+	line--
+	start, end, ok := doc.Editor.Buffer.LineRange(line)
+	if !ok {
+		return fmt.Errorf("line %d is outside this document", line+1)
+	}
+	data, err := doc.Editor.Buffer.Bytes(start, end)
+	if err != nil {
+		return err
+	}
+	offset := start
+	for n := 1; n < column && offset-start < len(data); n++ {
+		_, size := utf8.DecodeRune(data[offset-start:])
+		if size == 0 {
+			break
+		}
+		offset += size
+	}
+	doc.Editor.SetCursor(offset)
+	return nil
+}
+
+func findCurrent(state *application.Application, shell *workbenchState, previous bool) {
+	shell.ShowFind = true
+	if shell.FindQuery == "" || state.ActiveDocument() == nil {
+		return
+	}
+	doc := state.ActiveDocument()
+	matches := state.FindCurrent(state.Active, []byte(shell.FindQuery))
+	if len(matches) == 0 {
+		return
+	}
+	anchor, cursor := doc.Editor.Selection()
+	from, to := anchor, cursor
+	if from > to {
+		from, to = to, from
+	}
+	target := matches[0]
+	if previous {
+		target = matches[len(matches)-1]
+		for i := len(matches) - 1; i >= 0; i-- {
+			if matches[i].Start < from {
+				target = matches[i]
+				break
+			}
+		}
+	} else {
+		for _, match := range matches {
+			if match.Start >= to {
+				target = match
+				break
+			}
+		}
+	}
+	doc.Editor.SetSelection(target.Start, target.End)
+}
+
+func openTreeContextMenu(shell *workbenchState, path string, isDir bool) {
+	shell.ContextMenu = contextMenuState{
+		Open: true, Generation: shell.ContextMenu.Generation + 1,
+		Kind: contextMenuTree, Path: path, IsDir: isDir, Position: GetInputState().MousePoint,
+	}
+}
+
+func openTabContextMenu(shell *workbenchState, id application.DocumentID, path string) {
+	shell.ContextMenu = contextMenuState{
+		Open: true, Generation: shell.ContextMenu.Generation + 1,
+		Kind: contextMenuTab, ID: id, Path: path, Position: GetInputState().MousePoint,
+	}
+}
+
+func contextMenuItem(label string) bool {
+	var clicked bool
+	Container(Attrs(Row, Expand, CrossMid, FixHeight(26), Pad2(0, 10)), func() {
+		button := ProcessButtonEvents(false)
+		if button.Hovered {
+			ModAttrs(BackgroundVec(DefaultTheme().Highlight))
+		}
+		Label(label, FontSize(12), TextColorVec(DefaultTheme().Ink))
+		clicked = button.Clicked && GetInputState().MouseButton == MousePrimary
+	})
+	return clicked
+}
+
+func contextMenu(state *application.Application, shell *workbenchState, theme Theme) {
+	menu := shell.ContextMenu
+	if !menu.Open {
+		return
+	}
+	Popup(func() {
+		var menuID ContainerId
+		ContainerWithKey(fmt.Sprintf("context-menu-%d", menu.Generation), Attrs(FixWidth(260), Gap(1), Pad(6), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
+			ModAttrs(FloatVec(menu.Position))
+			menuID = CurrentId()
+			shell.ContextMenu.MenuID = menuID
+			if menu.Kind == contextMenuTab {
+				if contextMenuItem("Close") {
+					executeCommand(state, shell, commands.DocumentClose, menu.ID)
+					shell.ContextMenu.Open = false
+				}
+				if contextMenuItem("Close Others") {
+					executeCommand(state, shell, commands.DocumentCloseOthers, menu.ID)
+					shell.ContextMenu.Open = false
+				}
+				if contextMenuItem("Close All") {
+					executeCommand(state, shell, commands.DocumentCloseAll)
+					shell.ContextMenu.Open = false
+				}
+				if contextMenuItem("Reopen Closed") {
+					executeCommand(state, shell, commands.DocumentReopenClosed)
+					shell.ContextMenu.Open = false
+				}
+			} else if menu.IsDir {
+				label := "Expand"
+				if shell.Tree.Expanded[workspaceRelative(state, menu.Path)] {
+					label = "Collapse"
+				}
+				if contextMenuItem(label) {
+					executeCommand(state, shell, commands.WorkspaceToggleFolder, workspaceRelative(state, menu.Path))
+					shell.ContextMenu.Open = false
+				}
+			} else if contextMenuItem("Open") {
+				executeCommand(state, shell, commands.FileOpen, menu.Path)
+				shell.ContextMenu.Open = false
+			}
+			if contextMenuItem("Copy Path") {
+				executeCommand(state, shell, commands.FileCopyPath, menu.Path)
+				shell.ContextMenu.Open = false
+			}
+			if contextMenuItem("Copy Relative Path") {
+				executeCommand(state, shell, commands.FileCopyRelativePath, menu.Path)
+				shell.ContextMenu.Open = false
+			}
+			if contextMenuItem("Reveal") {
+				executeCommand(state, shell, commands.FileReveal, menu.Path)
+				shell.ContextMenu.Open = false
+			}
+		})
+		if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary && !IdIsHovered(menuID) {
+			shell.ContextMenu.Open = false
+		}
+	})
+}
+
+func workspaceRelative(state *application.Application, path string) string {
+	if state.HasWorkspace {
+		if relative, err := state.Workspace.RelativePath(path); err == nil {
+			return relative
+		}
+	}
+	return filepath.Base(path)
+}
+
+func recentPopup(state *application.Application, shell *workbenchState, theme Theme) {
+	Popup(func() {
+		var popupID ContainerId
+		ContainerWithKey("recent-files-popup", Attrs(FixWidth(360), Gap(1), Pad(6), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
+			ModAttrs(Float(8, 38))
+			popupID = CurrentId()
+			Label("Open Recent", FontWeight(WeightBold), FontSize(12), TextColorVec(theme.Ink))
+			paths := state.RecentPaths()
+			if len(paths) == 0 {
+				Label("No recent files", FontSize(11), TextColorVec(theme.Muted))
+			}
+			for _, path := range paths {
+				path := path
+				if contextMenuItem(filepathBase(path)) {
+					executeCommand(state, shell, commands.FileOpenRecent, path)
+					shell.ShowRecent = false
+				}
+			}
+		})
+		if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary && !IdIsHovered(popupID) {
+			shell.ShowRecent = false
+		}
+	})
+}
+
+func revealActiveFile(state *application.Application, shell *workbenchState) {
+	if !state.HasWorkspace {
+		return
+	}
+	doc := state.ActiveDocument()
+	if doc == nil {
+		return
+	}
+	relative, err := state.Workspace.RelativePath(doc.Path)
+	if err != nil {
+		return
+	}
+	tree := &shell.Tree
+	if tree.Expanded == nil {
+		tree.Expanded = make(map[string]bool)
+	}
+	for dir := filepath.Dir(relative); dir != "." && dir != ""; dir = filepath.Dir(dir) {
+		tree.Expanded[dir] = true
+	}
+	shell.SidebarMode = SidebarFiles
+	shell.SidebarVisible = true
 }
 
 func BackgroundIf(active bool, color Vec4) AttrsFn {
