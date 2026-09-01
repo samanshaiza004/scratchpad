@@ -7,7 +7,7 @@ func TestDetectPath(t *testing.T) {
 		"README.md":     Markdown,
 		"main.go":       Go,
 		"lib.rs":        Rust,
-		"component.TSX": TypeScript,
+		"component.TSX": TSX,
 		"script.py":     Python,
 		"data.json":     JSON,
 		"notes.txt":     PlainText,

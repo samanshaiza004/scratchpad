@@ -158,7 +158,7 @@ func collectFolds(root *ts.Node, source []byte) []document.LanguageFold {
 	walk = func(node *ts.Node) {
 		start, end := int(node.StartByte()), int(node.EndByte())
 		kind := node.Kind()
-		if end-start > 1 && (kind == "function_declaration" || kind == "method_declaration" || kind == "type_declaration" || kind == "block" || kind == "composite_literal") && bytesContainNewline(source[start:end]) {
+		if end-start > 1 && isFoldNode(kind) && bytesContainNewline(source[start:end]) {
 			folds = append(folds, document.LanguageFold{StartByte: start, EndByte: end})
 		}
 		cursor := node.Walk()

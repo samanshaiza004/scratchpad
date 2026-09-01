@@ -28,7 +28,7 @@ var codeFontFallbackFamilies = []string{
 
 func isCodeLanguage(id language.ID) bool {
 	switch id {
-	case language.Go, language.Rust, language.JavaScript, language.TypeScript,
+	case language.Go, language.Rust, language.JavaScript, language.TypeScript, language.TSX,
 		language.Python, language.Shell, language.JSON, language.YAML:
 		return true
 	default:

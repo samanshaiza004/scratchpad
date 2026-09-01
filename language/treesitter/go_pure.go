@@ -123,7 +123,7 @@ func pureFolds(language *gotreesitter.Language, root *gotreesitter.Node, source 
 	walk = func(node *gotreesitter.Node) {
 		start, end := int(node.StartByte()), int(node.EndByte())
 		kind := node.Type(language)
-		if end-start > 1 && (kind == "function_declaration" || kind == "method_declaration" || kind == "type_declaration" || kind == "block" || kind == "composite_literal") && bytesContainNewline(source[start:end]) {
+		if end-start > 1 && isFoldNode(kind) && bytesContainNewline(source[start:end]) {
 			folds = append(folds, document.LanguageFold{StartByte: start, EndByte: end})
 		}
 		for _, child := range node.Children() {

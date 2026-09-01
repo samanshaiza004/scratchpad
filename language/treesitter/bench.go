@@ -49,6 +49,21 @@ var GoHighlightsQuery string
 //go:embed queries/go/tags.scm
 var GoTagsQuery string
 
+//go:embed queries/javascript/highlights.scm
+var JavaScriptHighlightsQuery string
+
+//go:embed queries/javascript/highlights-jsx.scm
+var JavaScriptJSXHighlightsQuery string
+
+//go:embed queries/javascript/tags.scm
+var JavaScriptTagsQuery string
+
+//go:embed queries/typescript/highlights.scm
+var TypeScriptHighlightsQuery string
+
+//go:embed queries/typescript/tags.scm
+var TypeScriptTagsQuery string
+
 // PureTagsQuery removes only the optional documentation adjacency directive
 // that gotreesitter does not implement yet. Definition captures remain the
 // upstream query's captures; the bake-off records this runtime limitation.

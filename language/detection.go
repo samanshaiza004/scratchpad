@@ -16,6 +16,7 @@ const (
 	Rust       ID = "rust"
 	JavaScript ID = "javascript"
 	TypeScript ID = "typescript"
+	TSX        ID = "tsx"
 	Python     ID = "python"
 	Shell      ID = "shell"
 	JSON       ID = "json"
@@ -37,6 +38,9 @@ func DetectPath(path string) ID {
 	case ".js", ".jsx", ".mjs", ".cjs":
 		return JavaScript
 	case ".ts", ".tsx", ".mts", ".cts":
+		if ext == ".tsx" {
+			return TSX
+		}
 		return TypeScript
 	case ".py":
 		return Python
