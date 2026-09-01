@@ -56,7 +56,7 @@ func RootView(state *application.Application) {
 			}
 			Container(Attrs(Grow(1), Expand, Gap(0), Clip), func() {
 				if len(state.Order) == 0 {
-					emptyState(shell, theme)
+					emptyState(state, shell, theme)
 					return
 				}
 				if len(state.Order) > 1 {
@@ -113,6 +113,7 @@ type workbenchState struct {
 	WorkspaceWasOpen   bool
 	FindEpoch          uint64
 	QuickOpenEpoch     uint64
+	OpenEpoch          uint64
 	FilePath           string
 	FindQuery          string
 	GoToLineText       string
@@ -123,6 +124,7 @@ type workbenchState struct {
 	PathPicker         folderPickerState
 	FolderPicker       folderPickerState // compatibility alias for existing tests
 	SidebarMode        SidebarMode
+	Tree               treeState
 	ContextMenu        contextMenuState
 	CloseQueue         []application.DocumentID
 	RevealPath         func(string) error
@@ -271,7 +273,7 @@ func documentTitle(state *application.Application) string {
 }
 
 func sidebar(state *application.Application, shell *workbenchState, theme Theme) {
-	tree := Use[treeState]("workspace-tree")
+	tree := &shell.Tree
 	if tree.Expanded == nil {
 		tree.Expanded = make(map[string]bool)
 	}
@@ -520,8 +522,9 @@ type treeState struct {
 }
 
 func renderTree(state *application.Application, tree *treeState, relative string, depth int, theme Theme) {
-	shell := Use[workbenchState]("workbench")
-	renderTreeWithShell(state, tree, shell, relative, depth, theme)
+	shell := &workbenchState{Tree: *tree}
+	renderTreeWithShell(state, &shell.Tree, shell, relative, depth, theme)
+	*tree = shell.Tree
 }
 
 func renderTreeWithShell(state *application.Application, tree *treeState, shell *workbenchState, relative string, depth int, theme Theme) {
@@ -579,14 +582,14 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 	}
 }
 
-func emptyState(shell *workbenchState, theme Theme) {
+func emptyState(state *application.Application, shell *workbenchState, theme Theme) {
 	Container(Attrs(Grow(1), Expand, Center, BackgroundVec(theme.Paper), Pad(28)), func() {
 		Container(Attrs(FixWidth(560), Gap(8)), func() {
 			Label("A quiet place for files, notes, and code.", FontWeight(WeightBold), FontSize(20), TextColorVec(theme.Ink))
 			Label("Open a file for a focused editor, or a folder for the workspace tree.", FontSize(13), TextColorVec(theme.Muted))
 			Container(Attrs(Row, Gap(8)), func() {
 				if CtrlButton(NoIcon, "Open…", true) {
-					openPathPicker(nil, shell)
+					executeCommand(state, shell, commands.FileOpen)
 				}
 				if CtrlButton(NoIcon, "Quick open", true) {
 					shell.ShowQuickOpen = true
@@ -829,12 +832,14 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 	if shell.ShowOpen {
 		Modal(620, func() { shell.ShowOpen = false; shell.ShowFolder = false }, func() {
 			Label("Open file or folder", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
-			if FileBrowserPanel(&shell.PathPicker.Cwd, &shell.PathPicker.Filter, &shell.PathPicker.Selected, &shell.PathPicker.Result, FileBrowserAttrs{Title: "Open", Dirs: true, Files: true, Start: shell.PathPicker.Cwd, Width: 580, ShowHidden: true}) {
-				if executeCommand(state, shell, commands.FileOpen, filepath.Clean(shell.PathPicker.Result)) {
-					shell.ShowOpen = false
-					shell.ShowFolder = false
+			ContainerWithKey(fmt.Sprintf("open-picker-%d", shell.OpenEpoch), Attrs(), func() {
+				if FileBrowserPanel(&shell.PathPicker.Cwd, &shell.PathPicker.Filter, &shell.PathPicker.Selected, &shell.PathPicker.Result, FileBrowserAttrs{Title: "Open", Dirs: true, Files: true, Start: shell.PathPicker.Cwd, Width: 580, ShowHidden: true}) {
+					if executeCommand(state, shell, commands.FileOpen, filepath.Clean(shell.PathPicker.Result)) {
+						shell.ShowOpen = false
+						shell.ShowFolder = false
+					}
 				}
-			}
+			})
 		})
 	}
 	if shell.ShowSaveAs {
@@ -945,6 +950,7 @@ func openPathPicker(state *application.Application, shell *workbenchState) {
 		start = filepath.Clean(abs)
 	}
 	shell.PathPicker = folderPickerState{Cwd: start, Selected: -1}
+	shell.OpenEpoch++
 	shell.ShowOpen = true
 }
 
@@ -1078,7 +1084,7 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	}
 	switch id {
 	case commands.FileOpen:
-		if path := commandPath(state, args); path != "" {
+		if path := explicitCommandPath(args); path != "" {
 			return state.OpenPath(path) == nil
 		}
 		openPathPicker(state, shell)
@@ -1189,17 +1195,17 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		shell.SidebarMode = SidebarOutline
 		shell.SidebarVisible = true
 	case commands.WorkspaceRefresh:
-		Use[treeState]("workspace-tree").Expanded = make(map[string]bool)
+		shell.Tree.Expanded = make(map[string]bool)
 	case commands.WorkspaceToggleFolder:
 		if relative := commandString(args); relative != "" {
-			tree := Use[treeState]("workspace-tree")
+			tree := &shell.Tree
 			if tree.Expanded == nil {
 				tree.Expanded = make(map[string]bool)
 			}
 			tree.Expanded[relative] = !tree.Expanded[relative]
 		}
 	case commands.FileOpenRecent:
-		if path := commandPath(state, args); path != "" {
+		if path := explicitCommandPath(args); path != "" {
 			if state.OpenPath(path) == nil {
 				shell.ShowRecent = false
 				return true
@@ -1289,16 +1295,18 @@ func commandDocumentID(state *application.Application, args []any) application.D
 	return ""
 }
 
-func commandPath(state *application.Application, args []any) string {
+func explicitCommandPath(args []any) string {
 	if len(args) > 0 {
-		switch value := args[0].(type) {
-		case string:
+		if value, ok := args[0].(string); ok && value != "" {
 			return filepath.Clean(value)
-		case application.DocumentID:
-			if doc := state.Documents[value]; doc != nil {
-				return doc.Path
-			}
 		}
+	}
+	return ""
+}
+
+func commandPath(state *application.Application, args []any) string {
+	if path := explicitCommandPath(args); path != "" {
+		return path
 	}
 	if doc := state.ActiveDocument(); doc != nil {
 		return doc.Path
@@ -1445,7 +1453,7 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 				}
 			} else if menu.IsDir {
 				label := "Expand"
-				if tree := Use[treeState]("workspace-tree"); tree.Expanded[workspaceRelative(state, menu.Path)] {
+				if shell.Tree.Expanded[workspaceRelative(state, menu.Path)] {
 					label = "Collapse"
 				}
 				if contextMenuItem(label) {
@@ -1521,7 +1529,7 @@ func revealActiveFile(state *application.Application, shell *workbenchState) {
 	if err != nil {
 		return
 	}
-	tree := Use[treeState]("workspace-tree")
+	tree := &shell.Tree
 	if tree.Expanded == nil {
 		tree.Expanded = make(map[string]bool)
 	}

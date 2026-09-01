@@ -44,6 +44,96 @@ func TestWorkbenchCommandsCopyPaths(t *testing.T) {
 	}
 }
 
+func TestFileOpenWithoutArgumentsOpensPicker(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "README.md")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	active := state.Active
+	shell := &workbenchState{}
+	executeCommand(state, shell, commands.FileOpen)
+	if !shell.ShowOpen {
+		t.Fatal("argumentless FileOpen did not open the picker")
+	}
+	if state.Active != active {
+		t.Fatalf("argumentless FileOpen changed active document from %q to %q", active, state.Active)
+	}
+}
+
+func TestFolderClickUsesPersistentWorkbenchTreeState(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "main.go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{}
+	executeCommand(state, shell, commands.WorkspaceToggleFolder, "src")
+	if !shell.Tree.Expanded["src"] {
+		t.Fatal("folder command did not persist expansion in workbench state")
+	}
+}
+
+func TestOpenPickerCanTypeOnFirstAndSecondOpening(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"child.md", "other.md"} {
+		if err := os.WriteFile(filepath.Join(root, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := application.New(nil)
+	if err := state.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{}
+	scope := new(int)
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{800, 600}
+	GetInputState().MousePoint = Vec2{-1000, -1000}
+	GetInputState().MouseButton = MousePrimary
+	GetFrameInput().Mouse = 0
+	GetFrameInput().Key = KeyCodeNone
+	GetFrameInput().Text = ""
+	run := func(text string) {
+		GetFrameInput().Mouse = 0
+		GetFrameInput().Key = KeyCodeNone
+		GetFrameInput().Text = text
+		RunFrameFn(func() {
+			ContainerWithKey(scope, Attrs(Viewport), func() { openControls(state, shell, DefaultTheme()) })
+		})
+	}
+	ResetInputSession()
+	openPathPicker(state, shell)
+	run("")
+	run("")
+	run("")
+	run("child")
+	if shell.PathPicker.Filter != "child" {
+		t.Fatalf("first picker filter = %q, want child", shell.PathPicker.Filter)
+	}
+	shell.ShowOpen = false
+	run("")
+	openPathPicker(state, shell)
+	run("")
+	run("")
+	run("")
+	run("other")
+	if shell.PathPicker.Filter != "other" {
+		t.Fatalf("second picker filter = %q, want other", shell.PathPicker.Filter)
+	}
+}
+
 func TestWorkbenchCommandsGoToLineAndFindNavigation(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "note.txt")
