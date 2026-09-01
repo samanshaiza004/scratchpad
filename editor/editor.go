@@ -17,7 +17,33 @@ type ScratchEditor struct {
 	nextRevision uint64
 	undo         []editRecord
 	redo         []editRecord
+	editJournal  []SourceEdit
 }
+
+// BytePoint is a UTF-8 byte position. Tree-sitter and the editor both use
+// byte columns, so this type keeps parser details out of the parser adapters.
+type BytePoint struct {
+	Row    int
+	Column int
+}
+
+// SourceEdit describes one source mutation in the coordinate space that was
+// valid immediately before and after the mutation. It is deliberately free
+// of Tree-sitter types so the editor can remain parser-independent.
+type SourceEdit struct {
+	BeforeRevision uint64
+	AfterRevision  uint64
+
+	StartByte  int
+	OldEndByte int
+	NewEndByte int
+
+	StartPoint  BytePoint
+	OldEndPoint BytePoint
+	NewEndPoint BytePoint
+}
+
+const editJournalCapacity = 4096
 
 type Affinity uint8
 
@@ -62,6 +88,45 @@ func (e *ScratchEditor) Reset(source []byte) {
 	e.nextRevision = 1
 	e.undo = nil
 	e.redo = nil
+	e.editJournal = nil
+}
+
+// EditsSince returns the contiguous edit chain from revision to the current
+// editor state. The journal is intentionally bounded; callers must fall back
+// to a fresh parse when the requested chain has been evicted or is ambiguous.
+func (e *ScratchEditor) EditsSince(revision uint64) ([]SourceEdit, bool) {
+	if e == nil || revision == e.revision {
+		return nil, true
+	}
+	start := -1
+	for i, edit := range e.editJournal {
+		if edit.BeforeRevision != revision {
+			continue
+		}
+		if start != -1 {
+			// Undo/redo can revisit a revision. A revision alone then does not
+			// identify the parser's position in the journal, so be conservative.
+			return nil, false
+		}
+		start = i
+	}
+	if start == -1 {
+		return nil, false
+	}
+	chain := make([]SourceEdit, 0, len(e.editJournal)-start)
+	current := revision
+	for i := start; i < len(e.editJournal); i++ {
+		edit := e.editJournal[i]
+		if edit.BeforeRevision != current {
+			return nil, false
+		}
+		chain = append(chain, edit)
+		current = edit.AfterRevision
+		if current == e.revision {
+			return chain, true
+		}
+	}
+	return nil, false
 }
 
 func (e *ScratchEditor) SetCursor(cursor int) {
@@ -139,6 +204,9 @@ func (e *ScratchEditor) Undo() error {
 	}
 	r := e.undo[len(e.undo)-1]
 	e.undo = e.undo[:len(e.undo)-1]
+	edit := e.sourceEdit(r.start, r.start+len(r.inserted), r.deleted, 0)
+	edit.BeforeRevision = e.revision
+	edit.AfterRevision = r.beforeRevision
 	if err := e.Buffer.Delete(r.start, r.start+len(r.inserted)); err != nil {
 		return err
 	}
@@ -147,6 +215,7 @@ func (e *ScratchEditor) Undo() error {
 	}
 	e.Cursor, e.Anchor = r.beforeCursor, r.beforeAnchor
 	e.revision = r.beforeRevision
+	e.recordSourceEdit(edit)
 	e.Affinity = AffinityLeading
 	e.redo = append(e.redo, r)
 	return nil
@@ -158,6 +227,9 @@ func (e *ScratchEditor) Redo() error {
 	}
 	r := e.redo[len(e.redo)-1]
 	e.redo = e.redo[:len(e.redo)-1]
+	edit := e.sourceEdit(r.start, r.start+len(r.deleted), r.inserted, 0)
+	edit.BeforeRevision = e.revision
+	edit.AfterRevision = r.afterRevision
 	if err := e.Buffer.Delete(r.start, r.start+len(r.deleted)); err != nil {
 		return err
 	}
@@ -166,6 +238,7 @@ func (e *ScratchEditor) Redo() error {
 	}
 	e.Cursor, e.Anchor = r.afterCursor, r.afterAnchor
 	e.revision = r.afterRevision
+	e.recordSourceEdit(edit)
 	e.Affinity = AffinityLeading
 	e.undo = append(e.undo, r)
 	return nil
@@ -264,6 +337,7 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 		return err
 	}
 	beforeCursor, beforeAnchor := e.Cursor, e.Anchor
+	edit := e.sourceEdit(start, end, text, 0)
 	if err := e.Buffer.Delete(start, end); err != nil {
 		return err
 	}
@@ -272,8 +346,11 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 	}
 	beforeRevision := e.revision
 	afterRevision := e.nextRevision
+	edit.BeforeRevision = beforeRevision
+	edit.AfterRevision = afterRevision
 	e.nextRevision++
 	e.revision = afterRevision
+	e.recordSourceEdit(edit)
 	e.Cursor = start + len(text)
 	e.Anchor = e.Cursor
 	e.Affinity = AffinityLeading
@@ -285,6 +362,52 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 	})
 	e.redo = nil
 	return nil
+}
+
+func (e *ScratchEditor) sourceEdit(start, end int, text []byte, afterRevision uint64) SourceEdit {
+	startPoint := bufferBytePoint(&e.Buffer, start)
+	oldEndPoint := bufferBytePoint(&e.Buffer, end)
+	return SourceEdit{
+		StartByte:     start,
+		OldEndByte:    end,
+		NewEndByte:    start + len(text),
+		StartPoint:    startPoint,
+		OldEndPoint:   oldEndPoint,
+		NewEndPoint:   advanceBytePoint(startPoint, text),
+		AfterRevision: afterRevision,
+	}
+}
+
+func (e *ScratchEditor) recordSourceEdit(edit SourceEdit) {
+	e.editJournal = append(e.editJournal, edit)
+	if len(e.editJournal) > editJournalCapacity {
+		e.editJournal = e.editJournal[len(e.editJournal)-editJournalCapacity:]
+	}
+}
+
+func bufferBytePoint(buffer *Buffer, offset int) BytePoint {
+	line, ok := buffer.LineAt(offset)
+	if !ok {
+		return BytePoint{}
+	}
+	start, _, ok := buffer.LineRange(line)
+	if !ok {
+		return BytePoint{Row: line}
+	}
+	return BytePoint{Row: line, Column: offset - start}
+}
+
+func advanceBytePoint(start BytePoint, text []byte) BytePoint {
+	point := start
+	for _, c := range text {
+		if c == '\n' {
+			point.Row++
+			point.Column = 0
+		} else {
+			point.Column++
+		}
+	}
+	return point
 }
 
 func (e *ScratchEditor) selection() (int, int) {

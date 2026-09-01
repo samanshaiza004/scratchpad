@@ -23,6 +23,12 @@ require (
 	github.com/go-text/typesetting v0.3.4 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/jezek/xgb v1.1.1 // indirect
+	github.com/mattn/go-pointer v0.0.1 // indirect
+	github.com/odvcencio/gotreesitter v0.51.0 // indirect
+	github.com/tree-sitter/go-tree-sitter v0.25.0 // indirect
+	github.com/tree-sitter/tree-sitter-go v0.25.0 // indirect
+	github.com/tree-sitter/tree-sitter-javascript v0.25.0 // indirect
+	github.com/tree-sitter/tree-sitter-typescript v0.23.2 // indirect
 	go.hasen.dev/generic v0.1.7 // indirect
 	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
