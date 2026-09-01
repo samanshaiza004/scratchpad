@@ -294,6 +294,33 @@ This closes the packaging consequence of Gate E without reopening parser or
 editor architecture. Cross-CGO toolchain engineering remains deferred to
 release hardening if a single-host release workflow later becomes necessary.
 
+## Milestone M — paper workstation visual pass
+
+Status: complete for the headless visual and interaction scope. Scratchpad now
+uses one semantic material palette and a small set of downstream Shirei
+primitives for raised, inset, flat-paper, selected, focused, and floating
+states. The shell separates cool-gray machinery from the warm editor surface;
+Files/Outline tabs, command and toolbar controls, tree rows, document tabs,
+splitter, status bar, scrollbars, popups, and dialogs share that physical
+grammar. The editor/document/language contracts are unchanged.
+
+Ten host-font visual baselines live under `ui/testdata/snapshots/` and cover
+empty, single-file, Markdown workspace, selected tree, multiple tabs, both
+sidebar modes, status, popup, and dialog states. They run explicitly with
+`SCRATCHPAD_VISUAL_SNAPSHOTS=1` so font-dependent images do not make ordinary
+CI brittle. Behavioral tests continue to cover segmented selection, buttons,
+tree layout, tab activation/close, editor scrolling, and shell commands.
+
+Known framework limits in Shirei v0.6.7: stock menu popup colors are private,
+and the stock modal has a fixed white card. Scratchpad preserves Shirei menu
+behavior while styling its trigger, and uses a downstream modal shell around
+the framework focus/dismiss primitives. Native visual and interaction checks
+remain platform smoke work; no macOS, Windows, or Linux native certification
+is claimed by this headless milestone.
+
+Deferred to Prose Presentation: richer Markdown layout, punctuation hiding,
+tables, variable row heights, block surfaces, and soft wrapping.
+
 ## Gate F — unified contextual commands
 
 Objective: make one command vocabulary useful across prose and code contexts.

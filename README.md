@@ -5,9 +5,9 @@ is intended to provide one continuous writing surface for notes, prose, tasks,
 and code without turning into an IDE or a proprietary note database.
 
 This repository contains a native Go editor with the Gate B scalable editor
-core, the file-native Gate C slices, and the first Gate E language-service
-proof for Go and TypeScript/TSX. It does not contain LSP support, plugins, or
-sync logic.
+core, the file-native Gate C slices, and the Gate E language-service proof for
+Go and TypeScript/TSX. Its current shell uses a compact paper-workstation
+visual system; it does not contain LSP support, plugins, or sync logic.
 
 ## Current status
 
@@ -46,9 +46,15 @@ go run ./cmd/scratchpad
 go run ./cmd/scratchpad --version
 ```
 
-The current window is intentionally plain: it proves that Scratchpad can
-consume Shirei as a normal Go application without introducing an application
-runtime boundary.
+The current window separates tactile, cool-gray application machinery from a
+quiet warm-paper editor surface. It remains ordinary Shirei composition with
+no application runtime boundary.
+
+Host-font visual baselines are opt-in:
+
+```bash
+SCRATCHPAD_VISUAL_SNAPSHOTS=1 go test ./ui -run TestSnapshotWorkstation
+```
 
 For local work against the audit checkout, use a replace directive pointing at
 your own checkout. For example:
