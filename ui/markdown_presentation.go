@@ -6,11 +6,35 @@ import (
 	. "go.hasen.dev/shirei"
 )
 
+// SyntaxTheme keeps parser categories independent from their presentation
+// values. Shirei Vec4 values are HSLA (hue 0..360, saturation/lightness
+// 0..100), not normalized RGB.
+type SyntaxTheme struct {
+	Comment  Vec4
+	Keyword  Vec4
+	String   Vec4
+	Number   Vec4
+	Type     Vec4
+	Function Vec4
+}
+
+func DefaultSyntaxTheme() SyntaxTheme {
+	return SyntaxTheme{
+		Comment:  Vec4{150, 22, 42, 1},
+		Keyword:  Vec4{278, 62, 38, 1},
+		String:   Vec4{28, 75, 38, 1},
+		Number:   Vec4{215, 70, 42, 1},
+		Type:     Vec4{185, 68, 35, 1},
+		Function: Vec4{205, 72, 40, 1},
+	}
+}
+
 // MarkdownPresentationStyle is the UI-owned mapping from semantic source
 // spans to Shirei text modifiers. Markdown keeps its prose base style; code
 // fragments opt into the same preferred programming face as code documents.
 func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs) []TextStyleFn {
 	theme := DefaultTheme()
+	syntax := DefaultSyntaxTheme()
 	switch kind {
 	case document.PresentationHeading, document.PresentationStrong:
 		return []TextStyleFn{FontWeight(WeightBold)}
@@ -29,17 +53,17 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 	case document.PresentationTaskMarker:
 		return []TextStyleFn{TextColorVec(theme.Focus), FontWeight(WeightBold)}
 	case document.PresentationCodeComment:
-		return []TextStyleFn{TextColorVec(Vec4{0.38, 0.48, 0.42, 1})}
+		return []TextStyleFn{TextColorVec(syntax.Comment)}
 	case document.PresentationCodeKeyword:
-		return []TextStyleFn{TextColorVec(Vec4{0.72, 0.32, 0.62, 1}), FontWeight(WeightBold)}
+		return []TextStyleFn{TextColorVec(syntax.Keyword), FontWeight(WeightBold)}
 	case document.PresentationCodeString:
-		return []TextStyleFn{TextColorVec(Vec4{0.58, 0.32, 0.16, 1})}
+		return []TextStyleFn{TextColorVec(syntax.String)}
 	case document.PresentationCodeNumber:
-		return []TextStyleFn{TextColorVec(Vec4{0.22, 0.42, 0.68, 1})}
+		return []TextStyleFn{TextColorVec(syntax.Number)}
 	case document.PresentationCodeType:
-		return []TextStyleFn{TextColorVec(Vec4{0.22, 0.45, 0.58, 1})}
+		return []TextStyleFn{TextColorVec(syntax.Type)}
 	case document.PresentationCodeFunction, document.PresentationCodeMethod:
-		return []TextStyleFn{TextColorVec(Vec4{0.12, 0.38, 0.62, 1})}
+		return []TextStyleFn{TextColorVec(syntax.Function)}
 	case document.PresentationCodeVariable,
 		document.PresentationCodeConstant, document.PresentationCodeProperty,
 		document.PresentationCodeOperator, document.PresentationCodePunctuation,

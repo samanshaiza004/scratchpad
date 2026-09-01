@@ -31,6 +31,24 @@ func TestMarkdownPresentationStyleMapsSemanticKinds(t *testing.T) {
 	}
 }
 
+func TestSyntaxPresentationStyleUsesVisibleHSLAColors(t *testing.T) {
+	base := DefaultTextStyle()
+	for _, kind := range []document.PresentationKind{
+		document.PresentationCodeComment,
+		document.PresentationCodeKeyword,
+		document.PresentationCodeString,
+		document.PresentationCodeNumber,
+		document.PresentationCodeType,
+		document.PresentationCodeFunction,
+	} {
+		style := TextStyleWith(base, MarkdownPresentationStyle(kind, base)...)
+		color := style.TextColor
+		if color[0] <= 1 || color[1] <= 1 || color[2] <= 1 || color[3] != 1 {
+			t.Errorf("%v color = %v, want visible HSLA values", kind, color)
+		}
+	}
+}
+
 func TestPresentationTextSpansClipToVisibleSourceWindow(t *testing.T) {
 	visual := VisualLine{
 		DocStart:    100,

@@ -13,6 +13,16 @@ import (
 
 const projectionDebounce = 150 * time.Millisecond
 
+// Code parsers are designed to provide useful incremental results while the
+// user is typing. Markdown still uses a quiet-period debounce because its
+// whole-document structural projection is less latency-sensitive.
+func projectionDelay(id language.ID) time.Duration {
+	if id == language.Markdown {
+		return projectionDebounce
+	}
+	return 0
+}
+
 type projectionResult struct {
 	id          DocumentID
 	revision    uint64
@@ -102,9 +112,10 @@ drained:
 		if revision := doc.Revision(); (!state.hasSeen || revision != state.seenRevision) && (!state.hasDesired || revision != state.desiredRevision) {
 			state.desiredRevision = revision
 			state.hasDesired = true
-			state.due = now.Add(projectionDebounce)
+			delay := projectionDelay(language.ID(doc.RootLanguage))
+			state.due = now.Add(delay)
 			if a.derivedWake != nil {
-				a.scheduleDerivedWake(projectionDebounce)
+				a.scheduleDerivedWake(delay)
 			}
 		}
 	}
@@ -128,7 +139,8 @@ drained:
 		if snapshot.Revision != revision {
 			state.desiredRevision = doc.Revision()
 			state.hasDesired = true
-			state.due = now.Add(projectionDebounce)
+			delay := projectionDelay(language.ID(doc.RootLanguage))
+			state.due = now.Add(delay)
 			continue
 		}
 		state.running = true

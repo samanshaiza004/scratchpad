@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"scratchpad/document"
 	"scratchpad/workspace"
 )
 
@@ -66,6 +67,51 @@ func TestDerivedProjectionAnalyzesGoThroughTheSharedCoordinator(t *testing.T) {
 	}
 	if len(doc.Projections.Code.Highlights) == 0 {
 		t.Fatalf("Go projection lacks analysis: %+v", doc.Projections.Code)
+	}
+}
+
+func TestDerivedProjectionAnalyzesGoWithoutTypingDebounce(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/main.go"
+	if err := writeTestFile(path, []byte("package main\n\nfunc main() {}\n")); err != nil {
+		t.Fatal(err)
+	}
+	a := New(workspace.NewOSFileStore())
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	doc := a.ActiveDocument()
+	now := time.Now()
+	a.PollDerived(now)
+	waitForDerived(t, a, doc, 500*time.Millisecond)
+
+	if err := doc.Replace(0, 0, []byte("// typed\n")); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Now()
+	a.PollDerived(now)
+
+	// A code projection should be eligible immediately. Keep the clock inside
+	// the old Markdown debounce window so this fails if code is still delayed.
+	deadline := time.Now().Add(projectionDebounce / 2)
+	for time.Now().Before(deadline) && !doc.DerivedCurrent() {
+		a.PollDerived(now.Add(time.Millisecond))
+		time.Sleep(time.Millisecond)
+	}
+	if !doc.DerivedCurrent() {
+		t.Fatal("Go projection remained debounced during the typing window")
+	}
+}
+
+func waitForDerived(t *testing.T, a *Application, doc *document.Document, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) && !doc.DerivedCurrent() {
+		a.PollDerived(time.Now())
+		time.Sleep(time.Millisecond)
+	}
+	if !doc.DerivedCurrent() {
+		t.Fatal("derived projection did not publish")
 	}
 }
 
