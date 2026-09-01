@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/widgets"
 )
 
 func TestRaisedFrameUsesDirectionalEdgesAndGradient(t *testing.T) {
@@ -71,5 +72,67 @@ func TestThemeSeparatesMachineryFromPaper(t *testing.T) {
 	}
 	if theme.Light[2] <= theme.ChromeRaised[2] || theme.DarkShadow[2] >= theme.Shadow[2] {
 		t.Fatalf("edge lightness order is inconsistent: light=%v raised=%v shadow=%v dark=%v", theme.Light, theme.ChromeRaised, theme.Shadow, theme.DarkShadow)
+	}
+}
+
+func TestWorkstationSegmentedControlSwitchesSelection(t *testing.T) {
+	theme := DefaultTheme()
+	scope := new(int)
+	selected := SidebarFiles
+	cellIDs := make(map[SidebarMode]ContainerId)
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{240, 80}
+	ResetInputSession()
+	frame := func() {
+		RunFrameFn(func() {
+			ContainerWithKey(scope, Attrs(Viewport), func() {
+				workstationSegmentedControl(theme, &selected, cellIDs, Cell("Files", SidebarFiles), Cell("Outline", SidebarOutline))
+			})
+		})
+	}
+	frame()
+	frame()
+	rect := GetResolvedRectOf(cellIDs[SidebarOutline])
+	GetInputState().MousePoint = Vec2{rect.Origin[0] + rect.Size[0]/2, rect.Origin[1] + rect.Size[1]/2}
+	GetInputState().MouseButton = MousePrimary
+	GetFrameInput().Mouse = MouseClick
+	frame()
+	GetFrameInput().Mouse = MouseRelease
+	frame()
+	if selected != SidebarOutline {
+		t.Fatalf("selected = %v, want Outline", selected)
+	}
+}
+
+func TestWorkstationButtonClickBehavior(t *testing.T) {
+	theme := DefaultTheme()
+	scope := new(int)
+	clicked := false
+	var buttonID ContainerId
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{240, 80}
+	ResetInputSession()
+	frame := func() {
+		RunFrameFn(func() {
+			ContainerWithKey(scope, Attrs(Viewport), func() {
+				pressed, id := workstationButton(theme, "Open", true, workstationButtonCommand)
+				clicked = pressed || clicked
+				buttonID = id
+			})
+		})
+	}
+	frame()
+	frame()
+	rect := GetResolvedRectOf(buttonID)
+	GetInputState().MousePoint = Vec2{rect.Origin[0] + rect.Size[0]/2, rect.Origin[1] + rect.Size[1]/2}
+	GetInputState().MouseButton = MousePrimary
+	GetFrameInput().Mouse = MouseClick
+	frame()
+	GetFrameInput().Mouse = MouseRelease
+	frame()
+	if !clicked {
+		t.Fatal("workstation button did not preserve Shirei click behavior")
 	}
 }
