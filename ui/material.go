@@ -25,35 +25,32 @@ func installWorkstationChrome() {
 	})
 }
 
-// RaisedFrame builds the directional workstation bevel used by elevated
-// machinery. outer controls placement/size; face controls the content layout.
+// RaisedFrame builds a restrained Aero Paper elevation. It uses one cool
+// contour and a shallow face gradient; outer controls placement/size and face
+// controls content layout.
 func RaisedFrame(theme Theme, outer, face AttrSet, fn func()) ContainerId {
 	return raisedFrameWithKey(nil, theme, outer, face, fn)
 }
 
 func raisedFrameWithKey(key any, theme Theme, outer, face AttrSet, fn func()) ContainerId {
 	return ContainerWithKey(key, AttrsWith(outer,
-		BackgroundVec(theme.DarkShadow), Pad4(0, 1, 1, 0), NoAnimate,
+		BackgroundVec(theme.Border), Pad4(1, 1, 1, 1), NoAnimate,
 	), func() {
-		Container(Attrs(Grow(1), Expand, BackgroundVec(theme.Light), Pad4(1, 0, 0, 1), NoAnimate), func() {
-			Container(AttrsWith(face,
-				Grow(1), Expand, BackgroundVec(theme.ChromeRaised), Grad(0, 0, -4, 0), NoAnimate,
-			), fn)
-		})
+		Container(AttrsWith(face,
+			Grow(1), Expand, BackgroundVec(theme.ChromeRaised), Grad(0, 0, -3, 0), NoAnimate,
+		), fn)
 	})
 }
 
-// InsetFrame reverses RaisedFrame's edge order so the content reads as a
-// recessed well rather than an elevated control.
+// InsetFrame uses the same fine contour with a slightly darker, upward-biased
+// gradient so recessed controls remain related to raised controls.
 func InsetFrame(theme Theme, outer, well AttrSet, fn func()) ContainerId {
 	return Container(AttrsWith(outer,
-		BackgroundVec(theme.Light), Pad4(0, 1, 1, 0), NoAnimate,
+		BackgroundVec(theme.Border), Pad4(1, 1, 1, 1), NoAnimate,
 	), func() {
-		Container(Attrs(Grow(1), Expand, BackgroundVec(theme.DarkShadow), Pad4(1, 0, 0, 1), NoAnimate), func() {
-			Container(AttrsWith(well,
-				Grow(1), Expand, BackgroundVec(theme.ChromeInset), NoAnimate,
-			), fn)
-		})
+		Container(AttrsWith(well,
+			Grow(1), Expand, BackgroundVec(theme.ChromeInset), Grad(0, 0, 2, 0), NoAnimate,
+		), fn)
 	})
 }
 
@@ -79,16 +76,16 @@ const (
 	dividerHorizontal
 )
 
-// EtchedDivider is a two-pixel dark/light seam. It communicates a structural
-// boundary without creating a card or drop shadow.
+// EtchedDivider is a two-pixel cool contour seam. It communicates a
+// structural boundary without creating a card or drop shadow.
 func EtchedDivider(theme Theme, axis dividerAxis) ContainerId {
 	attrs := Attrs(Row, FixWidth(2), Expand, NoAnimate)
-	edge := Attrs(FixWidth(1), Expand, BackgroundVec(theme.DarkShadow), NoAnimate)
-	light := Attrs(FixWidth(1), Expand, BackgroundVec(theme.Light), NoAnimate)
+	edge := Attrs(FixWidth(1), Expand, BackgroundVec(theme.Border), NoAnimate)
+	light := Attrs(FixWidth(1), Expand, BackgroundVec(theme.ChromeRaised), NoAnimate)
 	if axis == dividerHorizontal {
 		attrs = Attrs(FixHeight(2), Expand, NoAnimate)
-		edge = Attrs(FixHeight(1), Expand, BackgroundVec(theme.DarkShadow), NoAnimate)
-		light = Attrs(FixHeight(1), Expand, BackgroundVec(theme.Light), NoAnimate)
+		edge = Attrs(FixHeight(1), Expand, BackgroundVec(theme.Border), NoAnimate)
+		light = Attrs(FixHeight(1), Expand, BackgroundVec(theme.ChromeRaised), NoAnimate)
 	}
 	return Container(attrs, func() {
 		Element(edge)
@@ -133,8 +130,7 @@ func workstationButton(theme Theme, label string, enabled bool, strength worksta
 		clicked = state.Clicked
 		skin := theme
 		if strength == workstationButtonToolbar && !state.Hovered && !state.Active {
-			skin.Light[3] = 0
-			skin.DarkShadow[3] = 0
+			skin.Border[3] = 0
 			skin.ChromeRaised = skin.Chrome
 		}
 		if !enabled {
@@ -237,7 +233,7 @@ func FloatingSurface(theme Theme, outer, face AttrSet, fn func()) ContainerId {
 func floatingSurfaceWithKey(key any, theme Theme, outer, face AttrSet, fn func()) ContainerId {
 	skin := theme
 	skin.ChromeRaised = theme.Popup
-	return raisedFrameWithKey(key, skin, AttrsWith(outer, BoxShadow(8), Corners(3)), AttrsWith(face, Corners(2)), fn)
+	return raisedFrameWithKey(key, skin, AttrsWith(outer, BoxShadow(6), Corners(3)), AttrsWith(face, Corners(2)), fn)
 }
 
 // WorkstationModal is Scratchpad's downstream modal shell. It keeps Shirei's

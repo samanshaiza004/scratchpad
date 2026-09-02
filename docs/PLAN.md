@@ -321,6 +321,20 @@ is claimed by this headless milestone.
 Deferred to Prose Presentation: richer Markdown layout, punctuation hiding,
 tables, variable row heights, block surfaces, and soft wrapping.
 
+### M.1 — Aero Paper retheme and shell freeze
+
+Status: complete. The workstation shell has been rethemed toward the approved
+Aero Paper direction without changing its structure or behavior. The palette
+now separates warm ivory paper from softened silver-blue-gray machinery, with
+muted blue reserved for selection/focus and shallow gradients carrying most of
+the depth. Raised and inset primitives remain in place but use fine contours
+and lower-contrast surfaces instead of the earlier Classic four-edge bevel.
+
+The shell is frozen for the next milestone: future chrome changes require a
+concrete usability problem. M.1 adds no document, editor, or Markdown behavior;
+Milestone N owns richer prose presentation, variable row metrics, block
+surfaces, tables, and soft wrapping.
+
 ## Gate F — unified contextual commands
 
 Objective: make one command vocabulary useful across prose and code contexts.

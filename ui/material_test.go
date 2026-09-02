@@ -11,7 +11,7 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
-func TestRaisedFrameUsesDirectionalEdgesAndGradient(t *testing.T) {
+func TestRaisedFrameUsesSoftContourAndGradient(t *testing.T) {
 	theme := DefaultTheme()
 	scope := new(int)
 	var outer, face ContainerId
@@ -27,11 +27,11 @@ func TestRaisedFrameUsesDirectionalEdgesAndGradient(t *testing.T) {
 	})
 
 	outerData := GetRenderDataOf(outer)
-	if outerData.Background != theme.DarkShadow {
-		t.Fatalf("outer background = %v, want dark shadow %v", outerData.Background, theme.DarkShadow)
+	if outerData.Background != theme.Border {
+		t.Fatalf("outer background = %v, want contour %v", outerData.Background, theme.Border)
 	}
-	if outerData.Padding != (Vec4{0, 1, 1, 0}) {
-		t.Fatalf("outer padding = %v, want bottom/right edge", outerData.Padding)
+	if outerData.Padding != (Vec4{1, 1, 1, 1}) {
+		t.Fatalf("outer padding = %v, want one-pixel contour", outerData.Padding)
 	}
 	faceData := GetRenderDataOf(face)
 	if faceData.Background != theme.ChromeRaised || faceData.Gradient[2] >= 0 {
@@ -39,7 +39,7 @@ func TestRaisedFrameUsesDirectionalEdgesAndGradient(t *testing.T) {
 	}
 }
 
-func TestInsetFrameReversesDirectionalEdges(t *testing.T) {
+func TestInsetFrameUsesSoftContourAndGradient(t *testing.T) {
 	theme := DefaultTheme()
 	scope := new(int)
 	var outer, well ContainerId
@@ -55,11 +55,11 @@ func TestInsetFrameReversesDirectionalEdges(t *testing.T) {
 	})
 
 	outerData := GetRenderDataOf(outer)
-	if outerData.Background != theme.Light {
-		t.Fatalf("outer background = %v, want light edge %v", outerData.Background, theme.Light)
+	if outerData.Background != theme.Border {
+		t.Fatalf("outer background = %v, want contour %v", outerData.Background, theme.Border)
 	}
-	if outerData.Padding != (Vec4{0, 1, 1, 0}) {
-		t.Fatalf("outer padding = %v, want bottom/right edge", outerData.Padding)
+	if outerData.Padding != (Vec4{1, 1, 1, 1}) {
+		t.Fatalf("outer padding = %v, want one-pixel contour", outerData.Padding)
 	}
 	if got := GetRenderDataOf(well).Background; got != theme.ChromeInset {
 		t.Fatalf("well background = %v, want %v", got, theme.ChromeInset)
