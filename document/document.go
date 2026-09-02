@@ -18,19 +18,19 @@ var ErrDiskChanged = errors.New("file changed on disk")
 // authoritative editable text state. The editor contains the bytes; Document
 // never keeps a second complete content copy.
 type Document struct {
-	Path             string
-	Editor           *editor.ScratchEditor
-	SavedRevision    uint64
-	DiskVersion      workspace.DiskVersion
-	FileMode         fs.FileMode
-	Format           FileFormat
-	RootLanguage     string
-	Injected         []InjectedRegion
-	Projections      Projections
+	Path          string
+	Editor        *editor.ScratchEditor
+	SavedRevision uint64
+	DiskVersion   workspace.DiskVersion
+	FileMode      fs.FileMode
+	Format        FileFormat
+	RootLanguage  string
+	Injected      []InjectedRegion
+	Projections   Projections
 	// DisplayCode is a paint-only syntax cache. It may be rebased to the
 	// current revision while semantic projections are being recomputed.
-	DisplayCode    CodeProjection
-	hasDisplayCode bool
+	DisplayCode      CodeProjection
+	hasDisplayCode   bool
 	DerivedRevision  uint64
 	observedRevision uint64
 	base             []byte
@@ -66,6 +66,7 @@ type Projections struct {
 	Folds    []Fold
 	Tasks    []Task
 	Links    []Link
+	Blocks   []BlockPresentation
 	Markdown MarkdownPresentation
 	Code     CodeProjection
 }
@@ -109,6 +110,24 @@ type Symbol struct {
 type LanguageFold struct {
 	StartByte int
 	EndByte   int
+}
+
+// BlockKind identifies a disposable source block that may receive a row-level
+// presentation treatment. It carries no rendering or parser types.
+type BlockKind uint8
+
+const (
+	BlockCode BlockKind = iota
+	BlockQuote
+	BlockList
+	BlockThematicBreak
+	BlockTable
+)
+
+type BlockPresentation struct {
+	Kind               BlockKind
+	StartByte, EndByte int
+	Level              int
 }
 
 // CodeProjection is disposable language-derived data. Its spans are indexed
@@ -196,6 +215,8 @@ const (
 	PresentationCodeParameter
 	PresentationCodeTag
 	PresentationCodeAttribute
+	PresentationThematicBreak
+	PresentationTable
 )
 
 // PresentationSpan is a half-open source-byte range. Spans may overlap when
@@ -204,6 +225,7 @@ type PresentationSpan struct {
 	StartByte int
 	EndByte   int
 	Kind      PresentationKind
+	Level     int
 }
 
 // MarkdownPresentation is a disposable, immutable-by-convention projection
@@ -481,8 +503,8 @@ func rebaseDisplayCode(code CodeProjection, edits []editor.SourceEdit, revision 
 				span.StartByte += shift
 				span.EndByte += shift
 				next = append(next, span)
-			// A token touching the changed range is unsafe to display until
-			// the parser has revalidated it.
+				// A token touching the changed range is unsafe to display until
+				// the parser has revalidated it.
 			}
 		}
 		highlights = next

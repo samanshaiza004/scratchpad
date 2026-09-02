@@ -39,6 +39,26 @@ func TestProjectBuildsSourcePresentationSpans(t *testing.T) {
 	}
 }
 
+func TestProjectEmitsDisposableBlockPresentation(t *testing.T) {
+	source := []byte("> quote\n\n- item\n\n---\n\n| a | b |\n| - | - |\n| c | d |\n\n```go\nfmt.Println(1)\n```\n")
+	got := Project(source, 8)
+	seen := map[document.BlockKind]bool{}
+	for _, block := range got.Blocks {
+		if block.StartByte < 0 || block.EndByte > len(source) || block.StartByte >= block.EndByte {
+			t.Fatalf("invalid block = %+v", block)
+		}
+		seen[block.Kind] = true
+	}
+	for _, kind := range []document.BlockKind{
+		document.BlockQuote, document.BlockList, document.BlockThematicBreak,
+		document.BlockTable, document.BlockCode,
+	} {
+		if !seen[kind] {
+			t.Errorf("missing block kind %v in %+v", kind, got.Blocks)
+		}
+	}
+}
+
 func TestProjectPresentationKeepsMarkdownSyntaxVisible(t *testing.T) {
 	source := []byte("## **bold**\n")
 	got := Project(source, 1)

@@ -45,9 +45,22 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 		case *ast.CodeBlock:
 			start, end := blockRange(node, source, state.end)
 			add(start, end, document.PresentationCodeBlock)
+			addBlock(projection, document.BlockCode, start, end)
 		case *ast.Blockquote:
 			start, end := blockRange(node, source, state.end)
 			add(start, end, document.PresentationBlockquote)
+			addBlock(projection, document.BlockQuote, start, end)
+		case *ast.List:
+			addBlock(projection, document.BlockList, state.start, state.end)
+		case *ast.ThematicBreak:
+			start, end := blockRange(node, source, state.end)
+			add(start, end, document.PresentationThematicBreak)
+			addBlock(projection, document.BlockThematicBreak, start, end)
+		case *markdownast.Table:
+			if state.start < state.end {
+				add(state.start, state.end, document.PresentationTable)
+				addBlock(projection, document.BlockTable, state.start, state.end)
+			}
 		case *ast.ListItem:
 			appendListPresentation(add, node, source)
 		case *ast.Emphasis:
@@ -76,6 +89,13 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 		return ast.WalkContinue, nil
 	})
 	return document.NewMarkdownPresentation(revision, spans)
+}
+
+func addBlock(projection *document.Projections, kind document.BlockKind, start, end int) {
+	if projection == nil || start < 0 || end <= start {
+		return
+	}
+	projection.Blocks = append(projection.Blocks, document.BlockPresentation{Kind: kind, StartByte: start, EndByte: end})
 }
 
 func collectStructuralProjection(node ast.Node, source []byte, projection *document.Projections) {

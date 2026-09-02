@@ -81,6 +81,8 @@ func RootView(state *application.Application) {
 							ScrollInitialized: view.ScrollInitialized,
 							LineNumbers:       true,
 							Rows:              &rows,
+							LineDecoration:    markdownLineDecoration(doc, theme),
+							LineSpacing:       markdownLineSpacing(doc),
 							Foldable:          func(line int) bool { return foldForLine(doc, line) != nil },
 							FoldMarker: func(line int) string {
 								if view.CollapsedHeadings != nil && view.CollapsedHeadings[headingAtLine(doc, line)] {
@@ -1591,6 +1593,63 @@ func BackgroundIf(active bool, color Vec4) AttrsFn {
 
 func proseWraps(id language.ID) bool {
 	return id == language.Markdown || id == language.PlainText
+}
+
+func markdownLineDecoration(doc *document.Document, theme Theme) func(int) EditorLineDecoration {
+	return func(line int) EditorLineDecoration {
+		if doc == nil || doc.RootLanguage != string(language.Markdown) || !doc.DerivedCurrent() {
+			return EditorLineDecoration{}
+		}
+		start, end, ok := doc.Editor.Buffer.LineRange(line)
+		if !ok {
+			return EditorLineDecoration{}
+		}
+		for _, block := range doc.Projections.Blocks {
+			if block.StartByte >= end || block.EndByte <= start {
+				continue
+			}
+			background := theme.ChromeInset
+			switch block.Kind {
+			case document.BlockQuote:
+				background = theme.SelectionHighlight
+			case document.BlockTable:
+				background = theme.ChromeRaised
+			case document.BlockThematicBreak:
+				background = theme.ChromeInset
+			case document.BlockList:
+				return EditorLineDecoration{}
+			}
+			background[3] = 0.16
+			return EditorLineDecoration{Background: background}
+		}
+		return EditorLineDecoration{}
+	}
+}
+
+func markdownLineSpacing(doc *document.Document) func(int) float32 {
+	return func(line int) float32 {
+		if doc == nil || doc.RootLanguage != string(language.Markdown) || !doc.DerivedCurrent() {
+			return 0
+		}
+		start, _, ok := doc.Editor.Buffer.LineRange(line)
+		if !ok {
+			return 0
+		}
+		for _, heading := range doc.Projections.Headings {
+			if heading.StartByte != start {
+				continue
+			}
+			switch heading.Level {
+			case 1:
+				return 7
+			case 2:
+				return 5
+			default:
+				return 3
+			}
+		}
+		return 0
+	}
 }
 
 func isActivePath(state *application.Application, path string) bool {

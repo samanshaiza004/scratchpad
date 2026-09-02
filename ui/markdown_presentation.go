@@ -74,3 +74,27 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 		return nil
 	}
 }
+
+// MarkdownPresentationSpanStyle is the richer Markdown presentation hook.
+// Heading hierarchy changes only Markdown's visual scale; source ranges and
+// editor metrics remain owned by the existing visible-row path.
+func MarkdownPresentationSpanStyle(span document.PresentationSpan, base TextStyleAttrs) []TextStyleFn {
+	if span.Kind != document.PresentationHeading {
+		return MarkdownPresentationStyle(span.Kind, base)
+	}
+	size := base.FontSize
+	if size <= 0 {
+		size = DefaultTextStyle().FontSize
+	}
+	switch span.Level {
+	case 1:
+		size *= 1.35
+	case 2:
+		size *= 1.20
+	case 3:
+		size *= 1.10
+	default:
+		size *= 1.03
+	}
+	return []TextStyleFn{FontSize(size), FontWeight(WeightBold)}
+}

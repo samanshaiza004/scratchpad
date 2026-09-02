@@ -345,13 +345,13 @@ Slices:
 
 1. N0 audit the existing logical-line, Shirei shaping, projection, and
    viewport seams.
-2. N1 establish visual-row geometry and variable logical-line heights.
+2. N1 establish visual-row geometry and variable logical-line heights. **Done.**
 3. N2 add width-aware soft wrapping for Markdown and plain text; code remains
-   unwrapped by default.
+   unwrapped by default. **Done.**
 4. N3 add heading hierarchy, semantic spacing, and source-visible inline
-   presentation.
+   presentation. **Done.**
 5. N4 add block/row decoration for fenced code, blockquotes, lists, tasks,
-   and thematic breaks.
+   and thematic breaks. **Done.**
 6. N5 add source-visible table structure without a rendered-table model.
 7. N6 verify folding, injected Go, caret/selection, and stale projection
    composition.

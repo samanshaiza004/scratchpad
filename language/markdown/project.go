@@ -17,10 +17,22 @@ import (
 // Project lowers Markdown structure and presentation spans. It never owns or mutates source.
 func Project(source []byte, revision uint64) document.Projections {
 	root := parser.New(parser.WithAutoHeadingID(), parser.WithExtensions(
-		extension.NewTaskListItemParser(), extension.NewStrikethroughParser(),
+		extension.NewTaskListItemParser(), extension.NewStrikethroughParser(), extension.NewTableParser(),
 	)).Parse(source)
 	projection := document.Projections{Revision: revision}
 	projection.Markdown = collectPresentation(root, source, revision, &projection)
+	for i := range projection.Markdown.Spans {
+		span := &projection.Markdown.Spans[i]
+		if span.Kind != document.PresentationHeading {
+			continue
+		}
+		for _, heading := range projection.Headings {
+			if span.StartByte < heading.EndByte && span.EndByte > heading.StartByte {
+				span.Level = heading.Level
+				break
+			}
+		}
+	}
 	for i, heading := range projection.Headings {
 		start := heading.EndByte
 		if start < len(source) && source[start] == '\n' {

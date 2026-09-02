@@ -71,11 +71,17 @@ type EditorPresentationSource func(startByte, endByte int) []document.Presentati
 
 type EditorPresentationStyler func(kind document.PresentationKind, base TextStyleAttrs) []TextStyleFn
 
+type EditorPresentationSpanStyler func(span document.PresentationSpan, base TextStyleAttrs) []TextStyleFn
+
 func buildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, presentation EditorPresentationSource, styler EditorPresentationStyler) (VisualLine, bool) {
-	return buildVisualLineAroundMax(buffer, line, anchor, style, 0, presentation, styler)
+	return buildVisualLineAroundMaxStyled(buffer, line, anchor, style, 0, presentation, styler, nil)
 }
 
 func buildVisualLineAroundMax(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, maxWidth float32, presentation EditorPresentationSource, styler EditorPresentationStyler) (VisualLine, bool) {
+	return buildVisualLineAroundMaxStyled(buffer, line, anchor, style, maxWidth, presentation, styler, nil)
+}
+
+func buildVisualLineAroundMaxStyled(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, maxWidth float32, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) (VisualLine, bool) {
 	start, end, ok := buffer.LineRange(line)
 	if !ok {
 		return VisualLine{}, false
@@ -102,8 +108,8 @@ func buildVisualLineAroundMax(buffer *editor.Buffer, line, anchor int, style Tex
 	}
 	if presentation != nil && styler != nil {
 		sourceSpans := presentation(windowStart, windowEnd)
-		textSpans := presentationTextSpans(visual, sourceSpans, style, styler)
-		visual.layoutSpans = presentationStyleSpans(visual, sourceSpans, style, styler)
+		textSpans := presentationTextSpansStyled(visual, sourceSpans, style, styler, spanStyler)
+		visual.layoutSpans = presentationStyleSpansStyled(visual, sourceSpans, style, styler, spanStyler)
 		visual.Layout = ShapeTextMax(display, style, maxWidth, textSpans...)
 	} else {
 		visual.Layout = ShapeTextMax(display, style, maxWidth)
@@ -112,6 +118,10 @@ func buildVisualLineAroundMax(buffer *editor.Buffer, line, anchor int, style Tex
 }
 
 func presentationStyleSpans(visual VisualLine, sourceSpans []document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler) []StyleSpan {
+	return presentationStyleSpansStyled(visual, sourceSpans, base, styler, nil)
+}
+
+func presentationStyleSpansStyled(visual VisualLine, sourceSpans []document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) []StyleSpan {
 	if len(sourceSpans) == 0 {
 		return nil
 	}
@@ -127,7 +137,7 @@ func presentationStyleSpans(visual VisualLine, sourceSpans []document.Presentati
 		if from >= to {
 			continue
 		}
-		mods := styler(sourceSpan.Kind, base)
+		mods := presentationMods(sourceSpan, base, styler, spanStyler)
 		if len(mods) > 0 {
 			spans = append(spans, ResolveSpan(from, to, base, mods...))
 		}
@@ -139,6 +149,10 @@ func presentationStyleSpans(visual VisualLine, sourceSpans []document.Presentati
 }
 
 func presentationTextSpans(visual VisualLine, sourceSpans []document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler) []TextSpan {
+	return presentationTextSpansStyled(visual, sourceSpans, base, styler, nil)
+}
+
+func presentationTextSpansStyled(visual VisualLine, sourceSpans []document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) []TextSpan {
 	if len(sourceSpans) == 0 {
 		return nil
 	}
@@ -154,7 +168,7 @@ func presentationTextSpans(visual VisualLine, sourceSpans []document.Presentatio
 		if from >= to {
 			continue
 		}
-		mods := styler(sourceSpan.Kind, base)
+		mods := presentationMods(sourceSpan, base, styler, spanStyler)
 		if len(mods) > 0 {
 			spans = append(spans, Span(from, to, mods...))
 		}
@@ -163,6 +177,16 @@ func presentationTextSpans(visual VisualLine, sourceSpans []document.Presentatio
 		return nil
 	}
 	return spans
+}
+
+func presentationMods(span document.PresentationSpan, base TextStyleAttrs, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) []TextStyleFn {
+	if spanStyler != nil {
+		return spanStyler(span, base)
+	}
+	if styler != nil {
+		return styler(span.Kind, base)
+	}
+	return nil
 }
 
 // displayText creates the Unicode projection used by Shirei while retaining
@@ -638,18 +662,28 @@ func (v VisualLine) nextClusterBoundary(bounds []int, cluster int) int {
 }
 
 type EditorViewOptions struct {
-	Style             TextStyleAttrs
-	RowHeight         float32
-	Wrap              bool
-	ScrollY           *float32
-	ScrollInitialized bool
-	Rows              *editor.RowMap
-	LineNumbers       bool
-	Foldable          func(logicalLine int) bool
-	FoldMarker        func(logicalLine int) string
-	OnFoldToggle      func(logicalLine int)
-	Presentation      EditorPresentationSource
-	PresentationStyle EditorPresentationStyler
+	Style                 TextStyleAttrs
+	RowHeight             float32
+	Wrap                  bool
+	ScrollY               *float32
+	ScrollInitialized     bool
+	Rows                  *editor.RowMap
+	LineNumbers           bool
+	Foldable              func(logicalLine int) bool
+	FoldMarker            func(logicalLine int) string
+	OnFoldToggle          func(logicalLine int)
+	Presentation          EditorPresentationSource
+	PresentationStyle     EditorPresentationStyler
+	PresentationSpanStyle EditorPresentationSpanStyler
+	LineDecoration        func(logicalLine int) EditorLineDecoration
+	LineSpacing           func(logicalLine int) float32
+}
+
+// EditorLineDecoration is a deliberately small, row-level presentation hook.
+// It is paint-only: the document and editor never see these values.
+type EditorLineDecoration struct {
+	Background Vec4
+	Accent     Vec4
 }
 
 type visualLineCache struct {
@@ -670,11 +704,13 @@ func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool) {
 	}
 }
 
-func cachedVisualLine(c *visualLineCache, buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, width float32, presentation EditorPresentationSource, styler EditorPresentationStyler) (VisualLine, bool) {
+func cachedVisualLine(c *visualLineCache, buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, width float32, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) (VisualLine, bool) {
 	if visual, ok := c.Lines[line]; ok {
-		return visual, true
+		if anchor >= visual.DocStart && anchor <= visual.DocEnd {
+			return visual, true
+		}
 	}
-	visual, ok := buildVisualLineAroundMax(buffer, line, anchor, style, width, presentation, styler)
+	visual, ok := buildVisualLineAroundMaxStyled(buffer, line, anchor, style, width, presentation, styler, spanStyler)
 	if ok {
 		c.Lines[line] = visual
 		c.Order = append(c.Order, line)
@@ -744,6 +780,7 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 			return spans
 		}
 		options.PresentationStyle = MarkdownPresentationStyle
+		options.PresentationSpanStyle = MarkdownPresentationSpanStyle
 	}
 	if options.Presentation == nil {
 		code, ok := doc.DisplayCodeProjection()
@@ -756,6 +793,7 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 				return spans
 			}
 			options.PresentationStyle = MarkdownPresentationStyle
+			options.PresentationSpanStyle = MarkdownPresentationSpanStyle
 		}
 	}
 	EditableView(key, doc.Editor, options)
@@ -840,7 +878,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		beforeCaret := takeEditorCaretSnapshot(e)
 		if HasFocus() {
 			WantKeyboard()
-			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, lineCache, options.Presentation, options.PresentationStyle)
+			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, lineCache, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle, options.LineSpacing)
 		}
 		caretActivity := beforeCaret.changed(e) || editorCaretInputActivity()
 		editorFocused := HasFocus() && GetHost().WindowFocused
@@ -858,11 +896,15 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				}
 				contentWidth := editorContentWidth(width, gutterWidth)
 				lineCache.prepare(e.Revision(), contentWidth, options.Wrap)
-				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle)
+				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle)
 				if !ok {
 					return rowHeight
 				}
-				return visual.Height(rowHeight)
+				extra := float32(0)
+				if options.LineSpacing != nil {
+					extra = maxFloat(0, options.LineSpacing(logical))
+				}
+				return visual.Height(rowHeight) + extra
 			},
 			OutScrollOffset: scrollY,
 			OutFirstVisible: firstVisible,
@@ -874,7 +916,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				}
 				contentWidth := contentWidthIfWrapped(options.Wrap, editorContentWidth(width, gutterWidth))
 				lineCache.prepare(e.Revision(), contentWidth, options.Wrap)
-				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle)
+				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle)
 				if !ok {
 					return
 				}
@@ -882,7 +924,17 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				if options.Wrap {
 					itemHeight = visual.Height(rowHeight)
 				}
-				ContainerWithKey(logical, Attrs(FixHeight(itemHeight), Expand, NoClip), func() {
+				if options.LineSpacing != nil {
+					itemHeight += maxFloat(0, options.LineSpacing(logical))
+				}
+				rowAttrs := Attrs(FixHeight(itemHeight), Expand, NoClip)
+				if options.LineDecoration != nil {
+					decoration := options.LineDecoration(logical)
+					if decoration.Background != (Vec4{}) {
+						rowAttrs = AttrsWith(rowAttrs, BackgroundVec(decoration.Background))
+					}
+				}
+				ContainerWithKey(logical, rowAttrs, func() {
 					Container(Attrs(Row, Expand, NoClip), func() {
 						if options.LineNumbers {
 							Container(Attrs(FixWidth(gutterWidth-1), FixHeight(itemHeight), Pad2(0, 8), CrossAlign(AlignStart), BackgroundVec(theme.Paper)), func() {
@@ -958,7 +1010,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 	})
 }
 
-func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler) {
+func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, spacing func(int) float32) {
 	frame := GetFrameInput()
 	input := GetInputState()
 	composition := e.Composition()
@@ -1027,7 +1079,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 		var localY float32
 		var ok bool
 		if wrap {
-			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, lineWidth, lineCache, presentation, styler)
+			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, lineWidth, lineCache, presentation, styler, spanStyler, spacing)
 		} else {
 			visible := int(targetY / rowHeight)
 			if visible < 0 {
@@ -1053,7 +1105,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	}
 }
 
-func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler) (int, float32, VisualLine, bool) {
+func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, spacing func(int) float32) (int, float32, VisualLine, bool) {
 	if targetY < 0 {
 		targetY = 0
 	}
@@ -1064,15 +1116,19 @@ func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32,
 		if !ok {
 			continue
 		}
-		visual, ok := cachedVisualLine(cache, &e.Buffer, line, anchorForLine(e, line), style, width, presentation, styler)
+		visual, ok := cachedVisualLine(cache, &e.Buffer, line, anchorForLine(e, line), style, width, presentation, styler, spanStyler)
 		if !ok {
 			continue
 		}
 		height := visual.Height(style.FontSize * 1.5)
-		if targetY < top+height || visible == rows.Count()-1 {
+		extra := float32(0)
+		if spacing != nil {
+			extra = maxFloat(0, spacing(line))
+		}
+		if targetY < top+height+extra || visible == rows.Count()-1 {
 			return line, targetY - top, visual, true
 		}
-		top += height
+		top += height + extra
 	}
 	return 0, 0, VisualLine{}, false
 }

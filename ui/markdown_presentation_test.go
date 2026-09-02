@@ -68,6 +68,22 @@ func TestCodeSyntaxPresentationDoesNotChangeFontMetrics(t *testing.T) {
 	}
 }
 
+func TestMarkdownHeadingSpanStyleAddsHierarchy(t *testing.T) {
+	base := DefaultTextStyle()
+	h1 := TextStyleWith(base, MarkdownPresentationSpanStyle(document.PresentationSpan{
+		Kind: document.PresentationHeading, Level: 1,
+	}, base)...)
+	h3 := TextStyleWith(base, MarkdownPresentationSpanStyle(document.PresentationSpan{
+		Kind: document.PresentationHeading, Level: 3,
+	}, base)...)
+	if h1.FontSize <= h3.FontSize || h3.FontSize <= base.FontSize {
+		t.Fatalf("heading sizes = h1=%v h3=%v base=%v", h1.FontSize, h3.FontSize, base.FontSize)
+	}
+	if h1.Weight != WeightBold || h3.Weight != WeightBold {
+		t.Fatalf("heading weights = h1=%v h3=%v", h1.Weight, h3.Weight)
+	}
+}
+
 func TestVisualLineCarriesResolvedPresentationStylesToLayout(t *testing.T) {
 	buffer := editor.NewBuffer([]byte("func main() {}"))
 	visual, ok := buildVisualLineAround(&buffer, 0, 0, DefaultTextStyle(), func(start, end int) []document.PresentationSpan {
