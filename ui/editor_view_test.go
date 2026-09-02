@@ -405,3 +405,25 @@ func currentText(useTextArea bool, text *string, custom *editor.ScratchEditor) s
 	}
 	return string(custom.Buffer.Text())
 }
+
+func BenchmarkWrappedVisualLine(b *testing.B) {
+	for _, size := range []int{1 << 20, 10 << 20} {
+		b.Run(wrappedSizeName(size), func(b *testing.B) {
+			line := "A calm sentence with enough words to wrap across the available paper surface.\n"
+			source := []byte(strings.Repeat(line, size/len(line)+1))
+			buffer := editor.NewBuffer(source[:size])
+			style := DefaultTextStyle()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = BuildVisualLineMax(&buffer, i%buffer.LineCount(), 0, style, 640)
+			}
+		})
+	}
+}
+
+func wrappedSizeName(size int) string {
+	if size >= 10<<20 {
+		return "10MiB"
+	}
+	return "1MiB"
+}

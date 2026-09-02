@@ -59,6 +59,20 @@ func TestProjectEmitsDisposableBlockPresentation(t *testing.T) {
 	}
 }
 
+func TestProjectKeepsTableSourceVisible(t *testing.T) {
+	source := []byte("| name | value |\n| :--- | ---: |\n| one | two |\n")
+	got := Project(source, 9)
+	if !hasPresentationKind(got.Markdown.Spans, document.PresentationTable) {
+		t.Fatalf("table presentation spans = %+v", got.Markdown.Spans)
+	}
+	if len(got.Blocks) != 1 || got.Blocks[0].Kind != document.BlockTable {
+		t.Fatalf("table blocks = %+v", got.Blocks)
+	}
+	if string(source[got.Blocks[0].StartByte:got.Blocks[0].EndByte]) != string(source) {
+		t.Fatalf("table block range = %+v, source=%q", got.Blocks[0], source)
+	}
+}
+
 func TestProjectPresentationKeepsMarkdownSyntaxVisible(t *testing.T) {
 	source := []byte("## **bold**\n")
 	got := Project(source, 1)

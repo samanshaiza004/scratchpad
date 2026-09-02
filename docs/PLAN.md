@@ -337,9 +337,10 @@ surfaces, tables, and soft wrapping.
 
 ## Milestone N — prose presentation
 
-Status: in progress. The M.1 workstation shell is frozen while the document
+Status: complete. The M.1 workstation shell remains frozen while the document
 surface gains semantic presentation without a second Markdown mode or text
-authority.
+authority. Gate F is next; richer Markdown presentation remains a future
+milestone.
 
 Slices:
 
@@ -352,10 +353,10 @@ Slices:
    presentation. **Done.**
 5. N4 add block/row decoration for fenced code, blockquotes, lists, tasks,
    and thematic breaks. **Done.**
-6. N5 add source-visible table structure without a rendered-table model.
+6. N5 add source-visible table structure without a rendered-table model. **Done.**
 7. N6 verify folding, injected Go, caret/selection, and stale projection
-   composition.
-8. N7 add document-surface snapshots and targeted performance evidence.
+   composition. **Done.**
+8. N7 add document-surface snapshots and targeted performance evidence. **Done.**
 
 The first implementation uses Shirei `ShapeTextMax` inside the existing
 virtualized logical-line list. Visual-row mappings remain local to each shaped

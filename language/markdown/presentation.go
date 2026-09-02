@@ -57,9 +57,10 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 			add(start, end, document.PresentationThematicBreak)
 			addBlock(projection, document.BlockThematicBreak, start, end)
 		case *markdownast.Table:
-			if state.start < state.end {
-				add(state.start, state.end, document.PresentationTable)
-				addBlock(projection, document.BlockTable, state.start, state.end)
+			start, end := blockRange(node, source, state.end)
+			if start < end {
+				add(start, end, document.PresentationTable)
+				addBlock(projection, document.BlockTable, start, end)
 			}
 		case *ast.ListItem:
 			appendListPresentation(add, node, source)
