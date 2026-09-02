@@ -335,6 +335,34 @@ concrete usability problem. M.1 adds no document, editor, or Markdown behavior;
 Milestone N owns richer prose presentation, variable row metrics, block
 surfaces, tables, and soft wrapping.
 
+## Milestone N — prose presentation
+
+Status: in progress. The M.1 workstation shell is frozen while the document
+surface gains semantic presentation without a second Markdown mode or text
+authority.
+
+Slices:
+
+1. N0 audit the existing logical-line, Shirei shaping, projection, and
+   viewport seams.
+2. N1 establish visual-row geometry and variable logical-line heights.
+3. N2 add width-aware soft wrapping for Markdown and plain text; code remains
+   unwrapped by default.
+4. N3 add heading hierarchy, semantic spacing, and source-visible inline
+   presentation.
+5. N4 add block/row decoration for fenced code, blockquotes, lists, tasks,
+   and thematic breaks.
+6. N5 add source-visible table structure without a rendered-table model.
+7. N6 verify folding, injected Go, caret/selection, and stale projection
+   composition.
+8. N7 add document-surface snapshots and targeted performance evidence.
+
+The first implementation uses Shirei `ShapeTextMax` inside the existing
+virtualized logical-line list. Visual-row mappings remain local to each shaped
+line, and all source bytes remain owned by `ScratchEditor.Buffer`. No shell
+redesign, soft-wrap support for code, Markdown preview, or language/parser
+work is part of N.
+
 ## Gate F — unified contextual commands
 
 Objective: make one command vocabulary useful across prose and code contexts.

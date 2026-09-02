@@ -162,6 +162,50 @@ func TestLongLineChunksDoNotSplitCommonGraphemeBoundaries(t *testing.T) {
 	}
 }
 
+func TestWrappedVisualLineKeepsSourceByteMapping(t *testing.T) {
+	source := []byte("one two three four five six seven eight nine ten")
+	b := editor.NewBuffer(source)
+	visual, ok := BuildVisualLineMax(&b, 0, 0, DefaultTextStyle(), 70)
+	if !ok {
+		t.Fatal("BuildVisualLineMax failed")
+	}
+	if len(visual.Layout.Lines) < 2 {
+		t.Skip("Shirei has no usable font or the fixture did not wrap")
+	}
+	if got := visual.Height(20); got <= 20 {
+		t.Fatalf("wrapped height = %v, want more than one row", got)
+	}
+	previousEnd := -1
+	for i := range visual.Layout.Lines {
+		start, end := visual.shapedLineRange(i)
+		if start < previousEnd || end < start {
+			t.Fatalf("wrapped source range %d = %d:%d after %d", i, start, end, previousEnd)
+		}
+		previousEnd = end
+	}
+	if previousEnd != len(visual.Runes) {
+		t.Fatalf("wrapped source ended at rune %d, want %d", previousEnd, len(visual.Runes))
+	}
+}
+
+func TestWrappedVisualLineHitTestingUsesVerticalRow(t *testing.T) {
+	b := editor.NewBuffer([]byte("one two three four five six seven eight nine ten"))
+	visual, ok := BuildVisualLineMax(&b, 0, 0, DefaultTextStyle(), 70)
+	if !ok || len(visual.Layout.Lines) < 2 {
+		t.Skip("Shirei has no usable font or the fixture did not wrap")
+	}
+	firstStart, firstEnd := visual.shapedLineRange(0)
+	secondStart, _ := visual.shapedLineRange(1)
+	if secondStart <= firstStart || firstEnd <= firstStart {
+		t.Fatalf("unexpected wrapped ranges: first=%d:%d second=%d", firstStart, firstEnd, secondStart)
+	}
+	lineHeight := lineHeight(visual.Layout.Lines[0])
+	got, _ := visual.HitTestAt(lineHeight+1, 0)
+	if got < secondStart {
+		t.Fatalf("second-row hit-test = %d, want at least %d", got, secondStart)
+	}
+}
+
 func isEditorClusterBoundary(buffer *editor.Buffer, offset int) bool {
 	if offset == 0 || offset == buffer.ByteLen() {
 		return true

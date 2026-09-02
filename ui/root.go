@@ -15,6 +15,7 @@ import (
 	"scratchpad/commands"
 	"scratchpad/document"
 	"scratchpad/editor"
+	"scratchpad/language"
 	"scratchpad/language/markdown"
 	"scratchpad/workspace"
 
@@ -76,7 +77,7 @@ func RootView(state *application.Application) {
 					rows := rowMapForDocument(doc, view)
 					PaperWell(theme, Attrs(Grow(1), Expand, Clip), Attrs(Clip), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
-							Style: DefaultTextStyle(), RowHeight: 20, ScrollY: &view.ScrollY,
+							Style: DefaultTextStyle(), RowHeight: 20, Wrap: proseWraps(language.ID(doc.RootLanguage)), ScrollY: &view.ScrollY,
 							ScrollInitialized: view.ScrollInitialized,
 							LineNumbers:       true,
 							Rows:              &rows,
@@ -1586,6 +1587,10 @@ func BackgroundIf(active bool, color Vec4) AttrsFn {
 		return func(*AttrSet) {}
 	}
 	return BackgroundVec(color)
+}
+
+func proseWraps(id language.ID) bool {
+	return id == language.Markdown || id == language.PlainText
 }
 
 func isActivePath(state *application.Application, path string) bool {

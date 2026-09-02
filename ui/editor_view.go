@@ -41,6 +41,7 @@ type VisualLine struct {
 	TruncatedAfter  bool
 	ChunkIndex      int
 	ChunkCount      int
+	WrapWidth       float32
 
 	sourceBytes []int
 }
@@ -56,7 +57,14 @@ func BuildVisualLine(buffer *editor.Buffer, line int, style TextStyleAttrs) (Vis
 // lines it is centered on anchor when possible, so the active caret remains
 // visible without asking Shirei to shape megabytes synchronously.
 func BuildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs) (VisualLine, bool) {
-	return buildVisualLineAround(buffer, line, anchor, style, nil, nil)
+	return buildVisualLineAroundMax(buffer, line, anchor, style, 0, nil, nil)
+}
+
+// BuildVisualLineMax is the visual-row entry point for a known width. A
+// positive width enables Shirei's soft wrapping while preserving the same
+// local source-byte mapping used by the fixed logical-line view.
+func BuildVisualLineMax(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, maxWidth float32) (VisualLine, bool) {
+	return buildVisualLineAroundMax(buffer, line, anchor, style, maxWidth, nil, nil)
 }
 
 type EditorPresentationSource func(startByte, endByte int) []document.PresentationSpan
@@ -64,6 +72,10 @@ type EditorPresentationSource func(startByte, endByte int) []document.Presentati
 type EditorPresentationStyler func(kind document.PresentationKind, base TextStyleAttrs) []TextStyleFn
 
 func buildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, presentation EditorPresentationSource, styler EditorPresentationStyler) (VisualLine, bool) {
+	return buildVisualLineAroundMax(buffer, line, anchor, style, 0, presentation, styler)
+}
+
+func buildVisualLineAroundMax(buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, maxWidth float32, presentation EditorPresentationSource, styler EditorPresentationStyler) (VisualLine, bool) {
 	start, end, ok := buffer.LineRange(line)
 	if !ok {
 		return VisualLine{}, false
@@ -85,15 +97,16 @@ func buildVisualLineAround(buffer *editor.Buffer, line, anchor int, style TextSt
 		TruncatedAfter:  windowEnd < end,
 		ChunkIndex:      chunkIndex,
 		ChunkCount:      chunkCount,
+		WrapWidth:       maxWidth,
 		sourceBytes:     sourceBytes,
 	}
 	if presentation != nil && styler != nil {
 		sourceSpans := presentation(windowStart, windowEnd)
 		textSpans := presentationTextSpans(visual, sourceSpans, style, styler)
 		visual.layoutSpans = presentationStyleSpans(visual, sourceSpans, style, styler)
-		visual.Layout = ShapeText(display, style, textSpans...)
+		visual.Layout = ShapeTextMax(display, style, maxWidth, textSpans...)
 	} else {
-		visual.Layout = ShapeText(display, style)
+		visual.Layout = ShapeTextMax(display, style, maxWidth)
 	}
 	return visual, true
 }
@@ -396,6 +409,196 @@ func (v VisualLine) CaretX(runeIndex int, affinity editor.Affinity) float32 {
 	return high
 }
 
+// HitTestAt is the wrapped-row variant of HitTest. y is relative to the top
+// of this logical line, so a pointer in a continuation row resolves to the
+// corresponding source-rune boundary.
+func (v VisualLine) HitTestAt(y, x float32) (int, editor.Affinity) {
+	return v.hitTestLine(v.lineAtY(y), x)
+}
+
+func (v VisualLine) hitTestLine(lineIndex int, x float32) (int, editor.Affinity) {
+	if len(v.Layout.Lines) == 0 {
+		return 0, editor.AffinityLeading
+	}
+	lineIndex = maxInt(0, minInt(lineIndex, len(v.Layout.Lines)-1))
+	line := &v.Layout.Lines[lineIndex]
+	bounds := v.clusterBounds()
+	penX := float32(0)
+	for _, segment := range line.Segments {
+		for _, glyph := range segment.Glyphs {
+			cluster := int(glyph.Cluster)
+			if cluster < 0 || cluster >= len(v.Runes) {
+				continue
+			}
+			after := v.nextClusterBoundary(bounds, cluster)
+			if penX+glyph.XAdvance >= x {
+				leftSide := penX+glyph.XAdvance/2 > x
+				if segment.Dir == LTR {
+					if leftSide {
+						return cluster, editor.AffinityLeading
+					}
+					return after, editor.AffinityTrailing
+				}
+				if leftSide {
+					return after, editor.AffinityLeading
+				}
+				return cluster, editor.AffinityTrailing
+			}
+			penX += glyph.XAdvance
+		}
+	}
+	if x <= 0 {
+		start, _ := v.shapedLineRange(lineIndex)
+		return start, editor.AffinityLeading
+	}
+	_, end := v.shapedLineRange(lineIndex)
+	return end, editor.AffinityTrailing
+}
+
+// CaretPosition returns x, y, and height for a local source-rune boundary.
+// The y coordinate is relative to the top of this logical line.
+func (v VisualLine) CaretPosition(runeIndex int, affinity editor.Affinity) (float32, float32, float32) {
+	if len(v.Layout.Lines) == 0 {
+		return 0, 0, 0
+	}
+	runeIndex = maxInt(0, minInt(runeIndex, len(v.Runes)))
+	lineIndex := v.lineAtRune(runeIndex, affinity)
+	line := &v.Layout.Lines[lineIndex]
+	bounds := v.clusterBounds()
+	penX := float32(0)
+	var low, high float32
+	found := false
+	for _, segment := range line.Segments {
+		for _, glyph := range segment.Glyphs {
+			cluster := int(glyph.Cluster)
+			if cluster < 0 || cluster >= len(v.Runes) {
+				continue
+			}
+			after := v.nextClusterBoundary(bounds, cluster)
+			var candidates [2]float32
+			count := 0
+			if segment.Dir == LTR {
+				if cluster == runeIndex {
+					candidates[count] = penX
+					count++
+				}
+				if after == runeIndex {
+					candidates[count] = penX + glyph.XAdvance
+					count++
+				}
+			} else {
+				if cluster == runeIndex {
+					candidates[count] = penX + glyph.XAdvance
+					count++
+				}
+				if after == runeIndex {
+					candidates[count] = penX
+					count++
+				}
+			}
+			for i := 0; i < count; i++ {
+				x := candidates[i]
+				if !found {
+					low, high, found = x, x, true
+				} else {
+					low = minFloat(low, x)
+					high = maxFloat(high, x)
+				}
+			}
+			penX += glyph.XAdvance
+		}
+	}
+	if !found {
+		low = penX
+		high = penX
+	}
+	if affinity == editor.AffinityTrailing {
+		low = high
+	}
+	return low, v.lineTop(lineIndex), lineHeight(*line)
+}
+
+func (v VisualLine) Height(fallback float32) float32 {
+	if len(v.Layout.Lines) == 0 {
+		return fallback
+	}
+	var total float32
+	for _, line := range v.Layout.Lines {
+		total += lineHeight(line)
+	}
+	if total <= 0 {
+		return fallback
+	}
+	return total
+}
+
+func lineHeight(line ShapedTextLine) float32 {
+	if line.Height > 0 {
+		return line.Height
+	}
+	return DefaultTextSize * 1.5
+}
+
+func (v VisualLine) lineTop(index int) float32 {
+	var y float32
+	for i := 0; i < index && i < len(v.Layout.Lines); i++ {
+		y += lineHeight(v.Layout.Lines[i])
+	}
+	return y
+}
+
+func (v VisualLine) lineAtY(y float32) int {
+	if len(v.Layout.Lines) == 0 || y <= 0 {
+		return 0
+	}
+	var top float32
+	for i, line := range v.Layout.Lines {
+		top += lineHeight(line)
+		if y < top {
+			return i
+		}
+	}
+	return len(v.Layout.Lines) - 1
+}
+
+func (v VisualLine) lineAtRune(runeIndex int, affinity editor.Affinity) int {
+	if len(v.Layout.Lines) == 0 {
+		return 0
+	}
+	for i := range v.Layout.Lines {
+		start, end := v.shapedLineRange(i)
+		if runeIndex < end || i == len(v.Layout.Lines)-1 {
+			if runeIndex == start && i > 0 && affinity == editor.AffinityLeading {
+				return i
+			}
+			return i
+		}
+	}
+	return len(v.Layout.Lines) - 1
+}
+
+func (v VisualLine) shapedLineRange(index int) (int, int) {
+	if index < 0 || index >= len(v.Layout.Lines) {
+		return 0, len(v.Runes)
+	}
+	bounds := v.clusterBounds()
+	start := len(v.Runes)
+	end := 0
+	for _, segment := range v.Layout.Lines[index].Segments {
+		for _, glyph := range segment.Glyphs {
+			cluster := int(glyph.Cluster)
+			start = minInt(start, cluster)
+			if cluster >= 0 && cluster < len(v.Runes) {
+				end = maxInt(end, v.nextClusterBoundary(bounds, cluster))
+			}
+		}
+	}
+	if start == len(v.Runes) {
+		start = end
+	}
+	return start, end
+}
+
 func (v VisualLine) clusterBounds() []int {
 	bounds := []int{0, len(v.Runes)}
 	for lineIndex := range v.Layout.Lines {
@@ -437,6 +640,7 @@ func (v VisualLine) nextClusterBoundary(bounds []int, cluster int) int {
 type EditorViewOptions struct {
 	Style             TextStyleAttrs
 	RowHeight         float32
+	Wrap              bool
 	ScrollY           *float32
 	ScrollInitialized bool
 	Rows              *editor.RowMap
@@ -446,6 +650,78 @@ type EditorViewOptions struct {
 	OnFoldToggle      func(logicalLine int)
 	Presentation      EditorPresentationSource
 	PresentationStyle EditorPresentationStyler
+}
+
+type visualLineCache struct {
+	Revision uint64
+	Width    float32
+	Wrap     bool
+	Lines    map[int]VisualLine
+	Order    []int
+}
+
+func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool) {
+	if c.Lines == nil || c.Revision != revision || c.Width != width || c.Wrap != wrap {
+		c.Revision = revision
+		c.Width = width
+		c.Wrap = wrap
+		c.Lines = make(map[int]VisualLine)
+		c.Order = nil
+	}
+}
+
+func cachedVisualLine(c *visualLineCache, buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, width float32, presentation EditorPresentationSource, styler EditorPresentationStyler) (VisualLine, bool) {
+	if visual, ok := c.Lines[line]; ok {
+		return visual, true
+	}
+	visual, ok := buildVisualLineAroundMax(buffer, line, anchor, style, width, presentation, styler)
+	if ok {
+		c.Lines[line] = visual
+		c.Order = append(c.Order, line)
+		const cacheLimit = 256
+		if len(c.Order) > cacheLimit {
+			oldest := c.Order[0]
+			c.Order = c.Order[1:]
+			delete(c.Lines, oldest)
+		}
+	}
+	return visual, ok
+}
+
+func anchorForLine(e *editor.ScratchEditor, line int) int {
+	if start, end, ok := e.Buffer.LineRange(line); ok && e.Cursor >= start && e.Cursor <= end {
+		return e.Cursor
+	}
+	return 0
+}
+
+func editorContentWidth(width, gutter float32) float32 {
+	content := width - gutter
+	if content < 1 {
+		return 1
+	}
+	return content
+}
+
+func contentWidthIfWrapped(wrap bool, width float32) float32 {
+	if !wrap {
+		return 0
+	}
+	return width
+}
+
+func minFloat(a, b float32) float32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float32) float32 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // EditableDocumentView binds the existing Shirei-backed editor view to the
@@ -525,9 +801,10 @@ func codePresentationKind(kind document.HighlightKind) document.PresentationKind
 	}
 }
 
-// EditableView is the fixed-height Shirei view for ScratchEditor. It shapes
-// only virtualized logical rows; the editor core remains unaware of glyphs,
-// focus, clipboard transport, or native IME state.
+// EditableView is the Shirei view for ScratchEditor. It virtualizes logical
+// buffer lines, while prose lines may occupy several shaped visual rows. The
+// editor core remains unaware of glyphs, focus, clipboard transport, or native
+// IME state.
 func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 	theme := DefaultTheme()
 	style := options.Style
@@ -558,19 +835,35 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		}
 		firstVisible := Use[int]("editor-first-visible")
 		lastVisible := Use[int]("editor-last-visible")
+		lineCache := Use[visualLineCache]("editor-visual-lines")
 		caretBlink := Use[caretBlinkState]("editor-caret-blink")
 		beforeCaret := takeEditorCaretSnapshot(e)
 		if HasFocus() {
 			WantKeyboard()
-			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth)
+			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, lineCache, options.Presentation, options.PresentationStyle)
 		}
 		caretActivity := beforeCaret.changed(e) || editorCaretInputActivity()
 		editorFocused := HasFocus() && GetHost().WindowFocused
 
 		VirtualListViewExt("editor-lines", VirtualListAttrs{
-			ItemCount:       rows.Count(),
-			ItemKey:         func(index int) any { logical, _ := rows.Logical(index); return logical },
-			ItemHeight:      func(index int, width float32) float32 { return rowHeight },
+			ItemCount: rows.Count(),
+			ItemKey:   func(index int) any { logical, _ := rows.Logical(index); return logical },
+			ItemHeight: func(index int, width float32) float32 {
+				if !options.Wrap {
+					return rowHeight
+				}
+				logical, ok := rows.Logical(index)
+				if !ok {
+					return rowHeight
+				}
+				contentWidth := editorContentWidth(width, gutterWidth)
+				lineCache.prepare(e.Revision(), contentWidth, options.Wrap)
+				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle)
+				if !ok {
+					return rowHeight
+				}
+				return visual.Height(rowHeight)
+			},
 			OutScrollOffset: scrollY,
 			OutFirstVisible: firstVisible,
 			OutLastVisible:  lastVisible,
@@ -579,18 +872,20 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				if !ok {
 					return
 				}
-				anchor := 0
-				if start, end, exists := e.Buffer.LineRange(logical); exists && e.Cursor >= start && e.Cursor <= end {
-					anchor = e.Cursor
-				}
-				visual, ok := buildVisualLineAround(&e.Buffer, logical, anchor, style, options.Presentation, options.PresentationStyle)
+				contentWidth := contentWidthIfWrapped(options.Wrap, editorContentWidth(width, gutterWidth))
+				lineCache.prepare(e.Revision(), contentWidth, options.Wrap)
+				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle)
 				if !ok {
 					return
 				}
-				ContainerWithKey(logical, Attrs(FixHeight(rowHeight), Expand, NoClip), func() {
+				itemHeight := rowHeight
+				if options.Wrap {
+					itemHeight = visual.Height(rowHeight)
+				}
+				ContainerWithKey(logical, Attrs(FixHeight(itemHeight), Expand, NoClip), func() {
 					Container(Attrs(Row, Expand, NoClip), func() {
 						if options.LineNumbers {
-							Container(Attrs(FixWidth(gutterWidth-1), FixHeight(rowHeight), Pad2(0, 8), CrossMid, BackgroundVec(theme.Paper)), func() {
+							Container(Attrs(FixWidth(gutterWidth-1), FixHeight(itemHeight), Pad2(0, 8), CrossAlign(AlignStart), BackgroundVec(theme.Paper)), func() {
 								if options.Foldable != nil && options.Foldable(logical) {
 									foldButton := ProcessButtonEvents(false)
 									marker := "▾"
@@ -608,7 +903,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 								}
 								Label(fmt.Sprintf("%*d", len(fmt.Sprintf("%d", e.Buffer.LineCount())), logical+1), FontSize(style.FontSize*0.85), TextColorVec(theme.Muted))
 							})
-							Element(Attrs(FixWidth(1), FixHeight(rowHeight), BackgroundVec(theme.Shadow), NoAnimate))
+							Element(Attrs(FixWidth(1), FixHeight(itemHeight), BackgroundVec(theme.Shadow), NoAnimate))
 						}
 						Container(Attrs(Grow(1), Expand, NoClip), func() {
 							selectionFrom, selectionTo := visibleSelection(visual, e)
@@ -616,12 +911,15 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 
 							if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd {
 								localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)
-								x := visual.CaretX(localRune, e.Affinity)
+								x, caretY, caretHeight := visual.CaretPosition(localRune, e.Affinity)
 								composition := e.Composition()
 								ordinaryCaretEligible := editorFocused && e.Cursor == e.Anchor && composition.Text == ""
 								blinkVisible := caretBlink.sync(time.Now(), ordinaryCaretEligible, caretActivity, GetHost().HeadlessRender, RequestNextFrame)
 								showCaret := ordinaryCaretEligible && blinkVisible
 								caret := editorCaretGeometry(rowHeight, style)
+								if caretHeight > 0 {
+									caret.Height = caretHeight
+								}
 								if composition.Text != "" {
 									// Keep the established full-row IME anchor independent
 									// from the narrowed ordinary insertion caret.
@@ -634,7 +932,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 									if !showCaret {
 										caretColor[3] = 0
 									}
-									Container(Attrs(FloatVec(Vec2{x, caret.Y}), MinSize(caret.Width, caret.Height), InFront, BackgroundVec(caretColor)), func() {
+									Container(Attrs(FloatVec(Vec2{x, caretY + caret.Y}), MinSize(caret.Width, caret.Height), InFront, BackgroundVec(caretColor)), func() {
 										r := GetScreenRect()
 										GetHost().CaretPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
 										GetHost().CaretHeight = r.Size[1]
@@ -660,7 +958,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 	})
 }
 
-func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32) {
+func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler) {
 	frame := GetFrameInput()
 	input := GetInputState()
 	composition := e.Composition()
@@ -719,19 +1017,29 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 
 	if IsClicked() || IsActive() {
 		content := GetContentRect()
-		visible := int((input.MousePoint[1] - content.Origin[1] + scrollY) / rowHeight)
-		if visible < 0 {
-			visible = 0
-		}
-		line, ok := rows.Logical(visible)
-		if !ok {
-			return
-		}
 		if input.MousePoint[0]-content.Origin[0] < gutterWidth {
 			return
 		}
-		if visual, ok := BuildVisualLineAround(&e.Buffer, line, e.Cursor, style); ok {
-			localRune, affinity := visual.HitTest(input.MousePoint[0] - content.Origin[0] - gutterWidth)
+		targetY := input.MousePoint[1] - content.Origin[1] + scrollY
+		lineWidth := contentWidthIfWrapped(wrap, editorContentWidth(content.Size[0], gutterWidth))
+		var line int
+		var visual VisualLine
+		var localY float32
+		var ok bool
+		if wrap {
+			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, lineWidth, lineCache, presentation, styler)
+		} else {
+			visible := int(targetY / rowHeight)
+			if visible < 0 {
+				visible = 0
+			}
+			line, ok = rows.Logical(visible)
+			if ok {
+				visual, ok = BuildVisualLineAround(&e.Buffer, line, e.Cursor, style)
+			}
+		}
+		if ok {
+			localRune, affinity := visual.HitTestAt(localY, input.MousePoint[0]-content.Origin[0]-gutterWidth)
 			position := visual.DocStart + visual.LocalRuneToByte(localRune)
 			if IsClicked() && shift {
 				e.SetSelection(e.Anchor, position)
@@ -743,6 +1051,30 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 			e.SetAffinity(affinity)
 		}
 	}
+}
+
+func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler) (int, float32, VisualLine, bool) {
+	if targetY < 0 {
+		targetY = 0
+	}
+	cache.prepare(e.Revision(), width, true)
+	var top float32
+	for visible := 0; visible < rows.Count(); visible++ {
+		line, ok := rows.Logical(visible)
+		if !ok {
+			continue
+		}
+		visual, ok := cachedVisualLine(cache, &e.Buffer, line, anchorForLine(e, line), style, width, presentation, styler)
+		if !ok {
+			continue
+		}
+		height := visual.Height(style.FontSize * 1.5)
+		if targetY < top+height || visible == rows.Count()-1 {
+			return line, targetY - top, visual, true
+		}
+		top += height
+	}
+	return 0, 0, VisualLine{}, false
 }
 
 func visibleSelection(visual VisualLine, e *editor.ScratchEditor) (from, to int) {
