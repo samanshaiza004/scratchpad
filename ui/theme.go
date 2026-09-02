@@ -2,39 +2,64 @@ package ui
 
 import . "go.hasen.dev/shirei"
 
-// Theme is the small semantic palette for the Scratchpad shell. Keeping the
-// roles here makes the editor surface and the application chrome coherent
-// without making Shirei's default widget appearance part of the product API.
+// Theme is Scratchpad's compact material palette. Machinery uses the chrome,
+// edge, selection, and focus roles; document content uses Paper and Ink. The
+// palette intentionally belongs to the product rather than pretending to be a
+// general Shirei theming layer.
 type Theme struct {
-	Window    Vec4
-	Chrome    Vec4
-	Raised    Vec4
-	Paper     Vec4
-	Sidebar   Vec4
-	Inset     Vec4
-	Ink       Vec4
-	Muted     Vec4
-	Border    Vec4
-	Highlight Vec4
-	Selection Vec4
-	Focus     Vec4
-	Warning   Vec4
+	Window       Vec4
+	Chrome       Vec4
+	ChromeRaised Vec4
+	ChromeInset  Vec4
+	Paper        Vec4
+	Sidebar      Vec4
+	Popup        Vec4
+
+	Ink   Vec4
+	Muted Vec4
+
+	Light      Vec4
+	Highlight  Vec4
+	Shadow     Vec4
+	DarkShadow Vec4
+	Border     Vec4
+
+	Selection          Vec4
+	SelectionHighlight Vec4
+	SelectionShadow    Vec4
+
+	Focus       Vec4
+	Warning     Vec4
+	WarningWell Vec4
 }
 
 func DefaultTheme() Theme {
 	return Theme{
-		Window:    Vec4{90, 3, 72, 1},
-		Chrome:    Vec4{60, 5, 77, 1},
-		Raised:    Vec4{60, 7, 81, 1},
-		Paper:     Vec4{48, 13, 81, 1},
-		Sidebar:   Vec4{60, 5, 77, 1},
-		Inset:     Vec4{90, 3, 71, 1},
-		Ink:       Vec4{210, 8, 15, 1},
-		Muted:     Vec4{204, 4, 35, 1},
-		Border:    Vec4{197, 3, 45, 1},
-		Highlight: Vec4{51, 20, 92, 1},
-		Selection: Vec4{213, 31, 50, 1},
-		Focus:     Vec4{213, 42, 44, 1},
-		Warning:   Vec4{35, 51, 54, 1},
+		// Aero Paper palette: cool silver-blue machinery around a warm ivory
+		// writing surface. Values are HSLA, as required by Shirei.
+		Window:       Vec4{195, 5, 81, 1},
+		Chrome:       Vec4{210, 5, 85, 1},
+		ChromeRaised: Vec4{180, 5, 90, 1},
+		ChromeInset:  Vec4{200, 6, 80, 1},
+		Paper:        Vec4{48, 21, 91, 1},
+		Sidebar:      Vec4{150, 5, 88, 1},
+		Popup:        Vec4{48, 13, 94, 1},
+
+		Ink:   Vec4{200, 8, 15, 1},
+		Muted: Vec4{198, 6, 37, 1},
+
+		Light:      Vec4{150, 8, 97, 1},
+		Highlight:  Vec4{198, 12, 93, 1},
+		Shadow:     Vec4{202, 6, 52, 1},
+		DarkShadow: Vec4{202, 7, 44, 1},
+		Border:     Vec4{197, 5, 64, 1},
+
+		Selection:          Vec4{206, 44, 69, 1},
+		SelectionHighlight: Vec4{205, 40, 80, 1},
+		SelectionShadow:    Vec4{207, 31, 54, 1},
+
+		Focus:       Vec4{208, 38, 50, 1},
+		Warning:     Vec4{37, 46, 53, 1},
+		WarningWell: Vec4{40, 27, 82, 1},
 	}
 }

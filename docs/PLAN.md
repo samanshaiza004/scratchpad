@@ -294,6 +294,47 @@ This closes the packaging consequence of Gate E without reopening parser or
 editor architecture. Cross-CGO toolchain engineering remains deferred to
 release hardening if a single-host release workflow later becomes necessary.
 
+## Milestone M — paper workstation visual pass
+
+Status: complete for the headless visual and interaction scope. Scratchpad now
+uses one semantic material palette and a small set of downstream Shirei
+primitives for raised, inset, flat-paper, selected, focused, and floating
+states. The shell separates cool-gray machinery from the warm editor surface;
+Files/Outline tabs, command and toolbar controls, tree rows, document tabs,
+splitter, status bar, scrollbars, popups, and dialogs share that physical
+grammar. The editor/document/language contracts are unchanged.
+
+Ten host-font visual baselines live under `ui/testdata/snapshots/` and cover
+empty, single-file, Markdown workspace, selected tree, multiple tabs, both
+sidebar modes, status, popup, and dialog states. They run explicitly with
+`SCRATCHPAD_VISUAL_SNAPSHOTS=1` so font-dependent images do not make ordinary
+CI brittle. Behavioral tests continue to cover segmented selection, buttons,
+tree layout, tab activation/close, editor scrolling, and shell commands.
+
+Known framework limits in Shirei v0.6.7: stock menu popup colors are private,
+and the stock modal has a fixed white card. Scratchpad preserves Shirei menu
+behavior while styling its trigger, and uses a downstream modal shell around
+the framework focus/dismiss primitives. Native visual and interaction checks
+remain platform smoke work; no macOS, Windows, or Linux native certification
+is claimed by this headless milestone.
+
+Deferred to Prose Presentation: richer Markdown layout, punctuation hiding,
+tables, variable row heights, block surfaces, and soft wrapping.
+
+### M.1 — Aero Paper retheme and shell freeze
+
+Status: complete. The workstation shell has been rethemed toward the approved
+Aero Paper direction without changing its structure or behavior. The palette
+now separates warm ivory paper from softened silver-blue-gray machinery, with
+muted blue reserved for selection/focus and shallow gradients carrying most of
+the depth. Raised and inset primitives remain in place but use fine contours
+and lower-contrast surfaces instead of the earlier Classic four-edge bevel.
+
+The shell is frozen for the next milestone: future chrome changes require a
+concrete usability problem. M.1 adds no document, editor, or Markdown behavior;
+Milestone N owns richer prose presentation, variable row metrics, block
+surfaces, tables, and soft wrapping.
+
 ## Gate F — unified contextual commands
 
 Objective: make one command vocabulary useful across prose and code contexts.

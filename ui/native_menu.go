@@ -6,6 +6,7 @@ import (
 	"scratchpad/application"
 	"scratchpad/commands"
 
+	"go.hasen.dev/shirei"
 	nativemenu "go.hasen.dev/shirei/ext/menu"
 )
 
@@ -13,6 +14,9 @@ import (
 // forked Shirei extension supports it. The same command IDs are used by the
 // rendered fallback and the native adapter.
 func nativeMenuBar(state *application.Application, shell *workbenchState) bool {
+	if shirei.GetHost().HeadlessRender {
+		return false
+	}
 	if !nativemenu.Supported() {
 		return false
 	}

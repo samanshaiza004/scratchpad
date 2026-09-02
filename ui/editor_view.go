@@ -529,6 +529,7 @@ func codePresentationKind(kind document.HighlightKind) document.PresentationKind
 // only virtualized logical rows; the editor core remains unaware of glyphs,
 // focus, clipboard transport, or native IME state.
 func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
+	theme := DefaultTheme()
 	style := options.Style
 	if style.FontSize == 0 && style.TextColor == (Vec4{}) && len(style.FontFamilies) == 0 {
 		style = DefaultTextStyle()
@@ -544,7 +545,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 	gutterWidth := float32(0)
 	if options.LineNumbers {
 		digits := len(fmt.Sprintf("%d", e.Buffer.LineCount()))
-		gutterWidth = float32(digits*8 + 22)
+		gutterWidth = float32(digits*8 + 23)
 	}
 	ContainerWithKey(key, Attrs(Viewport, Expand, Focusable, Clip), func() {
 		AutoFocus()
@@ -589,20 +590,25 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				ContainerWithKey(logical, Attrs(FixHeight(rowHeight), Expand, NoClip), func() {
 					Container(Attrs(Row, Expand, NoClip), func() {
 						if options.LineNumbers {
-							Container(Attrs(FixWidth(gutterWidth), FixHeight(rowHeight), Pad2(0, 8), CrossMid), func() {
+							Container(Attrs(FixWidth(gutterWidth-1), FixHeight(rowHeight), Pad2(0, 8), CrossMid, BackgroundVec(theme.Paper)), func() {
 								if options.Foldable != nil && options.Foldable(logical) {
 									foldButton := ProcessButtonEvents(false)
 									marker := "▾"
 									if options.FoldMarker != nil {
 										marker = options.FoldMarker(logical)
 									}
-									Label(marker, FontSize(style.FontSize*0.85), TextColorVec(Vec4{0.42, 0.45, 0.5, 1}))
+									markerColor := theme.Muted
+									if foldButton.Hovered {
+										markerColor = theme.Focus
+									}
+									Label(marker, FontSize(style.FontSize*0.85), TextColorVec(markerColor))
 									if foldButton.Clicked && options.OnFoldToggle != nil {
 										options.OnFoldToggle(logical)
 									}
 								}
-								Label(fmt.Sprintf("%*d", len(fmt.Sprintf("%d", e.Buffer.LineCount())), logical+1), FontSize(style.FontSize*0.85), TextColorVec(Vec4{0.42, 0.45, 0.5, 1}))
+								Label(fmt.Sprintf("%*d", len(fmt.Sprintf("%d", e.Buffer.LineCount())), logical+1), FontSize(style.FontSize*0.85), TextColorVec(theme.Muted))
 							})
+							Element(Attrs(FixWidth(1), FixHeight(rowHeight), BackgroundVec(theme.Shadow), NoAnimate))
 						}
 						Container(Attrs(Grow(1), Expand, NoClip), func() {
 							selectionFrom, selectionTo := visibleSelection(visual, e)
@@ -624,7 +630,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 										GetHost().CompositionPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
 									})
 								} else {
-									caretColor := Vec4{0, 0, 20, 1}
+									caretColor := theme.Ink
 									if !showCaret {
 										caretColor[3] = 0
 									}

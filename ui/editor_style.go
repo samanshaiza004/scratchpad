@@ -46,6 +46,7 @@ func codeFontFamilies() []string {
 // text and unknown roots.
 func EditorTextStyle(rootLanguage language.ID) TextStyleAttrs {
 	style := DefaultTextStyle()
+	style.TextColor = DefaultTheme().Ink
 	if isCodeLanguage(rootLanguage) {
 		style.FontFamilies = codeFontFamilies()
 	}

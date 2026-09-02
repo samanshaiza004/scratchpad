@@ -31,6 +31,7 @@ func RootView(state *application.Application) {
 	if state == nil {
 		return
 	}
+	installWorkstationChrome()
 	state.PollWatcher()
 	state.ReconcileStale()
 	state.PollDerived(time.Now())
@@ -50,11 +51,12 @@ func RootView(state *application.Application) {
 
 	Container(Attrs(Viewport, Expand, BackgroundVec(theme.Window), NoAnimate), func() {
 		menuBar(state, shell, theme)
-		Container(Attrs(Row, Grow(1), Expand, Gap(8), Pad2(0, 8)), func() {
+		Container(Attrs(Row, Grow(1), Expand, Gap(0)), func() {
 			if shell.SidebarVisible && (state.HasWorkspace || shell.SidebarMode == SidebarOutline) {
 				sidebar(state, shell, theme)
+				EtchedDivider(theme, dividerVertical)
 			}
-			Container(Attrs(Grow(1), Expand, Gap(0), Clip), func() {
+			Container(Attrs(Grow(1), Expand, Gap(0), Clip, BackgroundVec(theme.Chrome)), func() {
 				if len(state.Order) == 0 {
 					emptyState(state, shell, theme)
 					return
@@ -72,7 +74,7 @@ func RootView(state *application.Application) {
 						view.CollapsedHeadings = nil
 					}
 					rows := rowMapForDocument(doc, view)
-					Container(Attrs(Grow(1), Expand, Clip, BackgroundVec(theme.Paper)), func() {
+					PaperWell(theme, Attrs(Grow(1), Expand, Clip), Attrs(Clip), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
 							Style: DefaultTextStyle(), RowHeight: 20, ScrollY: &view.ScrollY,
 							ScrollInitialized: view.ScrollInitialized,
@@ -128,6 +130,8 @@ type workbenchState struct {
 	ContextMenu        contextMenuState
 	CloseQueue         []application.DocumentID
 	RevealPath         func(string) error
+	TabIDs             map[application.DocumentID]ContainerId // transient handles used by interaction tests
+	TabCloseIDs        map[application.DocumentID]ContainerId // transient handles used by interaction tests
 }
 
 type SidebarMode uint8
@@ -191,70 +195,73 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 	if nativeMenuBar(state, shell) {
 		return
 	}
-	Container(Attrs(Row, CrossMid, FixHeight(34), Pad2(0, 8), Gap(2), BackgroundVec(theme.Chrome), BorderWidth(1), BorderColorVec(theme.Border)), func() {
-		CtrlMenuButton(NoIcon, "File", func() {
-			if MenuItem(NoIcon, "Open…    "+primaryShortcut("O")) {
-				executeCommand(state, shell, commands.FileOpen)
-			}
-			if MenuItem(NoIcon, "Quick Open…    "+primaryShortcut("P")) {
-				executeCommand(state, shell, commands.QuickOpen)
-			}
-			if MenuItem(NoIcon, "Open Recent") {
-				executeCommand(state, shell, commands.FileOpenRecent)
-			}
-			if MenuItem(NoIcon, "Reopen Closed") {
-				executeCommand(state, shell, commands.DocumentReopenClosed)
-			}
-			MenuSeparator()
-			if MenuItem(NoIcon, "Save    "+primaryShortcut("S")) {
-				executeCommand(state, shell, commands.FileSave)
-			}
-			if MenuItem(NoIcon, "Save As…") {
-				executeCommand(state, shell, commands.FileSaveAs)
-			}
-			if MenuItem(NoIcon, "Close    "+primaryShortcut("W")) {
-				executeCommand(state, shell, commands.DocumentClose)
+	Container(Attrs(FixHeight(36), Expand, NoAnimate), func() {
+		ChromeBar(theme, Attrs(Row, CrossMid, FixHeight(34), Pad2(0, 8), Gap(2)), func() {
+			WorkstationMenuButton(theme, "File", func() {
+				if MenuItem(NoIcon, "Open…    "+primaryShortcut("O")) {
+					executeCommand(state, shell, commands.FileOpen)
+				}
+				if MenuItem(NoIcon, "Quick Open…    "+primaryShortcut("P")) {
+					executeCommand(state, shell, commands.QuickOpen)
+				}
+				if MenuItem(NoIcon, "Open Recent") {
+					executeCommand(state, shell, commands.FileOpenRecent)
+				}
+				if MenuItem(NoIcon, "Reopen Closed") {
+					executeCommand(state, shell, commands.DocumentReopenClosed)
+				}
+				MenuSeparator()
+				if MenuItem(NoIcon, "Save    "+primaryShortcut("S")) {
+					executeCommand(state, shell, commands.FileSave)
+				}
+				if MenuItem(NoIcon, "Save As…") {
+					executeCommand(state, shell, commands.FileSaveAs)
+				}
+				if MenuItem(NoIcon, "Close    "+primaryShortcut("W")) {
+					executeCommand(state, shell, commands.DocumentClose)
+				}
+			})
+			WorkstationMenuButton(theme, "Edit", func() {
+				if MenuItem(NoIcon, "Find…    "+primaryShortcut("F")) {
+					executeCommand(state, shell, commands.DocumentFind)
+				}
+				if MenuItem(NoIcon, "Find in Files…    "+primaryShortcut("Shift+F")) {
+					executeCommand(state, shell, commands.WorkspaceSearch)
+				}
+			})
+			WorkstationMenuButton(theme, "View", func() {
+				if MenuItem(NoIcon, "Outline") {
+					executeCommand(state, shell, commands.OutlineToggle)
+				}
+				if (state.HasWorkspace || state.ActiveDocument() != nil) && MenuItem(NoIcon, "Toggle Sidebar") {
+					executeCommand(state, shell, commands.ViewToggleSidebar)
+				}
+				if state.HasWorkspace && MenuItem(NoIcon, "Refresh Workspace") {
+					executeCommand(state, shell, commands.WorkspaceRefresh)
+				}
+			})
+			WorkstationMenuButton(theme, "Go", func() {
+				if MenuItem(NoIcon, "Quick Open…") {
+					executeCommand(state, shell, commands.QuickOpen)
+				}
+				if MenuItem(NoIcon, "Next Document") {
+					executeCommand(state, shell, commands.TabNext)
+				}
+				if MenuItem(NoIcon, "Previous Document") {
+					executeCommand(state, shell, commands.TabPrevious)
+				}
+				if MenuItem(NoIcon, "Go to Line…") {
+					executeCommand(state, shell, commands.DocumentGoToLine)
+				}
+			})
+			WorkstationMenuButton(theme, "Help", func() { MenuItem(NoIcon, "Scratchpad") })
+			Container(Attrs(Grow(1)), func() {})
+			Label(documentTitle(state), FontSize(12), FontWeight(WeightBold), TextColorVec(theme.Ink))
+			if state.HasWorkspace {
+				Label(filepath.Base(state.Workspace.Root), FontSize(11), TextColorVec(theme.Muted))
 			}
 		})
-		CtrlMenuButton(NoIcon, "Edit", func() {
-			if MenuItem(NoIcon, "Find…    "+primaryShortcut("F")) {
-				executeCommand(state, shell, commands.DocumentFind)
-			}
-			if MenuItem(NoIcon, "Find in Files…    "+primaryShortcut("Shift+F")) {
-				executeCommand(state, shell, commands.WorkspaceSearch)
-			}
-		})
-		CtrlMenuButton(NoIcon, "View", func() {
-			if MenuItem(NoIcon, "Outline") {
-				executeCommand(state, shell, commands.OutlineToggle)
-			}
-			if (state.HasWorkspace || state.ActiveDocument() != nil) && MenuItem(NoIcon, "Toggle Sidebar") {
-				executeCommand(state, shell, commands.ViewToggleSidebar)
-			}
-			if state.HasWorkspace && MenuItem(NoIcon, "Refresh Workspace") {
-				executeCommand(state, shell, commands.WorkspaceRefresh)
-			}
-		})
-		CtrlMenuButton(NoIcon, "Go", func() {
-			if MenuItem(NoIcon, "Quick Open…") {
-				executeCommand(state, shell, commands.QuickOpen)
-			}
-			if MenuItem(NoIcon, "Next Document") {
-				executeCommand(state, shell, commands.TabNext)
-			}
-			if MenuItem(NoIcon, "Previous Document") {
-				executeCommand(state, shell, commands.TabPrevious)
-			}
-			if MenuItem(NoIcon, "Go to Line…") {
-				executeCommand(state, shell, commands.DocumentGoToLine)
-			}
-		})
-		CtrlMenuButton(NoIcon, "Help", func() { MenuItem(NoIcon, "Scratchpad") })
-		Container(Attrs(Grow(1)), func() {})
-		Label(documentTitle(state), FontSize(12), FontWeight(WeightBold), TextColorVec(theme.Ink))
-		if state.HasWorkspace {
-			Label(filepath.Base(state.Workspace.Root), FontSize(11), TextColorVec(theme.Muted))
-		}
+		EtchedDivider(theme, dividerHorizontal)
 	})
 }
 
@@ -277,13 +284,10 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 	if tree.Expanded == nil {
 		tree.Expanded = make(map[string]bool)
 	}
-	Container(Attrs(FixWidth(248), Expand, Clip, BackgroundVec(theme.Sidebar), BorderWidth(1), BorderColorVec(theme.Border)), func() {
-		Container(Attrs(Row, CrossMid, FixHeight(34), Pad2(0, 10), BorderWidth(1), BorderColorVec(theme.Border)), func() {
-			SegmentedControl(&shell.SidebarMode, Cell("Files", SidebarFiles), Cell("Outline", SidebarOutline))
+	Container(Attrs(FixWidth(248), Expand, Clip, BackgroundVec(theme.Sidebar), NoAnimate), func() {
+		Container(Attrs(Row, CrossAlign(AlignEnd), FixHeight(34), Pad4(5, 8, 0, 8)), func() {
+			WorkstationSegmentedControl(theme, &shell.SidebarMode, Cell("Files", SidebarFiles), Cell("Outline", SidebarOutline))
 			Container(Attrs(Grow(1)), func() {})
-			if shell.SidebarMode == SidebarFiles && CtrlButton(NoIcon, "Refresh", true) {
-				tree.Expanded = make(map[string]bool)
-			}
 		})
 		if shell.SidebarMode == SidebarOutline {
 			outlinePanel(state, shell, theme)
@@ -312,13 +316,12 @@ func outlinePanel(state *application.Application, shell *workbenchState, theme T
 			Label("Updating outline…", FontSize(11), TextColorVec(theme.Muted))
 		}
 		for _, heading := range doc.Projections.Headings {
-			Container(Attrs(Row, FixHeight(24), Expand, Pad2(0, float32(8+heading.Level*10))), func() {
-				button := ProcessButtonEvents(doc.Projections.Valid)
+			button := WorkstationRow(theme, Attrs(Row, FixHeight(24), Expand, Pad2(0, float32(8+heading.Level*10))), false, !doc.Projections.Valid, func() {
 				Label(heading.Text, FontSize(11), TextColorVec(theme.Ink))
-				if button.Clicked && doc.Projections.Valid {
-					doc.Editor.SetCursor(heading.StartByte)
-				}
 			})
+			if button.Clicked && doc.Projections.Valid {
+				doc.Editor.SetCursor(heading.StartByte)
+			}
 		}
 		if len(doc.Projections.Tasks) > 0 {
 			Label("Tasks", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Muted))
@@ -338,7 +341,7 @@ func outlinePanel(state *application.Application, shell *workbenchState, theme T
 
 func outlineTask(state *application.Application, doc *document.Document, task document.Task, enabled bool, theme Theme) {
 	Container(Attrs(Row, FixHeight(24), Expand, Pad2(0, 10), Gap(4)), func() {
-		if CtrlButton(NoIcon, checkbox(task.Checked), enabled) && enabled {
+		if WorkstationToolButton(theme, checkbox(task.Checked), enabled) && enabled {
 			marker, err := doc.Editor.Buffer.Bytes(task.MarkerStart, task.MarkerEnd)
 			if err == nil && (string(marker) == "[ ]" || string(marker) == "[x]" || string(marker) == "[X]") {
 				replacement := []byte("[ ]")
@@ -370,7 +373,7 @@ func outlineLink(state *application.Application, shell *workbenchState, doc *doc
 		if button.Clicked && enabled {
 			doc.Editor.SetCursor(link.StartByte)
 		}
-		if CtrlButton(NoIcon, "Open", enabled) && enabled {
+		if WorkstationToolButton(theme, "Open", enabled) && enabled {
 			openLinkTarget(state, shell, doc, link.Target)
 		}
 	})
@@ -541,39 +544,39 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 		ContainerWithKey(entry.Path, Attrs(Expand), func() {
 			// Keep the item itself horizontal. Expanded children are siblings
 			// below it in this vertical subtree, never children of its row.
-			rowID := Container(Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), func() {
-				button := ProcessButtonEvents(false)
-				secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
-				if button.Hovered {
-					ModAttrs(BackgroundVec(theme.Highlight))
-				}
-				if !entry.Dir && isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path)) {
-					ModAttrs(BackgroundVec(theme.Selection))
-				}
+			active := !entry.Dir && isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path))
+			var button ButtonState
+			rowID := Container(Attrs(Expand), func() {
+				button = WorkstationRow(theme, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), active, false, func() {
+					secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
+					if entry.Dir {
+						arrow := "▸"
+						if tree.Expanded[entry.Path] {
+							arrow = "▾"
+						}
+						Label(arrow+"  "+entry.Name, FontSize(12), TextColorVec(theme.Ink))
+						if secondaryClick && IsHovered() {
+							openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), true)
+						}
+						return
+					}
+					marker := "  "
+					if isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path)) {
+						marker = "● "
+					}
+					Label(marker+entry.Name, FontSize(12), TextColorVec(theme.Ink))
+					if secondaryClick && IsHovered() {
+						openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), false)
+					}
+				})
+			})
+			if button.Clicked && GetInputState().MouseButton == MousePrimary {
 				if entry.Dir {
-					arrow := "▸"
-					if tree.Expanded[entry.Path] {
-						arrow = "▾"
-					}
-					Label(arrow+"  "+entry.Name, FontSize(12), TextColorVec(theme.Ink))
-					if secondaryClick && button.Hovered {
-						openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), true)
-					} else if button.Clicked {
-						executeCommand(state, shell, commands.WorkspaceToggleFolder, entry.Path)
-					}
-					return
-				}
-				marker := "  "
-				if isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path)) {
-					marker = "● "
-				}
-				Label(marker+entry.Name, FontSize(12), TextColorVec(theme.Ink))
-				if secondaryClick && button.Hovered {
-					openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), false)
-				} else if button.Clicked {
+					executeCommand(state, shell, commands.WorkspaceToggleFolder, entry.Path)
+				} else {
 					executeCommand(state, shell, commands.FileOpen, filepath.Join(state.Workspace.Root, entry.Path))
 				}
-			})
+			}
 			tree.RowIDs[entry.Path] = rowID
 			if entry.Dir && tree.Expanded[entry.Path] {
 				renderTreeWithShell(state, tree, shell, entry.Path, depth+1, theme)
@@ -583,15 +586,15 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 }
 
 func emptyState(state *application.Application, shell *workbenchState, theme Theme) {
-	Container(Attrs(Grow(1), Expand, Center, BackgroundVec(theme.Paper), Pad(28)), func() {
+	PaperWell(theme, Attrs(Grow(1), Expand), Attrs(Center, Pad(28)), func() {
 		Container(Attrs(FixWidth(560), Gap(8)), func() {
 			Label("A quiet place for files, notes, and code.", FontWeight(WeightBold), FontSize(20), TextColorVec(theme.Ink))
 			Label("Open a file for a focused editor, or a folder for the workspace tree.", FontSize(13), TextColorVec(theme.Muted))
 			Container(Attrs(Row, Gap(8)), func() {
-				if CtrlButton(NoIcon, "Open…", true) {
+				if WorkstationButton(theme, "Open…", true) {
 					executeCommand(state, shell, commands.FileOpen)
 				}
-				if CtrlButton(NoIcon, "Quick open", true) {
+				if WorkstationButton(theme, "Quick open", true) {
 					executeCommand(state, shell, commands.QuickOpen)
 				}
 			})
@@ -600,32 +603,58 @@ func emptyState(state *application.Application, shell *workbenchState, theme The
 }
 
 func tabs(state *application.Application, shell *workbenchState, theme Theme) {
-	Container(Attrs(Row, CrossMid, FixHeight(32), Gap(2), BackgroundVec(theme.Chrome), Pad2(2, 4)), func() {
+	if shell.TabIDs == nil {
+		shell.TabIDs = make(map[application.DocumentID]ContainerId)
+	}
+	if shell.TabCloseIDs == nil {
+		shell.TabCloseIDs = make(map[application.DocumentID]ContainerId)
+	}
+	ChromeBar(theme, Attrs(Row, CrossAlign(AlignEnd), FixHeight(32), Gap(1), Pad4(3, 4, 0, 4)), func() {
 		for _, id := range state.Order {
 			doc := state.Documents[id]
 			id, doc := id, doc
 			active := id == state.Active
-			ContainerWithKey(id, Attrs(Row, CrossMid, FixHeight(27), Pad2(0, 8), Gap(6), BackgroundIf(active, theme.Paper), BorderWidth(1), BorderColorVec(theme.Border)), func() {
+			var closeID ContainerId
+			tabID := ContainerWithKey(id, Attrs(FixHeight(29)), func() {
 				button := ProcessButtonEvents(false)
 				secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
 				middleClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseTertiary
-				if button.Hovered && !active {
-					ModAttrs(BackgroundVec(theme.Highlight))
+				drawContent := func() {
+					Container(Attrs(Row, CrossMid, FixHeight(27), Pad2(0, 8), Gap(6)), func() {
+						weight := WeightNormal
+						if active {
+							weight = WeightBold
+						}
+						Label(filepathBase(doc.Path), FontSize(12), FontWeight(weight), TextColorVec(theme.Ink))
+						if doc.Dirty() {
+							Label("●", FontSize(8), TextColorVec(theme.Warning))
+						}
+						closeID = Container(Attrs(FixWidth(16), FixHeight(18), Center, Corners(1)), func() {
+							closeButton := ProcessButtonEvents(false)
+							if closeButton.Hovered {
+								ModAttrs(BackgroundVec(theme.Highlight), BorderWidth(1), BorderColorVec(theme.Shadow))
+							}
+							Label("×", FontSize(13), TextColorVec(theme.Muted))
+							if closeButton.Clicked {
+								executeCommand(state, shell, commands.DocumentClose, id)
+							}
+						})
+					})
 				}
-				if doc.Dirty() {
-					Label("●", FontSize(9), TextColorVec(theme.Warning))
+				if active {
+					Container(Attrs(Grow(1), Expand, BackgroundVec(theme.DarkShadow), Pad4(1, 1, 0, 1), NoAnimate), func() {
+						Container(Attrs(Grow(1), Expand, BackgroundVec(theme.Paper), NoAnimate), drawContent)
+					})
+				} else if button.Active {
+					InsetFrame(theme, Attrs(Grow(1), Expand), Attrs(), drawContent)
+				} else {
+					RaisedFrame(theme, Attrs(Grow(1), Expand), Attrs(), func() {
+						if button.Hovered {
+							ModAttrs(BackgroundVec(theme.Highlight))
+						}
+						drawContent()
+					})
 				}
-				Label(filepathBase(doc.Path), FontSize(12), TextColorVec(theme.Ink))
-				Container(Attrs(FixWidth(16), FixHeight(18), Center), func() {
-					closeButton := ProcessButtonEvents(false)
-					if closeButton.Hovered {
-						ModAttrs(BackgroundVec(theme.Highlight))
-					}
-					Label("×", FontSize(13), TextColorVec(theme.Muted))
-					if closeButton.Clicked {
-						executeCommand(state, shell, commands.DocumentClose, id)
-					}
-				})
 				if middleClick && button.Hovered {
 					executeCommand(state, shell, commands.DocumentClose, id)
 				} else if secondaryClick && button.Hovered {
@@ -634,6 +663,8 @@ func tabs(state *application.Application, shell *workbenchState, theme Theme) {
 					executeCommand(state, shell, commands.DocumentActivate, id)
 				}
 			})
+			shell.TabIDs[id] = tabID
+			shell.TabCloseIDs[id] = closeID
 		}
 		Container(Attrs(Grow(1)), func() {})
 	})
@@ -644,7 +675,7 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 		return
 	}
 	search := Use[searchState]("current-find")
-	Container(Attrs(Row, CrossMid, Gap(6), FixHeight(34), Pad2(3, 8), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border)), func() {
+	Container(Attrs(Row, CrossMid, Gap(6), FixHeight(34), Pad2(3, 8), BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Border)), func() {
 		Label("Find", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
 		input := CtrlTextInputAttrs()
 		input.MinWidth = 260
@@ -657,7 +688,7 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 			Label(fmt.Sprintf("%d matches", len(search.Current)), FontSize(10), TextColorVec(theme.Muted))
 		}
 		Container(Attrs(Grow(1)), func() {})
-		if CtrlButton(NoIcon, "Close", true) {
+		if WorkstationToolButton(theme, "Close", true) {
 			shell.ShowFind = false
 		}
 	})
@@ -673,12 +704,12 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 
 func workspaceSearchPanel(state *application.Application, shell *workbenchState, theme Theme) {
 	search := Use[searchState]("workspace-search")
-	Container(Attrs(Gap(5), Pad2(6, 8), BackgroundVec(theme.Inset)), func() {
+	Container(Attrs(Gap(5), Pad2(6, 8), BackgroundVec(theme.ChromeInset)), func() {
 		Container(Attrs(Row, CrossMid, Gap(4)), func() {
 			input := CtrlTextInputAttrs()
 			input.MinWidth = 140
 			TextInputExt(&search.Query, input)
-			if CtrlButton(NoIcon, "Search", true) {
+			if WorkstationButton(theme, "Search", true) {
 				if search.Cancel != nil {
 					search.Cancel()
 				}
@@ -718,28 +749,28 @@ func conflictPanel(state *application.Application, shell *workbenchState, theme 
 		Label("Conflict", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
 		Label(fmt.Sprintf("disk changed · base %d B · disk %d B", len(conflict.Base), len(conflict.Disk)), FontSize(10), TextColorVec(theme.Muted))
 		Container(Attrs(Grow(1)), func() {})
-		if CtrlButton(NoIcon, "Compare", true) {
+		if WorkstationToolButton(theme, "Compare", true) {
 			shell.ShowCompare = true
 		}
-		if CtrlButton(NoIcon, "Reload", true) {
+		if WorkstationToolButton(theme, "Reload", true) {
 			_ = state.ReloadDisk(state.Active)
 		}
-		if CtrlButton(NoIcon, "Keep editing", true) {
+		if WorkstationToolButton(theme, "Keep editing", true) {
 			_ = state.KeepEditing(state.Active)
 		}
-		if CtrlButton(NoIcon, "Overwrite…", true) {
+		if WorkstationToolButton(theme, "Overwrite…", true) {
 			_ = state.OverwriteDisk(state.Active)
 		}
 	})
 	if shell.ShowCompare {
-		Container(Attrs(Row, CrossMid, Gap(8), FixHeight(28), Pad2(2, 8), BackgroundVec(theme.Raised)), func() {
+		Container(Attrs(Row, CrossMid, Gap(8), FixHeight(28), Pad2(2, 8), BackgroundVec(theme.ChromeRaised)), func() {
 			localBytes := 0
 			if doc := state.ActiveDocument(); doc != nil {
 				localBytes = len(doc.Editor.Buffer.Text())
 			}
 			Label(fmt.Sprintf("Compare · base %d B · local %d B · disk %d B", len(conflict.Base), localBytes, len(conflict.Disk)), FontSize(10), TextColorVec(theme.Muted))
 			Container(Attrs(Grow(1)), func() {})
-			if CtrlButton(NoIcon, "Close", true) {
+			if WorkstationToolButton(theme, "Close", true) {
 				shell.ShowCompare = false
 			}
 		})
@@ -759,13 +790,13 @@ func closePanel(state *application.Application, shell *workbenchState, theme The
 		Label("Unsaved changes", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
 		Label(filepathBase(doc.Path)+" has not been saved.", FontSize(10), TextColorVec(theme.Muted))
 		Container(Attrs(Grow(1)), func() {})
-		if CtrlButton(NoIcon, "Save and close", true) {
+		if WorkstationButton(theme, "Save and close", true) {
 			executeCommand(state, shell, commands.DocumentClose, shell.ClosePending, closeSave)
 		}
-		if CtrlButton(NoIcon, "Discard", true) {
+		if WorkstationToolButton(theme, "Discard", true) {
 			executeCommand(state, shell, commands.DocumentClose, shell.ClosePending, closeDiscard)
 		}
-		if CtrlButton(NoIcon, "Cancel", true) {
+		if WorkstationToolButton(theme, "Cancel", true) {
 			shell.ClosePending = ""
 			shell.CloseQueue = nil
 		}
@@ -773,32 +804,41 @@ func closePanel(state *application.Application, shell *workbenchState, theme The
 }
 
 func statusBar(state *application.Application, theme Theme) {
-	Container(Attrs(Row, CrossMid, FixHeight(25), Gap(10), Pad2(0, 10), BackgroundVec(theme.Chrome), BorderWidth(1), BorderColorVec(theme.Border)), func() {
-		doc := state.ActiveDocument()
-		if doc == nil {
-			Label("No document", FontSize(10), TextColorVec(theme.Muted))
-			return
-		}
-		status := "Saved"
-		if doc.Dirty() {
-			status = "Modified"
-		}
-		if state.Status(state.Active) == application.StatusConflict {
-			status = "Conflict"
-		}
-		Label(status, FontSize(10), TextColorVec(theme.Muted))
-		Label(doc.Path, FontSize(10), TextColorVec(theme.Ink))
-		Container(Attrs(Grow(1)), func() {})
-		line, column := cursorPosition(doc)
-		Label(fmt.Sprintf("Ln %d · Col %d", line, column), FontSize(10), TextColorVec(theme.Muted))
-		encoding := strings.ToUpper(doc.Format.Encoding)
-		if doc.Format.UTF8BOM {
-			encoding += " BOM"
-		}
-		Label(encoding, FontSize(10), TextColorVec(theme.Muted))
-		if doc.RootLanguage != "" {
-			Label(doc.RootLanguage, FontSize(10), TextColorVec(theme.Muted))
-		}
+	Container(Attrs(FixHeight(27), Expand, NoAnimate), func() {
+		EtchedDivider(theme, dividerHorizontal)
+		ChromeBar(theme, Attrs(Row, CrossMid, FixHeight(25), Gap(8), Pad2(0, 8)), func() {
+			doc := state.ActiveDocument()
+			if doc == nil {
+				Label("No document", FontSize(10), TextColorVec(theme.Muted))
+				return
+			}
+			status := "Saved"
+			if doc.Dirty() {
+				status = "Modified"
+			}
+			if state.Status(state.Active) == application.StatusConflict {
+				status = "Conflict"
+			}
+			statusColor := theme.Muted
+			if status == "Conflict" {
+				statusColor = theme.Warning
+			}
+			Label(status, FontSize(10), FontWeight(WeightBold), TextColorVec(statusColor))
+			Label(relativePath(state, doc.Path), FontSize(10), TextColorVec(theme.Ink))
+			Container(Attrs(Grow(1)), func() {})
+			line, column := cursorPosition(doc)
+			Label(fmt.Sprintf("Ln %d · Col %d", line, column), FontSize(10), TextColorVec(theme.Muted))
+			EtchedDivider(theme, dividerVertical)
+			encoding := strings.ToUpper(doc.Format.Encoding)
+			if doc.Format.UTF8BOM {
+				encoding += " BOM"
+			}
+			Label(encoding, FontSize(10), TextColorVec(theme.Muted))
+			if doc.RootLanguage != "" {
+				EtchedDivider(theme, dividerVertical)
+				Label(doc.RootLanguage, FontSize(10), TextColorVec(theme.Muted))
+			}
+		})
 	})
 }
 
@@ -820,7 +860,7 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 		theme = themes[0]
 	}
 	if shell.ShowFolder && !shell.ShowOpen {
-		Modal(560, func() { shell.ShowFolder = false }, func() {
+		WorkstationModal(theme, 560, func() { shell.ShowFolder = false }, func() {
 			Label("Open folder", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
 			if folderPickerPanel(shell) {
 				if executeCommand(state, shell, commands.FileOpen, filepath.Clean(shell.FolderPicker.Result)) {
@@ -830,7 +870,7 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 		})
 	}
 	if shell.ShowOpen {
-		Modal(620, func() { shell.ShowOpen = false; shell.ShowFolder = false }, func() {
+		WorkstationModal(theme, 620, func() { shell.ShowOpen = false; shell.ShowFolder = false }, func() {
 			Label("Open file or folder", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
 			ContainerWithKey(fmt.Sprintf("open-picker-%d", shell.OpenEpoch), Attrs(), func() {
 				if FileBrowserPanel(&shell.PathPicker.Cwd, &shell.PathPicker.Filter, &shell.PathPicker.Selected, &shell.PathPicker.Result, FileBrowserAttrs{Title: "Open", Dirs: true, Files: true, Start: shell.PathPicker.Cwd, Width: 580, ShowHidden: true}) {
@@ -843,16 +883,16 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 		})
 	}
 	if shell.ShowSaveAs {
-		Modal(520, func() { shell.ShowSaveAs = false }, func() {
+		WorkstationModal(theme, 520, func() { shell.ShowSaveAs = false }, func() {
 			Label("Save As", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
 			field := DefaultTextInputAttrs()
 			field.MinWidth = 420
 			TextInputExt(&shell.SaveAsPath, field)
 			Container(Attrs(Row, Gap(6)), func() {
-				if Button(NoIcon, "Save As") && state.Active != "" && state.SaveAs(state.Active, shell.SaveAsPath) == nil {
+				if WorkstationButton(theme, "Save As", true) && state.Active != "" && state.SaveAs(state.Active, shell.SaveAsPath) == nil {
 					shell.ShowSaveAs = false
 				}
-				if Button(NoIcon, "Cancel") {
+				if WorkstationButton(theme, "Cancel", true) {
 					shell.ShowSaveAs = false
 				}
 			})
@@ -865,7 +905,7 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 		recentPopup(state, shell, theme)
 	}
 	if shell.ShowGoToLine {
-		Modal(420, func() { shell.ShowGoToLine = false }, func() {
+		WorkstationModal(theme, 420, func() { shell.ShowGoToLine = false }, func() {
 			Label("Go to Line", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
 			field := DefaultTextInputAttrs()
 			field.MinWidth = 360
@@ -874,10 +914,10 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 				Label(shell.GoToLineError, FontSize(11), TextColorVec(theme.Warning))
 			}
 			Container(Attrs(Row, Gap(6)), func() {
-				if Button(NoIcon, "Go") {
+				if WorkstationButton(theme, "Go", true) {
 					executeCommand(state, shell, commands.DocumentGoToLine, shell.GoToLineText)
 				}
-				if Button(NoIcon, "Cancel") {
+				if WorkstationButton(theme, "Cancel", true) {
 					shell.ShowGoToLine = false
 				}
 			})
@@ -920,7 +960,7 @@ func quickOpenPopup(state *application.Application, shell *workbenchState, theme
 		return
 	}
 	Popup(func() {
-		Container(Attrs(Float(0, 42), FixWidth(620), MaxHeight(520), Pad(10), Gap(5), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3)), func() {
+		FloatingSurface(theme, Attrs(Float(0, 42), FixWidth(620), MaxHeight(520)), Attrs(Pad(10), Gap(5)), func() {
 			ContainerWithKey(fmt.Sprintf("quick-open-field-%d", shell.QuickOpenEpoch), Attrs(Focusable), func() {
 				Focus()
 				accepted := FileSelector(FileSelectorAttrs{Selection: &quick.Result, Query: &quick.Query, Candidates: quick.Candidates, Root: state.Workspace.Root, Width: 580, MaxRows: 14, Hint: func(n int) string { return fmt.Sprintf("%d files", n) }})
@@ -1415,14 +1455,14 @@ func openTabContextMenu(shell *workbenchState, id application.DocumentID, path s
 	}
 }
 
-func contextMenuItem(label string) bool {
+func contextMenuItem(theme Theme, label string) bool {
 	var clicked bool
-	Container(Attrs(Row, Expand, CrossMid, FixHeight(26), Pad2(0, 10)), func() {
+	Container(Attrs(Row, Expand, CrossMid, FixHeight(23), Pad2(0, 8)), func() {
 		button := ProcessButtonEvents(false)
 		if button.Hovered {
-			ModAttrs(BackgroundVec(DefaultTheme().Highlight))
+			ModAttrs(BackgroundVec(theme.Selection), Grad(0, 0, -5, 0))
 		}
-		Label(label, FontSize(12), TextColorVec(DefaultTheme().Ink))
+		Label(label, FontSize(11), TextColorVec(theme.Ink))
 		clicked = button.Clicked && GetInputState().MouseButton == MousePrimary
 	})
 	return clicked
@@ -1435,24 +1475,21 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 	}
 	Popup(func() {
 		var menuID ContainerId
-		ContainerWithKey(fmt.Sprintf("context-menu-%d", menu.Generation), Attrs(FixWidth(260), Gap(1), Pad(6), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
-			ModAttrs(FloatVec(menu.Position))
-			menuID = CurrentId()
-			shell.ContextMenu.MenuID = menuID
+		menuID = floatingSurfaceWithKey(fmt.Sprintf("context-menu-%d", menu.Generation), theme, Attrs(FloatVec(menu.Position), FixWidth(224), Clip), Attrs(Gap(1), Pad(5), Clip), func() {
 			if menu.Kind == contextMenuTab {
-				if contextMenuItem("Close") {
+				if contextMenuItem(theme, "Close") {
 					executeCommand(state, shell, commands.DocumentClose, menu.ID)
 					shell.ContextMenu.Open = false
 				}
-				if contextMenuItem("Close Others") {
+				if contextMenuItem(theme, "Close Others") {
 					executeCommand(state, shell, commands.DocumentCloseOthers, menu.ID)
 					shell.ContextMenu.Open = false
 				}
-				if contextMenuItem("Close All") {
+				if contextMenuItem(theme, "Close All") {
 					executeCommand(state, shell, commands.DocumentCloseAll)
 					shell.ContextMenu.Open = false
 				}
-				if contextMenuItem("Reopen Closed") {
+				if contextMenuItem(theme, "Reopen Closed") {
 					executeCommand(state, shell, commands.DocumentReopenClosed)
 					shell.ContextMenu.Open = false
 				}
@@ -1461,27 +1498,28 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 				if shell.Tree.Expanded[workspaceRelative(state, menu.Path)] {
 					label = "Collapse"
 				}
-				if contextMenuItem(label) {
+				if contextMenuItem(theme, label) {
 					executeCommand(state, shell, commands.WorkspaceToggleFolder, workspaceRelative(state, menu.Path))
 					shell.ContextMenu.Open = false
 				}
-			} else if contextMenuItem("Open") {
+			} else if contextMenuItem(theme, "Open") {
 				executeCommand(state, shell, commands.FileOpen, menu.Path)
 				shell.ContextMenu.Open = false
 			}
-			if contextMenuItem("Copy Path") {
+			if contextMenuItem(theme, "Copy Path") {
 				executeCommand(state, shell, commands.FileCopyPath, menu.Path)
 				shell.ContextMenu.Open = false
 			}
-			if contextMenuItem("Copy Relative Path") {
+			if contextMenuItem(theme, "Copy Relative Path") {
 				executeCommand(state, shell, commands.FileCopyRelativePath, menu.Path)
 				shell.ContextMenu.Open = false
 			}
-			if contextMenuItem("Reveal") {
+			if contextMenuItem(theme, "Reveal") {
 				executeCommand(state, shell, commands.FileReveal, menu.Path)
 				shell.ContextMenu.Open = false
 			}
 		})
+		shell.ContextMenu.MenuID = menuID
 		if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary && !IdIsHovered(menuID) {
 			shell.ContextMenu.Open = false
 		}
@@ -1500,9 +1538,7 @@ func workspaceRelative(state *application.Application, path string) string {
 func recentPopup(state *application.Application, shell *workbenchState, theme Theme) {
 	Popup(func() {
 		var popupID ContainerId
-		ContainerWithKey("recent-files-popup", Attrs(FixWidth(360), Gap(1), Pad(6), BackgroundVec(theme.Raised), BorderWidth(1), BorderColorVec(theme.Border), Corners(3), Clip), func() {
-			ModAttrs(Float(8, 38))
-			popupID = CurrentId()
+		popupID = floatingSurfaceWithKey("recent-files-popup", theme, Attrs(Float(8, 38), FixWidth(360), Clip), Attrs(Gap(1), Pad(6), Clip), func() {
 			Label("Open Recent", FontWeight(WeightBold), FontSize(12), TextColorVec(theme.Ink))
 			paths := state.RecentPaths()
 			if len(paths) == 0 {
@@ -1510,7 +1546,7 @@ func recentPopup(state *application.Application, shell *workbenchState, theme Th
 			}
 			for _, path := range paths {
 				path := path
-				if contextMenuItem(filepathBase(path)) {
+				if contextMenuItem(theme, filepathBase(path)) {
 					executeCommand(state, shell, commands.FileOpenRecent, path)
 					shell.ShowRecent = false
 				}
