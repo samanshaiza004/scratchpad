@@ -3,6 +3,7 @@ package workspace
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -49,8 +50,16 @@ func TestAtomicWritePreservesExistingPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("mode = %o, want 600", got)
+	if !info.Mode().IsRegular() {
+		t.Fatalf("saved path is not a regular file: %v", info.Mode())
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "new" {
+		t.Fatalf("saved content = %q, %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("mode = %o, want 600", got)
+		}
 	}
 }
 
@@ -63,8 +72,16 @@ func TestAtomicWriteUsesRequestedModeForNewFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o640 {
-		t.Fatalf("mode = %o, want 640", got)
+	if !info.Mode().IsRegular() {
+		t.Fatalf("saved path is not a regular file: %v", info.Mode())
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "new" {
+		t.Fatalf("saved content = %q, %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o640 {
+			t.Fatalf("mode = %o, want 640", got)
+		}
 	}
 }
 
@@ -101,6 +118,37 @@ func TestAtomicWriteRefusesHardLink(t *testing.T) {
 	}
 	if err := AtomicWriteFile(path, []byte("new"), 0); err == nil {
 		t.Fatal("expected hard-link replacement to be refused")
+	}
+}
+
+func TestAtomicWriteRefusesSymlinkToHardLink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "original")
+	hardLink := filepath.Join(dir, "hard-link")
+	symlink := filepath.Join(dir, "symlink")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, hardLink); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := AtomicWriteFile(symlink, []byte("new"), 0); err == nil {
+		t.Fatal("expected symlink to hard-linked file replacement to be refused")
+	}
+	for _, path := range []string{target, hardLink} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "old" {
+			t.Fatalf("%s changed to %q after refused replacement", path, got)
+		}
+	}
+	if info, err := os.Lstat(symlink); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("symlink changed after refused replacement: %v", err)
 	}
 }
 

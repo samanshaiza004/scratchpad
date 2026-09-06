@@ -63,6 +63,29 @@ func TestSearchStreamsRawByteMatchesAndHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestSearchPreservesByteOffsetsForRawMatchesAcrossLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "raw.bin")
+	data := []byte{'x', '\n', 0xff, 'a', '\n', 0xff, 'b'}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []SearchResult
+	if err := ws.Search(context.Background(), []byte{0xff}, func(result SearchResult) bool {
+		results = append(results, result)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Line != 1 || results[0].Column != 0 || results[1].Line != 2 || results[1].Column != 0 {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
 func TestFilesWalksVisibleFilesRecursively(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {

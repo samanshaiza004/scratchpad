@@ -198,12 +198,15 @@ func (a *Application) MaybeWriteRecovery(dir string) {
 }
 
 func (a *Application) FlushRecovery(dir string) error {
+	var previousErr error
 	if a.recoveryRunning {
-		err := <-a.recoveryDone
+		previousErr = <-a.recoveryDone
 		a.recoveryRunning = false
-		return err
 	}
-	return a.WriteRecovery(dir)
+	// The asynchronous snapshot was captured before the caller's most recent
+	// edits. Once it has drained, capture the current state synchronously so a
+	// shutdown flush cannot leave recovery data behind an in-flight snapshot.
+	return errors.Join(previousErr, a.WriteRecovery(dir))
 }
 
 func (a *Application) RestoreRecovery(dir string) error {
@@ -249,6 +252,18 @@ func (a *Application) restoreRecoveredDocument(saved recoveryDocument, recovered
 		}
 	}
 	doc := a.Documents[saved.ID]
+	if !doc.DiskVersion.Equal(saved.BaseVersion) {
+		// Recovery stores the base fingerprint, but not a second copy of the
+		// base bytes. Keep the recovered bytes as the local side and retain the
+		// currently loaded disk bytes as the external side. The conflict gate
+		// ensures ordinary Save cannot overwrite those external changes until
+		// the user explicitly resolves the situation.
+		a.Conflicts[saved.ID] = Conflict{
+			Disk:        append([]byte(nil), doc.Editor.Buffer.Text()...),
+			DiskVersion: doc.DiskVersion,
+			DiskMode:    doc.FileMode,
+		}
+	}
 	if string(doc.Editor.Buffer.Text()) != string(recovered) {
 		if err := doc.ReplaceText(recovered); err != nil {
 			return err

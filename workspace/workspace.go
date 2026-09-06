@@ -131,6 +131,9 @@ func replacementTarget(path string) (string, error) {
 		if !targetInfo.Mode().IsRegular() {
 			return "", fmt.Errorf("symlink target %q is not a regular file", target)
 		}
+		if links := linkCount(target, targetInfo); links > 1 {
+			return "", fmt.Errorf("refusing to replace hard-linked file %q", target)
+		}
 		return filepath.Clean(target), nil
 	}
 	if !info.Mode().IsRegular() {

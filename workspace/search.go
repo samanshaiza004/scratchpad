@@ -38,18 +38,31 @@ func (w Workspace) Search(ctx context.Context, query []byte, emit func(SearchRes
 		if err != nil {
 			return nil
 		}
+		line, lineStart := 0, 0
+		consumed := 0
 		for offset := 0; offset <= len(data)-len(query); {
 			at := bytes.Index(data[offset:], query)
 			if at < 0 {
 				break
 			}
 			at += offset
-			line := bytes.Count(data[:at], []byte{'\n'})
-			lineStart := bytes.LastIndexByte(data[:at], '\n') + 1
+			for i := consumed; i < at; i++ {
+				if data[i] == '\n' {
+					line++
+					lineStart = i + 1
+				}
+			}
 			if !emit(SearchResult{Path: path, Line: line, Column: at - lineStart, Text: lineText(data, lineStart)}) {
 				return errSearchStopped
 			}
-			offset = at + len(query)
+			consumed = at + len(query)
+			for i := at; i < consumed; i++ {
+				if data[i] == '\n' {
+					line++
+					lineStart = i + 1
+				}
+			}
+			offset = consumed
 		}
 		return nil
 	})

@@ -68,7 +68,14 @@ var TypeScriptTagsQuery string
 // that gotreesitter does not implement yet. Definition captures remain the
 // upstream query's captures; the bake-off records this runtime limitation.
 func PureTagsQuery() string {
-	query := GoTagsQuery
+	return pureTagsQuery(GoTagsQuery)
+}
+
+func pureTagsQuery(query string) string {
+	// Embedded queries normally use LF, but a CRLF checkout must produce the
+	// same query after filtering unsupported predicates.
+	query = strings.ReplaceAll(query, "\r\n", "\n")
+	query = strings.ReplaceAll(query, "\r", "\n")
 	query = strings.ReplaceAll(query, "  (#set-adjacent! @doc @definition.function)\n", "")
 	query = strings.ReplaceAll(query, "  (#set-adjacent! @doc @definition.method)\n", "")
 	return query

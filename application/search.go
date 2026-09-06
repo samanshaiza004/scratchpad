@@ -21,18 +21,35 @@ func (a *Application) FindCurrent(id DocumentID, query []byte) []CurrentMatch {
 	}
 	data := doc.Editor.Buffer.Text()
 	var matches []CurrentMatch
+	line, lineStart := 0, 0
+	consumed := 0
 	for offset := 0; offset <= len(data)-len(query); {
 		at := bytes.Index(data[offset:], query)
 		if at < 0 {
 			break
 		}
 		at += offset
-		lineStart := bytes.LastIndexByte(data[:at], '\n') + 1
+		// Advance the line state over bytes since the previous match. Each
+		// byte is visited at most once, so locating matches does not repeatedly
+		// rescan the document prefix.
+		for i := consumed; i < at; i++ {
+			if data[i] == '\n' {
+				line++
+				lineStart = i + 1
+			}
+		}
 		matches = append(matches, CurrentMatch{
 			Start: at, End: at + len(query),
-			Line: bytes.Count(data[:at], []byte{'\n'}), Column: at - lineStart,
+			Line: line, Column: at - lineStart,
 		})
-		offset = at + len(query)
+		consumed = at + len(query)
+		for i := at; i < consumed; i++ {
+			if data[i] == '\n' {
+				line++
+				lineStart = i + 1
+			}
+		}
+		offset = consumed
 	}
 	return matches
 }

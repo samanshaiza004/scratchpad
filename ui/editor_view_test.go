@@ -355,6 +355,109 @@ func TestEditableViewTextParityWithTextArea(t *testing.T) {
 	}
 }
 
+func TestEditorLineBoundaryNavigationExtendsSelection(t *testing.T) {
+	e := editor.NewScratchEditor([]byte("abcd\nxy"))
+	e.SetCursor(2)
+	if !moveEditorLineBoundary(e, false, false) || e.Cursor != 0 || e.Anchor != 0 {
+		t.Fatalf("home = cursor %d anchor %d, want 0:0", e.Cursor, e.Anchor)
+	}
+	if !moveEditorLineBoundary(e, true, true) || e.Cursor != 4 || e.Anchor != 0 {
+		t.Fatalf("shift-end = cursor %d anchor %d, want 4:0", e.Cursor, e.Anchor)
+	}
+	if !moveEditorLineBoundary(e, false, true) || e.Cursor != 0 || e.Anchor != 0 {
+		t.Fatalf("shift-home = cursor %d anchor %d, want 0:0", e.Cursor, e.Anchor)
+	}
+}
+
+func TestEditorVerticalNavigationUsesVisibleRows(t *testing.T) {
+	if shaped := ShapeText("probe", DefaultTextStyle()); len(shaped.Lines) == 0 {
+		t.Skip("Shirei has no usable font in this headless unit-test context")
+	}
+	e := editor.NewScratchEditor([]byte("abcd\nh\nlong"))
+	e.SetCursor(2)
+	rows := editor.NewRowMap(e.Buffer.LineCount(), []editor.HiddenLineRange{{Start: 1, End: 2}})
+	if !moveEditorVertical(e, DefaultTextStyle(), rows, 1, false) {
+		t.Fatal("down did not move")
+	}
+	line, ok := e.Buffer.LineAt(e.Cursor)
+	if !ok || line != 2 {
+		t.Fatalf("down landed on logical line %d, want 2", line)
+	}
+	if targetLine, ok := e.Buffer.LineAt(e.Cursor); !ok || targetLine != 2 {
+		t.Fatalf("down cursor = %d, outside target line", e.Cursor)
+	}
+	anchor := e.Cursor
+	if !moveEditorVertical(e, DefaultTextStyle(), rows, -1, true) {
+		t.Fatal("shift-up did not move")
+	}
+	if e.Anchor != anchor {
+		t.Fatalf("shift-up selection = %d:%d, want anchor %d on visible target", e.Anchor, e.Cursor, anchor)
+	}
+	if targetLine, ok := e.Buffer.LineAt(e.Cursor); !ok || targetLine != 0 {
+		t.Fatalf("shift-up cursor = %d, landed on line %d", e.Cursor, targetLine)
+	}
+
+	e = editor.NewScratchEditor([]byte("abcdef\nx\nabcdef"))
+	e.SetCursor(5)
+	rows = editor.IdentityRowMap(e.Buffer.LineCount())
+	if !moveEditorVertical(e, DefaultTextStyle(), rows, 1, false) || !moveEditorVertical(e, DefaultTextStyle(), rows, 1, false) {
+		t.Fatal("consecutive down did not move through short line")
+	}
+	if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 2 || e.Cursor != 14 {
+		t.Fatalf("preferred column lost after short line: cursor=%d line=%d", e.Cursor, line)
+	}
+	e.MoveLeft(false)
+	if _, ok := e.PreferredVerticalX(); ok {
+		t.Fatal("horizontal movement retained preferred vertical X")
+	}
+}
+
+func TestEditableViewDispatchesLineNavigationKeys(t *testing.T) {
+	if shaped := ShapeText("probe", DefaultTextStyle()); len(shaped.Lines) == 0 {
+		t.Skip("Shirei has no usable font in this headless unit-test context")
+	}
+	ResetInputSession()
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{500, 160}
+	e := editor.NewScratchEditor([]byte("abcd\nxy\nlong"))
+	scope := new(int)
+	runKey := func(key KeyCode, mods Modifiers) {
+		GetInputState().Modifiers = mods
+		GetFrameInput().Key = key
+		GetFrameInput().Text = ""
+		GetFrameInput().Mouse = 0
+		RunFrameFn(func() {
+			ContainerWithKey(scope, Attrs(Viewport), func() {
+				EditableView(scope, e, EditorViewOptions{Style: DefaultTextStyle(), RowHeight: 20})
+			})
+		})
+		GetInputState().Modifiers = 0
+		GetFrameInput().Key = KeyCodeNone
+	}
+	for range 2 {
+		runKey(KeyCodeNone, 0)
+	}
+	e.SetCursor(2)
+	runKey(KeyEnd, 0)
+	if e.Cursor != 4 {
+		t.Fatalf("end dispatch = %d, want 4", e.Cursor)
+	}
+	runKey(KeyHome, ModShift)
+	if e.Cursor != 0 || e.Anchor != 4 {
+		t.Fatalf("shift-home dispatch = %d:%d, want 0:4", e.Anchor, e.Cursor)
+	}
+	e.SetCursor(2)
+	runKey(KeyDown, 0)
+	if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 1 {
+		t.Fatalf("down dispatch landed at %d, want line 1", e.Cursor)
+	}
+	runKey(KeyUp, ModShift)
+	if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 0 || e.Anchor == e.Cursor {
+		t.Fatalf("shift-up dispatch = %d:%d, want extended selection on line 0", e.Anchor, e.Cursor)
+	}
+}
+
 func currentText(useTextArea bool, text *string, custom *editor.ScratchEditor) string {
 	if useTextArea {
 		return *text

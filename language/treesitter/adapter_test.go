@@ -2,10 +2,24 @@ package treesitter
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"scratchpad/editor"
 )
+
+func TestPureTagsQueryFiltersUnsupportedPredicatesRegardlessOfLineEnding(t *testing.T) {
+	for _, lineEnding := range []string{"\n", "\r\n", "\r"} {
+		query := strings.ReplaceAll(GoTagsQuery, "\n", lineEnding)
+		filtered := pureTagsQuery(query)
+		if strings.Contains(filtered, "#set-adjacent!") {
+			t.Fatalf("line ending %q left unsupported predicate in query", lineEnding)
+		}
+		if strings.Contains(filtered, "\r") {
+			t.Fatalf("line ending %q left carriage returns in query", lineEnding)
+		}
+	}
+}
 
 var goAdapterFixture = []byte(`package demo
 

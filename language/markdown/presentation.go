@@ -211,7 +211,10 @@ func appendInlinePresentation(add func(int, int, document.PresentationKind), nod
 		return
 	}
 	add(position, minInt(start, position+delimiterSize), document.PresentationSyntax)
-	lineEndByte := lineEnd(source, position)
+	lineEndByte := lineEnd(source, end)
+	if end < 0 || end > len(source) || end > lineEndByte {
+		return
+	}
 	delimiter := source[position:minInt(len(source), position+delimiterSize)]
 	closeAt := bytes.Index(source[end:lineEndByte], delimiter)
 	if closeAt >= 0 {

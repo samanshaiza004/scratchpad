@@ -7,6 +7,7 @@ import (
 
 	"scratchpad/application"
 	"scratchpad/commands"
+	"scratchpad/document"
 
 	. "go.hasen.dev/shirei"
 )
@@ -202,6 +203,45 @@ func TestWorkbenchCommandsGoToLineAndFindNavigation(t *testing.T) {
 	RunFrameFn(func() { executeCommand(state, shell, commands.DocumentFindPrevious) })
 	if anchor, cursor := state.ActiveDocument().Editor.Selection(); anchor != 4 || cursor != 10 {
 		t.Fatalf("previous find selection = %d:%d", anchor, cursor)
+	}
+}
+
+func TestCurrentFindMatchesCachesUnchangedDocumentQuery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(path, []byte("one needle\ntwo needle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{FindQuery: "needle"}
+	first := currentFindMatches(state, shell)
+	if len(first) != 2 {
+		t.Fatalf("initial cache returned %d matches, want 2", len(first))
+	}
+	second := currentFindMatches(state, shell)
+	if len(second) != 2 || &first[0] != &second[0] {
+		t.Fatal("second lookup did not reuse the cached matches")
+	}
+
+	shell.FindQuery = "two"
+	if got := currentFindMatches(state, shell); len(got) != 1 {
+		t.Fatalf("query change returned %d matches, want 1", len(got))
+	}
+	doc := state.ActiveDocument()
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" two")); err != nil {
+		t.Fatal(err)
+	}
+	if got := currentFindMatches(state, shell); len(got) != 2 {
+		t.Fatalf("document edit returned %d matches, want 2", len(got))
+	}
+
+	oldEditor := doc.Editor
+	state.Documents[state.Active] = document.New(path, []byte("replacement needle"), "text")
+	if got := currentFindMatches(state, shell); len(got) != 0 || shell.findEditor == oldEditor {
+		t.Fatalf("replacement document reused stale cache: matches=%d editor=%p", len(got), shell.findEditor)
 	}
 }
 

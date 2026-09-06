@@ -57,6 +57,34 @@ func TestProjectPresentationUsesGoldmarkStrikethrough(t *testing.T) {
 	}
 }
 
+func TestProjectPresentationMultilineInline(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		source     string
+		kind       document.PresentationKind
+		openEnd    int
+		closeStart int
+		closeEnd   int
+	}{
+		{name: "emphasis", source: "*hello\nworld*\n", kind: document.PresentationEmphasis, openEnd: 1, closeStart: 12, closeEnd: 13},
+		{name: "strong", source: "**hello\nworld**\n", kind: document.PresentationStrong, openEnd: 2, closeStart: 13, closeEnd: 15},
+		{name: "strikethrough", source: "~~hello\nworld~~\n", kind: document.PresentationStrike, openEnd: 2, closeStart: 13, closeEnd: 15},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Project([]byte(tc.source), 1)
+			if !hasPresentationKind(got.Markdown.Spans, tc.kind) {
+				t.Fatalf("spans = %+v", got.Markdown.Spans)
+			}
+			if !hasPresentationRange(got.Markdown.Spans, document.PresentationSyntax, 0, tc.openEnd) {
+				t.Errorf("opening delimiter spans = %+v", got.Markdown.Spans)
+			}
+			if !hasPresentationRange(got.Markdown.Spans, document.PresentationSyntax, tc.closeStart, tc.closeEnd) {
+				t.Errorf("closing delimiter spans = %+v", got.Markdown.Spans)
+			}
+		})
+	}
+}
+
 func BenchmarkProjectMarkdownPresentation(b *testing.B) {
 	for _, size := range []int{1 << 20, 10 << 20} {
 		b.Run(sizeName(size), func(b *testing.B) {
