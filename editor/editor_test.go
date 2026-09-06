@@ -186,6 +186,119 @@ func TestEditorOffsetsSnapToUTF8Boundaries(t *testing.T) {
 	}
 }
 
+func TestResetAdvancesRevisionIdentity(t *testing.T) {
+	e := NewScratchEditor([]byte("before"))
+	if err := e.Insert([]byte(" edit")); err != nil {
+		t.Fatal(err)
+	}
+	oldRevision := e.Revision()
+	e.SetPreferredVerticalX(42)
+	e.Reset([]byte("after"))
+	if e.Revision() == oldRevision {
+		t.Fatalf("reset reused revision %d", e.Revision())
+	}
+	if got := string(e.Buffer.Text()); got != "after" {
+		t.Fatalf("reset text = %q", got)
+	}
+	if _, ok := e.EditsSince(oldRevision); ok {
+		t.Fatal("reset should discard the old edit journal")
+	}
+	if _, ok := e.PreferredVerticalX(); ok {
+		t.Fatal("reset retained preferred vertical X")
+	}
+}
+
+func TestEditorBackspaceTreatsMalformedUTF8AsByteUnits(t *testing.T) {
+	tests := []struct {
+		name   string
+		source []byte
+		at     int
+		want   []byte
+	}{
+		{name: "isolated continuation", source: []byte{'a', 0x80, 'b'}, at: 2, want: []byte{'a', 'b'}},
+		{name: "truncated lead", source: []byte{'a', 0xe2, 0x82}, at: 3, want: []byte{'a', 0xe2}},
+		{name: "malformed lead before ascii", source: []byte{0xc3, 'x'}, at: 2, want: []byte{0xc3}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := NewScratchEditor(test.source)
+			e.SetCursor(test.at)
+			if err := e.Backspace(); err != nil {
+				t.Fatal(err)
+			}
+			if got := e.Buffer.Text(); !bytes.Equal(got, test.want) {
+				t.Fatalf("after backspace = %x, want %x", got, test.want)
+			}
+			if err := e.Undo(); err != nil {
+				t.Fatal(err)
+			}
+			if got := e.Buffer.Text(); !bytes.Equal(got, test.source) {
+				t.Fatalf("after undo = %x, want %x", got, test.source)
+			}
+			if err := e.Redo(); err != nil {
+				t.Fatal(err)
+			}
+			if got := e.Buffer.Text(); !bytes.Equal(got, test.want) {
+				t.Fatalf("after redo = %x, want %x", got, test.want)
+			}
+		})
+	}
+}
+
+func TestEditorMalformedUTF8OffsetsRemainEditable(t *testing.T) {
+	e := NewScratchEditor([]byte{0xe2, 0x82, 'x'})
+	e.SetCursor(1)
+	if e.Cursor != 1 {
+		t.Fatalf("cursor in malformed sequence = %d, want 1", e.Cursor)
+	}
+	if err := e.Backspace(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Buffer.Text(); !bytes.Equal(got, []byte{0x82, 'x'}) {
+		t.Fatalf("deleting malformed lead = %x, want 82 78", got)
+	}
+	e.SetCursor(1)
+	if err := e.Backspace(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Buffer.Text(); !bytes.Equal(got, []byte{'x'}) {
+		t.Fatalf("deleting malformed continuation = %x, want 78", got)
+	}
+	if err := e.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Buffer.Text(); !bytes.Equal(got, []byte{0x82, 'x'}) {
+		t.Fatalf("undo malformed continuation = %x, want 82 78", got)
+	}
+	if err := e.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Buffer.Text(); !bytes.Equal(got, []byte{0xe2, 0x82, 'x'}) {
+		t.Fatalf("undo malformed lead = %x, want e2 82 78", got)
+	}
+}
+
+func TestMalformedUTF8StaysSeparateFromCombiningMarks(t *testing.T) {
+	source := []byte{0xff, 0xcc, 0x81, 'x'} // malformed byte, then U+0301.
+	e := NewScratchEditor(source)
+	e.SetCursor(0)
+	if err := e.DeleteForward(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Buffer.Text(); !bytes.Equal(got, []byte{0xcc, 0x81, 'x'}) {
+		t.Fatalf("forward deletion = %x, want cc 81 78", got)
+	}
+
+	e = NewScratchEditor([]byte{0xff, 0xcc, 0x81})
+	e.SetCursor(e.Buffer.ByteLen())
+	if err := e.Backspace(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Buffer.Text(); !bytes.Equal(got, []byte{0xff}) {
+		t.Fatalf("backspace deletion = %x, want ff", got)
+	}
+}
+
 func TestTreeBufferLineCursor(t *testing.T) {
 	b := NewBuffer([]byte("one\ntwo\n\nthree"))
 	cursor, ok := b.NewLineCursor(0)

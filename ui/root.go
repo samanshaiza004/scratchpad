@@ -121,6 +121,12 @@ type workbenchState struct {
 	OpenEpoch          uint64
 	FilePath           string
 	FindQuery          string
+	findMatches        []application.CurrentMatch
+	findDocument       application.DocumentID
+	findEditor         *editor.ScratchEditor
+	findRevision       uint64
+	findMatchesQuery   string
+	findMatchesValid   bool
 	GoToLineText       string
 	GoToLineError      string
 	SaveAsPath         string
@@ -685,9 +691,8 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 		ContainerWithKey(fmt.Sprintf("find-field-%d", shell.FindEpoch), Attrs(Grow(1)), func() {
 			TextInputExt(&shell.FindQuery, input)
 		})
-		search.Current = nil
+		search.Current = currentFindMatches(state, shell)
 		if state.Active != "" && shell.FindQuery != "" {
-			search.Current = state.FindCurrent(state.Active, []byte(shell.FindQuery))
 			Label(fmt.Sprintf("%d matches", len(search.Current)), FontSize(10), TextColorVec(theme.Muted))
 		}
 		Container(Attrs(Grow(1)), func() {})
@@ -1411,14 +1416,11 @@ func moveToLine(doc *document.Document, spec string) error {
 
 func findCurrent(state *application.Application, shell *workbenchState, previous bool) {
 	shell.ShowFind = true
-	if shell.FindQuery == "" || state.ActiveDocument() == nil {
-		return
-	}
-	doc := state.ActiveDocument()
-	matches := state.FindCurrent(state.Active, []byte(shell.FindQuery))
+	matches := currentFindMatches(state, shell)
 	if len(matches) == 0 {
 		return
 	}
+	doc := state.ActiveDocument()
 	anchor, cursor := doc.Editor.Selection()
 	from, to := anchor, cursor
 	if from > to {
@@ -1442,6 +1444,35 @@ func findCurrent(state *application.Application, shell *workbenchState, previous
 		}
 	}
 	doc.Editor.SetSelection(target.Start, target.End)
+}
+
+// currentFindMatches retains the current document's search results between
+// frames and navigation commands. Editor revisions change whenever document
+// bytes change, so this key also invalidates the cache after edits or reloads.
+func currentFindMatches(state *application.Application, shell *workbenchState) []application.CurrentMatch {
+	doc := state.ActiveDocument()
+	id := state.Active
+	query := shell.FindQuery
+	var revision uint64
+	var currentEditor *editor.ScratchEditor
+	if doc != nil {
+		revision = doc.Revision()
+		currentEditor = doc.Editor
+	}
+	if shell.findMatchesValid && shell.findDocument == id && shell.findEditor == currentEditor && shell.findRevision == revision && shell.findMatchesQuery == query {
+		return shell.findMatches
+	}
+	shell.findMatchesValid = true
+	shell.findDocument = id
+	shell.findEditor = currentEditor
+	shell.findRevision = revision
+	shell.findMatchesQuery = query
+	shell.findMatches = nil
+	if doc == nil || id == "" || query == "" {
+		return nil
+	}
+	shell.findMatches = state.FindCurrent(id, []byte(query))
+	return shell.findMatches
 }
 
 func openTreeContextMenu(shell *workbenchState, path string, isDir bool) {

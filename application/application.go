@@ -27,6 +27,7 @@ const (
 
 var ErrConflict = errors.New("document has an unresolved external-change conflict")
 var ErrDirty = errors.New("document has unsaved changes")
+var ErrDocumentAlreadyOpen = errors.New("destination document is already open")
 
 type Conflict struct {
 	Base        []byte
@@ -362,10 +363,20 @@ func (a *Application) SaveAs(id DocumentID, path string) error {
 	if doc == nil {
 		return errors.New("unknown document")
 	}
+	// Resolve the destination before writing it. SaveAs changes the document's
+	// identity, so allowing an already-open destination would replace that
+	// document in Documents and leave a duplicate ID in Order. documentID also
+	// resolves existing symlinks, keeping aliases covered by this check.
+	newID := documentID(path)
+	if newID != id {
+		if _, exists := a.Documents[newID]; exists {
+			return ErrDocumentAlreadyOpen
+		}
+	}
 	if err := doc.SaveAs(a.Store, path); err != nil {
 		return err
 	}
-	newID := documentID(doc.Path)
+	newID = documentID(doc.Path)
 	if newID != id {
 		delete(a.Documents, id)
 		a.Documents[newID] = doc

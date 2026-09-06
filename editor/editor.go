@@ -8,16 +8,18 @@ import "unicode"
 // Shirei supplies the visual mapping and native input transport above this
 // pure core.
 type ScratchEditor struct {
-	Buffer       Buffer
-	Cursor       int
-	Anchor       int
-	Affinity     Affinity
-	preedit      Composition
-	revision     uint64
-	nextRevision uint64
-	undo         []editRecord
-	redo         []editRecord
-	editJournal  []SourceEdit
+	Buffer        Buffer
+	Cursor        int
+	Anchor        int
+	Affinity      Affinity
+	preedit       Composition
+	preferredX    float32
+	hasPreferredX bool
+	revision      uint64
+	nextRevision  uint64
+	undo          []editRecord
+	redo          []editRecord
+	editJournal   []SourceEdit
 }
 
 // BytePoint is a UTF-8 byte position. Tree-sitter and the editor both use
@@ -77,15 +79,18 @@ func (e *ScratchEditor) Revision() uint64 {
 }
 
 // Reset replaces the editable content with a newly loaded file state. The
-// load is not an edit and therefore clears undo history and starts a fresh
-// content-state identity.
+// load is not an edit and therefore clears undo history. It still receives a
+// new revision identity: derived workers may still be finishing a parse of
+// the previous contents, and reusing revision zero would let that result
+// masquerade as a projection for the replacement bytes.
 func (e *ScratchEditor) Reset(source []byte) {
 	e.Buffer = NewBuffer(source)
 	e.Cursor, e.Anchor = 0, 0
 	e.Affinity = AffinityLeading
 	e.preedit = Composition{}
-	e.revision = 0
-	e.nextRevision = 1
+	e.ClearPreferredVerticalX()
+	e.revision = e.nextRevision
+	e.nextRevision++
 	e.undo = nil
 	e.redo = nil
 	e.editJournal = nil
@@ -134,12 +139,43 @@ func (e *ScratchEditor) SetCursor(cursor int) {
 	e.Cursor = cursor
 	e.Anchor = cursor
 	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
 }
 
 func (e *ScratchEditor) SetSelection(anchor, cursor int) {
 	e.Anchor = e.Buffer.boundary(anchor)
 	e.Cursor = e.Buffer.boundary(cursor)
 	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
+}
+
+// PreferredVerticalX is the visual horizontal position retained while the
+// caret moves through consecutive lines with Up and Down.
+func (e *ScratchEditor) PreferredVerticalX() (float32, bool) {
+	if e == nil {
+		return 0, false
+	}
+	return e.preferredX, e.hasPreferredX
+}
+
+// SetPreferredVerticalX records the visual horizontal position for vertical
+// caret movement. It is a UI-derived value, not document state.
+func (e *ScratchEditor) SetPreferredVerticalX(x float32) {
+	if e == nil {
+		return
+	}
+	e.preferredX = x
+	e.hasPreferredX = true
+}
+
+// ClearPreferredVerticalX makes the next vertical movement derive its
+// horizontal position from the current caret again.
+func (e *ScratchEditor) ClearPreferredVerticalX() {
+	if e == nil {
+		return
+	}
+	e.preferredX = 0
+	e.hasPreferredX = false
 }
 
 func (e *ScratchEditor) Insert(text []byte) error {
@@ -177,6 +213,7 @@ func (e *ScratchEditor) SelectAll() {
 	e.Anchor = 0
 	e.Cursor = e.Buffer.ByteLen()
 	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
 }
 
 func (e *ScratchEditor) Copy() string {
@@ -217,6 +254,7 @@ func (e *ScratchEditor) Undo() error {
 	e.revision = r.beforeRevision
 	e.recordSourceEdit(edit)
 	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
 	e.redo = append(e.redo, r)
 	return nil
 }
@@ -240,6 +278,7 @@ func (e *ScratchEditor) Redo() error {
 	e.revision = r.afterRevision
 	e.recordSourceEdit(edit)
 	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
 	e.undo = append(e.undo, r)
 	return nil
 }
@@ -251,6 +290,7 @@ func (e *ScratchEditor) MoveLeft(extend bool) {
 		e.Anchor = position
 	}
 	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
 }
 
 func (e *ScratchEditor) MoveRight(extend bool) {
@@ -260,6 +300,7 @@ func (e *ScratchEditor) MoveRight(extend bool) {
 		e.Anchor = position
 	}
 	e.Affinity = AffinityTrailing
+	e.ClearPreferredVerticalX()
 }
 
 func (e *ScratchEditor) SetAffinity(affinity Affinity) {
@@ -354,6 +395,7 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 	e.Cursor = start + len(text)
 	e.Anchor = e.Cursor
 	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
 	e.undo = append(e.undo, editRecord{
 		start: start, deleted: deleted, inserted: append([]byte(nil), text...),
 		beforeCursor: beforeCursor, beforeAnchor: beforeAnchor,

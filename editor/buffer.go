@@ -267,36 +267,28 @@ func (b *Buffer) boundary(at int) int {
 	if at >= b.byteLen {
 		return b.byteLen
 	}
-	for at > 0 {
-		c, _ := b.ByteAt(at)
-		if utf8.RuneStart(c) {
-			return at
+	// Only snap an offset backwards when it is inside a valid UTF-8 rune.
+	// Invalid bytes are editable one-byte units, so a malformed continuation
+	// sequence must not make the preceding valid rune unreachable.
+	for start := max(0, at-(utf8.UTFMax-1)); start < at; start++ {
+		width, ok := b.validRuneAt(start)
+		if ok && start+width > at {
+			return start
 		}
-		at--
 	}
-	return 0
+	return at
 }
 
 func (b *Buffer) runeAt(at int) (rune, int, bool) {
-	first, ok := b.ByteAt(at)
-	if !ok {
+	if at < 0 || at >= b.byteLen {
 		return 0, 0, false
 	}
 	var encoded [utf8.UTFMax]byte
-	encoded[0] = first
-	for size := 1; size < utf8.UTFMax; size++ {
-		c, exists := b.ByteAt(at + size)
-		if !exists {
-			r, width := utf8.DecodeRune(encoded[:size])
-			return r, width, true
-		}
-		encoded[size] = c
-		r, width := utf8.DecodeRune(encoded[:size+1])
-		if width > 1 || r != utf8.RuneError {
-			return r, width, true
-		}
+	size := min(utf8.UTFMax, b.byteLen-at)
+	for i := 0; i < size; i++ {
+		encoded[i], _ = b.ByteAt(at + i)
 	}
-	r, width := utf8.DecodeRune(encoded[:])
+	r, width := utf8.DecodeRune(encoded[:size])
 	return r, width, true
 }
 
@@ -304,15 +296,35 @@ func (b *Buffer) runeStartBefore(at int) (int, bool) {
 	if at <= 0 || at > b.byteLen {
 		return 0, false
 	}
-	start := at - 1
-	for start > 0 {
-		c, _ := b.ByteAt(start)
-		if utf8.RuneStart(c) {
-			break
+	// Search only for a valid rune that ends exactly at at. A bare
+	// continuation byte, truncated lead byte, or malformed sequence is one
+	// deletion unit of its own.
+	for start := at - 1; start >= max(0, at-utf8.UTFMax); start-- {
+		width, ok := b.validRuneAt(start)
+		if ok && start+width == at {
+			return start, true
 		}
-		start--
 	}
-	return start, true
+	return at - 1, true
+}
+
+// validRuneAt reports the width of the valid UTF-8 rune beginning at start.
+// It intentionally rejects DecodeRune's one-byte RuneError result for
+// malformed input, allowing callers to edit malformed bytes independently.
+func (b *Buffer) validRuneAt(start int) (int, bool) {
+	if start < 0 || start >= b.byteLen {
+		return 0, false
+	}
+	size := min(utf8.UTFMax, b.byteLen-start)
+	var encoded [utf8.UTFMax]byte
+	for i := 0; i < size; i++ {
+		encoded[i], _ = b.ByteAt(start + i)
+	}
+	_, width := utf8.DecodeRune(encoded[:size])
+	if width <= 0 || width > size || !utf8.Valid(encoded[:width]) {
+		return 0, false
+	}
+	return width, true
 }
 
 // PreviousCluster and NextCluster provide the first local grapheme behavior
@@ -329,7 +341,14 @@ func (b *Buffer) PreviousCluster(at int) int {
 		if !isClusterExtend(r) {
 			break
 		}
-		start, _ = b.runeStartBefore(start)
+		previous, ok := b.runeStartBefore(start)
+		if !ok {
+			break
+		}
+		if _, valid := b.validRuneAt(previous); !valid {
+			break
+		}
+		start = previous
 	}
 	for start > 0 {
 		zwjStart, _ := b.runeStartBefore(start)
@@ -337,14 +356,28 @@ func (b *Buffer) PreviousCluster(at int) int {
 		if zwj != '\u200d' {
 			break
 		}
+		baseStart, ok := b.runeStartBefore(zwjStart)
+		if !ok {
+			break
+		}
+		if _, valid := b.validRuneAt(baseStart); !valid {
+			break
+		}
 		start = zwjStart
-		start, _ = b.runeStartBefore(start)
+		start = baseStart
 		for start > 0 {
 			r, _, _ := b.runeAt(start)
 			if !isClusterExtend(r) {
 				break
 			}
-			start, _ = b.runeStartBefore(start)
+			previous, ok := b.runeStartBefore(start)
+			if !ok {
+				break
+			}
+			if _, valid := b.validRuneAt(previous); !valid {
+				break
+			}
+			start = previous
 		}
 	}
 	return start
@@ -359,6 +392,9 @@ func (b *Buffer) NextCluster(at int) int {
 		_, width, ok := b.runeAt(pos)
 		if !ok {
 			return b.byteLen
+		}
+		if _, valid := b.validRuneAt(pos); !valid {
+			return pos + 1
 		}
 		pos += width
 		for pos < b.byteLen {

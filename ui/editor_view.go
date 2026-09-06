@@ -1032,6 +1032,14 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	primary := PrimaryMod()
 	if frame.Key != KeyCodeNone {
 		switch {
+		case frame.Key == KeyUp && input.Modifiers&^ModShift == 0:
+			moveEditorVertical(e, style, rows, -1, shift)
+		case frame.Key == KeyDown && input.Modifiers&^ModShift == 0:
+			moveEditorVertical(e, style, rows, 1, shift)
+		case frame.Key == KeyHome && input.Modifiers&^ModShift == 0:
+			moveEditorLineBoundary(e, false, shift)
+		case frame.Key == KeyEnd && input.Modifiers&^ModShift == 0:
+			moveEditorLineBoundary(e, true, shift)
 		case frame.Key == KeyLeft && input.Modifiers&^ModShift == primary|ModAlt:
 			MoveLongLineChunk(e, false, shift)
 		case frame.Key == KeyRight && input.Modifiers&^ModShift == primary|ModAlt:
@@ -1131,6 +1139,81 @@ func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32,
 		top += height + extra
 	}
 	return 0, 0, VisualLine{}, false
+}
+
+// moveEditorVertical moves through visible rows while using the shaped caret
+// position as the column. The row map is authoritative here: folded logical
+// lines cannot become accidental destinations for keyboard navigation.
+func moveEditorVertical(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool) bool {
+	line, ok := e.Buffer.LineAt(e.Cursor)
+	if !ok {
+		return false
+	}
+	visible, ok := rows.Visible(line)
+	if !ok {
+		return false
+	}
+	targetLine, ok := rows.Logical(visible + delta)
+	if !ok {
+		return false
+	}
+	currentStart, _, ok := e.Buffer.LineRange(line)
+	if !ok {
+		return false
+	}
+	x, hasPreferredX := e.PreferredVerticalX()
+	if !hasPreferredX {
+		current, ok := BuildVisualLineAround(&e.Buffer, line, e.Cursor, style)
+		if !ok {
+			return false
+		}
+		currentRune := current.LocalByteToRune(e.Cursor - current.DocStart)
+		x = current.CaretX(currentRune, e.Affinity)
+	}
+	targetStart, targetEnd, ok := e.Buffer.LineRange(targetLine)
+	if !ok {
+		return false
+	}
+	byteColumn := e.Cursor - currentStart
+	anchor := targetStart + maxInt(0, minInt(byteColumn, targetEnd-targetStart))
+	target, ok := BuildVisualLineAround(&e.Buffer, targetLine, anchor, style)
+	if !ok {
+		return false
+	}
+	targetRune, affinity := target.HitTest(x)
+	position := target.DocStart + target.LocalRuneToByte(targetRune)
+	if extend {
+		e.SetSelection(e.Anchor, position)
+	} else {
+		e.SetCursor(position)
+	}
+	e.SetAffinity(affinity)
+	e.SetPreferredVerticalX(x)
+	return true
+}
+
+func moveEditorLineBoundary(e *editor.ScratchEditor, end bool, extend bool) bool {
+	line, ok := e.Buffer.LineAt(e.Cursor)
+	if !ok {
+		return false
+	}
+	start, lineEnd, ok := e.Buffer.LineRange(line)
+	if !ok {
+		return false
+	}
+	position := start
+	if end {
+		position = lineEnd
+	}
+	if extend {
+		e.SetSelection(e.Anchor, position)
+	} else {
+		e.SetCursor(position)
+	}
+	if end {
+		e.SetAffinity(editor.AffinityTrailing)
+	}
+	return true
 }
 
 func visibleSelection(visual VisualLine, e *editor.ScratchEditor) (from, to int) {
