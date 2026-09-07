@@ -422,6 +422,126 @@ func isClusterExtend(r rune) bool {
 		(r >= 0x1f3fb && r <= 0x1f3ff)
 }
 
+// Word motion follows Shirei's class-run rule. It skips whitespace in the
+// direction of travel and then crosses one maximal run of the same class.
+// Punctuation is a class of its own, while the common Japanese scripts are
+// split so a script transition is a word boundary. These methods scan bytes
+// through the piece tree and never flatten the complete buffer.
+func (b *Buffer) PreviousWord(at int) int {
+	i := b.boundary(at)
+	for i > 0 {
+		start, ok := b.runeStartBefore(i)
+		if !ok {
+			return i
+		}
+		class, _ := b.wordRuneClass(start)
+		i = start
+		if class != wordClassSpace {
+			for i > 0 {
+				previous, ok := b.runeStartBefore(i)
+				if !ok {
+					break
+				}
+				previousClass, _ := b.wordRuneClass(previous)
+				if previousClass != class {
+					break
+				}
+				i = previous
+			}
+			break
+		}
+	}
+	return b.snapWordLeft(i)
+}
+
+func (b *Buffer) NextWord(at int) int {
+	i := b.boundary(at)
+	for i < b.byteLen {
+		class, width := b.wordRuneClass(i)
+		if width <= 0 {
+			return i
+		}
+		i += width
+		if class != wordClassSpace {
+			for i < b.byteLen {
+				nextClass, nextWidth := b.wordRuneClass(i)
+				if nextWidth <= 0 || nextClass != class {
+					break
+				}
+				i += nextWidth
+			}
+			break
+		}
+	}
+	return b.snapWordRight(i)
+}
+
+// Class boundaries can occur between a base rune and an extending mark when
+// the mark belongs to the Inherited script. Keep word motion on the same
+// grapheme-like caret stops used by ordinary horizontal motion.
+func (b *Buffer) snapWordLeft(at int) int {
+	at = b.boundary(at)
+	if at <= 0 {
+		return at
+	}
+	start := b.PreviousCluster(at)
+	if b.NextCluster(start) > at {
+		return start
+	}
+	return at
+}
+
+func (b *Buffer) snapWordRight(at int) int {
+	at = b.boundary(at)
+	if at >= b.byteLen {
+		return at
+	}
+	start := b.PreviousCluster(at)
+	end := b.NextCluster(start)
+	if end > at {
+		return end
+	}
+	return at
+}
+
+type wordClass uint8
+
+const (
+	wordClassSpace wordClass = iota
+	wordClassPunct
+	wordClassWord
+	wordClassHan
+	wordClassHiragana
+	wordClassKatakana
+)
+
+func (b *Buffer) wordRuneClass(at int) (wordClass, int) {
+	r, width, ok := b.runeAt(at)
+	if !ok || width <= 0 {
+		return wordClassPunct, 0
+	}
+	// DecodeRune represents malformed input as RuneError with width one. Keep
+	// that byte as a punctuation unit instead of allowing it to be mistaken
+	// for a valid replacement-character rune or a part of a larger unit.
+	if _, valid := b.validRuneAt(at); !valid {
+		return wordClassPunct, 1
+	}
+	switch {
+	case unicode.IsSpace(r):
+		return wordClassSpace, width
+	case unicode.Is(unicode.Han, r):
+		return wordClassHan, width
+	case unicode.Is(unicode.Hiragana, r):
+		return wordClassHiragana, width
+	case unicode.Is(unicode.Katakana, r):
+		return wordClassKatakana, width
+	case r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r):
+		return wordClassWord, width
+	default:
+		return wordClassPunct, width
+	}
+}
+
 // lineStart returns the byte after the requested preceding newline. The
 // newline ordinal is selected using subtree newline counts, then scanned only
 // inside its containing piece.

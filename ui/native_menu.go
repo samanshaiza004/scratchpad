@@ -43,6 +43,9 @@ func nativeMenuBar(state *application.Application, shell *workbenchState) bool {
 		}},
 		{Label: "View", Items: []nativemenu.Item{
 			commandItem(commands.OutlineToggle, "Outline", "", state.ActiveDocument() != nil),
+			commandItemWithModifiers(commands.ViewIncreaseFontSize, "Increase Editor Font Size", "=", nativemenu.ModPrimary|nativemenu.ModShift, true),
+			commandItem(commands.ViewDecreaseFontSize, "Decrease Editor Font Size", "-", true),
+			commandItem(commands.ViewResetFontSize, "Reset Editor Font Size", "0", true),
 			commandItem(commands.ViewToggleSidebar, "Toggle Sidebar", "", state.HasWorkspace || state.ActiveDocument() != nil),
 			commandItem(commands.FileRevealActive, "Reveal Active File", "", state.HasWorkspace && state.ActiveDocument() != nil),
 		}},
@@ -82,7 +85,10 @@ func recentMenuItem(state *application.Application) nativemenu.Item {
 }
 
 func commandItem(id commands.ID, label, key string, enabled bool) nativemenu.Item {
-	modifiers := nativemenu.ModPrimary
+	return commandItemWithModifiers(id, label, key, nativemenu.ModPrimary, enabled)
+}
+
+func commandItemWithModifiers(id commands.ID, label, key string, modifiers nativemenu.Modifiers, enabled bool) nativemenu.Item {
 	if key == "Z" {
 		modifiers |= nativemenu.ModShift
 	}

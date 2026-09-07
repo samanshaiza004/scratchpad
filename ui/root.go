@@ -39,6 +39,9 @@ func RootView(state *application.Application) {
 	state.MaybeWriteRecovery(state.RecoveryDir)
 
 	shell := Use[workbenchState]("workbench")
+	if shell.EditorFontSize <= 0 {
+		shell.EditorFontSize = defaultEditorFontSize
+	}
 	if !shell.SidebarInitialized || (state.HasWorkspace && !shell.WorkspaceWasOpen) {
 		shell.SidebarVisible = state.HasWorkspace
 		shell.SidebarInitialized = true
@@ -75,9 +78,11 @@ func RootView(state *application.Application) {
 						view.CollapsedHeadings = nil
 					}
 					rows := rowMapForDocument(doc, view)
+					style := EditorTextStyleForDocument(doc)
+					style.FontSize = editorFontSize(shell)
 					PaperWell(theme, Attrs(Grow(1), Expand, Clip), Attrs(Clip), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
-							Style: DefaultTextStyle(), RowHeight: 20, Wrap: proseWraps(language.ID(doc.RootLanguage)), ScrollY: &view.ScrollY,
+							Style: style, RowHeight: editorRowHeight(style.FontSize), Wrap: proseWraps(language.ID(doc.RootLanguage)), ScrollY: &view.ScrollY,
 							ScrollInitialized: view.ScrollInitialized,
 							LineNumbers:       true,
 							Rows:              &rows,
@@ -114,6 +119,7 @@ type workbenchState struct {
 	ShowRecent         bool
 	ShowSearch         bool
 	SidebarVisible     bool
+	EditorFontSize     float32
 	SidebarInitialized bool
 	WorkspaceWasOpen   bool
 	FindEpoch          uint64
@@ -144,6 +150,57 @@ type workbenchState struct {
 }
 
 type SidebarMode uint8
+
+const (
+	defaultEditorFontSize float32 = 16
+	minEditorFontSize     float32 = 8
+	maxEditorFontSize     float32 = 48
+	editorFontSizeStep    float32 = 1
+)
+
+func editorFontSize(shell *workbenchState) float32 {
+	if shell == nil || shell.EditorFontSize <= 0 {
+		return defaultEditorFontSize
+	}
+	return clampEditorFontSize(shell.EditorFontSize)
+}
+
+func clampEditorFontSize(size float32) float32 {
+	if size < minEditorFontSize {
+		return minEditorFontSize
+	}
+	if size > maxEditorFontSize {
+		return maxEditorFontSize
+	}
+	return size
+}
+
+func adjustEditorFontSize(size float32, delta int) float32 {
+	if size <= 0 {
+		size = defaultEditorFontSize
+	}
+	size = clampEditorFontSize(size)
+	return clampEditorFontSize(size + float32(delta)*editorFontSizeStep)
+}
+
+func editorRowHeight(fontSize float32) float32 {
+	if fontSize <= 0 {
+		fontSize = defaultEditorFontSize
+	}
+	return clampEditorFontSize(fontSize) * 1.5
+}
+
+func setEditorFontSize(state *application.Application, shell *workbenchState, size float32) {
+	if shell == nil {
+		return
+	}
+	shell.EditorFontSize = clampEditorFontSize(size)
+	if state != nil {
+		if doc := state.ActiveDocument(); doc != nil {
+			doc.Editor.ClearPreferredVerticalX()
+		}
+	}
+}
 
 const (
 	SidebarFiles SidebarMode = iota
@@ -241,6 +298,15 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 			WorkstationMenuButton(theme, "View", func() {
 				if MenuItem(NoIcon, "Outline") {
 					executeCommand(state, shell, commands.OutlineToggle)
+				}
+				if MenuItem(NoIcon, "Increase Editor Font Size    "+primaryShortcut("+")) {
+					executeCommand(state, shell, commands.ViewIncreaseFontSize)
+				}
+				if MenuItem(NoIcon, "Decrease Editor Font Size    "+primaryShortcut("-")) {
+					executeCommand(state, shell, commands.ViewDecreaseFontSize)
+				}
+				if MenuItem(NoIcon, "Reset Editor Font Size    "+primaryShortcut("0")) {
+					executeCommand(state, shell, commands.ViewResetFontSize)
 				}
 				if (state.HasWorkspace || state.ActiveDocument() != nil) && MenuItem(NoIcon, "Toggle Sidebar") {
 					executeCommand(state, shell, commands.ViewToggleSidebar)
@@ -1079,6 +1145,11 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 			return
 		}
 	}
+	if zoom := editorZoomCommand(frame.Key, mods, primary); zoom != "" {
+		executeCommand(state, shell, zoom)
+		frame.Key = KeyCodeNone
+		return
+	}
 	if mods == primary {
 		switch frame.Key {
 		case KeyO:
@@ -1121,6 +1192,27 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 			return
 		}
 		frame.Key = KeyCodeNone
+	}
+}
+
+// editorZoomCommand maps the platform-independent physical key codes to the
+// editor font commands. On a US keyboard, plus is the '=' key with Shift;
+// accepting an unshifted '=' as well accommodates keyboards that report the
+// produced character rather than the physical legend. PrimaryMod is Cmd on
+// Apple hosts and Ctrl elsewhere.
+func editorZoomCommand(key KeyCode, mods, primary Modifiers) commands.ID {
+	if mods != primary && mods != primary|ModShift {
+		return ""
+	}
+	switch {
+	case key == KeyCode('-') && mods == primary:
+		return commands.ViewDecreaseFontSize
+	case (key == KeyCode('=') || key == KeyCode('+')) && (mods == primary || mods == primary|ModShift):
+		return commands.ViewIncreaseFontSize
+	case key == Key0 && mods == primary:
+		return commands.ViewResetFontSize
+	default:
+		return ""
 	}
 }
 
@@ -1244,6 +1336,15 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		if state.HasWorkspace || state.ActiveDocument() != nil {
 			shell.SidebarVisible = !shell.SidebarVisible
 		}
+	case commands.ViewIncreaseFontSize:
+		setEditorFontSize(state, shell, adjustEditorFontSize(editorFontSize(shell), 1))
+		return true
+	case commands.ViewDecreaseFontSize:
+		setEditorFontSize(state, shell, adjustEditorFontSize(editorFontSize(shell), -1))
+		return true
+	case commands.ViewResetFontSize:
+		setEditorFontSize(state, shell, defaultEditorFontSize)
+		return true
 	case commands.OutlineToggle:
 		shell.SidebarMode = SidebarOutline
 		shell.SidebarVisible = true

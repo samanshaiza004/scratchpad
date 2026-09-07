@@ -303,6 +303,29 @@ func (e *ScratchEditor) MoveRight(extend bool) {
 	e.ClearPreferredVerticalX()
 }
 
+// MoveWordLeft and MoveWordRight use the same class-run word boundaries as
+// Shirei. Shift extends the current selection, while an ordinary motion
+// collapses its anchor to the new caret position.
+func (e *ScratchEditor) MoveWordLeft(extend bool) {
+	position := e.Buffer.PreviousWord(e.Cursor)
+	e.Cursor = position
+	if !extend {
+		e.Anchor = position
+	}
+	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
+}
+
+func (e *ScratchEditor) MoveWordRight(extend bool) {
+	position := e.Buffer.NextWord(e.Cursor)
+	e.Cursor = position
+	if !extend {
+		e.Anchor = position
+	}
+	e.Affinity = AffinityTrailing
+	e.ClearPreferredVerticalX()
+}
+
 func (e *ScratchEditor) SetAffinity(affinity Affinity) {
 	e.Affinity = affinity
 }

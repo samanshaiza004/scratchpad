@@ -206,6 +206,86 @@ func TestWrappedVisualLineHitTestingUsesVerticalRow(t *testing.T) {
 	}
 }
 
+func TestWrappedVisualLineHitTestUsesShireiBlockOrigin(t *testing.T) {
+	b := editor.NewBuffer([]byte("one two three four five six seven eight nine ten"))
+	style := DefaultTextStyle()
+	visual, ok := BuildVisualLineMax(&b, 0, 0, style, 70)
+	if !ok || len(visual.Layout.Lines) < 2 {
+		t.Skip("Shirei has no usable font or the fixture did not wrap")
+	}
+	// ShapedTextLayout adds the same top padding above its first line that
+	// CaretPosition now reports. Compare each row against Shirei's own public
+	// cursor oracle after translating into its unpadded text coordinates.
+	pad := visual.textBlockPaddingTop()
+	for i, line := range visual.Layout.Lines {
+		start, end := visual.shapedLineRange(i)
+		if end <= start || line.Width <= 0 {
+			continue
+		}
+		x := line.Width * 0.4
+		y := pad + visual.lineTop(i) + lineHeight(line)/2
+		want := ComputeCursorIndex(Rect{Size: Vec2{1000, visual.Height(20)}}, Vec2{x, y - pad}, Vec2{}, visual.Layout)
+		got, _ := visual.HitTestAt(y, x)
+		if got != want {
+			t.Fatalf("wrapped row %d hit at (%v,%v) = %d, Shirei reference = %d", i, x, y, got, want)
+		}
+	}
+}
+
+func TestVisualLineAtYUsesConfiguredHeightForBlankRows(t *testing.T) {
+	e := editor.NewScratchEditor([]byte("\nfilled"))
+	style := DefaultTextStyle()
+	cache := &visualLineCache{}
+	rows := editor.IdentityRowMap(e.Buffer.LineCount())
+	line, localY, visual, ok := visualLineAtY(e, rows, 19.9, style, 20, 0, cache, nil, nil, nil, nil)
+	if !ok || line != 0 || localY < 19 {
+		t.Fatalf("blank row hit = line %d local y %v ok %v, want first 20px row", line, localY, ok)
+	}
+	line, localY, _, ok = visualLineAtY(e, rows, 20.1, style, 20, 0, cache, nil, nil, nil, nil)
+	if !ok || line != 1 || localY <= 0 {
+		t.Fatalf("row after blank hit = line %d local y %v ok %v, want second row", line, localY, ok)
+	}
+	if got := visual.Height(20); got != 20 {
+		t.Fatalf("blank visual height = %v, want configured row height 20", got)
+	}
+}
+
+func TestEditorVerticalNavigationUsesWrappedRows(t *testing.T) {
+	if shaped := ShapeText("probe", DefaultTextStyle()); len(shaped.Lines) == 0 {
+		t.Skip("Shirei has no usable font in this headless unit-test context")
+	}
+	e := editor.NewScratchEditor([]byte("one two three four five six seven eight nine ten\nnext line"))
+	style := DefaultTextStyle()
+	cache := &visualLineCache{}
+	rows := editor.IdentityRowMap(e.Buffer.LineCount())
+	visual, ok := BuildVisualLineMax(&e.Buffer, 0, 0, style, 70)
+	if !ok || len(visual.Layout.Lines) < 2 {
+		t.Skip("fixture did not wrap")
+	}
+	e.SetCursor(1)
+	if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil) {
+		t.Fatal("down within wrapped logical line did not move")
+	}
+	if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 0 {
+		t.Fatalf("wrapped down landed on logical line %d, want continuation row on line 0", line)
+	}
+	secondStart, _ := visual.shapedLineRange(1)
+	if e.Cursor < visual.LocalRuneToByte(secondStart) {
+		t.Fatalf("wrapped down cursor = %d, before continuation start %d", e.Cursor, visual.LocalRuneToByte(secondStart))
+	}
+	for i := 0; i < len(visual.Layout.Lines); i++ {
+		if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 0 {
+			break
+		}
+		if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil) {
+			break
+		}
+	}
+	if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 1 {
+		t.Fatalf("down through wrapped continuation landed on logical line %d, want line 1", line)
+	}
+}
+
 func isEditorClusterBoundary(buffer *editor.Buffer, offset int) bool {
 	if offset == 0 || offset == buffer.ByteLen() {
 		return true
@@ -325,6 +405,50 @@ func TestEditableViewScrollsVisibleRows(t *testing.T) {
 	if scrollY <= before {
 		t.Fatalf("editor scroll did not persist: before=%v after=%v", before, scrollY)
 	}
+}
+
+func TestEditableViewScrolledClickUsesRenderedRowGeometry(t *testing.T) {
+	ResetInputSession()
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{500, 120}
+	e := editor.NewScratchEditor([]byte(strings.Repeat("row\n", 40)))
+	scope := new(int)
+	var scrollY float32
+	var pendingScroll Vec2
+	frame := func(mouse Vec2, action MouseAction) {
+		GetInputState().MousePoint = mouse
+		GetFrameInput().Mouse = action
+		GetFrameInput().Scroll = pendingScroll
+		pendingScroll = Vec2{}
+		GetFrameInput().Motion = Vec2{}
+		GetFrameInput().Key = KeyCodeNone
+		GetFrameInput().Text = ""
+		RunFrameFn(func() {
+			ContainerWithKey(scope, Attrs(Viewport), func() {
+				EditableView(scope, e, EditorViewOptions{
+					Style: DefaultTextStyle(), RowHeight: 20, ScrollY: &scrollY, ScrollInitialized: true,
+				})
+			})
+		})
+	}
+	for range 3 {
+		frame(Vec2{250, 10}, 0)
+	}
+	// One row is scrolled offscreen. A click in the first painted row must
+	// resolve against the row after the scroll offset, using the same 20px
+	// geometry used by the virtual list.
+	pendingScroll = Vec2{0, 20}
+	frame(Vec2{250, 80}, 0)
+	for range 2 {
+		frame(Vec2{250, 80}, 0)
+	}
+	frame(Vec2{10, 10}, MouseClick)
+	line, ok := e.Buffer.LineAt(e.Cursor)
+	if !ok || line != 1 {
+		t.Fatalf("scrolled click cursor=%d landed on line %d, want line 1", e.Cursor, line)
+	}
+	frame(Vec2{10, 10}, MouseRelease)
 }
 
 func TestEditableViewTextParityWithTextArea(t *testing.T) {

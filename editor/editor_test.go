@@ -119,6 +119,100 @@ func TestEditorClipboardUndoRedoAndClusters(t *testing.T) {
 	}
 }
 
+func TestEditorWordNavigationMatchesShireiClassRuns(t *testing.T) {
+	cases := []struct {
+		text      string
+		from      int
+		wantLeft  int
+		wantRight int
+	}{
+		{"hello world", 0, 0, 5},
+		{"hello world", 5, 0, 11},
+		{"hello world", 8, 6, 11},
+		{"/opt/brew", 1, 0, 4},
+		{"/opt/brew", 4, 1, 5},
+		{"foo, bar", 3, 0, 4},
+		{"foo, bar", 4, 3, 8},
+		{"a_b2 c", 0, 0, 4},
+		{"   ", 1, 0, 3},
+		{"", 0, 0, 0},
+	}
+	for _, tc := range cases {
+		b := NewBuffer([]byte(tc.text))
+		if got := b.PreviousWord(tc.from); got != tc.wantLeft {
+			t.Errorf("PreviousWord(%q, %d) = %d, want %d", tc.text, tc.from, got, tc.wantLeft)
+		}
+		if got := b.NextWord(tc.from); got != tc.wantRight {
+			t.Errorf("NextWord(%q, %d) = %d, want %d", tc.text, tc.from, got, tc.wantRight)
+		}
+	}
+
+	// Japanese script transitions are word boundaries, and combining marks
+	// remain part of the surrounding word run.
+	b := NewBuffer([]byte("漢字かなカナab"))
+	for _, tc := range []struct{ at, left, right int }{
+		{0, 0, 6}, {6, 0, 12}, {12, 6, 18}, {18, 12, 20}, {20, 18, 20},
+	} {
+		if got := b.PreviousWord(tc.at); got != tc.left {
+			t.Errorf("PreviousWord(Japanese, %d) = %d, want %d", tc.at, got, tc.left)
+		}
+		if got := b.NextWord(tc.at); got != tc.right {
+			t.Errorf("NextWord(Japanese, %d) = %d, want %d", tc.at, got, tc.right)
+		}
+	}
+	b = NewBuffer([]byte("cafe\u0301s x"))
+	if got := b.NextWord(0); got != len([]byte("cafe\u0301s")) {
+		t.Fatalf("NextWord(combining word) = %d, want %d", got, len([]byte("cafe\u0301s")))
+	}
+	// An inherited combining mark after a Han base has a different script
+	// class, but word motion must still stop only at a grapheme boundary.
+	b = NewBuffer([]byte("漢\u0301字"))
+	if got := b.NextWord(0); got != len([]byte("漢\u0301")) {
+		t.Fatalf("NextWord(Han plus inherited mark) = %d, want %d", got, len([]byte("漢\u0301")))
+	}
+	if got := b.PreviousWord(len([]byte("漢\u0301"))); got != 0 {
+		t.Fatalf("PreviousWord(Han plus inherited mark) = %d, want 0", got)
+	}
+}
+
+func TestEditorWordNavigationPreservesSelectionAndInvalidByteSafety(t *testing.T) {
+	e := NewScratchEditor([]byte("hello world"))
+	e.SetCursor(0)
+	e.MoveWordRight(true)
+	if e.Cursor != 5 || e.Anchor != 0 {
+		t.Fatalf("shift-word-right selection = %d:%d, want 0:5", e.Anchor, e.Cursor)
+	}
+	e.MoveWordRight(true)
+	if e.Cursor != 11 || e.Anchor != 0 {
+		t.Fatalf("second shift-word-right selection = %d:%d, want 0:11", e.Anchor, e.Cursor)
+	}
+	e.MoveWordLeft(false)
+	if e.Cursor != 6 || e.Anchor != 6 {
+		t.Fatalf("word-left collapse = %d:%d, want 6:6", e.Anchor, e.Cursor)
+	}
+
+	// Malformed bytes remain one-byte navigation units and never cause a
+	// result inside the valid UTF-8 rune on either side.
+	b := NewBuffer([]byte{'a', ' ', 0xff, 'b', 0xc3})
+	for _, tc := range []struct {
+		name      string
+		got, want int
+	}{
+		{"next through invalid", b.NextWord(1), 3},
+		{"previous before invalid", b.PreviousWord(3), 2},
+		{"previous trailing invalid", b.PreviousWord(5), 4},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %d, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+
+	b = NewBuffer(append([]byte("é"), 0x80))
+	if got := b.PreviousWord(b.ByteLen()); got != len([]byte("é")) {
+		t.Fatalf("PreviousWord after malformed continuation = %d, want %d", got, len([]byte("é")))
+	}
+}
+
 func TestEditorCompositionAndBidiAffinity(t *testing.T) {
 	e := NewScratchEditor([]byte("שלום"))
 	e.SetCursor(0)

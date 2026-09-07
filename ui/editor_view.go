@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"time"
 	"unicode/utf8"
@@ -21,6 +22,10 @@ const (
 	maxShapingBytes       = 16 << 10
 	longLineChunkBytes    = maxShapingBytes
 	maxChunkBoundaryBytes = 1 << 10
+	// This is Shirei's documented pen-baseline fraction. It is used only to
+	// turn the public FontFace descender metrics into the block padding that
+	// ShapedTextLayout applies around its text lines.
+	shireiGlyphBaselineFrac = float32(0.82)
 )
 
 // VisualLine is the row-local bridge between the byte-oriented document and
@@ -42,6 +47,8 @@ type VisualLine struct {
 	ChunkIndex      int
 	ChunkCount      int
 	WrapWidth       float32
+	baseStyle       TextStyleAttrs
+	blockPaddingTop float32
 
 	sourceBytes []int
 }
@@ -104,6 +111,7 @@ func buildVisualLineAroundMaxStyled(buffer *editor.Buffer, line, anchor int, sty
 		ChunkIndex:      chunkIndex,
 		ChunkCount:      chunkCount,
 		WrapWidth:       maxWidth,
+		baseStyle:       style,
 		sourceBytes:     sourceBytes,
 	}
 	if presentation != nil && styler != nil {
@@ -114,6 +122,7 @@ func buildVisualLineAroundMaxStyled(buffer *editor.Buffer, line, anchor int, sty
 	} else {
 		visual.Layout = ShapeTextMax(display, style, maxWidth)
 	}
+	visual.blockPaddingTop = visual.computeTextBlockPaddingTop()
 	return visual, true
 }
 
@@ -368,57 +377,64 @@ func (v VisualLine) HitTest(x float32) (int, editor.Affinity) {
 // lower or upper one, matching the side returned by HitTest.
 func (v VisualLine) CaretX(runeIndex int, affinity editor.Affinity) float32 {
 	runeIndex = maxInt(0, minInt(runeIndex, len(v.Runes)))
+	return v.caretXOnLine(v.lineAtRune(runeIndex, affinity), runeIndex, affinity)
+}
+
+// caretXOnLine returns the caret's visual x within one shaped row. Keeping
+// the row selection here matters for soft wraps: a boundary at the start of a
+// continuation row has two possible visual positions, and aggregating all
+// rows would choose the wrong one for vertical motion.
+func (v VisualLine) caretXOnLine(lineIndex, runeIndex int, affinity editor.Affinity) float32 {
+	runeIndex = maxInt(0, minInt(runeIndex, len(v.Runes)))
+	lineIndex = maxInt(0, minInt(lineIndex, len(v.Layout.Lines)-1))
 	penX := float32(0)
 	bounds := v.clusterBounds()
 	var low, high float32
 	found := false
-	for lineIndex := range v.Layout.Lines {
-		line := &v.Layout.Lines[lineIndex]
-		for segmentIndex := range line.Segments {
-			segment := &line.Segments[segmentIndex]
-			for glyphIndex := range segment.Glyphs {
-				glyph := &segment.Glyphs[glyphIndex]
-				cluster := int(glyph.Cluster)
-				if cluster < 0 || cluster >= len(v.Runes) {
-					continue
-				}
-				after := v.nextClusterBoundary(bounds, cluster)
-				var candidates [2]float32
-				candidateCount := 0
-				if segment.Dir == LTR {
-					if cluster == runeIndex {
-						candidates[candidateCount] = penX
-						candidateCount++
-					}
-					if after == runeIndex {
-						candidates[candidateCount] = penX + glyph.XAdvance
-						candidateCount++
-					}
-				} else {
-					if cluster == runeIndex {
-						candidates[candidateCount] = penX + glyph.XAdvance
-						candidateCount++
-					}
-					if after == runeIndex {
-						candidates[candidateCount] = penX
-						candidateCount++
-					}
-				}
-				for i := 0; i < candidateCount; i++ {
-					x := candidates[i]
-					if !found {
-						low, high, found = x, x, true
-					} else {
-						if x < low {
-							low = x
-						}
-						if x > high {
-							high = x
-						}
-					}
-				}
-				penX += glyph.XAdvance
+	if len(v.Layout.Lines) == 0 {
+		return 0
+	}
+	line := &v.Layout.Lines[lineIndex]
+	for segmentIndex := range line.Segments {
+		segment := &line.Segments[segmentIndex]
+		for glyphIndex := range segment.Glyphs {
+			glyph := &segment.Glyphs[glyphIndex]
+			cluster := int(glyph.Cluster)
+			if cluster < 0 || cluster >= len(v.Runes) {
+				continue
 			}
+			after := v.nextClusterBoundary(bounds, cluster)
+			var candidates [2]float32
+			candidateCount := 0
+			if segment.Dir == LTR {
+				if cluster == runeIndex {
+					candidates[candidateCount] = penX
+					candidateCount++
+				}
+				if after == runeIndex {
+					candidates[candidateCount] = penX + glyph.XAdvance
+					candidateCount++
+				}
+			} else {
+				if cluster == runeIndex {
+					candidates[candidateCount] = penX + glyph.XAdvance
+					candidateCount++
+				}
+				if after == runeIndex {
+					candidates[candidateCount] = penX
+					candidateCount++
+				}
+			}
+			for i := 0; i < candidateCount; i++ {
+				x := candidates[i]
+				if !found {
+					low, high, found = x, x, true
+				} else {
+					low = minFloat(low, x)
+					high = maxFloat(high, x)
+				}
+			}
+			penX += glyph.XAdvance
 		}
 	}
 	if !found {
@@ -437,6 +453,10 @@ func (v VisualLine) CaretX(runeIndex int, affinity editor.Affinity) float32 {
 // of this logical line, so a pointer in a continuation row resolves to the
 // corresponding source-rune boundary.
 func (v VisualLine) HitTestAt(y, x float32) (int, editor.Affinity) {
+	y -= v.textBlockPaddingTop()
+	if y < 0 {
+		y = 0
+	}
 	return v.hitTestLine(v.lineAtY(y), x)
 }
 
@@ -539,21 +559,107 @@ func (v VisualLine) CaretPosition(runeIndex int, affinity editor.Affinity) (floa
 	if affinity == editor.AffinityTrailing {
 		low = high
 	}
-	return low, v.lineTop(lineIndex), lineHeight(*line)
+	caretHeight := float32(CaretHeightForStyle(v.baseStyle))
+	if caretHeight <= 0 {
+		caretHeight = lineHeight(*line)
+	}
+	leading := float32(0)
+	if lineIndex > 0 {
+		leading = lineHeight(v.Layout.Lines[lineIndex-1]) - v.lineEm(lineIndex-1)
+	}
+	return low, v.textBlockPaddingTop() + v.lineTop(lineIndex) + leading, caretHeight
 }
 
 func (v VisualLine) Height(fallback float32) float32 {
 	if len(v.Layout.Lines) == 0 {
 		return fallback
 	}
-	var total float32
-	for _, line := range v.Layout.Lines {
-		total += lineHeight(line)
+	total := v.lineEm(0)
+	for i := 1; i < len(v.Layout.Lines); i++ {
+		// Shirei carries the previous line's leading into the next line's
+		// top padding. Consequently the first row starts at its em height,
+		// while each later row is its own em plus the preceding row's leading.
+		total += v.lineEm(i) + lineHeight(v.Layout.Lines[i-1]) - v.lineEm(i-1)
 	}
 	if total <= 0 {
 		return fallback
 	}
-	return total
+	return total + 2*v.textBlockPaddingTop()
+}
+
+// textBlockPaddingTop returns the padding captured from the shaped glyphs'
+// public face metrics. Render-oracle tests guard agreement with the pinned
+// Shirei renderer's block geometry.
+func (v VisualLine) textBlockPaddingTop() float32 {
+	return v.blockPaddingTop
+}
+
+func (v VisualLine) computeTextBlockPaddingTop() float32 {
+	if len(v.Layout.Lines) == 0 {
+		return 0
+	}
+	last := &v.Layout.Lines[len(v.Layout.Lines)-1]
+	lineEm := v.baseStyle.FontSize
+	if lineEm <= 0 {
+		lineEm = DefaultTextSize
+	}
+	for _, segment := range last.Segments {
+		for _, glyph := range segment.Glyphs {
+			if size := v.styleAt(int(glyph.Cluster)).FontSize; size > lineEm {
+				lineEm = size
+			}
+		}
+	}
+	pad := float32(0)
+	if len(last.Segments) == 0 {
+		pad = maxFloat(0, float32(CaretHeightForStyle(v.baseStyle))-lineEm)
+	} else {
+		for _, segment := range last.Segments {
+			for _, glyph := range segment.Glyphs {
+				st := v.styleAt(int(glyph.Cluster))
+				em := st.FontSize
+				if em <= 0 {
+					em = lineEm
+				}
+				face := GetFace(glyph.FontId)
+				descender := face.Descender
+				if descender > 0 {
+					descender = -descender
+				}
+				depth := -descender * face.InvUPM * em
+				reserved := (1 - shireiGlyphBaselineFrac) * lineEm
+				pad = maxFloat(pad, maxFloat(0, depth-reserved))
+			}
+		}
+	}
+	return pad
+}
+
+func (v VisualLine) styleAt(runeIndex int) TextStyleAttrs {
+	for _, span := range v.layoutSpans {
+		if runeIndex >= span.From && runeIndex < span.To {
+			return span.Style
+		}
+	}
+	return v.baseStyle
+}
+
+func (v VisualLine) lineEm(index int) float32 {
+	if index < 0 || index >= len(v.Layout.Lines) {
+		return maxFloat(v.baseStyle.FontSize, DefaultTextSize)
+	}
+	em := v.baseStyle.FontSize
+	if em <= 0 {
+		em = DefaultTextSize
+	}
+	for _, segment := range v.Layout.Lines[index].Segments {
+		for _, glyph := range segment.Glyphs {
+			if size := v.styleAt(int(glyph.Cluster)).FontSize; size > em {
+				em = size
+			}
+		}
+	}
+	return em
 }
 
 func lineHeight(line ShapedTextLine) float32 {
@@ -564,21 +670,30 @@ func lineHeight(line ShapedTextLine) float32 {
 }
 
 func (v VisualLine) lineTop(index int) float32 {
-	var y float32
-	for i := 0; i < index && i < len(v.Layout.Lines); i++ {
-		y += lineHeight(v.Layout.Lines[i])
+	index = maxInt(0, minInt(index, len(v.Layout.Lines)))
+	if index == 0 || len(v.Layout.Lines) == 0 {
+		return 0
+	}
+	y := v.lineEm(0)
+	for i := 1; i < index; i++ {
+		y += v.lineEm(i) + lineHeight(v.Layout.Lines[i-1]) - v.lineEm(i-1)
 	}
 	return y
+}
+
+func (v VisualLine) lineBoxHeight(index int) float32 {
+	if index <= 0 {
+		return v.lineEm(0)
+	}
+	return v.lineEm(index) + lineHeight(v.Layout.Lines[index-1]) - v.lineEm(index-1)
 }
 
 func (v VisualLine) lineAtY(y float32) int {
 	if len(v.Layout.Lines) == 0 || y <= 0 {
 		return 0
 	}
-	var top float32
-	for i, line := range v.Layout.Lines {
-		top += lineHeight(line)
-		if y < top {
+	for i := range v.Layout.Lines {
+		if y < v.lineTop(i)+v.lineBoxHeight(i) {
 			return i
 		}
 	}
@@ -591,7 +706,7 @@ func (v VisualLine) lineAtRune(runeIndex int, affinity editor.Affinity) int {
 	}
 	for i := range v.Layout.Lines {
 		start, end := v.shapedLineRange(i)
-		if runeIndex < end || i == len(v.Layout.Lines)-1 {
+		if runeIndex < end || (runeIndex == end && affinity == editor.AffinityTrailing) || i == len(v.Layout.Lines)-1 {
 			if runeIndex == start && i > 0 && affinity == editor.AffinityLeading {
 				return i
 			}
@@ -706,7 +821,7 @@ func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool) {
 
 func cachedVisualLine(c *visualLineCache, buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, width float32, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) (VisualLine, bool) {
 	if visual, ok := c.Lines[line]; ok {
-		if anchor >= visual.DocStart && anchor <= visual.DocEnd {
+		if anchor >= visual.DocStart && anchor <= visual.DocEnd && reflect.DeepEqual(visual.baseStyle, style) {
 			return visual, true
 		}
 	}
@@ -972,10 +1087,15 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 								if caretHeight > 0 {
 									caret.Height = caretHeight
 								}
+								// CaretPosition is in the same padded text block that
+								// ShapedTextLayout paints. Do not center it a second time
+								// inside the logical row; that moves it away from the ink
+								// and breaks wrapped-row/descender alignment.
+								caret.Y = 0
 								if composition.Text != "" {
 									// Keep the established full-row IME anchor independent
 									// from the narrowed ordinary insertion caret.
-									Container(Attrs(FloatVec(Vec2{x, 0}), MinSize(1, rowHeight), InFront, BackgroundVec(Vec4{0, 0, 20, 0})), func() {
+									Container(Attrs(FloatVec(Vec2{x, caretY}), MinSize(1, rowHeight), InFront, BackgroundVec(Vec4{0, 0, 20, 0})), func() {
 										r := GetScreenRect()
 										GetHost().CompositionPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
 									})
@@ -1013,6 +1133,8 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, spacing func(int) float32) {
 	frame := GetFrameInput()
 	input := GetInputState()
+	content := GetContentRect()
+	lineWidth := contentWidthIfWrapped(wrap, editorContentWidth(content.Size[0], gutterWidth))
 	composition := e.Composition()
 	if input.Composition != "" {
 		if composition.Text == "" {
@@ -1030,12 +1152,16 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 
 	shift := input.Modifiers&ModShift != 0
 	primary := PrimaryMod()
+	wordMod := ModCtrl
+	if primary == ModCmd {
+		wordMod = ModAlt
+	}
 	if frame.Key != KeyCodeNone {
 		switch {
 		case frame.Key == KeyUp && input.Modifiers&^ModShift == 0:
-			moveEditorVertical(e, style, rows, -1, shift)
+			moveEditorVerticalLayout(e, style, rows, -1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler)
 		case frame.Key == KeyDown && input.Modifiers&^ModShift == 0:
-			moveEditorVertical(e, style, rows, 1, shift)
+			moveEditorVerticalLayout(e, style, rows, 1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler)
 		case frame.Key == KeyHome && input.Modifiers&^ModShift == 0:
 			moveEditorLineBoundary(e, false, shift)
 		case frame.Key == KeyEnd && input.Modifiers&^ModShift == 0:
@@ -1044,6 +1170,10 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 			MoveLongLineChunk(e, false, shift)
 		case frame.Key == KeyRight && input.Modifiers&^ModShift == primary|ModAlt:
 			MoveLongLineChunk(e, true, shift)
+		case frame.Key == KeyLeft && input.Modifiers&^ModShift == wordMod:
+			e.MoveWordLeft(shift)
+		case frame.Key == KeyRight && input.Modifiers&^ModShift == wordMod:
+			e.MoveWordRight(shift)
 		case frame.Key == KeyLeft && input.Modifiers&^ModShift == 0:
 			e.MoveLeft(shift)
 		case frame.Key == KeyRight && input.Modifiers&^ModShift == 0:
@@ -1076,7 +1206,6 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	}
 
 	if IsClicked() || IsActive() {
-		content := GetContentRect()
 		if input.MousePoint[0]-content.Origin[0] < gutterWidth {
 			return
 		}
@@ -1087,7 +1216,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 		var localY float32
 		var ok bool
 		if wrap {
-			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, lineWidth, lineCache, presentation, styler, spanStyler, spacing)
+			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, rowHeight, lineWidth, lineCache, presentation, styler, spanStyler, spacing)
 		} else {
 			visible := int(targetY / rowHeight)
 			if visible < 0 {
@@ -1113,7 +1242,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	}
 }
 
-func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, spacing func(int) float32) (int, float32, VisualLine, bool) {
+func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, rowHeight, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, spacing func(int) float32) (int, float32, VisualLine, bool) {
 	if targetY < 0 {
 		targetY = 0
 	}
@@ -1128,7 +1257,7 @@ func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32,
 		if !ok {
 			continue
 		}
-		height := visual.Height(style.FontSize * 1.5)
+		height := visual.Height(rowHeight)
 		extra := float32(0)
 		if spacing != nil {
 			extra = maxFloat(0, spacing(line))
@@ -1145,6 +1274,10 @@ func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32,
 // position as the column. The row map is authoritative here: folded logical
 // lines cannot become accidental destinations for keyboard navigation.
 func moveEditorVertical(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool) bool {
+	return moveEditorVerticalLayout(e, style, rows, delta, extend, false, 0, nil, nil, nil, nil)
+}
+
+func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) bool {
 	line, ok := e.Buffer.LineAt(e.Cursor)
 	if !ok {
 		return false
@@ -1153,22 +1286,32 @@ func moveEditorVertical(e *editor.ScratchEditor, style TextStyleAttrs, rows edit
 	if !ok {
 		return false
 	}
-	targetLine, ok := rows.Logical(visible + delta)
+	currentStart, _, ok := e.Buffer.LineRange(line)
 	if !ok {
 		return false
 	}
-	currentStart, _, ok := e.Buffer.LineRange(line)
+	current, ok := verticalVisualLine(e, line, e.Cursor, style, wrap, width, cache, presentation, styler, spanStyler)
+	if !ok {
+		return false
+	}
+	currentRune := current.LocalByteToRune(e.Cursor - current.DocStart)
+	currentRow := current.lineAtRune(currentRune, e.Affinity)
+	targetVisible := visible
+	targetRow := currentRow + delta
+	if targetRow < 0 || targetRow >= len(current.Layout.Lines) {
+		targetVisible += delta
+		targetRow = 0
+		if delta < 0 {
+			targetRow = -1 // selected after the target line is shaped below
+		}
+	}
+	targetLine, ok := rows.Logical(targetVisible)
 	if !ok {
 		return false
 	}
 	x, hasPreferredX := e.PreferredVerticalX()
 	if !hasPreferredX {
-		current, ok := BuildVisualLineAround(&e.Buffer, line, e.Cursor, style)
-		if !ok {
-			return false
-		}
-		currentRune := current.LocalByteToRune(e.Cursor - current.DocStart)
-		x = current.CaretX(currentRune, e.Affinity)
+		x = current.caretXOnLine(currentRow, currentRune, e.Affinity)
 	}
 	targetStart, targetEnd, ok := e.Buffer.LineRange(targetLine)
 	if !ok {
@@ -1176,11 +1319,17 @@ func moveEditorVertical(e *editor.ScratchEditor, style TextStyleAttrs, rows edit
 	}
 	byteColumn := e.Cursor - currentStart
 	anchor := targetStart + maxInt(0, minInt(byteColumn, targetEnd-targetStart))
-	target, ok := BuildVisualLineAround(&e.Buffer, targetLine, anchor, style)
+	target, ok := verticalVisualLine(e, targetLine, anchor, style, wrap, width, cache, presentation, styler, spanStyler)
 	if !ok {
 		return false
 	}
-	targetRune, affinity := target.HitTest(x)
+	if targetRow < 0 {
+		targetRow = len(target.Layout.Lines) - 1
+	}
+	if targetRow >= len(target.Layout.Lines) {
+		targetRow = len(target.Layout.Lines) - 1
+	}
+	targetRune, affinity := target.hitTestLine(targetRow, x)
 	position := target.DocStart + target.LocalRuneToByte(targetRune)
 	if extend {
 		e.SetSelection(e.Anchor, position)
@@ -1190,6 +1339,14 @@ func moveEditorVertical(e *editor.ScratchEditor, style TextStyleAttrs, rows edit
 	e.SetAffinity(affinity)
 	e.SetPreferredVerticalX(x)
 	return true
+}
+
+func verticalVisualLine(e *editor.ScratchEditor, line, anchor int, style TextStyleAttrs, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) (VisualLine, bool) {
+	if wrap && cache != nil {
+		cache.prepare(e.Revision(), width, true)
+		return cachedVisualLine(cache, &e.Buffer, line, anchor, style, width, presentation, styler, spanStyler)
+	}
+	return BuildVisualLineAround(&e.Buffer, line, anchor, style)
 }
 
 func moveEditorLineBoundary(e *editor.ScratchEditor, end bool, extend bool) bool {

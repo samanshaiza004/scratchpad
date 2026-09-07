@@ -50,6 +50,16 @@ The current window separates tactile, cool-gray application machinery from a
 quiet warm-paper editor surface. It remains ordinary Shirei composition with
 no application runtime boundary.
 
+The editor starts at a 16-pixel font size. Use **View → Increase Editor Font
+Size**, **Decrease Editor Font Size**, or **Reset Editor Font Size** to adjust
+it. Keyboard shortcuts are Ctrl+= (or Ctrl+Shift+=), Ctrl+-, and Ctrl+0 on
+Windows/Linux, with Command in place of Ctrl on macOS. Font size applies to
+the editor across open documents for the current application session.
+
+Use Ctrl+Left/Right to move by word on Windows/Linux, or Option+Left/Right on
+macOS. Hold Shift to extend the selection. Up/Down follows visible wrapped
+rows in prose documents.
+
 Host-font visual baselines are opt-in:
 
 ```bash
