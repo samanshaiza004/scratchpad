@@ -806,3 +806,88 @@ func TestTableLinesOptOutOfSoftWrap(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownTableLayoutPolicyCoversHitTestingAndVerticalNavigation(t *testing.T) {
+	source := []byte("A comfortable paragraph with enough words to wrap across several visual rows.\n\n| name | value | another column | a final wide column |\n| :--- | ---: | :--- | :--- |\n| one | two | three | four five six seven eight nine ten eleven |\nTrailing paragraph follows the table and should be reachable by the next visual row.\n")
+	doc := document.New("notes.md", source, "markdown")
+	if !doc.SetDerived(nil, markdown.Project(source, doc.Revision())) {
+		t.Fatal("SetDerived rejected the current-revision projections")
+	}
+	firstTable := -1
+	lastTable := -1
+	for line := 0; line < doc.Editor.Buffer.LineCount(); line++ {
+		if isTableLine(doc, line) {
+			if firstTable < 0 {
+				firstTable = line
+			}
+			lastTable = line
+		}
+	}
+	if firstTable < 0 || lastTable+1 >= doc.Editor.Buffer.LineCount() {
+		t.Fatalf("table projection did not leave a following paragraph: first=%d last=%d lines=%d", firstTable, lastTable, doc.Editor.Buffer.LineCount())
+	}
+
+	style := DefaultTextStyle()
+	const width float32 = 100
+	const rowHeight float32 = 20
+	options := EditorViewOptions{Wrap: true, NoWrapLine: func(line int) bool { return isTableLine(doc, line) }}
+	lineWidthFor := func(line int) float32 { return wrapWidthForLine(options, line, width) }
+	rows := editor.IdentityRowMap(doc.Editor.Buffer.LineCount())
+	cache := &visualLineCache{}
+
+	globalTable, ok := BuildVisualLineMax(&doc.Editor.Buffer, firstTable, 0, style, width)
+	if !ok || len(globalTable.Layout.Lines) < 2 {
+		t.Fatalf("wide table layout rows = %d, want at least two with the shared width", len(globalTable.Layout.Lines))
+	}
+	table, ok := BuildVisualLineMax(&doc.Editor.Buffer, firstTable, 0, style, lineWidthFor(firstTable))
+	if !ok || len(table.Layout.Lines) != 1 {
+		t.Fatalf("table layout rows = %d, want one unwrapped row", len(table.Layout.Lines))
+	}
+
+	top := float32(0)
+	for line := 0; line < firstTable; line++ {
+		visual, ok := BuildVisualLineMax(&doc.Editor.Buffer, line, 0, style, lineWidthFor(line))
+		if !ok {
+			t.Fatalf("line %d shaping failed", line)
+		}
+		top += visual.Height(rowHeight)
+	}
+	tableHeight := table.Height(rowHeight)
+	insideLine, insideY, insideVisual, ok := visualLineAtYWithWrapPolicy(doc.Editor, rows, top+tableHeight/2, style, rowHeight, width, lineWidthFor, cache, nil, nil, nil, 0, nil)
+	if !ok || insideLine != firstTable || insideY <= 0 || insideY >= tableHeight {
+		t.Fatalf("click inside table mapped to line %d local y %v, want table line %d within height %v", insideLine, insideY, firstTable, tableHeight)
+	}
+	if insideVisual.WrapWidth != 0 || len(insideVisual.Layout.Lines) != 1 {
+		t.Fatalf("click inside table returned wrap width %v with %d visual rows, want unwrapped single-row layout", insideVisual.WrapWidth, len(insideVisual.Layout.Lines))
+	}
+
+	following := lastTable + 1
+	followingVisual, ok := BuildVisualLineMax(&doc.Editor.Buffer, following, 0, style, lineWidthFor(following))
+	if !ok {
+		t.Fatal("following paragraph shaping failed")
+	}
+	followingTop := top + tableHeight
+	for line := firstTable + 1; line < following; line++ {
+		visual, ok := BuildVisualLineMax(&doc.Editor.Buffer, line, 0, style, lineWidthFor(line))
+		if !ok {
+			t.Fatalf("line %d shaping failed", line)
+		}
+		followingTop += visual.Height(rowHeight)
+	}
+	belowLine, _, _, ok := visualLineAtYWithWrapPolicy(doc.Editor, rows, followingTop+followingVisual.Height(rowHeight)/2, style, rowHeight, width, lineWidthFor, cache, nil, nil, nil, 0, nil)
+	if !ok || belowLine != following {
+		t.Fatalf("click below table mapped to line %d, want following paragraph line %d", belowLine, following)
+	}
+
+	start, end, ok := doc.Editor.Buffer.LineRange(lastTable)
+	if !ok {
+		t.Fatal("table line range unavailable")
+	}
+	doc.Editor.SetCursor(start + minInt(8, end-start))
+	if !moveEditorVerticalLayoutWithWrapPolicy(doc.Editor, style, rows, 1, false, true, width, lineWidthFor, cache, nil, nil, nil, 0) {
+		t.Fatal("down from table did not move")
+	}
+	if line, ok := doc.Editor.Buffer.LineAt(doc.Editor.Cursor); !ok || line != following {
+		t.Fatalf("down from table landed on line %d, want following paragraph line %d", line, following)
+	}
+}

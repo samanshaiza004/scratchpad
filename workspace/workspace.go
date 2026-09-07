@@ -23,6 +23,7 @@ type Workspace struct {
 // with errors.Is and must adopt the verified post-write version so a later
 // save does not report their own bytes as an external change.
 var ErrParentDirSync = errors.New("replacement completed but parent directory was not flushed")
+var ErrVersionChanged = errors.New("file changed during conditional replacement")
 
 func Open(root string) (Workspace, error) {
 	abs, err := filepath.Abs(root)
@@ -67,6 +68,18 @@ func (w Workspace) RelativePath(path string) (string, error) {
 // callers can verify and adopt the new bytes instead of treating the file as
 // unwritten.
 func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
+	return atomicWriteFile(path, data, mode, nil, nil)
+}
+
+// AtomicWriteFileIfVersion performs the same atomic replacement as
+// AtomicWriteFile, but checks the destination's verified content identity
+// immediately before replacing it. The replacement is refused if the
+// destination was created, removed, or changed since expected was observed.
+func AtomicWriteFileIfVersion(path string, data []byte, mode fs.FileMode, expected DiskVersion) error {
+	return atomicWriteFile(path, data, mode, &expected, nil)
+}
+
+func atomicWriteFile(path string, data []byte, mode fs.FileMode, expected *DiskVersion, beforeReplace func(string)) error {
 	targetPath, err := replacementTarget(path)
 	if err != nil {
 		return err
@@ -106,10 +119,22 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	if beforeReplace != nil && expected != nil {
+		beforeReplace(filepath.Clean(path))
+	}
 	if targetPath != filepath.Clean(path) {
 		currentTarget, err := filepath.EvalSymlinks(path)
 		if err != nil || filepath.Clean(currentTarget) != filepath.Clean(targetPath) {
 			return fmt.Errorf("symlink target changed during save")
+		}
+	}
+	if expected != nil {
+		current, err := versionForPath(path)
+		if err != nil {
+			return err
+		}
+		if !current.EqualForReplacement(*expected) {
+			return ErrVersionChanged
 		}
 	}
 	if err := atomicReplace(tmpName, targetPath); err != nil {
@@ -119,6 +144,17 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 		return fmt.Errorf("%w: %w", ErrParentDirSync, err)
 	}
 	return nil
+}
+
+func versionForPath(path string) (DiskVersion, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return DiskVersion{}, nil
+		}
+		return DiskVersion{}, err
+	}
+	return verifiedVersion(path, data)
 }
 
 func replacementTarget(path string) (string, error) {

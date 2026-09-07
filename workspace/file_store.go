@@ -45,6 +45,17 @@ func (v DiskVersion) Equal(other DiskVersion) bool {
 	return v.Size == other.Size && v.ModTime.Equal(other.ModTime) && v.FileID == other.FileID
 }
 
+// EqualForReplacement reports whether two versions identify the same bytes
+// and, when both identities are available, the same underlying file. The
+// stronger identity check is reserved for conditional replacements so the
+// general content-oriented Equal semantics remain unchanged.
+func (v DiskVersion) EqualForReplacement(other DiskVersion) bool {
+	if !v.Equal(other) {
+		return false
+	}
+	return !v.Exists || !v.FileID.Valid || !other.FileID.Valid || v.FileID == other.FileID
+}
+
 type FileSnapshot struct {
 	Path      string
 	Data      []byte
@@ -67,6 +78,14 @@ type FileStore interface {
 	Observe(path string) (DiskVersion, error)
 	Verify(path string) (DiskVersion, error)
 	Save(path string, data []byte, mode fs.FileMode) (DiskVersion, error)
+}
+
+// ConditionalFileStore can replace a file only when it still has the
+// supplied verified version. It is optional so lightweight test and recovery
+// stores can continue to implement FileStore without an OS-level replace
+// primitive.
+type ConditionalFileStore interface {
+	SaveIfVersion(path string, data []byte, mode fs.FileMode, expected DiskVersion) (DiskVersion, error)
 }
 
 type OSFileStore struct{}
@@ -124,6 +143,19 @@ func (s OSFileStore) Verify(path string) (DiskVersion, error) {
 
 func (s OSFileStore) Save(path string, data []byte, mode fs.FileMode) (DiskVersion, error) {
 	if err := AtomicWriteFile(path, data, mode); err != nil {
+		if errors.Is(err, ErrParentDirSync) {
+			version, verr := s.Verify(path)
+			if verr == nil && version.Verified && version.Hash == sha256.Sum256(data) {
+				return version, err
+			}
+		}
+		return DiskVersion{}, err
+	}
+	return s.Verify(path)
+}
+
+func (s OSFileStore) SaveIfVersion(path string, data []byte, mode fs.FileMode, expected DiskVersion) (DiskVersion, error) {
+	if err := AtomicWriteFileIfVersion(path, data, mode, expected); err != nil {
 		if errors.Is(err, ErrParentDirSync) {
 			version, verr := s.Verify(path)
 			if verr == nil && version.Verified && version.Hash == sha256.Sum256(data) {

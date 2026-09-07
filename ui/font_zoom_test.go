@@ -96,6 +96,25 @@ func TestEditorFontZoomClearsPreferredVerticalPosition(t *testing.T) {
 	}
 }
 
+func TestEditorFontZoomClearsPreferredVerticalPositionForAllOpenDocuments(t *testing.T) {
+	state := application.New(nil)
+	state.Documents["active"] = document.New("notes.md", []byte("one\ntwo"), "markdown")
+	state.Documents["inactive"] = document.New("other.md", []byte("three\nfour"), "markdown")
+	state.Order = []application.DocumentID{"active", "inactive"}
+	state.Active = "active"
+	state.Documents["active"].Editor.SetPreferredVerticalX(42)
+	state.Documents["inactive"].Editor.SetPreferredVerticalX(84)
+
+	if !executeCommand(state, &workbenchState{}, commands.ViewIncreaseFontSize) {
+		t.Fatal("font increase command was not handled")
+	}
+	for id, doc := range state.Documents {
+		if _, ok := doc.Editor.PreferredVerticalX(); ok {
+			t.Fatalf("font zoom retained stale preferred vertical position for %q", id)
+		}
+	}
+}
+
 func TestEditorFontZoomRebuildsCachedLayout(t *testing.T) {
 	buffer := editor.NewBuffer([]byte("A sentence with enough words to wrap when the editor font grows."))
 	style := DefaultTextStyle()

@@ -28,6 +28,25 @@ const (
 var ErrConflict = errors.New("document has an unresolved external-change conflict")
 var ErrDirty = errors.New("document has unsaved changes")
 var ErrDocumentAlreadyOpen = errors.New("destination document is already open")
+var ErrSaveAsDestinationExists = errors.New("save-as destination already exists")
+
+// SaveAsDestinationExistsError reports an existing, unopened Save As target
+// and the verified version that the user must confirm before it can be
+// replaced. Keeping the version on the error makes the confirmation
+// conditional on the exact bytes seen by the initial request.
+type SaveAsDestinationExistsError struct {
+	Path    string
+	Version workspace.DiskVersion
+}
+
+func (e *SaveAsDestinationExistsError) Error() string {
+	if e == nil {
+		return ErrSaveAsDestinationExists.Error()
+	}
+	return fmt.Sprintf("%s: %s", ErrSaveAsDestinationExists, e.Path)
+}
+
+func (e *SaveAsDestinationExistsError) Unwrap() error { return ErrSaveAsDestinationExists }
 
 type Conflict struct {
 	Base        []byte
@@ -63,6 +82,7 @@ type Application struct {
 	derivedResults       chan projectionResult
 	derivedRunning       int
 	derivedWake          func()
+	derivedAfterFunc     func(time.Duration, func())
 	derivedWakeScheduled int32
 	recent               []string
 	closed               []string
@@ -375,7 +395,16 @@ func (a *Application) SaveActive() error {
 	if status == StatusConflict {
 		return ErrConflict
 	}
+	beforePath, beforeVersion, beforeDirty := doc.Path, doc.DiskVersion, doc.Dirty()
 	if err := doc.Save(a.Store); err != nil {
+		// ErrParentDirSync means the replacement completed when Document was
+		// able to adopt the verified post-write version. Finish the same
+		// application-level bookkeeping as a clean save before surfacing the
+		// durability warning to the caller.
+		if !committedDurabilityWarning(err, doc, beforePath, beforeVersion, beforeDirty) {
+			return err
+		}
+		a.refreshRecoveryAfterSave()
 		return err
 	}
 	a.refreshRecoveryAfterSave()
@@ -393,6 +422,17 @@ func (a *Application) SaveDocument(id DocumentID) error {
 }
 
 func (a *Application) SaveAs(id DocumentID, path string) error {
+	return a.saveAs(id, path, nil)
+}
+
+// ConfirmSaveAs replaces an existing Save As destination only when its
+// verified version still matches the version returned by SaveAs. This keeps a
+// later external edit from being overwritten by an earlier confirmation.
+func (a *Application) ConfirmSaveAs(id DocumentID, path string, expected workspace.DiskVersion) error {
+	return a.saveAs(id, path, &expected)
+}
+
+func (a *Application) saveAs(id DocumentID, path string, expected *workspace.DiskVersion) error {
 	doc := a.Documents[id]
 	if doc == nil {
 		return errors.New("unknown document")
@@ -406,11 +446,62 @@ func (a *Application) SaveAs(id DocumentID, path string) error {
 		if _, exists := a.Documents[newID]; exists {
 			return ErrDocumentAlreadyOpen
 		}
+		destination, err := a.Store.Verify(filepath.Clean(path))
+		if err != nil {
+			return err
+		}
+		if destination.Exists {
+			if expected == nil {
+				return &SaveAsDestinationExistsError{Path: filepath.Clean(path), Version: destination}
+			}
+			if !destination.EqualForReplacement(*expected) {
+				return fmt.Errorf("%w: save-as destination changed", document.ErrDiskChanged)
+			}
+		} else {
+			if expected != nil {
+				return fmt.Errorf("%w: save-as destination was removed", document.ErrDiskChanged)
+			}
+			// Carry the observed missing version into the write. This protects
+			// a new destination from being created by another actor after the
+			// preflight and before replacement.
+			expected = &destination
+		}
 	}
-	if err := doc.SaveAs(a.Store, path); err != nil {
-		return err
+	beforePath, beforeVersion, beforeDirty := doc.Path, doc.DiskVersion, doc.Dirty()
+	var saveErr error
+	if expected != nil {
+		saveErr = doc.SaveAsIfVersion(a.Store, path, *expected)
+		if errors.Is(saveErr, workspace.ErrVersionChanged) {
+			saveErr = fmt.Errorf("%w: save-as destination changed", document.ErrDiskChanged)
+		}
+	} else {
+		saveErr = doc.SaveAs(a.Store, path)
 	}
-	newID = documentID(doc.Path)
+	if saveErr != nil && !committedDurabilityWarning(saveErr, doc, beforePath, beforeVersion, beforeDirty) {
+		return saveErr
+	}
+	a.completeSaveAs(id, doc, beforePath)
+	a.refreshRecoveryAfterSave()
+	return saveErr
+}
+
+// committedDurabilityWarning identifies the one save error that still leaves
+// the document committed. Document adopts the verified post-write version
+// before returning ErrParentDirSync, so a clean document is the application
+// level proof that the replacement completed and bookkeeping may proceed.
+func committedDurabilityWarning(err error, doc *document.Document, beforePath string, beforeVersion workspace.DiskVersion, beforeDirty bool) bool {
+	if !errors.Is(err, workspace.ErrParentDirSync) || doc == nil || doc.Dirty() {
+		return false
+	}
+	return beforeDirty || doc.Path != beforePath || doc.DiskVersion != beforeVersion
+}
+
+// completeSaveAs applies all application state changes that follow a
+// committed Save As. It is deliberately shared by successful saves and
+// committed durability warnings so callers cannot expose the warning before
+// the document registry, watcher, and recovery state agree on the new path.
+func (a *Application) completeSaveAs(id DocumentID, doc *document.Document, beforePath string) {
+	newID := documentID(doc.Path)
 	if newID != id {
 		delete(a.Documents, id)
 		a.Documents[newID] = doc
@@ -435,12 +526,17 @@ func (a *Application) SaveAs(id DocumentID, path string) error {
 			}
 		}
 	}
+	if a.Watcher != nil && filepath.Clean(filepath.Dir(beforePath)) != filepath.Clean(filepath.Dir(doc.Path)) {
+		// Save As may move the document to a directory that was not watched
+		// when it was opened. Watch setup is best-effort: it cannot undo a
+		// committed replacement, and recovery still records the new path.
+		_ = a.Watcher.WatchDirectory(filepath.Dir(doc.Path))
+	}
+	a.recordRecent(doc.Path)
 	delete(a.Conflicts, id)
 	// Consume any stale hint for the old identity (identity change) and for
 	// the same identity (SaveAs overwrote disk, so the hint is obsolete).
 	delete(a.Stale, id)
-	a.refreshRecoveryAfterSave()
-	return nil
 }
 
 func (a *Application) ReconcileStale() {

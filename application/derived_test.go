@@ -2,12 +2,66 @@ package application
 
 import (
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"scratchpad/document"
+	"scratchpad/editor"
 	"scratchpad/workspace"
 )
+
+type slowDerivedAnalyzer struct {
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (a *slowDerivedAnalyzer) Analyze(_ []byte, revision uint64, _ []editor.SourceEdit) (document.CodeProjection, error) {
+	a.calls.Add(1)
+	select {
+	case a.started <- struct{}{}:
+	default:
+	}
+	<-a.release
+	return document.NewCodeProjection(revision, "go", nil, nil, nil), nil
+}
+
+func (*slowDerivedAnalyzer) Close() {}
+
+func TestDerivedProjectionDoesNotReanalyzeUnchangedRunningRevision(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/main.go"
+	if err := writeTestFile(path, []byte("package main\n")); err != nil {
+		t.Fatal(err)
+	}
+	a := New(workspace.NewOSFileStore())
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	doc := a.ActiveDocument()
+	analyzer := &slowDerivedAnalyzer{started: make(chan struct{}, 1), release: make(chan struct{})}
+	a.ensureDerivedState()
+	a.derived[a.Active] = &projectionState{runtime: analyzer}
+
+	a.PollDerived(time.Now())
+	select {
+	case <-analyzer.started:
+	case <-time.After(time.Second):
+		t.Fatal("slow analyzer did not start")
+	}
+
+	// Poll repeatedly while the worker is blocked. The unchanged revision is
+	// already represented by runningRevision and must not be queued again.
+	for i := 0; i < 5; i++ {
+		a.PollDerived(time.Now())
+	}
+	close(analyzer.release)
+	waitForDerived(t, a, doc, time.Second)
+	if got := analyzer.calls.Load(); got != 1 {
+		t.Fatalf("Analyze calls = %d, want 1", got)
+	}
+}
 
 func TestDerivedProjectionDebouncesAndPublishesLatestRevision(t *testing.T) {
 	dir := t.TempDir()
@@ -40,6 +94,64 @@ func TestDerivedProjectionDebouncesAndPublishesLatestRevision(t *testing.T) {
 	}
 	if !doc.DerivedCurrent() || len(doc.Projections.Headings) != 2 {
 		t.Fatalf("derived=%v headings=%+v", doc.DerivedCurrent(), doc.Projections.Headings)
+	}
+}
+
+func TestDerivedProjectionWakeRearmsAfterEarlyWake(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/note.md"
+	if err := writeTestFile(path, []byte("# One\n")); err != nil {
+		t.Fatal(err)
+	}
+	a := New(workspace.NewOSFileStore())
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	a.SetWake(func() {})
+	var wakeDelays []time.Duration
+	var wakes []func()
+	a.derivedAfterFunc = func(delay time.Duration, wake func()) {
+		wakeDelays = append(wakeDelays, delay)
+		wakes = append(wakes, wake)
+	}
+
+	doc := a.ActiveDocument()
+	t0 := time.Unix(1000, 0)
+	if err := doc.Replace(0, 0, []byte("# Zero\n")); err != nil {
+		t.Fatal(err)
+	}
+	a.PollDerived(t0)
+	if len(wakes) != 1 || wakeDelays[0] != projectionDebounce {
+		t.Fatalf("initial wake delays = %+v, want one wake after %s", wakeDelays, projectionDebounce)
+	}
+
+	// Keep the coordinator occupied so this test exercises only wake
+	// scheduling. The second edit moves the desired deadline to t0+250ms,
+	// while the original timer is still due at t0+150ms.
+	state := a.derived[a.Active]
+	state.running = true
+	if err := doc.Replace(0, 0, []byte("# Latest\n")); err != nil {
+		t.Fatal(err)
+	}
+	t100 := t0.Add(100 * time.Millisecond)
+	a.PollDerived(t100)
+	if len(wakes) != 1 {
+		t.Fatalf("wake was rescheduled before the early wake: %+v", wakeDelays)
+	}
+
+	// The old timer fires early at t0+150ms. PollDerived must observe the
+	// outstanding t0+250ms deadline and install a replacement timer.
+	wakes[0]()
+	t150 := t0.Add(150 * time.Millisecond)
+	a.PollDerived(t150)
+	if len(wakes) != 2 || wakeDelays[1] != 100*time.Millisecond {
+		t.Fatalf("rearmed wake delays = %+v, want a 100ms wake", wakeDelays)
+	}
+
+	wakes[1]()
+	a.PollDerived(t0.Add(250 * time.Millisecond))
+	if len(wakes) != 2 {
+		t.Fatal("final deadline unexpectedly scheduled another wake")
 	}
 }
 

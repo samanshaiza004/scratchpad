@@ -634,6 +634,42 @@ func (d *Document) SaveAs(store workspace.FileStore, path string) error {
 	return nil
 }
 
+// SaveAsIfVersion is the conditional form used when the application has
+// shown an overwrite confirmation. The store must perform its version check
+// at the replacement seam, after preparing the new bytes.
+func (d *Document) SaveAsIfVersion(store workspace.FileStore, path string, expected workspace.DiskVersion) error {
+	if d == nil || d.Editor == nil || path == "" {
+		return errors.New("document has no save-as path")
+	}
+	conditional, ok := store.(workspace.ConditionalFileStore)
+	if !ok {
+		return errors.New("file store does not support conditional save-as")
+	}
+	current := d.Editor.Buffer.Text()
+	version, err := conditional.SaveIfVersion(path, current, d.FileMode, expected)
+	if err != nil {
+		if errors.Is(err, workspace.ErrParentDirSync) {
+			if version.Verified {
+				d.Path = filepath.Clean(path)
+				d.DiskVersion = version
+				d.MarkSaved()
+				d.base = append([]byte(nil), current...)
+			} else if verified, verr := store.Verify(path); verr == nil && verified.Verified && verified.Hash == sha256.Sum256(current) {
+				d.Path = filepath.Clean(path)
+				d.DiskVersion = verified
+				d.MarkSaved()
+				d.base = append([]byte(nil), current...)
+			}
+		}
+		return err
+	}
+	d.Path = filepath.Clean(path)
+	d.DiskVersion = version
+	d.MarkSaved()
+	d.base = append([]byte(nil), current...)
+	return nil
+}
+
 // MarkOverwritten records a successful force-overwrite of the on-disk file.
 // It updates the disk identity, marks the current revision clean, and
 // refreshes the conflict base to the current buffer bytes so later

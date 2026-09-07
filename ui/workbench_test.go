@@ -1,16 +1,37 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"scratchpad/application"
 	"scratchpad/commands"
 	"scratchpad/document"
+	"scratchpad/workspace"
 
 	. "go.hasen.dev/shirei"
 )
+
+type uiParentDirSyncStore struct{ workspace.OSFileStore }
+
+func (s *uiParentDirSyncStore) Save(path string, data []byte, mode os.FileMode) (workspace.DiskVersion, error) {
+	version, err := s.OSFileStore.Save(path, data, mode)
+	if err != nil {
+		return version, err
+	}
+	return version, fmt.Errorf("%w: test warning", workspace.ErrParentDirSync)
+}
+
+func (s *uiParentDirSyncStore) SaveIfVersion(path string, data []byte, mode os.FileMode, expected workspace.DiskVersion) (workspace.DiskVersion, error) {
+	version, err := s.OSFileStore.SaveIfVersion(path, data, mode, expected)
+	if err != nil {
+		return version, err
+	}
+	return version, fmt.Errorf("%w: test warning", workspace.ErrParentDirSync)
+}
 
 func TestWorkbenchCommandsCopyPaths(t *testing.T) {
 	root := t.TempDir()
@@ -63,6 +84,111 @@ func TestFileOpenWithoutArgumentsOpensPicker(t *testing.T) {
 	}
 	if state.Active != active {
 		t.Fatalf("argumentless FileOpen changed active document from %q to %q", active, state.Active)
+	}
+}
+
+func TestFileSaveCommandSurfacesOrdinaryFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	doc := state.ActiveDocument()
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" changed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{}
+	executeCommand(state, shell, commands.FileSave)
+	if !strings.HasPrefix(shell.SaveNotice, "Save failed: ") {
+		t.Fatalf("save failure notice = %q", shell.SaveNotice)
+	}
+	if !doc.Dirty() {
+		t.Fatal("failed save unexpectedly cleared dirty state")
+	}
+}
+
+func TestFileSaveCommandSurfacesCommittedDurabilityWarning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(&uiParentDirSyncStore{OSFileStore: workspace.NewOSFileStore()})
+	if err := state.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	doc := state.ActiveDocument()
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" changed")); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{}
+	executeCommand(state, shell, commands.FileSave)
+	if !strings.HasPrefix(shell.SaveNotice, "Saved with a durability warning: ") {
+		t.Fatalf("save warning notice = %q", shell.SaveNotice)
+	}
+	if doc.Dirty() {
+		t.Fatal("committed durability warning left document dirty")
+	}
+}
+
+func TestSaveAsModalSurfacesOrdinaryFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	doc := state.ActiveDocument()
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" changed")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "missing", "target.txt")
+	shell := &workbenchState{ShowSaveAs: true, SaveAsPath: target}
+	saveAsFromModal(state, shell, target)
+	if !shell.ShowSaveAs || !strings.HasPrefix(shell.SaveAsError, "Save failed: ") {
+		t.Fatalf("Save As failure state: show=%v error=%q", shell.ShowSaveAs, shell.SaveAsError)
+	}
+	if !doc.Dirty() || doc.Path != path {
+		t.Fatalf("failed Save As changed document: path=%q dirty=%v", doc.Path, doc.Dirty())
+	}
+}
+
+func TestSaveAsModalSurfacesCommittedDurabilityWarning(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	target := filepath.Join(dir, "moved", "target.txt")
+	if err := os.WriteFile(source, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(&uiParentDirSyncStore{OSFileStore: workspace.NewOSFileStore()})
+	if err := state.OpenPath(source); err != nil {
+		t.Fatal(err)
+	}
+	doc := state.ActiveDocument()
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" changed")); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{ShowSaveAs: true, SaveAsPath: target}
+	saveAsFromModal(state, shell, target)
+	if shell.ShowSaveAs || shell.SaveAsError != "" || !strings.HasPrefix(shell.SaveNotice, "Saved with a durability warning: ") {
+		t.Fatalf("Save As warning state: show=%v error=%q notice=%q", shell.ShowSaveAs, shell.SaveAsError, shell.SaveNotice)
+	}
+	if doc.Dirty() || doc.Path != target || state.ActiveDocument() != doc {
+		t.Fatalf("committed Save As state: path=%q dirty=%v active=%p doc=%p", doc.Path, doc.Dirty(), state.ActiveDocument(), doc)
 	}
 }
 
