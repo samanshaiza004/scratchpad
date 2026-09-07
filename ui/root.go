@@ -83,12 +83,14 @@ func RootView(state *application.Application) {
 					PaperWell(theme, Attrs(Grow(1), Expand, Clip), Attrs(Clip), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
 							Style: style, RowHeight: editorRowHeight(style.FontSize), Wrap: proseWraps(language.ID(doc.RootLanguage)), ScrollY: &view.ScrollY,
-							ScrollInitialized: view.ScrollInitialized,
-							LineNumbers:       true,
-							Rows:              &rows,
-							LineDecoration:    markdownLineDecoration(doc, theme),
-							LineSpacing:       markdownLineSpacing(doc),
-							Foldable:          func(line int) bool { return foldForLine(doc, line) != nil },
+							ScrollInitialized:  view.ScrollInitialized,
+							ScrollX:            &view.ScrollX,
+							ScrollXInitialized: view.ScrollXInitialized,
+							LineNumbers:        true,
+							Rows:               &rows,
+							LineDecoration:     markdownLineDecoration(doc, theme),
+							LineSpacing:        markdownLineSpacing(doc),
+							Foldable:           func(line int) bool { return foldForLine(doc, line) != nil },
 							FoldMarker: func(line int) string {
 								if view.CollapsedHeadings != nil && view.CollapsedHeadings[headingAtLine(doc, line)] {
 									return "▸"
@@ -99,6 +101,7 @@ func RootView(state *application.Application) {
 						})
 					})
 					view.ScrollInitialized = true
+					view.ScrollXInitialized = true
 					view.LastRevision = doc.Revision()
 					state.Views[id] = view
 				}

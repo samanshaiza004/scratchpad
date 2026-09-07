@@ -239,11 +239,11 @@ func TestVisualLineAtYUsesConfiguredHeightForBlankRows(t *testing.T) {
 	style := DefaultTextStyle()
 	cache := &visualLineCache{}
 	rows := editor.IdentityRowMap(e.Buffer.LineCount())
-	line, localY, visual, ok := visualLineAtY(e, rows, 19.9, style, 20, 0, cache, nil, nil, nil, 0, nil)
+	line, localY, visual, ok := visualLineAtY(e, rows, 19.9, style, 20, 0, nil, cache, nil, nil, nil, 0, nil)
 	if !ok || line != 0 || localY < 19 {
 		t.Fatalf("blank row hit = line %d local y %v ok %v, want first 20px row", line, localY, ok)
 	}
-	line, localY, _, ok = visualLineAtY(e, rows, 20.1, style, 20, 0, cache, nil, nil, nil, 0, nil)
+	line, localY, _, ok = visualLineAtY(e, rows, 20.1, style, 20, 0, nil, cache, nil, nil, nil, 0, nil)
 	if !ok || line != 1 || localY <= 0 {
 		t.Fatalf("row after blank hit = line %d local y %v ok %v, want second row", line, localY, ok)
 	}
@@ -265,7 +265,7 @@ func TestEditorVerticalNavigationUsesWrappedRows(t *testing.T) {
 		t.Skip("fixture did not wrap")
 	}
 	e.SetCursor(1)
-	if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil, 0) {
+	if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, nil, cache, nil, nil, nil, 0) {
 		t.Fatal("down within wrapped logical line did not move")
 	}
 	if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 0 {
@@ -279,7 +279,7 @@ func TestEditorVerticalNavigationUsesWrappedRows(t *testing.T) {
 		if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 0 {
 			break
 		}
-		if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil, 0) {
+		if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, nil, cache, nil, nil, nil, 0) {
 			break
 		}
 	}
@@ -804,5 +804,32 @@ func TestTableLinesOptOutOfSoftWrap(t *testing.T) {
 		if isTableLine(doc, line) {
 			t.Fatalf("stale line %d is still a table line, want no exemption", line)
 		}
+	}
+}
+
+func TestOverflowLaneHelpers(t *testing.T) {
+	if got := overflowXOffset(120, false); got != 0 {
+		t.Fatalf("wrapped offset = %v, want 0", got)
+	}
+	if got := overflowXOffset(120, true); got != -120 {
+		t.Fatalf("overflow offset = %v, want -120", got)
+	}
+	if got := overflowHitX(40, 120, true); got != 160 {
+		t.Fatalf("overflow hit x = %v, want 160", got)
+	}
+	if got := overflowHitX(40, 120, false); got != 40 {
+		t.Fatalf("wrapped hit x = %v, want 40", got)
+	}
+	if got := adjustScrollXForCaret(0, 12, 200, true); got != 0 {
+		t.Fatalf("initial caret adjustment = %v, want 0", got)
+	}
+	if got := adjustScrollXForCaret(0, 300, 200, true); got != 116 {
+		t.Fatalf("right caret adjustment = %v, want 116", got)
+	}
+	if got := adjustScrollXForCaret(200, 80, 200, true); got != 64 {
+		t.Fatalf("left caret adjustment = %v, want 64", got)
+	}
+	if got := adjustScrollXForCaret(200, 300, 200, false); got != 0 {
+		t.Fatalf("wrapped caret adjustment = %v, want 0", got)
 	}
 }

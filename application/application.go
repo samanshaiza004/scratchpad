@@ -39,6 +39,8 @@ type Conflict struct {
 type ViewState struct {
 	ScrollY           float32
 	ScrollInitialized bool
+	ScrollX           float32
+	ScrollXInitialized bool
 	CollapsedHeadings map[int]bool
 	LastRevision      uint64
 }

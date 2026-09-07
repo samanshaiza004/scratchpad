@@ -315,7 +315,7 @@ func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.ActiveDocument().Editor.SetSelection(1, 4)
-	a.Views[a.Active] = ViewState{ScrollY: 42}
+	a.Views[a.Active] = ViewState{ScrollY: 42, ScrollInitialized: true, ScrollX: 18, ScrollXInitialized: true}
 	sessionPath := filepath.Join(t.TempDir(), "session.json")
 	if err := a.SaveSession(sessionPath); err != nil {
 		t.Fatal(err)
@@ -326,7 +326,8 @@ func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
 	}
 	doc := restored.ActiveDocument()
 	anchor, cursor := doc.Editor.Selection()
-	if anchor != 1 || cursor != 4 || restored.Views[restored.Active].ScrollY != 42 {
+	view := restored.Views[restored.Active]
+	if anchor != 1 || cursor != 4 || view.ScrollY != 42 || !view.ScrollInitialized || view.ScrollX != 18 || !view.ScrollXInitialized {
 		t.Fatalf("restored selection=%d:%d view=%+v", anchor, cursor, restored.Views[restored.Active])
 	}
 }

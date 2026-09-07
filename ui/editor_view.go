@@ -782,6 +782,8 @@ type EditorViewOptions struct {
 	Wrap                  bool
 	ScrollY               *float32
 	ScrollInitialized     bool
+	ScrollX               *float32
+	ScrollXInitialized    bool
 	Rows                  *editor.RowMap
 	LineNumbers           bool
 	Foldable              func(logicalLine int) bool
@@ -978,6 +980,75 @@ func isTableLine(doc *document.Document, logical int) bool {
 	return false
 }
 
+// overflowCaretPadding keeps the caret a small distance from the viewport
+// edge when the overflow lane follows it horizontally.
+const overflowCaretPadding float32 = 16
+
+func clampScrollX(v float32) float32 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+// isOverflowLine reports whether a logical line renders in the horizontal
+// overflow lane: any line resolved as unwrapped (wrapWidthForLine == 0 via
+// NoWrapLine, or a globally unwrapped document like code). Wrapped prose
+// never overflows and always renders at x=0.
+func isOverflowLine(options EditorViewOptions, logical int) bool {
+	if !options.Wrap {
+		return true
+	}
+	return options.NoWrapLine != nil && options.NoWrapLine(logical)
+}
+
+// overflowXOffset resolves the paint-only x translation for one logical
+// line. Wrapped prose always returns 0; unwrapped rows translate by
+// -scrollX. The gutter is a sibling of the shifted content and stays fixed.
+func overflowXOffset(scrollX float32, unwrapped bool) float32 {
+	scrollX = clampScrollX(scrollX)
+	if !unwrapped || scrollX <= 0 {
+		return 0
+	}
+	return -scrollX
+}
+
+// overflowXOffsetForLine is the per-line convenience over overflowXOffset.
+func overflowXOffsetForLine(options EditorViewOptions, logical int, scrollX float32) float32 {
+	return overflowXOffset(scrollX, isOverflowLine(options, logical))
+}
+
+// adjustScrollXForCaret follows the caret just enough to keep it visible.
+// CaretX is text-relative (unshifted) and viewportWidth is the text content
+// width (editorContentWidth). Unwrapped rows scroll minimally with a small
+// padding; wrapped prose resets to 0 (ignored) so prose never slides.
+func adjustScrollXForCaret(scrollX, caretX, viewportWidth float32, unwrapped bool) float32 {
+	if !unwrapped {
+		return 0
+	}
+	scrollX = clampScrollX(scrollX)
+	if viewportWidth <= 0 {
+		return scrollX
+	}
+	if caretX-scrollX < 0 {
+		return maxFloat(0, caretX-overflowCaretPadding)
+	}
+	if caretX-scrollX > viewportWidth-overflowCaretPadding {
+		return maxFloat(0, caretX-viewportWidth+overflowCaretPadding)
+	}
+	return scrollX
+}
+
+// overflowHitX maps a mouse x (relative to the text content origin) through
+// the overflow lane. Unwrapped rows add scrollX back; wrapped prose ignores
+// it, mirroring overflowXOffset.
+func overflowHitX(mouseX, scrollX float32, unwrapped bool) float32 {
+	if !unwrapped {
+		return mouseX
+	}
+	return mouseX + clampScrollX(scrollX)
+}
+
 func minFloat(a, b float32) float32 {
 	if a < b {
 		return a
@@ -1107,15 +1178,29 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		if options.ScrollY != nil && options.ScrollInitialized {
 			*scrollY = *options.ScrollY
 		}
+		scrollX := Use[float32]("editor-scroll-x")
+		if options.ScrollX != nil && options.ScrollXInitialized {
+			*scrollX = clampScrollX(*options.ScrollX)
+		}
+		*scrollX = clampScrollX(*scrollX)
 		firstVisible := Use[int]("editor-first-visible")
 		lastVisible := Use[int]("editor-last-visible")
 		lineCache := Use[visualLineCache]("editor-visual-lines")
 		caretBlink := Use[caretBlinkState]("editor-caret-blink")
 		beforeCaret := takeEditorCaretSnapshot(e)
 		presentationKey := effectivePresentationKey(options)
+		if caretLine, ok := e.Buffer.LineAt(e.Cursor); ok && !isOverflowLine(options, caretLine) {
+			// Wrapped prose never slides sideways: reset the lane as soon
+			// as the caret returns to prose so a previous wide-row offset
+			// does not linger. Unwrapped rows keep scrollX for follow.
+			*scrollX = 0
+		}
+		frameScrollX := *scrollX
+		var pendingScrollX float32
+		havePendingScrollX := false
 		if HasFocus() {
 			WantKeyboard()
-			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, lineCache, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle, presentationKey, options.LineSpacing)
+			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, lineCache, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle, presentationKey, options.LineSpacing, frameScrollX, options.NoWrapLine)
 		}
 		caretActivity := beforeCaret.changed(e) || editorCaretInputActivity()
 		editorFocused := HasFocus() && GetHost().WindowFocused
@@ -1200,65 +1285,90 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 							})
 							Element(Attrs(FixWidth(1), FixHeight(itemHeight), BackgroundVec(theme.Shadow), NoAnimate))
 						}
-						Container(Attrs(Grow(1), Expand, NoClip), func() {
-							selectionFrom, selectionTo := visibleSelection(visual, e)
-							ShapedTextLayout(visual.Layout, style, selectionFrom, selectionTo, visual.layoutSpans...)
-
-							if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd {
+						Container(Attrs(Grow(1), Expand, Clip), func() {
+							unwrapped := isOverflowLine(options, logical)
+							renderScrollX := frameScrollX
+							if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd && unwrapped {
 								localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)
-								x, caretY, caretHeight := visual.CaretPosition(localRune, e.Affinity)
-								composition := e.Composition()
-								ordinaryCaretEligible := editorFocused && e.Cursor == e.Anchor && composition.Text == ""
-								blinkVisible := caretBlink.sync(time.Now(), ordinaryCaretEligible, caretActivity, GetHost().HeadlessRender, RequestNextFrame)
-								showCaret := ordinaryCaretEligible && blinkVisible
-								caret := editorCaretGeometry(rowHeight, style)
-								if caretHeight > 0 {
-									caret.Height = caretHeight
+								caretX, _, _ := visual.CaretPosition(localRune, e.Affinity)
+								renderScrollX = adjustScrollXForCaret(frameScrollX, caretX, fullWidth, true)
+								if renderScrollX != frameScrollX {
+									pendingScrollX = renderScrollX
+									havePendingScrollX = true
 								}
-								// CaretPosition is in the same padded text block that
-								// ShapedTextLayout paints. Do not center it a second time
-								// inside the logical row; that moves it away from the ink
-								// and breaks wrapped-row/descender alignment.
-								caret.Y = 0
-								if composition.Text != "" {
-									// Keep the established full-row IME anchor independent
-									// from the narrowed ordinary insertion caret.
-									Container(Attrs(FloatVec(Vec2{x, caretY}), MinSize(1, rowHeight), InFront, BackgroundVec(Vec4{0, 0, 20, 0})), func() {
-										r := GetScreenRect()
-										GetHost().CompositionPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
-									})
-								} else {
-									caretColor := theme.Ink
-									if !showCaret {
-										caretColor[3] = 0
-									}
-									Container(Attrs(FloatVec(Vec2{x, caretY + caret.Y}), MinSize(caret.Width, caret.Height), InFront, BackgroundVec(caretColor)), func() {
-										r := GetScreenRect()
-										GetHost().CaretPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
-										GetHost().CaretHeight = r.Size[1]
-									})
-								}
+							}
+							xOff := overflowXOffset(renderScrollX, unwrapped)
+							renderRow := func() {
+								selectionFrom, selectionTo := visibleSelection(visual, e)
+								ShapedTextLayout(visual.Layout, style, selectionFrom, selectionTo, visual.layoutSpans...)
 
-								if composition.Text != "" {
-									compositionStyle := style
-									compositionStyle.Underline = true
-									Container(Attrs(FloatVec(Vec2{x, 0}), NoClip, InFront), func() {
-										ShapedTextLayout(ShapeText(composition.Text, compositionStyle), compositionStyle, 0, 0)
-									})
+								if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd {
+									localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)
+									x, caretY, caretHeight := visual.CaretPosition(localRune, e.Affinity)
+									composition := e.Composition()
+									ordinaryCaretEligible := editorFocused && e.Cursor == e.Anchor && composition.Text == ""
+									blinkVisible := caretBlink.sync(time.Now(), ordinaryCaretEligible, caretActivity, GetHost().HeadlessRender, RequestNextFrame)
+									showCaret := ordinaryCaretEligible && blinkVisible
+									caret := editorCaretGeometry(rowHeight, style)
+									if caretHeight > 0 {
+										caret.Height = caretHeight
+									}
+									// CaretPosition is in the same padded text block that
+									// ShapedTextLayout paints. Do not center it a second time
+									// inside the logical row; that moves it away from the ink
+									// and breaks wrapped-row/descender alignment.
+									caret.Y = 0
+									if composition.Text != "" {
+										// Keep the established full-row IME anchor independent
+										// from the narrowed ordinary insertion caret.
+										Container(Attrs(FloatVec(Vec2{x, caretY}), MinSize(1, rowHeight), InFront, BackgroundVec(Vec4{0, 0, 20, 0})), func() {
+											r := GetScreenRect()
+											GetHost().CompositionPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
+										})
+									} else {
+										caretColor := theme.Ink
+										if !showCaret {
+											caretColor[3] = 0
+										}
+										Container(Attrs(FloatVec(Vec2{x, caretY + caret.Y}), MinSize(caret.Width, caret.Height), InFront, BackgroundVec(caretColor)), func() {
+											r := GetScreenRect()
+											GetHost().CaretPos = Vec2{r.Origin[0], r.Origin[1] + r.Size[1]}
+											GetHost().CaretHeight = r.Size[1]
+										})
+									}
+
+									if composition.Text != "" {
+										compositionStyle := style
+										compositionStyle.Underline = true
+										Container(Attrs(FloatVec(Vec2{x, 0}), NoClip, InFront), func() {
+											ShapedTextLayout(ShapeText(composition.Text, compositionStyle), compositionStyle, 0, 0)
+										})
+									}
 								}
+							}
+							if xOff != 0 {
+								Container(Attrs(FloatVec(Vec2{xOff, 0}), NoClip), renderRow)
+							} else {
+								renderRow()
 							}
 						})
 					})
 				})
 			},
 		})
+		if havePendingScrollX {
+			*scrollX = clampScrollX(pendingScrollX)
+		}
 		if options.ScrollY != nil {
 			*options.ScrollY = *scrollY
+		}
+		if options.ScrollX != nil {
+			*options.ScrollX = *scrollX
 		}
 	})
 }
 
-func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64, spacing func(int) float32) {
+func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64, spacing func(int) float32, scrollX float32, noWrapLine func(int) bool) {
 	frame := GetFrameInput()
 	input := GetInputState()
 	content := GetContentRect()
@@ -1287,9 +1397,9 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	if frame.Key != KeyCodeNone {
 		switch {
 		case frame.Key == KeyUp && input.Modifiers&^ModShift == 0:
-			moveEditorVerticalLayout(e, style, rows, -1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler, presentationKey)
+			moveEditorVerticalLayout(e, style, rows, -1, shift, wrap, lineWidth, noWrapLine, lineCache, presentation, styler, spanStyler, presentationKey)
 		case frame.Key == KeyDown && input.Modifiers&^ModShift == 0:
-			moveEditorVerticalLayout(e, style, rows, 1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler, presentationKey)
+			moveEditorVerticalLayout(e, style, rows, 1, shift, wrap, lineWidth, noWrapLine, lineCache, presentation, styler, spanStyler, presentationKey)
 		case frame.Key == KeyHome && input.Modifiers&^ModShift == 0:
 			moveEditorLineBoundary(e, false, shift)
 		case frame.Key == KeyEnd && input.Modifiers&^ModShift == 0:
@@ -1344,7 +1454,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 		var localY float32
 		var ok bool
 		if wrap {
-			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, rowHeight, lineWidth, lineCache, presentation, styler, spanStyler, presentationKey, spacing)
+			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, rowHeight, lineWidth, noWrapLine, lineCache, presentation, styler, spanStyler, presentationKey, spacing)
 		} else {
 			visible := int(targetY / rowHeight)
 			if visible < 0 {
@@ -1356,7 +1466,9 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 			}
 		}
 		if ok {
-			localRune, affinity := visual.HitTestAt(localY, input.MousePoint[0]-content.Origin[0]-gutterWidth)
+			unwrapped := !wrap || (noWrapLine != nil && noWrapLine(line))
+			hitX := overflowHitX(input.MousePoint[0]-content.Origin[0]-gutterWidth, scrollX, unwrapped)
+			localRune, affinity := visual.HitTestAt(localY, hitX)
 			position := visual.DocStart + visual.LocalRuneToByte(localRune)
 			if IsClicked() && shift {
 				e.SetSelection(e.Anchor, position)
@@ -1370,7 +1482,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	}
 }
 
-func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, rowHeight, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64, spacing func(int) float32) (int, float32, VisualLine, bool) {
+func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, rowHeight, width float32, noWrapLine func(int) bool, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64, spacing func(int) float32) (int, float32, VisualLine, bool) {
 	if targetY < 0 {
 		targetY = 0
 	}
@@ -1381,7 +1493,11 @@ func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32,
 		if !ok {
 			continue
 		}
-		visual, ok := cachedVisualLine(cache, &e.Buffer, line, anchorForLine(e, line), style, width, presentation, styler, spanStyler)
+		lineWidth := width
+		if noWrapLine != nil && noWrapLine(line) {
+			lineWidth = 0
+		}
+		visual, ok := cachedVisualLine(cache, &e.Buffer, line, anchorForLine(e, line), style, lineWidth, presentation, styler, spanStyler)
 		if !ok {
 			continue
 		}
@@ -1402,10 +1518,10 @@ func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32,
 // position as the column. The row map is authoritative here: folded logical
 // lines cannot become accidental destinations for keyboard navigation.
 func moveEditorVertical(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool) bool {
-	return moveEditorVerticalLayout(e, style, rows, delta, extend, false, 0, nil, nil, nil, nil, 0)
+	return moveEditorVerticalLayout(e, style, rows, delta, extend, false, 0, nil, nil, nil, nil, nil, 0)
 }
 
-func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64) bool {
+func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool, wrap bool, width float32, noWrapLine func(int) bool, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64) bool {
 	line, ok := e.Buffer.LineAt(e.Cursor)
 	if !ok {
 		return false
@@ -1418,7 +1534,7 @@ func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, row
 	if !ok {
 		return false
 	}
-	current, ok := verticalVisualLine(e, line, e.Cursor, style, wrap, width, cache, presentation, styler, spanStyler, presentationKey)
+	current, ok := verticalVisualLine(e, line, e.Cursor, style, wrap, width, noWrapLine, cache, presentation, styler, spanStyler, presentationKey)
 	if !ok {
 		return false
 	}
@@ -1447,7 +1563,7 @@ func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, row
 	}
 	byteColumn := e.Cursor - currentStart
 	anchor := targetStart + maxInt(0, minInt(byteColumn, targetEnd-targetStart))
-	target, ok := verticalVisualLine(e, targetLine, anchor, style, wrap, width, cache, presentation, styler, spanStyler, presentationKey)
+	target, ok := verticalVisualLine(e, targetLine, anchor, style, wrap, width, noWrapLine, cache, presentation, styler, spanStyler, presentationKey)
 	if !ok {
 		return false
 	}
@@ -1469,7 +1585,10 @@ func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, row
 	return true
 }
 
-func verticalVisualLine(e *editor.ScratchEditor, line, anchor int, style TextStyleAttrs, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64) (VisualLine, bool) {
+func verticalVisualLine(e *editor.ScratchEditor, line, anchor int, style TextStyleAttrs, wrap bool, width float32, noWrapLine func(int) bool, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64) (VisualLine, bool) {
+	if noWrapLine != nil && noWrapLine(line) {
+		width = 0
+	}
 	if wrap && cache != nil {
 		cache.prepare(e.Revision(), width, true, presentationKey)
 		return cachedVisualLine(cache, &e.Buffer, line, anchor, style, width, presentation, styler, spanStyler)

@@ -21,6 +21,7 @@ func Project(source []byte, revision uint64) document.Projections {
 	)).Parse(source)
 	projection := document.Projections{Revision: revision}
 	projection.Markdown = collectPresentation(root, source, revision, &projection)
+	projection.Tables = collectTableProjections(root, source, revision)
 	for i := range projection.Markdown.Spans {
 		span := &projection.Markdown.Spans[i]
 		if span.Kind != document.PresentationHeading {

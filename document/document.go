@@ -69,6 +69,7 @@ type Projections struct {
 	Links    []Link
 	Blocks   []BlockPresentation
 	Markdown MarkdownPresentation
+	Tables   []TableProjection
 	Code     CodeProjection
 }
 
