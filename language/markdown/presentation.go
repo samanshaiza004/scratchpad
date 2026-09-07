@@ -131,7 +131,7 @@ func collectStructuralProjection(node ast.Node, source []byte, projection *docum
 			}
 		}
 	case *ast.Link:
-		if start, end, ok := presentationLinkSourceRange(node, source); ok {
+		if start, end, ok := linkSourceRange(node, source); ok {
 			projection.Links = append(projection.Links, document.Link{Label: nodeText(node, source), Target: node.Destination.Value(source), StartByte: start, EndByte: end})
 		}
 	case *ast.AutoLink:
@@ -248,57 +248,12 @@ func appendLinkPresentation(add func(int, int, document.PresentationKind), link 
 	if labelStart < labelEnd {
 		add(labelStart, labelEnd, document.PresentationLink)
 	}
-	start, end, ok := presentationLinkSourceRange(link, source)
+	start, end, ok := linkSourceRange(link, source)
 	if !ok {
 		return
 	}
 	add(start, minInt(end, labelStart), document.PresentationSyntax)
 	add(labelEnd, end, document.PresentationSyntax)
-}
-
-func presentationLinkSourceRange(link *ast.Link, source []byte) (int, int, bool) {
-	if link == nil || link.Pos() < 0 || link.Pos() >= len(source) || source[link.Pos()] != '[' {
-		return 0, 0, false
-	}
-	if link.Reference == nil {
-		return inlineRange(link.Pos(), source, '[')
-	}
-	close := matchingPresentationBracket(source, link.Pos())
-	if close < 0 {
-		return 0, 0, false
-	}
-	end := close + 1
-	if link.Reference.ReferenceLinkKind == ast.ReferenceLinkKindFull || link.Reference.ReferenceLinkKind == ast.ReferenceLinkKindCollapsed {
-		if close+1 >= len(source) || source[close+1] != '[' {
-			return 0, 0, false
-		}
-		refClose := matchingPresentationBracket(source, close+1)
-		if refClose < 0 {
-			return 0, 0, false
-		}
-		end = refClose + 1
-	}
-	return link.Pos(), end, true
-}
-
-func matchingPresentationBracket(source []byte, start int) int {
-	depth := 0
-	for at := start; at < len(source); at++ {
-		if source[at] == '\\' {
-			at++
-			continue
-		}
-		switch source[at] {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				return at
-			}
-		}
-	}
-	return -1
 }
 
 func appendAutoLinkPresentation(add func(int, int, document.PresentationKind), link *ast.AutoLink, source []byte, labelStart, labelEnd int) {

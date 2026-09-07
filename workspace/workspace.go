@@ -17,6 +17,13 @@ type Workspace struct {
 	Root string
 }
 
+// ErrParentDirSync reports that a file replacement completed but the parent
+// directory entry could not be flushed. The new bytes are on disk; only the
+// durability of the directory entry is weakened. Callers can distinguish it
+// with errors.Is and must adopt the verified post-write version so a later
+// save does not report their own bytes as an external change.
+var ErrParentDirSync = errors.New("replacement completed but parent directory was not flushed")
+
 func Open(root string) (Workspace, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -55,6 +62,10 @@ func (w Workspace) RelativePath(path string) (string, error) {
 // MOVEFILE_WRITE_THROUGH. A successful return is the strongest durability
 // contract this package can establish through the host OS; it is not a power-
 // loss proof for hardware or filesystems that misreport flush completion.
+// When only the parent-directory flush fails, the replacement has already
+// completed and AtomicWriteFile returns an error wrapping ErrParentDirSync so
+// callers can verify and adopt the new bytes instead of treating the file as
+// unwritten.
 func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	targetPath, err := replacementTarget(path)
 	if err != nil {
@@ -105,7 +116,7 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 		return err
 	}
 	if err := syncParentDirectory(dir); err != nil {
-		return fmt.Errorf("replacement completed but parent directory was not flushed: %w", err)
+		return fmt.Errorf("%w: %w", ErrParentDirSync, err)
 	}
 	return nil
 }

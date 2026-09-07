@@ -829,9 +829,6 @@ func conflictPanel(state *application.Application, shell *workbenchState, theme 
 		if WorkstationToolButton(theme, "Reload", true) {
 			_ = state.ReloadDisk(state.Active)
 		}
-		if WorkstationToolButton(theme, "Keep editing", true) {
-			_ = state.KeepEditing(state.Active)
-		}
 		if WorkstationToolButton(theme, "Overwrite…", true) {
 			_ = state.OverwriteDisk(state.Active)
 		}

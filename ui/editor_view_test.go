@@ -5,7 +5,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"scratchpad/document"
 	"scratchpad/editor"
+	"scratchpad/language/markdown"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -237,11 +239,11 @@ func TestVisualLineAtYUsesConfiguredHeightForBlankRows(t *testing.T) {
 	style := DefaultTextStyle()
 	cache := &visualLineCache{}
 	rows := editor.IdentityRowMap(e.Buffer.LineCount())
-	line, localY, visual, ok := visualLineAtY(e, rows, 19.9, style, 20, 0, cache, nil, nil, nil, nil)
+	line, localY, visual, ok := visualLineAtY(e, rows, 19.9, style, 20, 0, cache, nil, nil, nil, 0, nil)
 	if !ok || line != 0 || localY < 19 {
 		t.Fatalf("blank row hit = line %d local y %v ok %v, want first 20px row", line, localY, ok)
 	}
-	line, localY, _, ok = visualLineAtY(e, rows, 20.1, style, 20, 0, cache, nil, nil, nil, nil)
+	line, localY, _, ok = visualLineAtY(e, rows, 20.1, style, 20, 0, cache, nil, nil, nil, 0, nil)
 	if !ok || line != 1 || localY <= 0 {
 		t.Fatalf("row after blank hit = line %d local y %v ok %v, want second row", line, localY, ok)
 	}
@@ -263,7 +265,7 @@ func TestEditorVerticalNavigationUsesWrappedRows(t *testing.T) {
 		t.Skip("fixture did not wrap")
 	}
 	e.SetCursor(1)
-	if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil) {
+	if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil, 0) {
 		t.Fatal("down within wrapped logical line did not move")
 	}
 	if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 0 {
@@ -277,7 +279,7 @@ func TestEditorVerticalNavigationUsesWrappedRows(t *testing.T) {
 		if line, ok := e.Buffer.LineAt(e.Cursor); !ok || line != 0 {
 			break
 		}
-		if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil) {
+		if !moveEditorVerticalLayout(e, style, rows, 1, false, true, 70, cache, nil, nil, nil, 0) {
 			break
 		}
 	}
@@ -633,6 +635,102 @@ func currentText(useTextArea bool, text *string, custom *editor.ScratchEditor) s
 	return string(custom.Buffer.Text())
 }
 
+// TestVisualLineCacheRebuildsWhenPresentationArrivesAtSameRevision reproduces
+// the async Markdown race: the first frame at an editor revision caches an
+// unstyled layout while projections are pending, and the later frame at the
+// same revision must rebuild with styled spans instead of hitting the stale
+// entry.
+func TestVisualLineCacheRebuildsWhenPresentationArrivesAtSameRevision(t *testing.T) {
+	buffer := editor.NewBuffer([]byte("# hello"))
+	style := DefaultTextStyle()
+	cache := &visualLineCache{}
+	const revision uint64 = 7
+	const width float32 = 500
+
+	// First frame: derived projections pending, no presentation source.
+	cache.prepare(revision, width, true, 0)
+	plain, ok := cachedVisualLine(cache, &buffer, 0, 0, style, width, nil, nil, nil)
+	if !ok {
+		t.Fatal("unstyled visual line failed")
+	}
+	if len(plain.layoutSpans) != 0 {
+		t.Fatalf("unstyled layout spans = %d, want 0", len(plain.layoutSpans))
+	}
+
+	// Same editor revision, async worker publishes: presentation appears.
+	presentation := func(startByte, endByte int) []document.PresentationSpan {
+		return []document.PresentationSpan{{StartByte: 0, EndByte: 7, Kind: document.PresentationHeading}}
+	}
+	cache.prepare(revision, width, true, 1)
+	styled, ok := cachedVisualLine(cache, &buffer, 0, 0, style, width, presentation, MarkdownPresentationStyle, MarkdownPresentationSpanStyle)
+	if !ok {
+		t.Fatal("styled visual line failed")
+	}
+	if len(styled.layoutSpans) == 0 {
+		t.Fatal("same-revision presentation arrival reused the unstyled cache entry")
+	}
+
+	// Same presentation key must keep the cache (no rebuild churn).
+	cached, ok := cachedVisualLine(cache, &buffer, 0, 0, style, width, presentation, MarkdownPresentationStyle, MarkdownPresentationSpanStyle)
+	if !ok || len(cached.layoutSpans) == 0 {
+		t.Fatal("same-key lookup lost the styled entry")
+	}
+	if len(cache.Order) != 1 {
+		t.Fatalf("same-key lookups grew cache order to %d, want 1", len(cache.Order))
+	}
+
+	// Presentation disappearing at the same revision must also invalidate.
+	cache.prepare(revision, width, true, 0)
+	again, ok := cachedVisualLine(cache, &buffer, 0, 0, style, width, nil, nil, nil)
+	if !ok {
+		t.Fatal("unstyled rebuild failed")
+	}
+	if len(again.layoutSpans) != 0 {
+		t.Fatalf("presentation removal kept styled spans = %d, want 0", len(again.layoutSpans))
+	}
+}
+
+func TestDocumentPresentationKeySeparatesPendingFromPublished(t *testing.T) {
+	doc := document.New("notes.md", []byte("# hello"), "markdown")
+	revision := doc.Revision()
+
+	if got := documentPresentationKey(doc, false); got != 0 {
+		t.Fatalf("nil presentation key = %d, want 0", got)
+	}
+	stale := documentPresentationKey(doc, true)
+	if stale == 0 {
+		t.Fatal("stale presentation key must be non-zero when presentation is present")
+	}
+	projections := document.Projections{
+		Revision: revision,
+		Markdown: document.NewMarkdownPresentation(revision, []document.PresentationSpan{
+			{StartByte: 0, EndByte: 7, Kind: document.PresentationHeading},
+		}),
+		Code: document.NewCodeProjection(revision, "markdown", nil, nil, nil),
+	}
+	if !doc.SetDerived(nil, projections) {
+		t.Fatal("SetDerived rejected the current-revision projections")
+	}
+	fresh := documentPresentationKey(doc, true)
+	if fresh == 0 {
+		t.Fatal("published presentation key must be non-zero")
+	}
+	if fresh == stale {
+		t.Fatal("presentation key did not change when projections arrived at the same editor revision")
+	}
+
+	var nilOptions EditorViewOptions
+	if got := effectivePresentationKey(nilOptions); got != 0 {
+		t.Fatalf("nil presentation effective key = %d, want 0", got)
+	}
+	unversioned := EditorViewOptions{
+		Presentation: func(startByte, endByte int) []document.PresentationSpan { return nil },
+	}
+	if got := effectivePresentationKey(unversioned); got == 0 {
+		t.Fatal("non-nil presentation with zero key must map to a non-zero effective key")
+	}
+}
+
 func BenchmarkWrappedVisualLine(b *testing.B) {
 	for _, size := range []int{1 << 20, 10 << 20} {
 		b.Run(wrappedSizeName(size), func(b *testing.B) {
@@ -653,4 +751,58 @@ func wrappedSizeName(size int) string {
 		return "10MiB"
 	}
 	return "1MiB"
+}
+
+// TestTableLinesOptOutOfSoftWrap pins the source-visible table policy: table
+// lines intersect a BlockTable projection and shape unwrapped (width 0) while
+// surrounding prose keeps the shared wrap width. Stale projections exempt
+// nothing, and non-wrapping documents resolve every line to 0.
+func TestTableLinesOptOutOfSoftWrap(t *testing.T) {
+	source := []byte("A comfortable paragraph with enough words to wrap across rows.\n\n| name | value |\n| :--- | ---: |\n| one | two |\n\nTrailing prose.\n")
+	doc := document.New("notes.md", source, "markdown")
+	if !doc.SetDerived(nil, markdown.Project(source, doc.Revision())) {
+		t.Fatal("SetDerived rejected the current-revision projections")
+	}
+	// Lines 0 and 6 are prose, 1 and 5 are blank, 2-4 are the table.
+	for _, line := range []int{2, 3, 4} {
+		if !isTableLine(doc, line) {
+			t.Errorf("line %d is not a table line (blocks=%+v)", line, doc.Projections.Blocks)
+		}
+	}
+	for _, line := range []int{0, 1, 5, 6} {
+		if isTableLine(doc, line) {
+			t.Errorf("line %d is a table line, want the shared prose policy", line)
+		}
+	}
+	options := EditorViewOptions{Wrap: true, NoWrapLine: func(logical int) bool { return isTableLine(doc, logical) }}
+	const fullWidth float32 = 200
+	for _, line := range []int{2, 3, 4} {
+		if got := wrapWidthForLine(options, line, fullWidth); got != 0 {
+			t.Errorf("table line %d width = %v, want 0 (unwrapped with horizontal overflow)", line, got)
+		}
+	}
+	for _, line := range []int{0, 6} {
+		if got := wrapWidthForLine(options, line, fullWidth); got != fullWidth {
+			t.Errorf("prose line %d width = %v, want %v", line, got, fullWidth)
+		}
+	}
+	if got := wrapWidthForLine(EditorViewOptions{Wrap: true}, 2, fullWidth); got != fullWidth {
+		t.Errorf("nil NoWrapLine width = %v, want shared %v", got, fullWidth)
+	}
+	if got := wrapWidthForLine(EditorViewOptions{}, 0, fullWidth); got != 0 {
+		t.Errorf("unwrapped document width = %v, want 0", got)
+	}
+	if isTableLine(nil, 0) {
+		t.Error("nil document is a table line, want false")
+	}
+	plain := document.New("main.go", []byte("package main\n"), "go")
+	if isTableLine(plain, 0) {
+		t.Error("non-Markdown document is a table line, want false")
+	}
+	doc.InvalidateDerived()
+	for line := 0; line < 7; line++ {
+		if isTableLine(doc, line) {
+			t.Fatalf("stale line %d is still a table line, want no exemption", line)
+		}
+	}
 }

@@ -32,6 +32,39 @@ func TestMarkdownPresentationStyleMapsSemanticKinds(t *testing.T) {
 	}
 }
 
+func TestMarkdownTablePresentationUsesCodeFace(t *testing.T) {
+	base := DefaultTextStyle()
+	mods := MarkdownPresentationStyle(document.PresentationTable, base)
+	if mods == nil {
+		t.Fatal("PresentationTable style is nil, want a visible monospace style")
+	}
+	styled := TextStyleWith(base, mods...)
+	want := codeFontFamilies()
+	if len(styled.FontFamilies) != len(want) {
+		t.Fatalf("table font families = %v, want %v", styled.FontFamilies, want)
+	}
+	for i := range want {
+		if styled.FontFamilies[i] != want[i] {
+			t.Fatalf("table font families = %v, want %v", styled.FontFamilies, want)
+		}
+	}
+	if styled.TextColor != base.TextColor {
+		t.Fatalf("table text color = %v, want base %v (row background stays with the BlockTable decoration)", styled.TextColor, base.TextColor)
+	}
+}
+
+func TestMarkdownThematicBreakPresentationIsMuted(t *testing.T) {
+	base := DefaultTextStyle()
+	mods := MarkdownPresentationStyle(document.PresentationThematicBreak, base)
+	if mods == nil {
+		t.Fatal("PresentationThematicBreak style is nil, want a muted style")
+	}
+	styled := TextStyleWith(base, mods...)
+	if styled.TextColor != DefaultTheme().Muted {
+		t.Fatalf("thematic break color = %v, want muted %v", styled.TextColor, DefaultTheme().Muted)
+	}
+}
+
 func TestSyntaxPresentationStyleUsesVisibleHSLAColors(t *testing.T) {
 	base := DefaultTextStyle()
 	for _, kind := range []document.PresentationKind{

@@ -56,6 +56,12 @@ type FileSnapshot struct {
 // FileStore is the filesystem seam used by document lifecycle code. The OS
 // implementation is deliberately small; tests can provide an adapter without
 // making Document depend on the OS.
+//
+// Save returns the verified post-write identity on success. When the
+// replacement completes but the parent directory cannot be flushed, Save
+// returns the verified version together with an error wrapping
+// ErrParentDirSync so callers can adopt the new identity while still
+// surfacing the weakened durability.
 type FileStore interface {
 	Load(path string) (FileSnapshot, error)
 	Observe(path string) (DiskVersion, error)
@@ -118,6 +124,12 @@ func (s OSFileStore) Verify(path string) (DiskVersion, error) {
 
 func (s OSFileStore) Save(path string, data []byte, mode fs.FileMode) (DiskVersion, error) {
 	if err := AtomicWriteFile(path, data, mode); err != nil {
+		if errors.Is(err, ErrParentDirSync) {
+			version, verr := s.Verify(path)
+			if verr == nil && version.Verified && version.Hash == sha256.Sum256(data) {
+				return version, err
+			}
+		}
 		return DiskVersion{}, err
 	}
 	return s.Verify(path)

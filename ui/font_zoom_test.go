@@ -100,7 +100,7 @@ func TestEditorFontZoomRebuildsCachedLayout(t *testing.T) {
 	buffer := editor.NewBuffer([]byte("A sentence with enough words to wrap when the editor font grows."))
 	style := DefaultTextStyle()
 	cache := &visualLineCache{}
-	cache.prepare(0, 180, true)
+	cache.prepare(0, 180, true, 0)
 	before, ok := cachedVisualLine(cache, &buffer, 0, 0, style, 180, nil, nil, nil)
 	if !ok || len(before.Layout.Lines) == 0 {
 		t.Fatal("initial layout unavailable")

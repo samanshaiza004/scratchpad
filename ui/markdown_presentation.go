@@ -48,10 +48,16 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 		return []TextStyleFn{TextStrike(true)}
 	case document.PresentationCodeBlock:
 		return []TextStyleFn{Fonts(codeFontFamilies()...), TextBackgroundVec(theme.ChromeInset)}
-	case document.PresentationBlockquote, document.PresentationListMarker, document.PresentationSyntax:
+	case document.PresentationBlockquote, document.PresentationListMarker, document.PresentationSyntax, document.PresentationThematicBreak:
 		return []TextStyleFn{TextColorVec(theme.Muted)}
 	case document.PresentationTaskMarker:
 		return []TextStyleFn{TextColorVec(theme.Focus), FontWeight(WeightBold)}
+	// Source-visible tables keep raw pipes with no rendered-table model, so
+	// the full-block table span takes the programming face: pipe columns
+	// align under the prose face. The BlockTable row background stays owned
+	// by the line decoration; no text background is set here.
+	case document.PresentationTable:
+		return []TextStyleFn{Fonts(codeFontFamilies()...)}
 	case document.PresentationCodeComment:
 		return []TextStyleFn{TextColorVec(syntax.Comment)}
 	case document.PresentationCodeKeyword:

@@ -3,6 +3,7 @@
 package document
 
 import (
+	"crypto/sha256"
 	"errors"
 	"io/fs"
 	"path/filepath"
@@ -172,7 +173,10 @@ func (p CodeProjection) HighlightsIn(startByte, endByte int) []HighlightSpan {
 		return nil
 	}
 	endIndex := sort.Search(len(p.Highlights), func(i int) bool { return p.Highlights[i].StartByte >= endByte })
-	startIndex := sort.Search(endIndex, func(i int) bool { return p.maxEnds[i] > startByte })
+	startIndex := 0
+	if len(p.maxEnds) == len(p.Highlights) {
+		startIndex = sort.Search(endIndex, func(i int) bool { return p.maxEnds[i] > startByte })
+	}
 	result := make([]HighlightSpan, 0, endIndex-startIndex)
 	for _, span := range p.Highlights[startIndex:endIndex] {
 		if span.EndByte > startByte && span.StartByte < endByte {
@@ -460,12 +464,15 @@ func (d *Document) Replace(start, end int, text []byte) error {
 	if d == nil || d.Editor == nil || start < 0 || end < start || end > d.Editor.Buffer.ByteLen() {
 		return errors.New("document replace range outside buffer")
 	}
+	before := d.Revision()
 	d.Editor.SetSelection(start, end)
 	if err := d.Editor.Insert(text); err != nil {
 		return err
 	}
-	d.observedRevision = d.Revision()
-	d.InvalidateDerived()
+	if d.Revision() != before {
+		d.observedRevision = d.Revision()
+		d.InvalidateDerived()
+	}
 	return nil
 }
 
@@ -556,7 +563,11 @@ func (d *Document) MarkSaved() {
 }
 
 // Save persists the current authoritative buffer and changes saved metadata
-// only after the filesystem operation succeeds.
+// only after the filesystem operation succeeds. When the replacement
+// completes but the parent directory cannot be flushed, the store returns the
+// verified new version with an error wrapping workspace.ErrParentDirSync;
+// Save adopts that version so a retry does not mistake the caller's own bytes
+// for an external change, while still returning the durability warning.
 func (d *Document) Save(store workspace.FileStore) error {
 	if d == nil || d.Editor == nil || d.Path == "" {
 		return errors.New("document has no save path")
@@ -568,31 +579,73 @@ func (d *Document) Save(store workspace.FileStore) error {
 	if !d.DiskVersion.Equal(disk) {
 		return ErrDiskChanged
 	}
-	version, err := store.Save(d.Path, d.Editor.Buffer.Text(), d.FileMode)
+	current := d.Editor.Buffer.Text()
+	version, err := store.Save(d.Path, current, d.FileMode)
 	if err != nil {
+		if errors.Is(err, workspace.ErrParentDirSync) {
+			if version.Verified {
+				d.DiskVersion = version
+				d.MarkSaved()
+				d.base = append([]byte(nil), current...)
+			} else if verified, verr := store.Verify(d.Path); verr == nil && verified.Verified && verified.Hash == sha256.Sum256(current) {
+				d.DiskVersion = verified
+				d.MarkSaved()
+				d.base = append([]byte(nil), current...)
+			}
+		}
 		return err
 	}
 	d.DiskVersion = version
 	d.MarkSaved()
-	d.base = d.Editor.Buffer.Text()
+	d.base = append([]byte(nil), current...)
 	return nil
 }
 
 // SaveAs persists the current buffer at a new path. The document path changes
-// only after the replacement succeeds.
+// only after the replacement succeeds. Like Save, a parent-directory sync
+// failure that still replaced the file adopts the verified version before
+// returning the durability warning.
 func (d *Document) SaveAs(store workspace.FileStore, path string) error {
 	if d == nil || d.Editor == nil || path == "" {
 		return errors.New("document has no save-as path")
 	}
-	version, err := store.Save(path, d.Editor.Buffer.Text(), d.FileMode)
+	current := d.Editor.Buffer.Text()
+	version, err := store.Save(path, current, d.FileMode)
 	if err != nil {
+		if errors.Is(err, workspace.ErrParentDirSync) {
+			if version.Verified {
+				d.Path = filepath.Clean(path)
+				d.DiskVersion = version
+				d.MarkSaved()
+				d.base = append([]byte(nil), current...)
+			} else if verified, verr := store.Verify(path); verr == nil && verified.Verified && verified.Hash == sha256.Sum256(current) {
+				d.Path = filepath.Clean(path)
+				d.DiskVersion = verified
+				d.MarkSaved()
+				d.base = append([]byte(nil), current...)
+			}
+		}
 		return err
 	}
 	d.Path = filepath.Clean(path)
 	d.DiskVersion = version
 	d.MarkSaved()
-	d.base = d.Editor.Buffer.Text()
+	d.base = append([]byte(nil), current...)
 	return nil
+}
+
+// MarkOverwritten records a successful force-overwrite of the on-disk file.
+// It updates the disk identity, marks the current revision clean, and
+// refreshes the conflict base to the current buffer bytes so later
+// reconciliations do not compare against a stale base.
+func (d *Document) MarkOverwritten(version workspace.DiskVersion) {
+	d.DiskVersion = version
+	d.MarkSaved()
+	if d.Editor != nil {
+		d.base = append([]byte(nil), d.Editor.Buffer.Text()...)
+	} else {
+		d.base = nil
+	}
 }
 
 // BaseSnapshot returns the originally loaded bytes for transient conflict

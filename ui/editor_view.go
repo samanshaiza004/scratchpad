@@ -790,8 +790,23 @@ type EditorViewOptions struct {
 	Presentation          EditorPresentationSource
 	PresentationStyle     EditorPresentationStyler
 	PresentationSpanStyle EditorPresentationSpanStyler
-	LineDecoration        func(logicalLine int) EditorLineDecoration
-	LineSpacing           func(logicalLine int) float32
+	// PresentationKey versions the paint-only presentation epoch. The editor
+	// revision alone cannot distinguish an unstyled first frame from a later
+	// frame at the same revision after the async Markdown worker publishes:
+	// both share the revision, but only the later frame has spans. Callers
+	// with a custom Presentation source must bump this key whenever the
+	// spans change without an editor revision bump. EditableDocumentView
+	// derives it from document projection state; zero means unversioned.
+	PresentationKey uint64
+	LineDecoration  func(logicalLine int) EditorLineDecoration
+	LineSpacing     func(logicalLine int) float32
+	// NoWrapLine optionally exempts individual logical lines from soft
+	// wrapping. An exempt line shapes with maxWidth 0 (horizontal overflow,
+	// like code) while the rest of the document keeps the shared wrap
+	// width. It is paint-only: the buffer is untouched and nil means no
+	// exemptions. EditableDocumentView exempts Markdown table lines so
+	// source-visible pipe rows never wrap mid-row.
+	NoWrapLine func(logicalLine int) bool
 }
 
 // EditorLineDecoration is a deliberately small, row-level presentation hook.
@@ -802,26 +817,91 @@ type EditorLineDecoration struct {
 }
 
 type visualLineCache struct {
-	Revision uint64
-	Width    float32
-	Wrap     bool
-	Lines    map[int]VisualLine
-	Order    []int
+	Revision     uint64
+	Width        float32
+	Wrap         bool
+	Presentation uint64
+	Lines        map[int]VisualLine
+	Order        []int
 }
 
-func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool) {
-	if c.Lines == nil || c.Revision != revision || c.Width != width || c.Wrap != wrap {
+func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool, presentation uint64) {
+	if c.Lines == nil || c.Revision != revision || c.Width != width || c.Wrap != wrap || c.Presentation != presentation {
 		c.Revision = revision
 		c.Width = width
 		c.Wrap = wrap
+		c.Presentation = presentation
 		c.Lines = make(map[int]VisualLine)
 		c.Order = nil
 	}
 }
 
+// effectivePresentationKey folds the nil/non-nil presence into the explicit
+// key so a naive custom presentation that leaves PresentationKey at zero
+// still invalidates the unstyled entry when spans appear. A nil presentation
+// always maps to zero because all unstyled layouts at one revision/width are
+// interchangeable. Document-backed views set an explicit non-zero key that
+// already encodes projection arrival (see documentPresentationKey).
+func effectivePresentationKey(options EditorViewOptions) uint64 {
+	if options.Presentation == nil {
+		return 0
+	}
+	if options.PresentationKey != 0 {
+		return options.PresentationKey
+	}
+	return 1
+}
+
+// documentPresentationKey versions disposable projection arrival at a fixed
+// editor revision. DerivedRevision/Projections.Revision/Markdown.Revision all
+// flip from stale to current when the async worker publishes, while the
+// editor revision stays put; span counts additionally separate a rebased
+// intermediate code view from the fresh parse at the same revision. The root
+// language is mixed in so a mode switch without an edit cannot reuse styled
+// rows. The result is non-zero whenever hasPresentation is true.
+func documentPresentationKey(doc *document.Document, hasPresentation bool) uint64 {
+	if doc == nil || !hasPresentation {
+		return 0
+	}
+	const (
+		offset = uint64(14695981039346656037)
+		prime  = uint64(1099511628211)
+	)
+	hash := offset
+	mix := func(value uint64) {
+		hash ^= value
+		hash *= prime
+	}
+	mix(doc.DerivedRevision)
+	mix(doc.Projections.Revision)
+	if doc.Projections.Valid {
+		mix(1)
+	}
+	mix(doc.Projections.Markdown.Revision)
+	mix(uint64(len(doc.Projections.Markdown.Spans)))
+	mix(doc.Projections.Code.Revision)
+	mix(uint64(len(doc.Projections.Code.Highlights)))
+	if code, ok := doc.DisplayCodeProjection(); ok {
+		mix(code.Revision)
+		mix(uint64(len(code.Highlights)))
+	} else {
+		mix(0x9e3779b97f4a7c15)
+	}
+	for i := 0; i < len(doc.RootLanguage); i++ {
+		mix(uint64(doc.RootLanguage[i]))
+	}
+	if hash == 0 {
+		hash = 1
+	}
+	return hash
+}
+
 func cachedVisualLine(c *visualLineCache, buffer *editor.Buffer, line, anchor int, style TextStyleAttrs, width float32, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) (VisualLine, bool) {
 	if visual, ok := c.Lines[line]; ok {
-		if anchor >= visual.DocStart && anchor <= visual.DocEnd && reflect.DeepEqual(visual.baseStyle, style) {
+		// WrapWidth participates in the hit check because one revision can
+		// hold mixed widths: table lines shape unwrapped (width 0) while
+		// the surrounding prose keeps the shared wrap width.
+		if anchor >= visual.DocStart && anchor <= visual.DocEnd && visual.WrapWidth == width && reflect.DeepEqual(visual.baseStyle, style) {
 			return visual, true
 		}
 	}
@@ -859,6 +939,43 @@ func contentWidthIfWrapped(wrap bool, width float32) float32 {
 		return 0
 	}
 	return width
+}
+
+// wrapWidthForLine resolves the per-line soft-wrap width. Lines exempted by
+// NoWrapLine shape with maxWidth 0 (unwrapped with horizontal overflow);
+// every other line keeps the shared policy. Non-wrapping documents always
+// resolve to 0.
+func wrapWidthForLine(options EditorViewOptions, logical int, fullWidth float32) float32 {
+	if !options.Wrap {
+		return 0
+	}
+	if options.NoWrapLine != nil && options.NoWrapLine(logical) {
+		return 0
+	}
+	return fullWidth
+}
+
+// isTableLine reports whether a logical line intersects a BlockTable
+// projection. It is paint-only: it never touches the buffer and returns
+// false unless Markdown projections are current, so stale or non-Markdown
+// views keep the shared wrap policy.
+func isTableLine(doc *document.Document, logical int) bool {
+	if doc == nil || doc.Editor == nil || doc.RootLanguage != string(language.Markdown) || !doc.DerivedCurrent() {
+		return false
+	}
+	start, end, ok := doc.Editor.Buffer.LineRange(logical)
+	if !ok {
+		return false
+	}
+	for _, block := range doc.Projections.Blocks {
+		if block.Kind != document.BlockTable {
+			continue
+		}
+		if block.StartByte < end && block.EndByte > start {
+			return true
+		}
+	}
+	return false
 }
 
 func minFloat(a, b float32) float32 {
@@ -910,6 +1027,10 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 			options.PresentationStyle = MarkdownPresentationStyle
 			options.PresentationSpanStyle = MarkdownPresentationSpanStyle
 		}
+	}
+	options.PresentationKey = documentPresentationKey(doc, options.Presentation != nil)
+	if options.NoWrapLine == nil && language.ID(doc.RootLanguage) == language.Markdown {
+		options.NoWrapLine = func(logicalLine int) bool { return isTableLine(doc, logicalLine) }
 	}
 	EditableView(key, doc.Editor, options)
 	doc.SyncEditorState()
@@ -991,9 +1112,10 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		lineCache := Use[visualLineCache]("editor-visual-lines")
 		caretBlink := Use[caretBlinkState]("editor-caret-blink")
 		beforeCaret := takeEditorCaretSnapshot(e)
+		presentationKey := effectivePresentationKey(options)
 		if HasFocus() {
 			WantKeyboard()
-			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, lineCache, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle, options.LineSpacing)
+			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, lineCache, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle, presentationKey, options.LineSpacing)
 		}
 		caretActivity := beforeCaret.changed(e) || editorCaretInputActivity()
 		editorFocused := HasFocus() && GetHost().WindowFocused
@@ -1010,8 +1132,12 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 					return rowHeight
 				}
 				contentWidth := editorContentWidth(width, gutterWidth)
-				lineCache.prepare(e.Revision(), contentWidth, options.Wrap)
-				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle)
+				lineCache.prepare(e.Revision(), contentWidth, options.Wrap, presentationKey)
+				lineWidth := wrapWidthForLine(options, logical, contentWidth)
+				if lineWidth <= 0 {
+					return rowHeight
+				}
+				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, lineWidth, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle)
 				if !ok {
 					return rowHeight
 				}
@@ -1029,14 +1155,16 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				if !ok {
 					return
 				}
-				contentWidth := contentWidthIfWrapped(options.Wrap, editorContentWidth(width, gutterWidth))
-				lineCache.prepare(e.Revision(), contentWidth, options.Wrap)
-				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, contentWidth, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle)
+				fullWidth := editorContentWidth(width, gutterWidth)
+				contentWidth := contentWidthIfWrapped(options.Wrap, fullWidth)
+				lineCache.prepare(e.Revision(), contentWidth, options.Wrap, presentationKey)
+				lineWidth := wrapWidthForLine(options, logical, fullWidth)
+				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, lineWidth, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle)
 				if !ok {
 					return
 				}
 				itemHeight := rowHeight
-				if options.Wrap {
+				if lineWidth > 0 {
 					itemHeight = visual.Height(rowHeight)
 				}
 				if options.LineSpacing != nil {
@@ -1130,7 +1258,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 	})
 }
 
-func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, spacing func(int) float32) {
+func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64, spacing func(int) float32) {
 	frame := GetFrameInput()
 	input := GetInputState()
 	content := GetContentRect()
@@ -1159,9 +1287,9 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	if frame.Key != KeyCodeNone {
 		switch {
 		case frame.Key == KeyUp && input.Modifiers&^ModShift == 0:
-			moveEditorVerticalLayout(e, style, rows, -1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler)
+			moveEditorVerticalLayout(e, style, rows, -1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler, presentationKey)
 		case frame.Key == KeyDown && input.Modifiers&^ModShift == 0:
-			moveEditorVerticalLayout(e, style, rows, 1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler)
+			moveEditorVerticalLayout(e, style, rows, 1, shift, wrap, lineWidth, lineCache, presentation, styler, spanStyler, presentationKey)
 		case frame.Key == KeyHome && input.Modifiers&^ModShift == 0:
 			moveEditorLineBoundary(e, false, shift)
 		case frame.Key == KeyEnd && input.Modifiers&^ModShift == 0:
@@ -1216,7 +1344,7 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 		var localY float32
 		var ok bool
 		if wrap {
-			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, rowHeight, lineWidth, lineCache, presentation, styler, spanStyler, spacing)
+			line, localY, visual, ok = visualLineAtY(e, rows, targetY, style, rowHeight, lineWidth, lineCache, presentation, styler, spanStyler, presentationKey, spacing)
 		} else {
 			visible := int(targetY / rowHeight)
 			if visible < 0 {
@@ -1242,11 +1370,11 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	}
 }
 
-func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, rowHeight, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, spacing func(int) float32) (int, float32, VisualLine, bool) {
+func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32, style TextStyleAttrs, rowHeight, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64, spacing func(int) float32) (int, float32, VisualLine, bool) {
 	if targetY < 0 {
 		targetY = 0
 	}
-	cache.prepare(e.Revision(), width, true)
+	cache.prepare(e.Revision(), width, true, presentationKey)
 	var top float32
 	for visible := 0; visible < rows.Count(); visible++ {
 		line, ok := rows.Logical(visible)
@@ -1274,10 +1402,10 @@ func visualLineAtY(e *editor.ScratchEditor, rows editor.RowMap, targetY float32,
 // position as the column. The row map is authoritative here: folded logical
 // lines cannot become accidental destinations for keyboard navigation.
 func moveEditorVertical(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool) bool {
-	return moveEditorVerticalLayout(e, style, rows, delta, extend, false, 0, nil, nil, nil, nil)
+	return moveEditorVerticalLayout(e, style, rows, delta, extend, false, 0, nil, nil, nil, nil, 0)
 }
 
-func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) bool {
+func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, rows editor.RowMap, delta int, extend bool, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64) bool {
 	line, ok := e.Buffer.LineAt(e.Cursor)
 	if !ok {
 		return false
@@ -1290,7 +1418,7 @@ func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, row
 	if !ok {
 		return false
 	}
-	current, ok := verticalVisualLine(e, line, e.Cursor, style, wrap, width, cache, presentation, styler, spanStyler)
+	current, ok := verticalVisualLine(e, line, e.Cursor, style, wrap, width, cache, presentation, styler, spanStyler, presentationKey)
 	if !ok {
 		return false
 	}
@@ -1319,7 +1447,7 @@ func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, row
 	}
 	byteColumn := e.Cursor - currentStart
 	anchor := targetStart + maxInt(0, minInt(byteColumn, targetEnd-targetStart))
-	target, ok := verticalVisualLine(e, targetLine, anchor, style, wrap, width, cache, presentation, styler, spanStyler)
+	target, ok := verticalVisualLine(e, targetLine, anchor, style, wrap, width, cache, presentation, styler, spanStyler, presentationKey)
 	if !ok {
 		return false
 	}
@@ -1341,9 +1469,9 @@ func moveEditorVerticalLayout(e *editor.ScratchEditor, style TextStyleAttrs, row
 	return true
 }
 
-func verticalVisualLine(e *editor.ScratchEditor, line, anchor int, style TextStyleAttrs, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler) (VisualLine, bool) {
+func verticalVisualLine(e *editor.ScratchEditor, line, anchor int, style TextStyleAttrs, wrap bool, width float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64) (VisualLine, bool) {
 	if wrap && cache != nil {
-		cache.prepare(e.Revision(), width, true)
+		cache.prepare(e.Revision(), width, true, presentationKey)
 		return cachedVisualLine(cache, &e.Buffer, line, anchor, style, width, presentation, styler, spanStyler)
 	}
 	return BuildVisualLineAround(&e.Buffer, line, anchor, style)

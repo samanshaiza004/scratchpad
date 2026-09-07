@@ -191,11 +191,22 @@ func (a *Application) HandleWatchEvent(event workspace.WatchEvent) {
 func (a *Application) Reconcile(id DocumentID) (DocumentStatus, error) {
 	doc, ok := a.Documents[id]
 	if !ok {
+		// Drop advisory hints for unknown IDs so ReconcileStale (which ranges
+		// over Stale and calls Reconcile) cannot retry them forever. This
+		// covers stale hints left behind by identity changes.
+		delete(a.Stale, id)
 		return StatusMissing, errors.New("unknown document")
 	}
 	snapshot, err := a.Store.Load(doc.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			// One hint = one Load: consume the hint so a still-missing file
+			// does not cause a Load every frame. The next watcher event
+			// re-adds the hint if the file reappears/changes.
+			// NOTE: Status() is intentionally left unchanged (sync, no IO):
+			// the UI only handles StatusConflict/StatusSynced, so surfacing
+			// Missing there would alter the close path with no handler.
+			delete(a.Stale, id)
 			return StatusMissing, nil
 		}
 		return StatusSynced, err
@@ -308,25 +319,44 @@ func (a *Application) recordClosed(path string) {
 	}
 }
 
-func (a *Application) KeepEditing(id DocumentID) error {
-	if _, ok := a.Conflicts[id]; !ok {
-		return errors.New("document is not conflicted")
-	}
-	return nil
-}
-
 func (a *Application) OverwriteDisk(id DocumentID) error {
 	doc := a.Documents[id]
 	if doc == nil {
 		return errors.New("unknown document")
 	}
-	version, err := a.Store.Save(doc.Path, doc.Editor.Buffer.Text(), doc.FileMode)
+	conflict, ok := a.Conflicts[id]
+	if !ok {
+		return errors.New("document is not conflicted")
+	}
+	snapshot, err := a.Store.Load(doc.Path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("file missing on disk")
+		}
 		return err
 	}
-	doc.DiskVersion = version
-	doc.MarkSaved()
+	if !snapshot.Version.Equal(conflict.DiskVersion) {
+		a.Conflicts[id] = Conflict{
+			Base:        append([]byte(nil), doc.BaseSnapshot()...),
+			Disk:        append([]byte(nil), snapshot.Data...),
+			DiskVersion: snapshot.Version, DiskMode: snapshot.Mode,
+		}
+		return document.ErrDiskChanged
+	}
+	version, err := a.Store.Save(doc.Path, doc.Editor.Buffer.Text(), doc.FileMode)
+	if err != nil {
+		if errors.Is(err, workspace.ErrParentDirSync) && version.Verified {
+			doc.MarkOverwritten(version)
+			delete(a.Conflicts, id)
+			delete(a.Stale, id)
+			a.refreshRecoveryAfterSave()
+		}
+		return err
+	}
+	doc.MarkOverwritten(version)
 	delete(a.Conflicts, id)
+	delete(a.Stale, id)
+	a.refreshRecoveryAfterSave()
 	return nil
 }
 
@@ -345,7 +375,11 @@ func (a *Application) SaveActive() error {
 	if status == StatusConflict {
 		return ErrConflict
 	}
-	return doc.Save(a.Store)
+	if err := doc.Save(a.Store); err != nil {
+		return err
+	}
+	a.refreshRecoveryAfterSave()
+	return nil
 }
 
 func (a *Application) SaveDocument(id DocumentID) error {
@@ -390,8 +424,22 @@ func (a *Application) SaveAs(id DocumentID, path string) error {
 		if a.Active == id {
 			a.Active = newID
 		}
+		// Close (don't migrate) derived state for the old identity, mirroring
+		// CloseDocument/ReloadDisk. PollDerived recreates state for newID on
+		// demand and reaps the closed entry without leaking goroutines.
+		if state := a.derived[id]; state != nil {
+			state.closed = true
+			if !state.running && state.runtime != nil {
+				state.runtime.Close()
+				delete(a.derived, id)
+			}
+		}
 	}
 	delete(a.Conflicts, id)
+	// Consume any stale hint for the old identity (identity change) and for
+	// the same identity (SaveAs overwrote disk, so the hint is obsolete).
+	delete(a.Stale, id)
+	a.refreshRecoveryAfterSave()
 	return nil
 }
 

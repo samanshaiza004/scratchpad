@@ -87,10 +87,22 @@ func (a *Application) PollDerived(now time.Time) {
 				delete(a.derived, result.id)
 				continue
 			}
-			if exists && doc != nil && result.err == nil && result.revision == doc.Revision() {
-				doc.SetDerived(nil, result.projections)
-				state.seenRevision = result.revision
-				state.hasSeen = true
+			if exists && doc != nil && result.revision == doc.Revision() {
+				publish := result.err == nil
+				if !publish && result.runtime == nil &&
+					result.projections.Revision == result.revision &&
+					result.projections.Markdown.Revision == result.revision {
+					// Injected-Go partial failure: the Markdown base projection
+					// plus any partial Code remain valid for this revision, so
+					// publish them instead of dropping the whole update. The
+					// nested-language error stays recorded on result.err.
+					publish = true
+				}
+				if publish {
+					doc.SetDerived(nil, result.projections)
+					state.seenRevision = result.revision
+					state.hasSeen = true
+				}
 			}
 			if exists {
 				state.running = false
@@ -183,18 +195,28 @@ func projectInjectedGo(regions []document.InjectedRegion, source []byte, revisio
 	var highlights []document.HighlightSpan
 	var symbols []document.Symbol
 	var folds []document.LanguageFold
+	// One adapter per projection: cheaper than per-fence construction and
+	// safe to reuse because each region is fully reparsed (nil edits reset
+	// the incremental tree). defer guarantees Close on every return path.
+	adapter, err := treesitter.NewGoAdapter()
+	if err != nil {
+		return err
+	}
+	defer adapter.Close()
+	var firstErr error
 	for _, region := range regions {
 		if region.Language != "go" || region.StartByte < 0 || region.EndByte > len(source) || region.StartByte >= region.EndByte {
 			continue
 		}
-		adapter, err := treesitter.NewGoAdapter()
-		if err != nil {
-			return err
-		}
 		code, err := adapter.Analyze(source[region.StartByte:region.EndByte], revision, nil)
-		adapter.Close()
 		if err != nil {
-			return err
+			// Per-region failure must not discard other regions or the
+			// Markdown base projection: accumulate what succeeded and
+			// report the first error separately.
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		for _, span := range code.Highlights {
 			span.StartByte += region.StartByte
@@ -215,7 +237,7 @@ func projectInjectedGo(regions []document.InjectedRegion, source []byte, revisio
 	if len(highlights) > 0 || len(symbols) > 0 || len(folds) > 0 {
 		projection.Code = document.NewCodeProjection(revision, "go", highlights, symbols, folds)
 	}
-	return nil
+	return firstErr
 }
 
 func analysisLanguage(id language.ID) language.ID {

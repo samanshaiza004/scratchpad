@@ -175,7 +175,9 @@ func (a *Application) WriteRecovery(dir string) error {
 
 // MaybeWriteRecovery captures dirty bytes on the UI goroutine and performs
 // filesystem work asynchronously, keeping large recovery writes out of the
-// keystroke-to-frame path.
+// keystroke-to-frame path. A clean payload also goes through the throttled
+// async path so writeRecovery can clear stale files; saves additionally call
+// refreshRecoveryAfterSave for an immediate synchronous rewrite (see below).
 func (a *Application) MaybeWriteRecovery(dir string) {
 	if dir == "" {
 		return
@@ -189,12 +191,24 @@ func (a *Application) MaybeWriteRecovery(dir string) {
 		return
 	}
 	payload := a.captureRecovery()
-	if len(payload.Manifest.Documents) == 0 {
-		return
-	}
 	a.lastRecovery = time.Now()
 	a.recoveryRunning = true
 	go func() { a.recoveryDone <- writeRecovery(dir, payload) }()
+}
+
+// refreshRecoveryAfterSave rewrites recovery synchronously after a successful
+// save so a crash cannot resurrect stale bytes. Saves are rare user gestures
+// (not the keystroke path), so blocking disk IO here is acceptable; it drains
+// any in-flight MaybeWriteRecovery snapshot first to avoid concurrent writers,
+// then captures the current (post-save) state. Best-effort: recovery errors
+// never fail the save. Callers must invoke it only after the save succeeded.
+func (a *Application) refreshRecoveryAfterSave() {
+	dir := a.RecoveryDir
+	if dir == "" {
+		return
+	}
+	_ = a.FlushRecovery(dir)
+	a.lastRecovery = time.Now()
 }
 
 func (a *Application) FlushRecovery(dir string) error {

@@ -162,6 +162,7 @@ func (b *Buffer) LineAt(offset int) (int, bool) {
 			return line, true
 		}
 		offset -= node.piece.length
+		line += node.piece.newlines
 		node = node.right
 	}
 	return line, true
