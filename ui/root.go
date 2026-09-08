@@ -316,6 +316,38 @@ func markdownSlashCommands() []slashCommand {
 	}
 }
 
+const (
+	slashCommandRowHeight      float32 = 25
+	slashCommandViewportHeight float32 = 300
+)
+
+// revealPopupSelection keeps a keyboard-selected row reachable in a bounded
+// Shirei viewport. Render data is the source of truth for the row geometry;
+// this avoids duplicating the viewport's scroll math in the slash picker.
+func revealPopupSelection(viewportID, rowID ContainerId) {
+	if viewportID == nil || rowID == nil {
+		return
+	}
+	viewport := GetRenderDataOf(viewportID)
+	row := GetRenderDataOf(rowID)
+	if viewport.ResolvedSize[1] <= 0 || row.ResolvedSize[1] <= 0 {
+		return
+	}
+
+	top := row.ResolvedOrigin[1] - viewport.ResolvedOrigin[1] + viewport.ScrollOffset[1]
+	bottom := top + row.ResolvedSize[1]
+	offset := viewport.ScrollOffset
+	if top < offset[1] {
+		offset[1] = top
+	} else if bottom > offset[1]+viewport.ResolvedSize[1] {
+		offset[1] = bottom - viewport.ResolvedSize[1]
+	}
+	if offset != viewport.ScrollOffset {
+		SetScrollOffset(offset)
+		RequestNextFrame()
+	}
+}
+
 func markdownFenceLanguages() []string {
 	return []string{"plain", "go", "javascript", "typescript", "tsx"}
 }
@@ -759,10 +791,9 @@ func applyCommandRequest(doc *document.Document, request commands.Request) bool 
 	if outcome.Status != commands.ResultExecuted || outcome.Start < 0 || outcome.End < outcome.Start {
 		return false
 	}
-	if err := doc.Replace(outcome.Start, outcome.End, outcome.Replacement); err != nil {
+	if err := doc.ReplaceWithSelection(outcome.Start, outcome.End, outcome.Replacement, outcome.Anchor, outcome.Cursor); err != nil {
 		return false
 	}
-	doc.Editor.SetSelection(outcome.Anchor, outcome.Cursor)
 	return true
 }
 
@@ -772,7 +803,7 @@ func slashCandidate(state *application.Application) (int, int, string, bool) {
 	}
 	doc := state.ActiveDocument()
 	ctx := commandContext(state)
-	if !ctx.Markdown || ctx.InFence {
+	if !ctx.Markdown {
 		return 0, 0, "", false
 	}
 	line, ok := doc.Editor.Buffer.LineAt(doc.Editor.Cursor)
@@ -793,6 +824,17 @@ func slashCandidate(state *application.Application) (int, int, string, bool) {
 		return 0, 0, "", false
 	}
 	if strings.TrimSpace(string(source[doc.Editor.Cursor-lineStart:])) != "" {
+		return 0, 0, "", false
+	}
+	if !ctx.ProjectionCurrent {
+		// Reparse only after the line actually looks like a slash command.
+		// Ordinary typing must not synchronously reparse the whole document
+		// while the debounced Markdown projection is stale.
+		request, err := commands.NewRequest(doc, commands.MarkdownInsertCodeBlock)
+		if err != nil || request.InFence {
+			return 0, 0, "", false
+		}
+	} else if ctx.InFence {
 		return 0, 0, "", false
 	}
 	slash := lineStart + len(prefix) - len(trimmed)
@@ -893,6 +935,14 @@ func handleSlashInput(state *application.Application, shell *workbenchState) boo
 
 func handleFenceInput(state *application.Application, shell *workbenchState) bool {
 	if shell == nil || !shell.Fence.Open || state == nil || shell.Fence.DocumentID != state.Active {
+		return false
+	}
+	if doc := state.ActiveDocument(); doc == nil {
+		shell.Fence = fenceState{}
+		return false
+	} else if request, err := commands.NewRequest(doc, commands.MarkdownSetFenceLanguage); err != nil || !request.InFence {
+		// The caret or source may have changed while the chooser was open.
+		shell.Fence = fenceState{}
 		return false
 	}
 	languages := markdownFenceLanguages()
@@ -1490,30 +1540,39 @@ func markdownCommandPopups(state *application.Application, shell *workbenchState
 		Popup(func() {
 			FloatingSurface(theme, Attrs(Float(70, 64), FixWidth(320), MaxHeight(390)), Attrs(Pad(8), Gap(2)), func() {
 				Label("Markdown commands", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
-				if len(items) == 0 {
-					Label("No matching commands", FontSize(11), TextColorVec(theme.Muted))
-				}
-				for index, item := range items {
-					index, item := index, item
-					Container(Attrs(Row, CrossMid, FixHeight(25), Pad2(1, 5)), func() {
-						selected := index == shell.Slash.Selected
-						if selected {
-							ModAttrs(BackgroundVec(theme.SelectionHighlight))
-						}
-						if WorkstationToolButton(theme, "/"+item.Name, true) {
-							if applyDocumentCommandRange(doc, item.ID, "", shell.Slash.TriggerStart, shell.Slash.TriggerEnd, true) {
-								shell.Slash = slashState{}
-								if item.ID == commands.MarkdownInsertCodeBlock {
-									shell.Fence = fenceState{Open: true, DocumentID: state.Active}
+				Container(Attrs(Viewport, MaxHeight(slashCommandViewportHeight), Clip), func() {
+					ScrollOnInput()
+					var viewportID ContainerId = CurrentId()
+					rowIDs := make([]ContainerId, len(items))
+					if len(items) == 0 {
+						Label("No matching commands", FontSize(11), TextColorVec(theme.Muted))
+					}
+					for index, item := range items {
+						index, item := index, item
+						rowIDs[index] = ContainerWithKey(item.ID, Attrs(Row, CrossMid, FixHeight(slashCommandRowHeight), Pad2(1, 5)), func() {
+							selected := index == shell.Slash.Selected
+							if selected {
+								ModAttrs(BackgroundVec(theme.SelectionHighlight))
+							}
+							if WorkstationToolButton(theme, "/"+item.Name, true) {
+								if applyDocumentCommandRange(doc, item.ID, "", shell.Slash.TriggerStart, shell.Slash.TriggerEnd, true) {
+									shell.Slash = slashState{}
+									if item.ID == commands.MarkdownInsertCodeBlock {
+										shell.Fence = fenceState{Open: true, DocumentID: state.Active}
+									}
 								}
 							}
-						}
-						// Keep the hint beside the command button without giving it
-						// another interaction or focus target.
-						Container(Attrs(Grow(1)), func() {})
-						Label(item.Hint, FontSize(10), TextColorVec(theme.Muted))
-					})
-				}
+							// Keep the hint beside the command button without giving it
+							// another interaction or focus target.
+							Container(Attrs(Grow(1)), func() {})
+							Label(item.Hint, FontSize(10), TextColorVec(theme.Muted))
+						})
+					}
+					if shell.Slash.Selected >= 0 && shell.Slash.Selected < len(rowIDs) {
+						revealPopupSelection(viewportID, rowIDs[shell.Slash.Selected])
+					}
+					ScrollBars()
+				})
 			})
 		})
 	}
@@ -1688,7 +1747,9 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	frame := GetFrameInput()
 	mods := GetInputState().Modifiers
 	primary := PrimaryMod()
-	if shell != nil && shell.PendingSmartPaste && frame.Text != "" {
+	if shell != nil && shell.PendingSmartPaste && transientInputOpen(shell) {
+		shell.PendingSmartPaste = false
+	} else if shell != nil && shell.PendingSmartPaste && frame.Text != "" {
 		if doc := state.ActiveDocument(); doc != nil {
 			ctx := commandContext(state)
 			if ctx.Markdown && !ctx.InFence && applyDocumentCommand(doc, commands.MarkdownSmartPaste, frame.Text) {
@@ -1763,7 +1824,7 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 			}
 		}
 	}
-	if mods == primary && frame.Key == KeyV {
+	if mods == primary && frame.Key == KeyV && !transientInputOpen(shell) {
 		ctx := commandContext(state)
 		if ctx.Markdown && !ctx.InFence {
 			RequestPaste()
@@ -1889,6 +1950,9 @@ func commandContext(state *application.Application) commands.CommandContext {
 		}
 		for _, block := range doc.Projections.Blocks {
 			if block.Kind == document.BlockCode && ctx.Cursor >= block.StartByte && ctx.Cursor < block.EndByte {
+				ctx.InFence = true
+			}
+			if block.Kind == document.BlockCode && ctx.HasSelection && ctx.SelectionStart < block.EndByte && ctx.SelectionEnd > block.StartByte {
 				ctx.InFence = true
 			}
 		}

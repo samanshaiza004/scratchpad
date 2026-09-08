@@ -119,6 +119,82 @@ func TestEditorClipboardUndoRedoAndClusters(t *testing.T) {
 	}
 }
 
+func TestEditorCommandTransactionUndoRedoPreservesSelectionState(t *testing.T) {
+	tests := []struct {
+		name                       string
+		source, replacement        string
+		beforeAnchor, beforeCursor int
+		afterAnchor, afterCursor   int
+	}{
+		{
+			name:        "empty code block caret",
+			source:      "",
+			replacement: "```\n\n```",
+			afterAnchor: 4,
+			afterCursor: 4,
+		},
+		{
+			name:         "reversed selection",
+			source:       "hello world",
+			replacement:  "**world**",
+			beforeAnchor: 11,
+			beforeCursor: 6,
+			afterAnchor:  8,
+			afterCursor:  13,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := NewScratchEditor([]byte(test.source))
+			e.SetSelection(test.beforeAnchor, test.beforeCursor)
+			start, end := test.beforeAnchor, test.beforeCursor
+			if start > end {
+				start, end = end, start
+			}
+			if err := e.ReplaceWithSelection(start, end, []byte(test.replacement), test.afterAnchor, test.afterCursor); err != nil {
+				t.Fatal(err)
+			}
+			if anchor, cursor := e.Selection(); anchor != test.afterAnchor || cursor != test.afterCursor {
+				t.Fatalf("post-edit selection = %d:%d, want %d:%d", anchor, cursor, test.afterAnchor, test.afterCursor)
+			}
+
+			if err := e.Undo(); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(e.Buffer.Text()); got != test.source {
+				t.Fatalf("undo text = %q, want %q", got, test.source)
+			}
+			if anchor, cursor := e.Selection(); anchor != test.beforeAnchor || cursor != test.beforeCursor {
+				t.Fatalf("undo selection = %d:%d, want %d:%d", anchor, cursor, test.beforeAnchor, test.beforeCursor)
+			}
+
+			if err := e.Redo(); err != nil {
+				t.Fatal(err)
+			}
+			if anchor, cursor := e.Selection(); anchor != test.afterAnchor || cursor != test.afterCursor {
+				t.Fatalf("redo selection = %d:%d, want %d:%d", anchor, cursor, test.afterAnchor, test.afterCursor)
+			}
+		})
+	}
+}
+
+func TestEditorSelectionAwareNoOpMovesSelectionWithoutUndo(t *testing.T) {
+	e := NewScratchEditor([]byte("abc"))
+	e.SetCursor(0)
+	beforeRevision := e.Revision()
+
+	if err := e.ReplaceWithSelection(0, 0, nil, 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	if anchor, cursor := e.Selection(); anchor != 2 || cursor != 2 {
+		t.Fatalf("no-op selection = %d:%d, want 2:2", anchor, cursor)
+	}
+	if got := e.Revision(); got != beforeRevision {
+		t.Fatalf("no-op selection revision = %d, want %d", got, beforeRevision)
+	}
+}
+
 func TestEditorWordNavigationMatchesShireiClassRuns(t *testing.T) {
 	cases := []struct {
 		text      string
@@ -210,6 +286,35 @@ func TestEditorWordNavigationPreservesSelectionAndInvalidByteSafety(t *testing.T
 	b = NewBuffer(append([]byte("é"), 0x80))
 	if got := b.PreviousWord(b.ByteLen()); got != len([]byte("é")) {
 		t.Fatalf("PreviousWord after malformed continuation = %d, want %d", got, len([]byte("é")))
+	}
+}
+
+func TestEditorWordDeletionUsesWordNavigationBoundaries(t *testing.T) {
+	e := NewScratchEditor([]byte("hello world"))
+	e.SetCursor(len([]byte("hello world")))
+	if err := e.DeleteWordBackward(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(e.Buffer.Text()); got != "hello " || e.Cursor != len([]byte("hello ")) {
+		t.Fatalf("backward word delete = %q at %d", got, e.Cursor)
+	}
+
+	e = NewScratchEditor([]byte("hello world"))
+	e.SetCursor(len("hello "))
+	if err := e.DeleteWordForward(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(e.Buffer.Text()); got != "hello " || e.Cursor != len("hello ") {
+		t.Fatalf("forward word delete = %q at %d", got, e.Cursor)
+	}
+
+	e = NewScratchEditor([]byte("hello world"))
+	e.SetSelection(2, 8)
+	if err := e.DeleteWordBackward(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(e.Buffer.Text()); got != "herld" {
+		t.Fatalf("selection word delete = %q", got)
 	}
 }
 

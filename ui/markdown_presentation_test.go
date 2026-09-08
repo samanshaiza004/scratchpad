@@ -125,6 +125,63 @@ func TestMarkdownCommandUsesOneUndoableEdit(t *testing.T) {
 	}
 }
 
+func TestMarkdownCommandsUndoRedoPreservesCommandSelections(t *testing.T) {
+	tests := []struct {
+		name           string
+		id             commands.ID
+		source         string
+		anchor, cursor int
+		argument       string
+	}{
+		{name: "bold", id: commands.MarkdownToggleStrong, source: "hello world", anchor: 11, cursor: 6},
+		{name: "heading", id: commands.MarkdownHeading2, source: "title\nbody", anchor: 5, cursor: 0},
+		{name: "link", id: commands.MarkdownInsertLink, source: "world", anchor: 5, cursor: 0, argument: "https://example.test"},
+		{name: "code block", id: commands.MarkdownInsertCodeBlock, source: "body", anchor: 4, cursor: 0},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			doc := document.New("notes.md", []byte(test.source), "markdown")
+			doc.Editor.SetSelection(test.anchor, test.cursor)
+			request, err := commands.NewRequest(doc, test.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Argument = test.argument
+			outcome := commands.Execute(request)
+			if outcome.Status != commands.ResultExecuted {
+				t.Fatalf("outcome = %#v", outcome)
+			}
+
+			if !applyCommandRequest(doc, request) {
+				t.Fatal("command returned false")
+			}
+			assertEditorSelection(t, doc, outcome.Anchor, outcome.Cursor)
+
+			if err := doc.Editor.Undo(); err != nil {
+				t.Fatalf("undo = %v", err)
+			}
+			if got := string(doc.Editor.Buffer.Text()); got != test.source {
+				t.Fatalf("undo source = %q, want %q", got, test.source)
+			}
+			assertEditorSelection(t, doc, test.anchor, test.cursor)
+
+			if err := doc.Editor.Redo(); err != nil {
+				t.Fatalf("redo = %v", err)
+			}
+			assertEditorSelection(t, doc, outcome.Anchor, outcome.Cursor)
+		})
+	}
+}
+
+func assertEditorSelection(t *testing.T, doc *document.Document, wantAnchor, wantCursor int) {
+	t.Helper()
+	anchor, cursor := doc.Editor.Selection()
+	if anchor != wantAnchor || cursor != wantCursor {
+		t.Fatalf("selection = %d:%d, want %d:%d", anchor, cursor, wantAnchor, wantCursor)
+	}
+}
+
 func TestTableNavigationFormatsAndMovesAcrossCells(t *testing.T) {
 	source := []byte("Intro\n\n| a | b |\n| --- | --- |\n| one | two |\n")
 	doc := document.New("notes.md", source, "markdown")

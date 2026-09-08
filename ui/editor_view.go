@@ -1499,6 +1499,10 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 			e.MoveWordLeft(shift)
 		case frame.Key == KeyRight && input.Modifiers&^ModShift == wordMod:
 			e.MoveWordRight(shift)
+		case frame.Key == KeyDeleteBackward && input.Modifiers&^ModShift == wordMod:
+			_ = e.DeleteWordBackward()
+		case frame.Key == KeyDeleteForward && input.Modifiers&^ModShift == wordMod:
+			_ = e.DeleteWordForward()
 		case frame.Key == KeyLeft && input.Modifiers&^ModShift == 0:
 			e.MoveLeft(shift)
 		case frame.Key == KeyRight && input.Modifiers&^ModShift == 0:

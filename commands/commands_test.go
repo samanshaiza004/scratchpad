@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"scratchpad/document"
@@ -52,8 +54,15 @@ func TestMarkdownTransformsAreOneReplacement(t *testing.T) {
 	if out.Status != ResultExecuted || string(out.Replacement) != "**world**" {
 		t.Fatalf("strong outcome = %#v", out)
 	}
-	if out.Start != 6 || out.End != 11 || out.Cursor != 15 || out.Anchor != 8 {
+	if out.Start != 6 || out.End != 11 || out.Cursor != 13 || out.Anchor != 8 {
 		t.Fatalf("strong range/caret = %#v", out)
+	}
+	second := req
+	second.Source = []byte("hello **world**")
+	second.Cursor, second.Anchor = out.Cursor, out.Anchor
+	secondOut := Execute(second)
+	if secondOut.Status != ResultExecuted || string(secondOut.Replacement) != "world" || secondOut.Start != 6 || secondOut.End != 15 {
+		t.Fatalf("second strong toggle = %#v; want delimiters removed", secondOut)
 	}
 
 	req.ID = MarkdownHeading2
@@ -94,6 +103,74 @@ func TestFenceLanguageCommandRewritesOpeningInfoString(t *testing.T) {
 	out := Execute(req)
 	if out.Status != ResultExecuted || string(out.Replacement) != "```go" || out.Start != 0 || out.End != 3 {
 		t.Fatalf("fence language outcome = %#v", out)
+	}
+}
+
+func TestLiteralCommandsPreserveUnselectedParagraphText(t *testing.T) {
+	for _, id := range []ID{MarkdownInsertDivider, MarkdownInsertTable} {
+		source := []byte("keep this paragraph")
+		cursor := len("keep")
+		out := Execute(Request{ID: id, RootLanguage: "markdown", Source: source, Cursor: cursor, Anchor: cursor})
+		if out.Status != ResultExecuted || out.Start != cursor || out.End != cursor {
+			t.Fatalf("%s outcome = %#v; expected insertion at the caret", id, out)
+		}
+		result := append([]byte{}, source[:out.Start]...)
+		result = append(result, out.Replacement...)
+		result = append(result, source[out.End:]...)
+		if !bytes.Equal(result[:cursor], source[:cursor]) || !bytes.Equal(result[cursor+len(out.Replacement):], source[cursor:]) {
+			t.Fatalf("%s changed unselected paragraph text: %q", id, result)
+		}
+	}
+}
+
+func TestFenceLanguageCommandRequiresCursorInsideMatchingFence(t *testing.T) {
+	source := []byte("before\n```\nbody\n```\nafter")
+	for _, cursor := range []int{len("before"), len("before\n```\nbody\n```"), len(source)} {
+		out := Execute(Request{ID: MarkdownSetFenceLanguage, RootLanguage: "markdown", Source: source, Cursor: cursor, Anchor: cursor, Argument: "go"})
+		if out.Status != ResultUnavailable {
+			t.Fatalf("cursor %d outcome = %#v; want unavailable outside/at closing fence", cursor, out)
+		}
+	}
+	closingCursor := len("before\n```\nbody\n```") - 1
+	out := Execute(Request{ID: MarkdownSetFenceLanguage, RootLanguage: "markdown", Source: source, Cursor: closingCursor, Anchor: closingCursor, Argument: "go"})
+	if out.Status != ResultUnavailable {
+		t.Fatalf("cursor on closing fence outcome = %#v; want unavailable", out)
+	}
+}
+
+func TestFenceLanguageCommandPreservesDelimiterStyleAndLength(t *testing.T) {
+	tests := []struct {
+		name, source, argument, wantReplace string
+		wantEnd                             int
+	}{
+		{name: "long backticks", source: "````\nbody\n`````", argument: "go", wantReplace: "````go", wantEnd: 4},
+		{name: "tildes", source: "~~~python\nbody\n~~~", argument: "go", wantReplace: "~~~go", wantEnd: len("~~~python")},
+		{name: "crlf", source: "```\r\nbody\r\n```", argument: "go", wantReplace: "```go", wantEnd: 3},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cursor := strings.Index(test.source, "body") + 2
+			out := Execute(Request{ID: MarkdownSetFenceLanguage, RootLanguage: "markdown", Source: []byte(test.source), Cursor: cursor, Anchor: cursor, Argument: test.argument})
+			if out.Status != ResultExecuted || string(out.Replacement) != test.wantReplace || out.Start != 0 || out.End != test.wantEnd {
+				t.Fatalf("fence language outcome = %#v", out)
+			}
+		})
+	}
+}
+
+func TestMarkdownCommandRejectsSelectionCrossingCodeFence(t *testing.T) {
+	source := []byte("before\n```\ncode\n```\nafter")
+	doc := document.New("notes.md", source, "markdown")
+	doc.Editor.SetSelection(len(source), len("before\n```\n"))
+	request, err := NewRequest(doc, MarkdownToggleStrong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !request.InFence {
+		t.Fatal("selection crossing a fenced block was not marked unsafe")
+	}
+	if outcome := Execute(request); outcome.Status != ResultUnavailable {
+		t.Fatalf("cross-fence command outcome = %#v; want unavailable", outcome)
 	}
 }
 

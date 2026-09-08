@@ -71,7 +71,13 @@ func NewRequest(doc *document.Document, id ID) (Request, error) {
 		for _, block := range request.Projections.Blocks {
 			if block.Kind == document.BlockCode && doc.Editor.Cursor >= block.StartByte && doc.Editor.Cursor < block.EndByte {
 				request.InFence = true
-				break
+			}
+			start, end := request.Anchor, request.Cursor
+			if start > end {
+				start, end = end, start
+			}
+			if block.Kind == document.BlockCode && start < block.EndByte && end > block.StartByte {
+				request.InFence = true
 			}
 		}
 	}
@@ -187,7 +193,10 @@ func toggleInline(request Request, start, end int, marker string) Outcome {
 	if start >= len(marker) && end+len(marker) <= len(request.Source) && string(request.Source[start-len(marker):start]) == marker && string(request.Source[end:end+len(marker)]) == marker {
 		return outcome(request, start-len(marker), end+len(marker), selected, end-len(marker), start-len(marker))
 	}
-	return outcome(request, start, end, marker+selected+marker, end+len(marker)*2, start+len(marker))
+	// Keep the selection on the original content after wrapping. This makes a
+	// second toggle observe the delimiters immediately surrounding the
+	// selection and remove them instead of nesting another pair.
+	return outcome(request, start, end, marker+selected+marker, end+len(marker), start+len(marker))
 }
 
 func wordRange(source []byte, cursor int) (int, int) {
@@ -445,24 +454,91 @@ func setFenceLanguage(request Request) Outcome {
 	if !ok {
 		return Outcome{Status: ResultUnavailable}
 	}
-	for line >= 0 {
-		start, end, ok := lineRange(request.Source, line)
+	lineCount := lenFenceLines(request.Source)
+	for openerLine := 0; openerLine <= line; {
+		opener, ok := parseFenceLine(request.Source, openerLine)
 		if !ok {
+			openerLine++
+			continue
+		}
+		closingLine := -1
+		for candidateLine := openerLine + 1; candidateLine < lineCount; candidateLine++ {
+			candidate, candidateOK := parseFenceLine(request.Source, candidateLine)
+			if candidateOK && candidate.closing && candidate.marker == opener.marker && candidate.markerLen >= opener.markerLen {
+				closingLine = candidateLine
+				break
+			}
+		}
+		if closingLine < 0 {
 			return Outcome{Status: ResultUnavailable}
 		}
-		text := string(request.Source[start:end])
-		trimmed := strings.TrimSpace(text)
-		if strings.HasPrefix(trimmed, "```") {
-			indent := text[:len(text)-len(strings.TrimLeft(text, " \t"))]
-			replacement := indent + "```" + strings.TrimSpace(request.Argument)
-			return outcome(request, start, end, replacement, shiftPosition(request.Cursor, start, end, len(replacement)-(end-start)), shiftPosition(request.Anchor, start, end, len(replacement)-(end-start)))
+		if line < closingLine {
+			if line <= openerLine {
+				return Outcome{Status: ResultUnavailable}
+			}
+			start, end, ok := lineRange(request.Source, openerLine)
+			if !ok {
+				return Outcome{Status: ResultUnavailable}
+			}
+			if end > start && request.Source[end-1] == '\r' {
+				end--
+			}
+			indent := string(request.Source[start:opener.markerStart])
+			delimiter := strings.Repeat(string(opener.marker), opener.markerLen)
+			replacement := indent + delimiter + strings.TrimSpace(request.Argument)
+			delta := len(replacement) - (end - start)
+			return outcome(request, start, end, replacement, shiftPosition(request.Cursor, start, end, delta), shiftPosition(request.Anchor, start, end, delta))
 		}
-		if line == 0 {
-			break
-		}
-		line--
+		openerLine = closingLine + 1
 	}
 	return Outcome{Status: ResultUnavailable}
+}
+
+type fenceLine struct {
+	marker      byte
+	markerLen   int
+	markerStart int
+	closing     bool
+}
+
+func lenFenceLines(source []byte) int {
+	lines := 1
+	for _, value := range source {
+		if value == '\n' {
+			lines++
+		}
+	}
+	return lines
+}
+
+func parseFenceLine(source []byte, line int) (fenceLine, bool) {
+	start, end, ok := lineRange(source, line)
+	if !ok {
+		return fenceLine{}, false
+	}
+	if end > start && source[end-1] == '\r' {
+		end--
+	}
+	markerStart := start
+	for markerStart < end && (source[markerStart] == ' ' || source[markerStart] == '\t') {
+		markerStart++
+	}
+	if markerStart-start > 3 || markerStart >= end || (source[markerStart] != '`' && source[markerStart] != '~') {
+		return fenceLine{}, false
+	}
+	marker := source[markerStart]
+	markerEnd := markerStart
+	for markerEnd < end && source[markerEnd] == marker {
+		markerEnd++
+	}
+	if markerEnd-markerStart < 3 {
+		return fenceLine{}, false
+	}
+	rest := strings.TrimSpace(string(source[markerEnd:end]))
+	if marker == '`' && strings.Contains(rest, "`") {
+		return fenceLine{}, false
+	}
+	return fenceLine{marker: marker, markerLen: markerEnd - markerStart, markerStart: markerStart, closing: rest == ""}, true
 }
 
 func lineAt(source []byte, cursor int) (int, bool) {
@@ -498,12 +574,6 @@ func lineRange(source []byte, line int) (int, int, bool) {
 }
 
 func insertLiteral(request Request, start, end int, literal string) Outcome {
-	if start == end {
-		lineStart, lineEnd := lineBounds(request.Source, start, end)
-		if lineStart != lineEnd {
-			start, end = lineStart, lineEnd
-		}
-	}
 	return outcome(request, start, end, literal, start+len(literal), start+len(literal))
 }
 

@@ -183,6 +183,15 @@ func (e *ScratchEditor) Insert(text []byte) error {
 	return e.replace(from, to, text)
 }
 
+// ReplaceWithSelection applies one source replacement while preserving the
+// current selection as the undo state and recording the supplied selection as
+// the post-edit state. It is used by structured commands whose replacement
+// range differs from the user's current selection and whose result has a
+// meaningful caret/anchor pair.
+func (e *ScratchEditor) ReplaceWithSelection(start, end int, text []byte, anchor, cursor int) error {
+	return e.replaceWithSelection(start, end, text, &selectionState{anchor: anchor, cursor: cursor})
+}
+
 func (e *ScratchEditor) Backspace() error {
 	from, to := e.selection()
 	if from != to {
@@ -203,6 +212,33 @@ func (e *ScratchEditor) DeleteForward() error {
 		return nil
 	}
 	return e.replace(e.Cursor, e.Buffer.NextCluster(e.Cursor), nil)
+}
+
+// DeleteWordBackward removes the selection or the class-run word span ending
+// at the caret. It shares Buffer.PreviousWord with word navigation so the two
+// commands agree on punctuation, whitespace, scripts, and malformed bytes.
+func (e *ScratchEditor) DeleteWordBackward() error {
+	from, to := e.selection()
+	if from != to {
+		return e.replace(from, to, nil)
+	}
+	if e.Cursor == 0 {
+		return nil
+	}
+	return e.replace(e.Buffer.PreviousWord(e.Cursor), e.Cursor, nil)
+}
+
+// DeleteWordForward removes the selection or the class-run word span starting
+// at the caret. It uses the same boundaries as MoveWordRight.
+func (e *ScratchEditor) DeleteWordForward() error {
+	from, to := e.selection()
+	if from != to {
+		return e.replace(from, to, nil)
+	}
+	if e.Cursor >= e.Buffer.ByteLen() {
+		return nil
+	}
+	return e.replace(e.Cursor, e.Buffer.NextWord(e.Cursor), nil)
 }
 
 func (e *ScratchEditor) Selection() (anchor, cursor int) {
@@ -393,7 +429,22 @@ func isRTL(r rune) bool {
 }
 
 func (e *ScratchEditor) replace(start, end int, text []byte) error {
+	return e.replaceWithSelection(start, end, text, nil)
+}
+
+type selectionState struct {
+	anchor int
+	cursor int
+}
+
+func (e *ScratchEditor) replaceWithSelection(start, end int, text []byte, after *selectionState) error {
 	if start == end && len(text) == 0 {
+		if after != nil {
+			e.Anchor = e.Buffer.boundary(after.anchor)
+			e.Cursor = e.Buffer.boundary(after.cursor)
+			e.Affinity = AffinityLeading
+			e.ClearPreferredVerticalX()
+		}
 		return nil
 	}
 	deleted, err := e.Buffer.Bytes(start, end)
@@ -415,8 +466,13 @@ func (e *ScratchEditor) replace(start, end int, text []byte) error {
 	e.nextRevision++
 	e.revision = afterRevision
 	e.recordSourceEdit(edit)
-	e.Cursor = start + len(text)
-	e.Anchor = e.Cursor
+	if after == nil {
+		e.Cursor = start + len(text)
+		e.Anchor = e.Cursor
+	} else {
+		e.Anchor = e.Buffer.boundary(after.anchor)
+		e.Cursor = e.Buffer.boundary(after.cursor)
+	}
 	e.Affinity = AffinityLeading
 	e.ClearPreferredVerticalX()
 	e.undo = append(e.undo, editRecord{

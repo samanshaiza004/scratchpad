@@ -480,6 +480,26 @@ func (d *Document) Replace(start, end int, text []byte) error {
 	return nil
 }
 
+// ReplaceWithSelection performs one command replacement while preserving the
+// editor's current selection for undo and recording the supplied selection for
+// redo. Unlike Replace, it does not select the source range before editing;
+// structured commands may replace a range that differs from the user's
+// selection and return a directional caret/anchor pair for the result.
+func (d *Document) ReplaceWithSelection(start, end int, text []byte, anchor, cursor int) error {
+	if d == nil || d.Editor == nil || start < 0 || end < start || end > d.Editor.Buffer.ByteLen() {
+		return errors.New("document replace range outside buffer")
+	}
+	before := d.Revision()
+	if err := d.Editor.ReplaceWithSelection(start, end, text, anchor, cursor); err != nil {
+		return err
+	}
+	if d.Revision() != before {
+		d.observedRevision = d.Revision()
+		d.InvalidateDerived()
+	}
+	return nil
+}
+
 // InvalidateDerived discards projections that no longer describe the current
 // editor revision. Callers may also leave old values in place, but they must
 // treat DerivedCurrent as the validity check.
