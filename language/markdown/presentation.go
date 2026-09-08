@@ -89,7 +89,33 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 		}
 		return ast.WalkContinue, nil
 	})
+	appendTablePresentation(add, projection.Tables)
 	return document.NewMarkdownPresentation(revision, spans)
+}
+
+// appendTablePresentation adds the table-specific source spans that the UI
+// needs for styling. Cell and pipe ranges come from the parser-owned table
+// projection, so the presentation layer never re-parses table syntax.
+func appendTablePresentation(add func(int, int, document.PresentationKind), tables []document.TableProjection) {
+	for _, table := range tables {
+		for _, row := range table.Rows {
+			for _, pipe := range row.Pipes {
+				add(pipe.StartByte, pipe.EndByte, document.PresentationTablePipe)
+			}
+			kind := document.PresentationKind(0)
+			switch {
+			case row.Header:
+				kind = document.PresentationTableHeader
+			case row.Delimiter:
+				kind = document.PresentationTableDelimiter
+			default:
+				continue
+			}
+			for _, cell := range row.Cells {
+				add(cell.StartByte, cell.EndByte, kind)
+			}
+		}
+	}
 }
 
 func addBlock(projection *document.Projections, kind document.BlockKind, start, end int) {

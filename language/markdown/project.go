@@ -20,8 +20,8 @@ func Project(source []byte, revision uint64) document.Projections {
 		extension.NewTaskListItemParser(), extension.NewStrikethroughParser(), extension.NewTableParser(),
 	)).Parse(source)
 	projection := document.Projections{Revision: revision}
-	projection.Markdown = collectPresentation(root, source, revision, &projection)
 	projection.Tables = collectTableProjections(root, source, revision)
+	projection.Markdown = collectPresentation(root, source, revision, &projection)
 	for i := range projection.Markdown.Spans {
 		span := &projection.Markdown.Spans[i]
 		if span.Kind != document.PresentationHeading {

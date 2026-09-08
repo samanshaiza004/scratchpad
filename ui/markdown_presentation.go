@@ -58,6 +58,12 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 	// by the line decoration; no text background is set here.
 	case document.PresentationTable:
 		return []TextStyleFn{Fonts(codeFontFamilies()...)}
+	case document.PresentationTableHeader:
+		return []TextStyleFn{FontWeight(WeightBold)}
+	case document.PresentationTableDelimiter:
+		return []TextStyleFn{TextColorVec(DefaultTheme().Muted)}
+	case document.PresentationTablePipe:
+		return []TextStyleFn{TextColorVec(DefaultTheme().Border)}
 	case document.PresentationCodeComment:
 		return []TextStyleFn{TextColorVec(syntax.Comment)}
 	case document.PresentationCodeKeyword:

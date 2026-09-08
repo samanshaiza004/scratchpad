@@ -222,6 +222,9 @@ const (
 	PresentationCodeAttribute
 	PresentationThematicBreak
 	PresentationTable
+	PresentationTableHeader
+	PresentationTableDelimiter
+	PresentationTablePipe
 )
 
 // PresentationSpan is a half-open source-byte range. Spans may overlap when

@@ -27,7 +27,7 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
 
 ## Implementation Decisions
 
-- Slice order (agreed): 1) overflow lane + caret-follow; 2) row/cell/pipe projection; 3) header/delimiter/pipe visuals; 4) `Format Table`; 5) `Tab`/`Shift+Tab`/`Enter` navigation; 6) caret task toggle. This spec covers all six; only slices 1–2 are dispatched now.
+- Slice order (agreed): 1) overflow lane + caret-follow; 2) row/cell/pipe projection; 3) header/delimiter/pipe visuals; 4) `Format Table`; 5) `Tab`/`Shift+Tab`/`Enter` navigation; 6) caret task toggle. Slices 1–6 are now implemented incrementally; manual scrollbar/trackpad panning remains a release-hardening follow-up.
 - Slice 1 — overflow lane (UI-only, no buffer/document-text change):
   - `scrollX` lives in document view state alongside `ScrollY` (per-document, session-disposable like `ScrollY`, not part of `Document` text authority).
   - Applies only to lines resolved as unwrapped (`NoWrapLine` true — tables — or code mode unwrapped). Wrapped prose always renders at x=0 and ignores `scrollX`.
@@ -42,7 +42,7 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
     - `TableCell { StartByte, EndByte, Column }`
   - Explicit pipe ranges required so UI never re-parses syntax (preserves parser/UI split).
   - Hard cases owned by the projection/aligner: escaped `\|` (the only way to keep a pipe inside inline content), unescaped pipes inside code spans split like any other GFM delimiter, optional leading/trailing pipes, inline markup (`**`, links), Unicode/CJK/emoji display width measured from source-aware visible content, uneven rows.
-  - Existing whole-block `BlockTable`/`PresentationTable` stays until slice 3 rewires styling; new projection is additive, revision-tagged + disposable like current projections.
+  - Existing whole-block `BlockTable`/`PresentationTable` remains the block/source styling seam; the row/cell/pipe projection is additive, revision-tagged + disposable like current projections.
 - Slice 3 — visuals only: faint cool well (block), stronger header surface + bold cell content, very muted delimiter + real 1px rule, muted cool pipes, regular ink cells. No zebra, no virtual boxes.
 - Slice 4 — aligner is one undoable whole-table edit preserving meaning; explicit command only, never on open.
 - Slice 5 — navigation reuses aligner (`Tab` = align + next, `Shift+Tab` = prev, `Enter` = same-column next/create). Must intercept `Tab` before it inserts `\t`.
@@ -51,7 +51,7 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
 
 ## Testing Decisions
 
-- Good tests assert external behavior at the highest seam: view-state + rendered x-offset/caret visibility for slice 1 (headless `ui` tests, no pixels); projection byte ranges + alignments for slice 2 (pure `language/markdown` tests with escaped-pipe/code-span/CJK/uneven fixtures); style mapping + no-op-on-open for later slices.
+- Good tests assert external behavior at the highest seam: view-state + rendered x-offset/caret visibility for slice 1 (headless `ui` tests, no pixels); projection byte ranges + alignments for slice 2 (pure `language/markdown` tests with escaped-pipe/code-span/CJK/uneven fixtures); style mapping, one-edit formatting/undo, navigation, and caret toggling for later slices.
 - Prior art: `ui/editor_view_test.go` (visual lines, wrap widths, cache epochs), `ui/prose_render_geometry_test.go`, `language/markdown/presentation_test.go` + `project_test.go`, `application/gatec_test.go` for view/conflict flows.
 - Benchmarks: wide-table overflow pan + 100-row table projection/align latency; never block keystroke-to-frame (align off the frame path like current 150ms debounce).
 

@@ -73,6 +73,32 @@ func TestProjectKeepsTableSourceVisible(t *testing.T) {
 	}
 }
 
+func TestProjectTablesEmitSemanticPresentationSpans(t *testing.T) {
+	source := []byte("| name | value |\n| :--- | ---: |\n| one | two |\n")
+	got := Project(source, 10)
+	if len(got.Tables) != 1 {
+		t.Fatalf("tables = %+v", got.Tables)
+	}
+	table := got.Tables[0]
+	for _, cell := range table.Rows[0].Cells {
+		if !hasPresentationRange(got.Markdown.Spans, document.PresentationTableHeader, cell.StartByte, cell.EndByte) {
+			t.Errorf("missing header span for %+v", cell)
+		}
+	}
+	for _, cell := range table.Rows[1].Cells {
+		if !hasPresentationRange(got.Markdown.Spans, document.PresentationTableDelimiter, cell.StartByte, cell.EndByte) {
+			t.Errorf("missing delimiter span for %+v", cell)
+		}
+	}
+	for _, row := range table.Rows {
+		for _, pipe := range row.Pipes {
+			if !hasPresentationRange(got.Markdown.Spans, document.PresentationTablePipe, pipe.StartByte, pipe.EndByte) {
+				t.Errorf("missing pipe span for %+v", pipe)
+			}
+		}
+	}
+}
+
 func TestProjectPresentationKeepsMarkdownSyntaxVisible(t *testing.T) {
 	source := []byte("## **bold**\n")
 	got := Project(source, 1)

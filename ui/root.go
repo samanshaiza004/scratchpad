@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -607,6 +608,206 @@ func toggleFold(doc *document.Document, view *application.ViewState, line int) {
 	if !view.CollapsedHeadings[heading] {
 		delete(view.CollapsedHeadings, heading)
 	}
+}
+
+func tableAtCursor(doc *document.Document) (*document.TableProjection, bool) {
+	if doc == nil || !doc.DerivedCurrent() || doc.RootLanguage != string(language.Markdown) {
+		return nil, false
+	}
+	cursor := doc.Editor.Cursor
+	for i := range doc.Projections.Tables {
+		table := &doc.Projections.Tables[i]
+		if cursor >= table.StartByte && cursor <= table.EndByte {
+			return table, true
+		}
+	}
+	return nil, false
+}
+
+// formatTableAtCursor performs one whole-table source replacement. Document
+// invalidation makes the edit disposable/reparseable, while ScratchEditor's
+// Replace path keeps the operation as one undo record.
+func formatTableAtCursor(doc *document.Document) bool {
+	table, ok := tableAtCursor(doc)
+	if !ok {
+		return false
+	}
+	source, err := doc.Editor.Buffer.Bytes(0, doc.Editor.Buffer.ByteLen())
+	if err != nil {
+		return false
+	}
+	formatted, ok := markdown.FormatTable(source, *table)
+	if !ok || bytes.Equal(formatted, source[table.StartByte:table.EndByte]) {
+		return false
+	}
+	if err := doc.Replace(table.StartByte, table.EndByte, formatted); err != nil {
+		return false
+	}
+	return true
+}
+
+type tableCursorCell struct {
+	row, column int
+}
+
+func tableCellAtCursor(table *document.TableProjection, cursor int) (tableCursorCell, bool) {
+	if table == nil {
+		return tableCursorCell{}, false
+	}
+	rowNumber := 0
+	for _, row := range table.Rows {
+		if row.Delimiter {
+			continue
+		}
+		for column, cell := range row.Cells {
+			if cursor >= cell.StartByte && cursor <= cell.EndByte {
+				return tableCursorCell{row: rowNumber, column: column}, true
+			}
+		}
+		rowNumber++
+	}
+	return tableCursorCell{}, false
+}
+
+func tableNavigationRows(table *document.TableProjection) []document.TableRow {
+	if table == nil {
+		return nil
+	}
+	rows := make([]document.TableRow, 0, len(table.Rows))
+	for _, row := range table.Rows {
+		if !row.Delimiter {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func tableNewline(source []byte) string {
+	if bytes.Contains(source, []byte("\r\n")) {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+func appendEmptyTableRow(source []byte, columnCount int) []byte {
+	newline := tableNewline(source)
+	row := "|" + strings.Repeat("   |", maxInt(1, columnCount))
+	if len(source) > 0 && source[len(source)-1] == '\n' {
+		return append(append(append([]byte(nil), source...), row...), newline...)
+	}
+	result := append(append([]byte(nil), source...), newline...)
+	return append(result, row...)
+}
+
+func findProjectedTableCell(source []byte, semanticRow, column int) (document.TableCell, bool) {
+	projection := markdown.Project(source, 1)
+	if len(projection.Tables) == 0 {
+		return document.TableCell{}, false
+	}
+	rows := tableNavigationRows(&projection.Tables[0])
+	if semanticRow < 0 || semanticRow >= len(rows) || column < 0 || column >= len(rows[semanticRow].Cells) {
+		return document.TableCell{}, false
+	}
+	return rows[semanticRow].Cells[column], true
+}
+
+// navigateTableAtCursor formats the active table before moving through its
+// semantic header/data cells. Enter moves down the same column; Tab advances
+// row-major. At the end of the available rows both operations create one new
+// empty source row, preserving the whole action as one undoable replacement.
+func navigateTableAtCursor(doc *document.Document, previous, enter bool) bool {
+	table, ok := tableAtCursor(doc)
+	if !ok {
+		return false
+	}
+	location, ok := tableCellAtCursor(table, doc.Editor.Cursor)
+	if !ok {
+		return false
+	}
+	source, err := doc.Editor.Buffer.Bytes(0, doc.Editor.Buffer.ByteLen())
+	if err != nil {
+		return false
+	}
+	tableSource := append([]byte(nil), source[table.StartByte:table.EndByte]...)
+	formatted, formatOK := markdown.FormatTable(source, *table)
+	formatChanged := false
+	if formatOK {
+		formatChanged = !bytes.Equal(formatted, tableSource)
+		tableSource = formatted
+	}
+	local := markdown.Project(tableSource, 1)
+	if len(local.Tables) == 0 {
+		return false
+	}
+	localRows := tableNavigationRows(&local.Tables[0])
+	if location.row < 0 || location.row >= len(localRows) {
+		return false
+	}
+	targetRow, targetColumn := location.row, location.column
+	create := false
+	if enter {
+		targetRow++
+		if targetRow >= len(localRows) || targetColumn >= len(localRows[targetRow].Cells) {
+			create = true
+		}
+	} else if previous {
+		if targetColumn > 0 {
+			targetColumn--
+		} else if targetRow > 0 {
+			targetRow--
+			targetColumn = len(localRows[targetRow].Cells) - 1
+		} else {
+			return false
+		}
+	} else if targetColumn+1 < len(localRows[targetRow].Cells) {
+		targetColumn++
+	} else if targetRow+1 < len(localRows) {
+		targetRow++
+		targetColumn = 0
+	} else {
+		create = true
+		targetRow = len(localRows)
+		targetColumn = 0
+	}
+	if create {
+		tableSource = appendEmptyTableRow(tableSource, len(table.Columns))
+		local = markdown.Project(tableSource, 1)
+		if len(local.Tables) == 0 {
+			return false
+		}
+	}
+	if formatChanged || create {
+		if err := doc.Replace(table.StartByte, table.EndByte, tableSource); err != nil {
+			return false
+		}
+	}
+	cell, ok := findProjectedTableCell(tableSource, targetRow, targetColumn)
+	if !ok {
+		return false
+	}
+	doc.Editor.SetCursor(table.StartByte + cell.StartByte)
+	return true
+}
+
+func toggleTaskAtCursor(doc *document.Document) bool {
+	if doc == nil || !doc.DerivedCurrent() || doc.RootLanguage != string(language.Markdown) {
+		return false
+	}
+	for _, task := range doc.Projections.Tasks {
+		if doc.Editor.Cursor < task.StartByte || doc.Editor.Cursor > task.EndByte {
+			continue
+		}
+		marker, err := doc.Editor.Buffer.Bytes(task.MarkerStart, task.MarkerEnd)
+		if err != nil || (string(marker) != "[ ]" && string(marker) != "[x]" && string(marker) != "[X]") {
+			return false
+		}
+		replacement := []byte("[x]")
+		if string(marker) != "[ ]" {
+			replacement = []byte("[ ]")
+		}
+		return doc.Replace(task.MarkerStart, task.MarkerEnd, replacement) == nil
+	}
+	return false
 }
 
 type treeState struct {
@@ -1281,6 +1482,20 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	frame := GetFrameInput()
 	mods := GetInputState().Modifiers
 	primary := PrimaryMod()
+	if doc := state.ActiveDocument(); doc != nil {
+		if frame.Key == KeyTab && (mods == 0 || mods == ModShift) {
+			if navigateTableAtCursor(doc, mods == ModShift, false) {
+				frame.Key = KeyCodeNone
+				return
+			}
+		}
+		if frame.Key == KeyEnter && mods == 0 {
+			if navigateTableAtCursor(doc, false, true) {
+				frame.Key = KeyCodeNone
+				return
+			}
+		}
+	}
 	if frame.Key == KeyEscape {
 		if shell.ShowFind {
 			shell.ShowFind = false
@@ -1513,6 +1728,14 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.ViewResetFontSize:
 		setEditorFontSize(state, shell, defaultEditorFontSize)
 		return true
+	case commands.DocumentFormat:
+		if doc := state.ActiveDocument(); doc != nil {
+			return formatTableAtCursor(doc)
+		}
+	case commands.ItemToggle:
+		if doc := state.ActiveDocument(); doc != nil {
+			return toggleTaskAtCursor(doc)
+		}
 	case commands.OutlineToggle:
 		shell.SidebarMode = SidebarOutline
 		shell.SidebarVisible = true
@@ -1903,6 +2126,27 @@ func markdownLineDecoration(doc *document.Document, theme Theme) func(int) Edito
 		start, end, ok := doc.Editor.Buffer.LineRange(line)
 		if !ok {
 			return EditorLineDecoration{}
+		}
+		for _, table := range doc.Projections.Tables {
+			for _, row := range table.Rows {
+				if row.StartByte != start {
+					continue
+				}
+				background := theme.ChromeRaised
+				background[3] = 0.16
+				if row.Header {
+					background = theme.Highlight
+					background[3] = 0.24
+				}
+				if row.Delimiter {
+					background = theme.ChromeInset
+					background[3] = 0.10
+					accent := theme.Border
+					accent[3] = 0.72
+					return EditorLineDecoration{Background: background, Accent: accent}
+				}
+				return EditorLineDecoration{Background: background}
+			}
 		}
 		for _, block := range doc.Projections.Blocks {
 			if block.StartByte >= end || block.EndByte <= start {

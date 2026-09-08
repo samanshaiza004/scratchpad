@@ -815,7 +815,9 @@ type EditorViewOptions struct {
 // It is paint-only: the document and editor never see these values.
 type EditorLineDecoration struct {
 	Background Vec4
-	Accent     Vec4
+	// Accent is an optional one-pixel bottom rule painted over the row. It is
+	// used by source-visible Markdown table delimiters and remains paint-only.
+	Accent Vec4
 }
 
 type visualLineCache struct {
@@ -1260,12 +1262,13 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				if options.LineSpacing != nil {
 					itemHeight += maxFloat(0, options.LineSpacing(logical))
 				}
-				rowAttrs := Attrs(FixHeight(itemHeight), Expand, NoClip)
+				decoration := EditorLineDecoration{}
 				if options.LineDecoration != nil {
-					decoration := options.LineDecoration(logical)
-					if decoration.Background != (Vec4{}) {
-						rowAttrs = AttrsWith(rowAttrs, BackgroundVec(decoration.Background))
-					}
+					decoration = options.LineDecoration(logical)
+				}
+				rowAttrs := Attrs(FixHeight(itemHeight), Expand, NoClip)
+				if decoration.Background != (Vec4{}) {
+					rowAttrs = AttrsWith(rowAttrs, BackgroundVec(decoration.Background))
 				}
 				ContainerWithKey(logical, rowAttrs, func() {
 					Container(Attrs(Row, Expand, NoClip), func() {
@@ -1355,6 +1358,11 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 								Container(Attrs(FloatVec(Vec2{xOff, 0}), NoClip), renderRow)
 							} else {
 								renderRow()
+							}
+							if decoration.Accent != (Vec4{}) {
+								Container(Attrs(Float(0, itemHeight-1), Expand, FixHeight(1), InFront, NoAnimate), func() {
+									Element(Attrs(Expand, BackgroundVec(decoration.Accent), NoAnimate))
+								})
 							}
 						})
 					})
