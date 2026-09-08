@@ -5,6 +5,10 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/extension"
+	markdownast "github.com/yuin/goldmark/v2/extension/ast"
+	"github.com/yuin/goldmark/v2/parser"
 	"scratchpad/document"
 )
 
@@ -141,24 +145,64 @@ func TestProjectTablesEscapedPipes(t *testing.T) {
 	}
 }
 
-func TestProjectTablesCodeSpanPipesDoNotSplit(t *testing.T) {
-	source := "| a | b |\n| - | - |\n| c `x|y` d | e |\n"
-	_, table := projectSingleTable(t, source, 23)
-	assertTableSane(t, source, 23, table)
+func TestProjectTablesCodeSpanPipesSplitUnlessEscaped(t *testing.T) {
+	tests := []struct {
+		name string
+		row  string
+		want []string
+	}{
+		{name: "unescaped", row: "| c `x|y` |\n", want: []string{"c `x", "y`"}},
+		{name: "escaped", row: "| c `x\\|y` d | e |\n", want: []string{"c `x\\|y` d", "e"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := "| a | b |\n| - | - |\n" + tt.row
+			_, table := projectSingleTable(t, source, 23)
+			assertTableSane(t, source, 23, table)
 
-	row := table.Rows[2]
-	if got := tableCellStrings([]byte(source), row); !reflect.DeepEqual(got, []string{"c `x|y` d", "e"}) {
-		t.Fatalf("code-span cells = %q (pipe inside backticks must not split)", got)
+			row := table.Rows[2]
+			projectionCells := tableCellStrings([]byte(source), row)
+			goldmarkCells := goldmarkTableCellStrings([]byte(source), row.StartByte)
+			if !reflect.DeepEqual(goldmarkCells, tt.want) {
+				t.Fatalf("Goldmark cells = %q, want %q", goldmarkCells, tt.want)
+			}
+			if !reflect.DeepEqual(projectionCells, goldmarkCells) {
+				t.Fatalf("projection cells = %q, Goldmark cells = %q", projectionCells, goldmarkCells)
+			}
+		})
 	}
-	if len(row.Pipes) != 3 {
-		t.Fatalf("pipes = %+v, want 3", row.Pipes)
-	}
-	spanPipe := bytes.Index([]byte(source), []byte("`x|y`")) + 2
-	for _, pipe := range row.Pipes {
-		if pipe.StartByte == spanPipe {
-			t.Fatalf("code-span pipe at %d treated as structural: %+v", spanPipe, row.Pipes)
+}
+
+func goldmarkTableCellStrings(source []byte, rowStart int) []string {
+	root := parser.New(parser.WithExtensions(extension.NewTableParser())).Parse(source)
+	var cells []string
+	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-	}
+		row, ok := node.(*markdownast.TableRow)
+		if !ok || row.Pos() != rowStart {
+			return ast.WalkContinue, nil
+		}
+		for child := row.FirstChild(); child != nil; child = child.NextSibling() {
+			cell, ok := child.(*markdownast.TableCell)
+			if !ok {
+				continue
+			}
+			var start, end int
+			for _, segment := range cell.Source() {
+				if start == 0 || segment.Start < start {
+					start = segment.Start
+				}
+				if segment.Stop > end {
+					end = segment.Stop
+				}
+			}
+			cells = append(cells, string(source[start:end]))
+		}
+		return ast.WalkSkipChildren, nil
+	})
+	return cells
 }
 
 func TestProjectTablesMissingTrailingPipe(t *testing.T) {

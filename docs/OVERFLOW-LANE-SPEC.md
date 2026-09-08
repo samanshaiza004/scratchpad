@@ -41,7 +41,7 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
     - `TableRow { StartByte, EndByte, Header, Delimiter bool, Cells []TableCell, Pipes []ByteRange }`
     - `TableCell { StartByte, EndByte, Column }`
   - Explicit pipe ranges required so UI never re-parses syntax (preserves parser/UI split).
-  - Hard cases owned by the projection/aligner: escaped `\|`, pipes inside code spans (do not split), optional leading/trailing pipes, inline markup (`**`, links), Unicode/CJK/emoji display width measured from source-aware visible content, uneven rows.
+  - Hard cases owned by the projection/aligner: escaped `\|` (the only way to keep a pipe inside inline content), unescaped pipes inside code spans split like any other GFM delimiter, optional leading/trailing pipes, inline markup (`**`, links), Unicode/CJK/emoji display width measured from source-aware visible content, uneven rows.
   - Existing whole-block `BlockTable`/`PresentationTable` stays until slice 3 rewires styling; new projection is additive, revision-tagged + disposable like current projections.
 - Slice 3 — visuals only: faint cool well (block), stronger header surface + bold cell content, very muted delimiter + real 1px rule, muted cool pipes, regular ink cells. No zebra, no virtual boxes.
 - Slice 4 — aligner is one undoable whole-table edit preserving meaning; explicit command only, never on open.

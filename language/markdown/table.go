@@ -14,8 +14,8 @@ import (
 // exists only when Goldmark accepted a header/delimiter pair, and each header
 // cell already carries the alignment declared by the delimiter colons. Row,
 // cell, and pipe geometry is then re-derived from source lines with a
-// table-aware scanner (escaped pipes and code-span pipes never split; optional
-// leading/trailing pipes handled) so uneven rows are preserved as-is even
+// table-aware scanner (only escaped pipes never split; optional leading/trailing
+// pipes handled) so uneven rows are preserved as-is even
 // where Goldmark drops or pads cells.
 func collectTableProjections(root ast.Node, source []byte, revision uint64) []document.TableProjection {
 	var tables []document.TableProjection
@@ -121,9 +121,9 @@ func mapTableAlignment(alignment markdownast.Alignment) document.TableAlignment 
 }
 
 // splitTableRow derives one row's cells and pipes from its source line.
-// Delimiter pipes are unescaped `|` bytes outside code spans; cell ranges are
-// trimmed of surrounding ASCII whitespace. Column is the zero-based position
-// in the row, preserving uneven rows as-is.
+// Delimiter pipes are unescaped `|` bytes, including when they occur inside
+// inline spans; cell ranges are trimmed of surrounding ASCII whitespace.
+// Column is the zero-based position in the row, preserving uneven rows as-is.
 func splitTableRow(source []byte, start, end int, header, delimiter bool) document.TableRow {
 	rowEnd := end
 	if rowEnd > start && source[rowEnd-1] == '\r' {
@@ -170,67 +170,16 @@ func splitTableRow(source []byte, start, end int, header, delimiter bool) docume
 }
 
 // tablePipeOffsets returns the byte offsets of structural pipes on one row
-// line: `|` bytes that are neither backslash-escaped nor inside a code span.
-// This mirrors the parser's escape handling (a pipe immediately preceded by a
-// backslash is literal) while additionally protecting code spans, which the
-// parser's row splitter does not.
+// line. GFM table parsing treats every unescaped `|` as a delimiter, even
+// when the pipe occurs inside inline markup such as a code span.
 func tablePipeOffsets(source []byte, start, end int) []int {
 	var offsets []int
-	at := start
-	for at < end {
-		switch source[at] {
-		case '`':
-			close := tableCodeSpanEnd(source, start, at, end)
-			if close < 0 {
-				// Unmatched backticks are literal text; pipes past them
-				// still split.
-				for at < end && source[at] == '`' {
-					at++
-				}
-				continue
-			}
-			at = close
-		case '|':
-			if !isBackslashEscaped(source, start, at) {
-				offsets = append(offsets, at)
-			}
-			at++
-		default:
-			at++
+	for at := start; at < end; at++ {
+		if source[at] == '|' && !isBackslashEscaped(source, start, at) {
+			offsets = append(offsets, at)
 		}
 	}
 	return offsets
-}
-
-// tableCodeSpanEnd resolves a backtick run at offset into the offset just past
-// its matching closer, following CommonMark code span rules: the closer is the
-// next run of exactly the same length. It returns -1 when no closer exists or
-// the opener itself is backslash-escaped (literal backticks). Inside the span
-// backslashes are literal, so only backtick runs matter.
-func tableCodeSpanEnd(source []byte, start, offset, end int) int {
-	if isBackslashEscaped(source, start, offset) {
-		return -1
-	}
-	opener := offset
-	for opener < end && source[opener] == '`' {
-		opener++
-	}
-	length := opener - offset
-	for at := opener; at < end; {
-		if source[at] != '`' {
-			at++
-			continue
-		}
-		close := at
-		for close < end && source[close] == '`' {
-			close++
-		}
-		if close-at == length {
-			return close
-		}
-		at = close
-	}
-	return -1
 }
 
 // isBackslashEscaped reports whether the byte at offset is preceded by an odd
