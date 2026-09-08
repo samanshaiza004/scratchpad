@@ -5,6 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"scratchpad/document"
 	"scratchpad/language"
 
 	. "go.hasen.dev/shirei"
@@ -45,6 +46,30 @@ func TestEditorTextStyleKeepsProseDefault(t *testing.T) {
 	} {
 		if len(style.got) != 0 {
 			t.Fatalf("%s font families = %v, want default prose families", style.name, style.got)
+		}
+	}
+}
+
+func TestUnknownTextualDocumentUsesCodeSurface(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		code bool
+	}{
+		{path: "component.astro", code: true},
+		{path: "styles.css", code: true},
+		{path: "config.toml", code: true},
+		{path: "unknown.xyz", code: true},
+		{path: "Makefile", code: true},
+		{path: "notes.txt", code: false},
+		{path: "README.md", code: false},
+	} {
+		doc := document.New(test.path, []byte("content"), string(language.PlainText))
+		style := EditorTextStyleForDocument(doc)
+		if (len(style.FontFamilies) > 0) != test.code {
+			t.Fatalf("%s code surface=%v, font families=%v", test.path, len(style.FontFamilies) > 0, style.FontFamilies)
+		}
+		if proseWraps(test.path) == test.code {
+			t.Fatalf("%s prose wrapping=%v, code surface=%v", test.path, proseWraps(test.path), test.code)
 		}
 	}
 }

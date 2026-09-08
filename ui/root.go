@@ -85,7 +85,7 @@ func RootView(state *application.Application) {
 					style.FontSize = editorFontSize(shell)
 					PaperWell(theme, Attrs(Grow(1), Expand, Clip), Attrs(Clip), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
-							Style: style, RowHeight: editorRowHeight(style.FontSize), Wrap: proseWraps(language.ID(doc.RootLanguage)), ScrollY: &view.ScrollY,
+							Style: style, RowHeight: editorRowHeight(style.FontSize), Wrap: proseWraps(doc.Path), ScrollY: &view.ScrollY,
 							ScrollInitialized:  view.ScrollInitialized,
 							ScrollX:            &view.ScrollX,
 							ScrollXInitialized: view.ScrollXInitialized,
@@ -1257,7 +1257,7 @@ func statusBar(state *application.Application, theme Theme) {
 			Label(encoding, FontSize(10), TextColorVec(theme.Muted))
 			if doc.RootLanguage != "" {
 				EtchedDivider(theme, dividerVertical)
-				Label(doc.RootLanguage, FontSize(10), TextColorVec(theme.Muted))
+				Label(documentSurfaceLabel(doc), FontSize(10), TextColorVec(theme.Muted))
 			}
 		})
 	})
@@ -2147,8 +2147,24 @@ func BackgroundIf(active bool, color Vec4) AttrsFn {
 	return BackgroundVec(color)
 }
 
-func proseWraps(id language.ID) bool {
-	return id == language.Markdown || id == language.PlainText
+func proseWraps(path string) bool {
+	return language.SurfaceForPath(path) == language.SurfaceProse
+}
+
+func documentSurfaceLabel(doc *document.Document) string {
+	if doc == nil {
+		return ""
+	}
+	if language.SurfaceForPath(doc.Path) == language.SurfaceProse {
+		if language.ID(doc.RootLanguage) == language.Markdown {
+			return "Markdown"
+		}
+		return "Text"
+	}
+	if doc.RootLanguage == "" || language.ID(doc.RootLanguage) == language.PlainText {
+		return "Code"
+	}
+	return doc.RootLanguage
 }
 
 func markdownLineDecoration(doc *document.Document, theme Theme) func(int) EditorLineDecoration {

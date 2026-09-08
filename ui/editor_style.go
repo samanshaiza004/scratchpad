@@ -43,7 +43,8 @@ func codeFontFamilies() []string {
 // EditorTextStyle is a presentation policy only. It keeps one document,
 // ScratchEditor, and Buffer while giving recognized code/data roots a dense
 // preferred face and retaining the existing prose style for Markdown/plain
-// text and unknown roots.
+// text. Unknown textual roots use the code surface even when they have no
+// language provider.
 func EditorTextStyle(rootLanguage language.ID) TextStyleAttrs {
 	style := DefaultTextStyle()
 	style.TextColor = DefaultTheme().Ink
@@ -67,6 +68,12 @@ func isDefaultEditorStyle(style TextStyleAttrs) bool {
 func EditorTextStyleForDocument(doc *document.Document) TextStyleAttrs {
 	if doc == nil {
 		return DefaultTextStyle()
+	}
+	if language.SurfaceForPath(doc.Path) == language.SurfaceCode {
+		style := DefaultTextStyle()
+		style.TextColor = DefaultTheme().Ink
+		style.FontFamilies = codeFontFamilies()
+		return style
 	}
 	return EditorTextStyle(language.ID(doc.RootLanguage))
 }
