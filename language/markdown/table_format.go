@@ -11,6 +11,7 @@ import (
 	"github.com/yuin/goldmark/v2/parser"
 	"golang.org/x/text/width"
 	"scratchpad/document"
+	"scratchpad/editor"
 )
 
 // FormatTable returns one explicitly aligned source replacement for table.
@@ -151,18 +152,62 @@ func formatDelimiter(alignment document.TableAlignment, targetWidth int) string 
 	return result.String()
 }
 
-func delimiterWidth(_ document.TableAlignment) int {
-	return 3
+func delimiterWidth(alignment document.TableAlignment) int {
+	width := 3
+	if alignment == document.TableAlignLeft || alignment == document.TableAlignRight {
+		width = 4
+	} else if alignment == document.TableAlignCenter {
+		width = 5
+	}
+	return width
 }
 
 // tableCellDisplayWidth measures the rendered inline content rather than its
-// source syntax. Goldmark supplies the visible text, then Unicode width rules
-// account for combining marks and wide CJK/emoji runes.
+// source syntax. Goldmark supplies the visible text, then the editor's local
+// grapheme clustering and Unicode width policy account for combining marks,
+// modifiers, joined emoji, flags, and wide CJK characters. A ZWJ sequence is
+// treated as one two-column glyph, which matches the supported table font
+// policy instead of summing each emoji component.
 func tableCellDisplayWidth(raw []byte) int {
 	visible := tableCellDisplayText(raw)
+	buffer := editor.NewBuffer([]byte(visible))
 	width := 0
-	for _, r := range visible {
+	for at := 0; at < buffer.ByteLen(); {
+		end := buffer.NextCluster(at)
+		if end <= at {
+			end = at + 1
+		}
+		if isRegionalIndicatorPair([]byte(visible), at, end, &buffer) {
+			end = buffer.NextCluster(end)
+		}
+		width += tableClusterWidth([]byte(visible)[at:end])
+		at = end
+	}
+	return width
+}
+
+func isRegionalIndicatorPair(source []byte, start, end int, buffer *editor.Buffer) bool {
+	first, firstSize := utf8.DecodeRune(source[start:end])
+	if firstSize == 0 || first < 0x1f1e6 || first > 0x1f1ff || end >= len(source) {
+		return false
+	}
+	second, _ := utf8.DecodeRune(source[end:])
+	return second >= 0x1f1e6 && second <= 0x1f1ff && buffer.NextCluster(end) > end
+}
+
+func tableClusterWidth(cluster []byte) int {
+	hasJoiner := false
+	width := 0
+	for at := 0; at < len(cluster); {
+		r, size := utf8.DecodeRune(cluster[at:])
+		if r == '\u200d' {
+			hasJoiner = true
+		}
 		width += tableRuneWidth(r)
+		at += size
+	}
+	if hasJoiner && width > 0 {
+		return 2
 	}
 	return width
 }
@@ -188,8 +233,13 @@ func tableCellDisplayText(raw []byte) string {
 }
 
 func tableRuneWidth(r rune) int {
-	if r == '\u200d' || r == '\ufe0e' || r == '\ufe0f' || unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+	if r == '\u200d' || r == '\ufe0e' || r == '\ufe0f' ||
+		(r >= 0x1f3fb && r <= 0x1f3ff) || unicode.Is(unicode.Mn, r) ||
+		unicode.Is(unicode.Mc, r) || unicode.Is(unicode.Me, r) {
 		return 0
+	}
+	if r >= 0x1f1e6 && r <= 0x1f1ff {
+		return 1
 	}
 	if r == utf8.RuneError {
 		return 1

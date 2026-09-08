@@ -62,3 +62,36 @@ func TestFormatTableKeepsTableTerminatingNewlineConvention(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatTableMinimumAlignedDelimiterWidths(t *testing.T) {
+	tests := []struct {
+		name, source, want string
+	}{
+		{"default", "| a |\n| --- |\n| b |\n", "| a   |\n| --- |\n| b   |\n"},
+		{"left", "| a |\n| :-- |\n| b |\n", "| a    |\n| :--- |\n| b    |\n"},
+		{"right", "| a |\n| --: |\n| b |\n", "|    a |\n| ---: |\n|    b |\n"},
+		{"center", "| a |\n| :--: |\n| b |\n", "|   a   |\n| :---: |\n|   b   |\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, table := projectSingleTable(t, test.source, 44)
+			formatted, ok := FormatTable([]byte(test.source), table)
+			if !ok || string(formatted) != test.want {
+				t.Fatalf("formatted = %q, %v; want %q", formatted, ok, test.want)
+			}
+		})
+	}
+}
+
+func TestFormatTableClustersJoinedEmojiAndCombiningText(t *testing.T) {
+	source := "| a |\n| --- |\n| 👩‍💻 |\n| 👍🏽 |\n| 🇬🇹 |\n| é |\n| का |\n"
+	_, table := projectSingleTable(t, source, 45)
+	formatted, ok := FormatTable([]byte(source), table)
+	if !ok {
+		t.Fatal("FormatTable returned !ok")
+	}
+	want := "| a   |\n| --- |\n| 👩‍💻  |\n| 👍🏽  |\n| 🇬🇹  |\n| é   |\n| का   |\n"
+	if string(formatted) != want {
+		t.Fatalf("formatted = %q, want %q", formatted, want)
+	}
+}

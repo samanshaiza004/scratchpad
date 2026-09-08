@@ -841,6 +841,43 @@ func TestFlushRecoveryCapturesEditsAfterInFlightSnapshot(t *testing.T) {
 	}
 }
 
+func TestAsyncRecoveryPayloadMaterializesCapturedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("disk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	doc := a.ActiveDocument()
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte("-captured")); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := a.captureRecoveryPayload(false)
+	if len(payload.Files) != 0 || len(payload.Snapshots) != 1 {
+		t.Fatalf("async recovery payload = files %d, snapshots %d; want files 0, snapshots 1", len(payload.Files), len(payload.Snapshots))
+	}
+	if err := doc.Insert([]byte("-later")); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDir := filepath.Join(t.TempDir(), "recovery")
+	if err := writeRecovery(recoveryDir, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := New(nil)
+	if err := restored.RestoreRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(restored.ActiveDocument().Editor.Buffer.Text()); got != "disk-captured" {
+		t.Fatalf("recovery materialized current buffer instead of captured snapshot: %q", got)
+	}
+}
+
 func TestRestoreRecoveryConflictsWhenDiskChangedSinceBase(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.txt")

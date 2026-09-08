@@ -129,17 +129,33 @@ func (a *Application) RestoreSession(path string) error {
 type recoveryPayload struct {
 	Manifest recoveryManifest
 	Files    map[string][]byte
+	// Snapshots are used by MaybeWriteRecovery so capturing a payload on the
+	// frame path copies only immutable piece descriptors. writeRecovery
+	// materializes them immediately before the asynchronous file writes.
+	Snapshots map[string]document.DocumentSnapshot
 }
 
 func (a *Application) captureRecovery() recoveryPayload {
+	return a.captureRecoveryPayload(true)
+}
+
+func (a *Application) captureRecoveryPayload(materialize bool) recoveryPayload {
 	payload := recoveryPayload{Files: make(map[string][]byte)}
+	if !materialize {
+		payload.Snapshots = make(map[string]document.DocumentSnapshot)
+	}
 	for _, id := range a.Order {
 		doc := a.Documents[id]
 		if !doc.Dirty() {
 			continue
 		}
 		name := recoveryName(id) + ".bytes"
-		payload.Files[name] = doc.Editor.Buffer.Text()
+		snapshot := doc.Snapshot()
+		if materialize {
+			payload.Files[name] = snapshot.Materialize()
+		} else {
+			payload.Snapshots[name] = snapshot
+		}
 		anchor, cursor := doc.Editor.Selection()
 		payload.Manifest.Documents = append(payload.Manifest.Documents, recoveryDocument{
 			ID: id, Path: doc.Path, BytesFile: name, BaseVersion: doc.DiskVersion,
@@ -151,6 +167,9 @@ func (a *Application) captureRecovery() recoveryPayload {
 }
 
 func writeRecovery(dir string, payload recoveryPayload) error {
+	for name, snapshot := range payload.Snapshots {
+		payload.Files[name] = snapshot.Materialize()
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -173,9 +192,9 @@ func (a *Application) WriteRecovery(dir string) error {
 	return writeRecovery(dir, a.captureRecovery())
 }
 
-// MaybeWriteRecovery captures dirty bytes on the UI goroutine and performs
-// filesystem work asynchronously, keeping large recovery writes out of the
-// keystroke-to-frame path. A clean payload also goes through the throttled
+// MaybeWriteRecovery captures immutable buffer snapshots on the UI goroutine
+// and performs materialization plus filesystem work asynchronously, keeping
+// large recovery copies out of the keystroke-to-frame path. A clean payload also goes through the throttled
 // async path so writeRecovery can clear stale files; saves additionally call
 // refreshRecoveryAfterSave for an immediate synchronous rewrite (see below).
 func (a *Application) MaybeWriteRecovery(dir string) {
@@ -196,7 +215,7 @@ func (a *Application) MaybeWriteRecovery(dir string) {
 	if a.recoveryRunning || time.Since(a.lastRecovery) < time.Second {
 		return
 	}
-	payload := a.captureRecovery()
+	payload := a.captureRecoveryPayload(false)
 	a.lastRecovery = time.Now()
 	a.recoveryRunning = true
 	go func() { a.recoveryDone <- writeRecovery(dir, payload) }()

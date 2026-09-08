@@ -59,6 +59,84 @@ func TestVisualLinePreservesInvalidBytesWithExplicitMapping(t *testing.T) {
 	}
 }
 
+func TestDisplayTextExpandsTabsToNextStop(t *testing.T) {
+	tests := []struct {
+		name      string
+		source    string
+		wantText  string
+		wantBytes []int
+	}{
+		{name: "tab at start", source: "\tX", wantText: "    X", wantBytes: []int{0, 0, 0, 0, 1, 2}},
+		{name: "tab after one column", source: "a\tX", wantText: "a   X", wantBytes: []int{0, 1, 1, 1, 2, 3}},
+		{name: "tab after three columns", source: "abc\tX", wantText: "abc X", wantBytes: []int{0, 1, 2, 3, 4, 5}},
+		{name: "tab at stop", source: "abcd\tX", wantText: "abcd    X", wantBytes: []int{0, 1, 2, 3, 4, 4, 4, 4, 5, 6}},
+		{name: "wide CJK rune", source: "界\tX", wantText: "界  X", wantBytes: []int{0, 3, 3, 4, 5}},
+		{name: "combining mark", source: "a\u0301\tX", wantText: "a\u0301   X", wantBytes: []int{0, 1, 3, 3, 3, 4, 5}},
+		{name: "joined emoji", source: "👩‍💻\tX", wantText: "👩‍💻  X", wantBytes: []int{0, 4, 7, 11, 11, 12, 13}},
+		{name: "regional flag", source: "🇺🇸\tX", wantText: "🇺🇸  X", wantBytes: []int{0, 4, 8, 8, 9, 10}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotText, gotRunes, gotBytes := displayText([]byte(test.source))
+			if gotText != test.wantText {
+				t.Fatalf("display text = %q, want %q", gotText, test.wantText)
+			}
+			if string(gotRunes) != test.wantText {
+				t.Fatalf("display runes = %q, want %q", string(gotRunes), test.wantText)
+			}
+			if len(gotBytes) != len(test.wantBytes) {
+				t.Fatalf("source mapping length = %d, want %d (%v)", len(gotBytes), len(test.wantBytes), gotBytes)
+			}
+			for i, want := range test.wantBytes {
+				if gotBytes[i] != want {
+					t.Fatalf("source mapping[%d] = %d, want %d (%v)", i, gotBytes[i], want, gotBytes)
+				}
+			}
+		})
+	}
+}
+
+func TestVisualLineTabMappingKeepsCaretAndHitTestGeometry(t *testing.T) {
+	source := []byte("a\tX")
+	b := editor.NewBuffer(source)
+	visual, ok := BuildVisualLine(&b, 0, DefaultTextStyle())
+	if !ok {
+		t.Fatal("BuildVisualLine failed")
+	}
+	if visual.Text != "a   X" {
+		t.Fatalf("display text = %q, want %q", visual.Text, "a   X")
+	}
+	if got := visual.LocalByteToRune(1); got != 1 {
+		t.Fatalf("caret before tab maps to display rune %d, want 1", got)
+	}
+	if got := visual.LocalByteToRune(2); got != 4 {
+		t.Fatalf("caret after tab maps to display rune %d, want 4", got)
+	}
+	if got := visual.LocalRuneToByte(4); got != 2 {
+		t.Fatalf("display caret after tab maps to source byte %d, want 2", got)
+	}
+	if got := visual.LocalRuneToByte(2); got != 1 {
+		t.Fatalf("display caret inside tab maps to source byte %d, want 1", got)
+	}
+	if len(visual.Layout.Lines) == 0 {
+		t.Skip("Shirei has no loaded font in this headless unit-test context")
+	}
+	beforeTab := visual.CaretX(visual.LocalByteToRune(1), editor.AffinityLeading)
+	afterTab := visual.CaretX(visual.LocalByteToRune(2), editor.AffinityLeading)
+	if afterTab <= beforeTab {
+		t.Fatalf("tab did not advance caret: before=%v after=%v", beforeTab, afterTab)
+	}
+	insideTab, _ := visual.HitTest((beforeTab + afterTab) / 2)
+	if got := visual.LocalRuneToByte(insideTab); got != 1 {
+		t.Fatalf("hit inside tab maps to source byte %d, want 1", got)
+	}
+	end := visual.CaretX(len(visual.Runes), editor.AffinityTrailing)
+	after, _ := visual.HitTest(afterTab + (end-afterTab)*0.1)
+	if got := visual.LocalRuneToByte(after); got != 2 {
+		t.Fatalf("hit after tab maps to source byte %d, want 2", got)
+	}
+}
+
 func TestVisualLineBoundsPathologicalLineShaping(t *testing.T) {
 	b := editor.NewBuffer([]byte(strings.Repeat("x", 2<<20)))
 	visual, ok := BuildVisualLineAround(&b, 0, 1<<20, DefaultTextStyle())

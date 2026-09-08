@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -153,6 +152,9 @@ type workbenchState struct {
 	RevealPath         func(string) error
 	TabIDs             map[application.DocumentID]ContainerId // transient handles used by interaction tests
 	TabCloseIDs        map[application.DocumentID]ContainerId // transient handles used by interaction tests
+	Slash              slashState
+	Fence              fenceState
+	PendingSmartPaste  bool
 
 	SaveAsError             string
 	SaveNotice              string
@@ -273,6 +275,51 @@ type searchState struct {
 	Cancel  context.CancelFunc
 }
 
+type slashState struct {
+	Open         bool
+	Query        string
+	TriggerStart int
+	TriggerEnd   int
+	Selected     int
+	DocumentID   application.DocumentID
+}
+
+type fenceState struct {
+	Open       bool
+	Selected   int
+	DocumentID application.DocumentID
+}
+
+type slashCommand struct {
+	ID   commands.ID
+	Name string
+	Hint string
+}
+
+func markdownSlashCommands() []slashCommand {
+	return []slashCommand{
+		{commands.MarkdownToggleStrong, "bold", "strong text"},
+		{commands.MarkdownToggleEmphasis, "italic", "emphasis"},
+		{commands.MarkdownToggleStrike, "strike", "strikethrough"},
+		{commands.MarkdownToggleInlineCode, "code", "inline code"},
+		{commands.MarkdownInsertLink, "link", "link"},
+		{commands.MarkdownHeading1, "heading 1", "level-one heading"},
+		{commands.MarkdownHeading2, "heading 2", "level-two heading"},
+		{commands.MarkdownHeading3, "heading 3", "level-three heading"},
+		{commands.MarkdownToggleBulletedList, "bullet", "bulleted list"},
+		{commands.MarkdownToggleNumberedList, "number", "numbered list"},
+		{commands.MarkdownToggleQuote, "quote", "blockquote"},
+		{commands.MarkdownInsertTask, "task", "task item"},
+		{commands.MarkdownInsertCodeBlock, "code block", "fenced code block"},
+		{commands.MarkdownInsertTable, "table", "table"},
+		{commands.MarkdownInsertDivider, "divider", "horizontal rule"},
+	}
+}
+
+func markdownFenceLanguages() []string {
+	return []string{"plain", "go", "javascript", "typescript", "tsx"}
+}
+
 func menuBar(state *application.Application, shell *workbenchState, theme Theme) {
 	if nativeMenuBar(state, shell) {
 		return
@@ -311,6 +358,50 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 					executeCommand(state, shell, commands.WorkspaceSearch)
 				}
 			})
+			if doc := state.ActiveDocument(); doc != nil && doc.RootLanguage == string(language.Markdown) {
+				WorkstationMenuButton(theme, "Markdown", func() {
+					if MenuItem(NoIcon, "Bold    "+primaryShortcut("B")) {
+						executeCommand(state, shell, commands.MarkdownToggleStrong)
+					}
+					if MenuItem(NoIcon, "Italic    "+primaryShortcut("I")) {
+						executeCommand(state, shell, commands.MarkdownToggleEmphasis)
+					}
+					if MenuItem(NoIcon, "Strike") {
+						executeCommand(state, shell, commands.MarkdownToggleStrike)
+					}
+					if MenuItem(NoIcon, "Inline code") {
+						executeCommand(state, shell, commands.MarkdownToggleInlineCode)
+					}
+					if MenuItem(NoIcon, "Link    "+primaryShortcut("K")) {
+						executeCommand(state, shell, commands.MarkdownInsertLink)
+					}
+					MenuSeparator()
+					if MenuItem(NoIcon, "Heading 1") {
+						executeCommand(state, shell, commands.MarkdownHeading1)
+					}
+					if MenuItem(NoIcon, "Heading 2") {
+						executeCommand(state, shell, commands.MarkdownHeading2)
+					}
+					if MenuItem(NoIcon, "Heading 3") {
+						executeCommand(state, shell, commands.MarkdownHeading3)
+					}
+					if MenuItem(NoIcon, "Task") {
+						executeCommand(state, shell, commands.MarkdownInsertTask)
+					}
+					if MenuItem(NoIcon, "Code block") {
+						executeCommand(state, shell, commands.MarkdownInsertCodeBlock)
+					}
+					if MenuItem(NoIcon, "Table") {
+						executeCommand(state, shell, commands.MarkdownInsertTable)
+					}
+					if MenuItem(NoIcon, "Divider") {
+						executeCommand(state, shell, commands.MarkdownInsertDivider)
+					}
+					if MenuItem(NoIcon, "Format table") {
+						executeCommand(state, shell, commands.DocumentFormat)
+					}
+				})
+			}
 			WorkstationMenuButton(theme, "View", func() {
 				if MenuItem(NoIcon, "Outline") {
 					executeCommand(state, shell, commands.OutlineToggle)
@@ -610,119 +701,11 @@ func toggleFold(doc *document.Document, view *application.ViewState, line int) {
 	}
 }
 
-func tableAtCursor(doc *document.Document) (*document.TableProjection, bool) {
-	if doc == nil || doc.RootLanguage != string(language.Markdown) {
-		return nil, false
-	}
-	// Table commands are editing commands, so they cannot wait for the
-	// debounced derived worker. Re-project the current source when the cached
-	// projection is stale; callers only use the returned view for this action.
-	var projection *document.Projections
-	if doc.DerivedCurrent() {
-		projection = &doc.Projections
-	} else {
-		source, err := doc.Editor.Buffer.Bytes(0, doc.Editor.Buffer.ByteLen())
-		if err != nil {
-			return nil, false
-		}
-		current := markdown.Project(source, doc.Revision())
-		projection = &current
-	}
-	cursor := doc.Editor.Cursor
-	for i := range projection.Tables {
-		table := &projection.Tables[i]
-		if cursor >= table.StartByte && cursor < table.EndByte {
-			return table, true
-		}
-	}
-	return nil, false
-}
-
 // formatTableAtCursor performs one whole-table source replacement. Document
 // invalidation makes the edit disposable/reparseable, while ScratchEditor's
 // Replace path keeps the operation as one undo record.
 func formatTableAtCursor(doc *document.Document) bool {
-	table, ok := tableAtCursor(doc)
-	if !ok {
-		return false
-	}
-	source, err := doc.Editor.Buffer.Bytes(0, doc.Editor.Buffer.ByteLen())
-	if err != nil {
-		return false
-	}
-	formatted, ok := markdown.FormatTable(source, *table)
-	if !ok || bytes.Equal(formatted, source[table.StartByte:table.EndByte]) {
-		return false
-	}
-	if err := doc.Replace(table.StartByte, table.EndByte, formatted); err != nil {
-		return false
-	}
-	return true
-}
-
-type tableCursorCell struct {
-	row, column int
-}
-
-func tableCellAtCursor(table *document.TableProjection, cursor int) (tableCursorCell, bool) {
-	if table == nil {
-		return tableCursorCell{}, false
-	}
-	rowNumber := 0
-	for _, row := range table.Rows {
-		if row.Delimiter {
-			continue
-		}
-		for column, cell := range row.Cells {
-			if cursor >= cell.StartByte && cursor <= cell.EndByte {
-				return tableCursorCell{row: rowNumber, column: column}, true
-			}
-		}
-		rowNumber++
-	}
-	return tableCursorCell{}, false
-}
-
-func tableNavigationRows(table *document.TableProjection) []document.TableRow {
-	if table == nil {
-		return nil
-	}
-	rows := make([]document.TableRow, 0, len(table.Rows))
-	for _, row := range table.Rows {
-		if !row.Delimiter {
-			rows = append(rows, row)
-		}
-	}
-	return rows
-}
-
-func tableNewline(source []byte) string {
-	if bytes.Contains(source, []byte("\r\n")) {
-		return "\r\n"
-	}
-	return "\n"
-}
-
-func appendEmptyTableRow(source []byte, columnCount int) []byte {
-	newline := tableNewline(source)
-	row := "|" + strings.Repeat("   |", maxInt(1, columnCount))
-	if len(source) > 0 && source[len(source)-1] == '\n' {
-		return append(append(append([]byte(nil), source...), row...), newline...)
-	}
-	result := append(append([]byte(nil), source...), newline...)
-	return append(result, row...)
-}
-
-func findProjectedTableCell(source []byte, semanticRow, column int) (document.TableCell, bool) {
-	projection := markdown.Project(source, 1)
-	if len(projection.Tables) == 0 {
-		return document.TableCell{}, false
-	}
-	rows := tableNavigationRows(&projection.Tables[0])
-	if semanticRow < 0 || semanticRow >= len(rows) || column < 0 || column >= len(rows[semanticRow].Cells) {
-		return document.TableCell{}, false
-	}
-	return rows[semanticRow].Cells[column], true
+	return applyDocumentCommand(doc, commands.DocumentFormat)
 }
 
 // navigateTableAtCursor formats the active table before moving through its
@@ -730,101 +713,215 @@ func findProjectedTableCell(source []byte, semanticRow, column int) (document.Ta
 // row-major. At the end of the available rows both operations create one new
 // empty source row, preserving the whole action as one undoable replacement.
 func navigateTableAtCursor(doc *document.Document, previous, enter bool) bool {
-	table, ok := tableAtCursor(doc)
-	if !ok {
-		return false
+	id := commands.MarkdownTableNext
+	if previous {
+		id = commands.MarkdownTablePrevious
+	} else if enter {
+		id = commands.MarkdownTableEnter
 	}
-	location, ok := tableCellAtCursor(table, doc.Editor.Cursor)
-	if !ok {
-		return false
-	}
-	source, err := doc.Editor.Buffer.Bytes(0, doc.Editor.Buffer.ByteLen())
-	if err != nil {
-		return false
-	}
-	tableSource := append([]byte(nil), source[table.StartByte:table.EndByte]...)
-	formatted, formatOK := markdown.FormatTable(source, *table)
-	if !formatOK {
-		// Navigation and formatting share the same source rewrite. Refuse the
-		// command when the formatter cannot preserve the table's schema (for
-		// example, an overlong body row) rather than moving through a shape that
-		// would be rewritten differently from what the parser recognizes.
-		return false
-	}
-	formatChanged := false
-	formatChanged = !bytes.Equal(formatted, tableSource)
-	tableSource = formatted
-	local := markdown.Project(tableSource, 1)
-	if len(local.Tables) == 0 {
-		return false
-	}
-	localRows := tableNavigationRows(&local.Tables[0])
-	if location.row < 0 || location.row >= len(localRows) {
-		return false
-	}
-	targetRow, targetColumn := location.row, location.column
-	create := false
-	if enter {
-		targetRow++
-		if targetRow >= len(localRows) || targetColumn >= len(localRows[targetRow].Cells) {
-			create = true
-		}
-	} else if previous {
-		if targetColumn > 0 {
-			targetColumn--
-		} else if targetRow > 0 {
-			targetRow--
-			targetColumn = len(localRows[targetRow].Cells) - 1
-		} else {
-			return false
-		}
-	} else if targetColumn+1 < len(localRows[targetRow].Cells) {
-		targetColumn++
-	} else if targetRow+1 < len(localRows) {
-		targetRow++
-		targetColumn = 0
-	} else {
-		create = true
-		targetRow = len(localRows)
-		targetColumn = 0
-	}
-	if create {
-		tableSource = appendEmptyTableRow(tableSource, len(table.Columns))
-		local = markdown.Project(tableSource, 1)
-		if len(local.Tables) == 0 {
-			return false
-		}
-	}
-	if formatChanged || create {
-		if err := doc.Replace(table.StartByte, table.EndByte, tableSource); err != nil {
-			return false
-		}
-	}
-	cell, ok := findProjectedTableCell(tableSource, targetRow, targetColumn)
-	if !ok {
-		return false
-	}
-	doc.Editor.SetCursor(table.StartByte + cell.StartByte)
-	return true
+	return applyDocumentCommand(doc, id)
 }
 
 func toggleTaskAtCursor(doc *document.Document) bool {
-	if doc == nil || !doc.DerivedCurrent() || doc.RootLanguage != string(language.Markdown) {
+	return applyDocumentCommand(doc, commands.ItemToggle)
+}
+
+// applyDocumentCommand is the only UI-side adapter for product editing
+// commands. The command package decides whether an action is meaningful and
+// returns one source replacement; Document then records that replacement as
+// one ordinary undoable edit.
+func applyDocumentCommand(doc *document.Document, id commands.ID, args ...string) bool {
+	request, err := commands.NewRequest(doc, id)
+	if err != nil {
 		return false
 	}
-	for _, task := range doc.Projections.Tasks {
-		if doc.Editor.Cursor < task.StartByte || doc.Editor.Cursor > task.EndByte {
-			continue
+	if len(args) > 0 {
+		request.Argument = args[0]
+	}
+	return applyCommandRequest(doc, request)
+}
+
+func applyDocumentCommandRange(doc *document.Document, id commands.ID, argument string, start, end int, slash bool) bool {
+	request, err := commands.NewRequest(doc, id)
+	if err != nil {
+		return false
+	}
+	request.Argument = argument
+	request.RangeStart = start
+	request.RangeEnd = end
+	request.RangeOverride = true
+	request.SlashTrigger = slash
+	return applyCommandRequest(doc, request)
+}
+
+func applyCommandRequest(doc *document.Document, request commands.Request) bool {
+	outcome := commands.Execute(request)
+	if outcome.Status != commands.ResultExecuted || outcome.Start < 0 || outcome.End < outcome.Start {
+		return false
+	}
+	if err := doc.Replace(outcome.Start, outcome.End, outcome.Replacement); err != nil {
+		return false
+	}
+	doc.Editor.SetSelection(outcome.Anchor, outcome.Cursor)
+	return true
+}
+
+func slashCandidate(state *application.Application) (int, int, string, bool) {
+	if state == nil || state.ActiveDocument() == nil {
+		return 0, 0, "", false
+	}
+	doc := state.ActiveDocument()
+	ctx := commandContext(state)
+	if !ctx.Markdown || ctx.InFence {
+		return 0, 0, "", false
+	}
+	line, ok := doc.Editor.Buffer.LineAt(doc.Editor.Cursor)
+	if !ok {
+		return 0, 0, "", false
+	}
+	lineStart, lineEnd, ok := doc.Editor.Buffer.LineRange(line)
+	if !ok || doc.Editor.Cursor < lineStart || doc.Editor.Cursor > lineEnd {
+		return 0, 0, "", false
+	}
+	source, err := doc.Editor.Buffer.Bytes(lineStart, lineEnd)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	prefix := string(source[:doc.Editor.Cursor-lineStart])
+	trimmed := strings.TrimLeft(prefix, " \t")
+	if !strings.HasPrefix(trimmed, "/") {
+		return 0, 0, "", false
+	}
+	if strings.TrimSpace(string(source[doc.Editor.Cursor-lineStart:])) != "" {
+		return 0, 0, "", false
+	}
+	slash := lineStart + len(prefix) - len(trimmed)
+	return slash, doc.Editor.Cursor, trimmed[1:], true
+}
+
+func filteredSlashCommands(query string) []slashCommand {
+	query = strings.ToLower(strings.TrimSpace(query))
+	result := make([]slashCommand, 0)
+	for _, command := range markdownSlashCommands() {
+		if fuzzyCommandMatch(query, strings.ToLower(command.Name)) {
+			result = append(result, command)
 		}
-		marker, err := doc.Editor.Buffer.Bytes(task.MarkerStart, task.MarkerEnd)
-		if err != nil || (string(marker) != "[ ]" && string(marker) != "[x]" && string(marker) != "[X]") {
+	}
+	return result
+}
+
+func fuzzyCommandMatch(query, candidate string) bool {
+	if query == "" {
+		return true
+	}
+	at := 0
+	for _, want := range query {
+		found := false
+		for at < len(candidate) {
+			r, size := utf8.DecodeRuneInString(candidate[at:])
+			at += size
+			if r == want {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
-		replacement := []byte("[x]")
-		if string(marker) != "[ ]" {
-			replacement = []byte("[ ]")
+	}
+	return true
+}
+
+func handleSlashInput(state *application.Application, shell *workbenchState) bool {
+	if shell == nil {
+		return false
+	}
+	if shell.Slash.Open {
+		start, end, query, ok := slashCandidate(state)
+		if !ok || shell.Slash.DocumentID != state.Active {
+			shell.Slash = slashState{}
+			return false
 		}
-		return doc.Replace(task.MarkerStart, task.MarkerEnd, replacement) == nil
+		shell.Slash.TriggerStart, shell.Slash.TriggerEnd, shell.Slash.Query = start, end, query
+		items := filteredSlashCommands(query)
+		if shell.Slash.Selected >= len(items) {
+			shell.Slash.Selected = maxInt(0, len(items)-1)
+		}
+		frame := GetFrameInput()
+		switch frame.Key {
+		case KeyEscape:
+			shell.Slash = slashState{}
+			frame.Key = KeyCodeNone
+			return true
+		case KeyUp:
+			if len(items) > 0 {
+				shell.Slash.Selected = (shell.Slash.Selected + len(items) - 1) % len(items)
+			}
+			frame.Key = KeyCodeNone
+			return true
+		case KeyDown:
+			if len(items) > 0 {
+				shell.Slash.Selected = (shell.Slash.Selected + 1) % len(items)
+			}
+			frame.Key = KeyCodeNone
+			return true
+		case KeyEnter:
+			if len(items) == 0 {
+				return false
+			}
+			selected := items[shell.Slash.Selected]
+			doc := state.ActiveDocument()
+			if applyDocumentCommandRange(doc, selected.ID, "", start, end, true) {
+				shell.Slash = slashState{}
+				if selected.ID == commands.MarkdownInsertCodeBlock {
+					shell.Fence = fenceState{Open: true, DocumentID: state.Active}
+				}
+				frame.Key = KeyCodeNone
+				return true
+			}
+		}
+		return false
+	}
+	if transientInputOpen(shell) {
+		return false
+	}
+	if start, end, query, ok := slashCandidate(state); ok {
+		shell.Slash = slashState{Open: true, Query: query, TriggerStart: start, TriggerEnd: end, DocumentID: state.Active}
+	}
+	return false
+}
+
+func handleFenceInput(state *application.Application, shell *workbenchState) bool {
+	if shell == nil || !shell.Fence.Open || state == nil || shell.Fence.DocumentID != state.Active {
+		return false
+	}
+	languages := markdownFenceLanguages()
+	frame := GetFrameInput()
+	switch frame.Key {
+	case KeyEscape:
+		shell.Fence = fenceState{}
+		frame.Key = KeyCodeNone
+		return true
+	case KeyUp:
+		if len(languages) > 0 {
+			shell.Fence.Selected = (shell.Fence.Selected + len(languages) - 1) % len(languages)
+		}
+		frame.Key = KeyCodeNone
+		return true
+	case KeyDown:
+		if len(languages) > 0 {
+			shell.Fence.Selected = (shell.Fence.Selected + 1) % len(languages)
+		}
+		frame.Key = KeyCodeNone
+		return true
+	case KeyEnter:
+		if len(languages) == 0 {
+			return false
+		}
+		if executeCommand(state, shell, commands.MarkdownSetFenceLanguage, languages[shell.Fence.Selected]) {
+			frame.Key = KeyCodeNone
+			return true
+		}
 	}
 	return false
 }
@@ -1374,7 +1471,97 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 			}
 		})
 	}
+	markdownCommandPopups(state, shell, theme)
 	contextMenu(state, shell, theme)
+}
+
+func markdownCommandPopups(state *application.Application, shell *workbenchState, theme Theme) {
+	if state == nil || shell == nil {
+		return
+	}
+	doc := state.ActiveDocument()
+	if doc == nil || doc.RootLanguage != string(language.Markdown) {
+		shell.Slash = slashState{}
+		shell.Fence = fenceState{}
+		return
+	}
+	if shell.Slash.Open {
+		items := filteredSlashCommands(shell.Slash.Query)
+		Popup(func() {
+			FloatingSurface(theme, Attrs(Float(70, 64), FixWidth(320), MaxHeight(390)), Attrs(Pad(8), Gap(2)), func() {
+				Label("Markdown commands", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
+				if len(items) == 0 {
+					Label("No matching commands", FontSize(11), TextColorVec(theme.Muted))
+				}
+				for index, item := range items {
+					index, item := index, item
+					Container(Attrs(Row, CrossMid, FixHeight(25), Pad2(1, 5)), func() {
+						selected := index == shell.Slash.Selected
+						if selected {
+							ModAttrs(BackgroundVec(theme.SelectionHighlight))
+						}
+						if WorkstationToolButton(theme, "/"+item.Name, true) {
+							if applyDocumentCommandRange(doc, item.ID, "", shell.Slash.TriggerStart, shell.Slash.TriggerEnd, true) {
+								shell.Slash = slashState{}
+								if item.ID == commands.MarkdownInsertCodeBlock {
+									shell.Fence = fenceState{Open: true, DocumentID: state.Active}
+								}
+							}
+						}
+						// Keep the hint beside the command button without giving it
+						// another interaction or focus target.
+						Container(Attrs(Grow(1)), func() {})
+						Label(item.Hint, FontSize(10), TextColorVec(theme.Muted))
+					})
+				}
+			})
+		})
+	}
+	if shell.Fence.Open && shell.Fence.DocumentID == state.Active {
+		languages := markdownFenceLanguages()
+		if shell.Fence.Selected >= len(languages) {
+			shell.Fence.Selected = len(languages) - 1
+		}
+		Popup(func() {
+			FloatingSurface(theme, Attrs(Float(70, 96), FixWidth(260)), Attrs(Pad(8), Gap(3)), func() {
+				Label("Fence language", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
+				for index, languageName := range languages {
+					index, languageName := index, languageName
+					if WorkstationToolButton(theme, languageName, true) {
+						executeCommand(state, shell, commands.MarkdownSetFenceLanguage, languageName)
+					}
+					if index == shell.Fence.Selected {
+						// The button interaction remains framework-owned; the label
+						// below makes the keyboard-selected option visible in tests.
+						Label("selected", FontSize(9), TextColorVec(theme.Muted))
+					}
+				}
+			})
+		})
+	}
+	ctx := commandContext(state)
+	if shell.Slash.Open || shell.Fence.Open || transientInputOpen(shell) || !ctx.HasSelection || ctx.InFence {
+		return
+	}
+	Popup(func() {
+		FloatingSurface(theme, Attrs(Float(70, 34), FixWidth(330)), Attrs(Row, CrossMid, Gap(3), Pad(5)), func() {
+			for _, item := range []struct {
+				label string
+				id    commands.ID
+			}{
+				{"B", commands.MarkdownToggleStrong},
+				{"I", commands.MarkdownToggleEmphasis},
+				{"S", commands.MarkdownToggleStrike},
+				{"Code", commands.MarkdownToggleInlineCode},
+				{"Link", commands.MarkdownInsertLink},
+			} {
+				item := item
+				if WorkstationToolButton(theme, item.label, true) {
+					executeCommand(state, shell, item.id)
+				}
+			}
+		})
+	})
 }
 
 func quickOpenPopup(state *application.Application, shell *workbenchState, theme Theme) {
@@ -1501,19 +1688,46 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	frame := GetFrameInput()
 	mods := GetInputState().Modifiers
 	primary := PrimaryMod()
+	if shell != nil && shell.PendingSmartPaste && frame.Text != "" {
+		if doc := state.ActiveDocument(); doc != nil {
+			ctx := commandContext(state)
+			if ctx.Markdown && !ctx.InFence && applyDocumentCommand(doc, commands.MarkdownSmartPaste, frame.Text) {
+				frame.Text = ""
+				shell.PendingSmartPaste = false
+				frame.Key = KeyCodeNone
+				return
+			}
+		}
+		shell.PendingSmartPaste = false
+	} else if shell != nil && shell.PendingSmartPaste {
+		// Shirei delivers a requested clipboard read on the next frame. If
+		// that frame contains no text, do not let a later ordinary keystroke
+		// inherit the pending paste interpretation.
+		shell.PendingSmartPaste = false
+	}
+	if handleSlashInput(state, shell) {
+		return
+	}
+	if handleFenceInput(state, shell) {
+		return
+	}
 	// Text inputs and modal controls own Tab/Enter. In particular, the active
 	// document may still have its caret inside a table while Find, Save As, or
 	// Go to Line is open; letting table navigation run first would consume the
 	// modal's key press and make those controls appear unresponsive.
 	if doc := state.ActiveDocument(); doc != nil && !transientInputOpen(shell) {
 		if frame.Key == KeyTab && (mods == 0 || mods == ModShift) {
-			if navigateTableAtCursor(doc, mods == ModShift, false) {
+			id := commands.MarkdownTableNext
+			if mods == ModShift {
+				id = commands.MarkdownTablePrevious
+			}
+			if executeCommand(state, shell, id) {
 				frame.Key = KeyCodeNone
 				return
 			}
 		}
 		if frame.Key == KeyEnter && mods == 0 {
-			if navigateTableAtCursor(doc, false, true) {
+			if executeCommand(state, shell, commands.MarkdownTableEnter) {
 				frame.Key = KeyCodeNone
 				return
 			}
@@ -1540,6 +1754,23 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 		executeCommand(state, shell, zoom)
 		frame.Key = KeyCodeNone
 		return
+	}
+	if !transientInputOpen(shell) {
+		if id, ok := commandKeyBinding(state, frame.Key, frame.Text, mods, primary); ok {
+			if executeCommand(state, shell, id) {
+				frame.Key = KeyCodeNone
+				return
+			}
+		}
+	}
+	if mods == primary && frame.Key == KeyV {
+		ctx := commandContext(state)
+		if ctx.Markdown && !ctx.InFence {
+			RequestPaste()
+			shell.PendingSmartPaste = true
+			frame.Key = KeyCodeNone
+			return
+		}
 	}
 	if mods == primary {
 		switch frame.Key {
@@ -1586,6 +1817,90 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	}
 }
 
+func commandKeyBinding(state *application.Application, key KeyCode, text string, mods, primary Modifiers) (commands.ID, bool) {
+	if state == nil || state.ActiveDocument() == nil || mods != primary {
+		return "", false
+	}
+	stroke := ""
+	switch key {
+	case KeyB:
+		stroke = "primary+b"
+	case KeyI:
+		stroke = "primary+i"
+	case KeyK:
+		stroke = "primary+k"
+	case KeyCode('/'):
+		stroke = "primary+/"
+	default:
+		if text == "/" {
+			stroke = "primary+/"
+		}
+	}
+	if stroke == "" {
+		return "", false
+	}
+	ctx := commandContext(state)
+	if ctx.Markdown && !ctx.ProjectionCurrent {
+		// A shortcut is an explicit editing action, so it may use the same
+		// synchronous current-source refresh as command execution. Passive
+		// surfaces below remain non-blocking when the debounced projection is
+		// stale.
+		if doc := state.ActiveDocument(); doc != nil {
+			if request, err := commands.NewRequest(doc, commands.DocumentFormat); err == nil {
+				ctx.ProjectionCurrent = request.ProjectionsCurrent
+				ctx.InFence = request.InFence
+			}
+		}
+	}
+	return commands.DefaultRegistry().Match(stroke, ctx)
+}
+
+func commandContext(state *application.Application) commands.CommandContext {
+	ctx := commands.CommandContext{}
+	if state == nil {
+		return ctx
+	}
+	doc := state.ActiveDocument()
+	if doc == nil || doc.Editor == nil {
+		return ctx
+	}
+	ctx.ActiveDocument = true
+	ctx.RootLanguage = doc.RootLanguage
+	ctx.Markdown = doc.RootLanguage == string(language.Markdown)
+	ctx.Code = !ctx.Markdown
+	ctx.EditorFocused = true
+	ctx.Cursor = doc.Editor.Cursor
+	ctx.SelectionStart, ctx.SelectionEnd = doc.Editor.Selection()
+	if ctx.SelectionStart > ctx.SelectionEnd {
+		ctx.SelectionStart, ctx.SelectionEnd = ctx.SelectionEnd, ctx.SelectionStart
+	}
+	ctx.HasSelection = ctx.SelectionStart != ctx.SelectionEnd
+	ctx.ProjectionCurrent = doc.DerivedCurrent()
+	if ctx.Markdown && ctx.ProjectionCurrent {
+		for _, table := range doc.Projections.Tables {
+			if ctx.Cursor >= table.StartByte && ctx.Cursor < table.EndByte {
+				ctx.InTable = true
+			}
+		}
+		for _, task := range doc.Projections.Tasks {
+			if ctx.Cursor >= task.StartByte && ctx.Cursor <= task.EndByte {
+				ctx.InTask = true
+			}
+		}
+		for _, block := range doc.Projections.Blocks {
+			if block.Kind == document.BlockCode && ctx.Cursor >= block.StartByte && ctx.Cursor < block.EndByte {
+				ctx.InFence = true
+			}
+		}
+	} else if ctx.Markdown {
+		// Without a current structural projection the safe passive-context
+		// answer is "possibly inside a fence". Explicit commands reparse on
+		// invocation; the frame path does not.
+		ctx.InFence = true
+	}
+	return ctx
+}
+
 func transientInputOpen(shell *workbenchState) bool {
 	if shell == nil {
 		return false
@@ -1593,7 +1908,7 @@ func transientInputOpen(shell *workbenchState) bool {
 	return shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen ||
 		shell.ShowSaveAs || shell.ShowSaveAsOverwrite || shell.ShowFind ||
 		shell.ShowGoToLine || shell.ShowSearch || shell.ShowRecent ||
-		shell.ShowCompare
+		shell.ShowCompare || shell.Slash.Open || shell.Fence.Open
 }
 
 // editorZoomCommand maps the platform-independent physical key codes to the
@@ -1622,6 +1937,22 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		path, err := url.QueryUnescape(strings.TrimPrefix(string(id), string(commands.FileOpenRecent)+":"))
 		if err == nil {
 			return executeCommand(state, shell, commands.FileOpenRecent, path)
+		}
+		return false
+	}
+	if isProductCommand(id) {
+		var argument string
+		if len(args) > 0 {
+			argument, _ = args[0].(string)
+		}
+		if doc := state.ActiveDocument(); doc != nil {
+			ok := applyDocumentCommand(doc, id, argument)
+			if ok && id == commands.MarkdownInsertCodeBlock {
+				shell.Fence = fenceState{Open: true, DocumentID: state.Active}
+			} else if ok && id == commands.MarkdownSetFenceLanguage {
+				shell.Fence = fenceState{}
+			}
+			return ok
 		}
 		return false
 	}
@@ -1761,14 +2092,6 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.ViewResetFontSize:
 		setEditorFontSize(state, shell, defaultEditorFontSize)
 		return true
-	case commands.DocumentFormat:
-		if doc := state.ActiveDocument(); doc != nil {
-			return formatTableAtCursor(doc)
-		}
-	case commands.ItemToggle:
-		if doc := state.ActiveDocument(); doc != nil {
-			return toggleTaskAtCursor(doc)
-		}
 	case commands.OutlineToggle:
 		shell.SidebarMode = SidebarOutline
 		shell.SidebarVisible = true
@@ -1834,6 +2157,9 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		}
 	case commands.EditPaste:
 		if doc := state.ActiveDocument(); doc != nil {
+			if commandContext(state).Markdown {
+				shell.PendingSmartPaste = true
+			}
 			RequestPaste()
 		}
 	case commands.EditSelectAll:
@@ -1842,6 +2168,22 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		}
 	}
 	return false
+}
+
+func isProductCommand(id commands.ID) bool {
+	switch id {
+	case commands.DocumentFormat, commands.ItemToggle, commands.CommentToggle,
+		commands.MarkdownToggleStrong, commands.MarkdownToggleEmphasis, commands.MarkdownToggleStrike,
+		commands.MarkdownToggleInlineCode, commands.MarkdownInsertLink, commands.MarkdownHeading1,
+		commands.MarkdownHeading2, commands.MarkdownHeading3, commands.MarkdownToggleBulletedList,
+		commands.MarkdownToggleNumberedList, commands.MarkdownToggleQuote, commands.MarkdownInsertTask,
+		commands.MarkdownInsertCodeBlock, commands.MarkdownSetFenceLanguage, commands.MarkdownInsertTable, commands.MarkdownInsertDivider,
+		commands.MarkdownTableNext, commands.MarkdownTablePrevious, commands.MarkdownTableEnter,
+		commands.MarkdownSmartPaste:
+		return true
+	default:
+		return false
+	}
 }
 
 func commandString(args []any) string {

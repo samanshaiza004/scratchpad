@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sort"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"scratchpad/document"
@@ -13,9 +14,15 @@ import (
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
+	"golang.org/x/text/width"
 )
 
 const (
+	// editorTabSize is the source-independent display policy for literal tabs.
+	// Tabs remain one source byte; only the paint projection expands them to the
+	// next four-column stop so shaping, caret placement, and hit testing agree.
+	editorTabSize = 4
+
 	// Long logical lines are presented as deterministic chunks. Keeping the
 	// chunk smaller than the old safety window materially reduces the amount
 	// of Shirei shaping and temporary glyph state per frame.
@@ -201,31 +208,95 @@ func presentationMods(span document.PresentationSpan, base TextStyleAttrs, style
 // displayText creates the Unicode projection used by Shirei while retaining
 // a local display-rune to source-byte mapping. Invalid UTF-8 bytes are shown
 // as explicit escapes and remain untouched in the authoritative buffer.
+// Literal tabs are expanded to the next editor tab stop in this paint-only
+// projection. Every expanded rune maps to the tab's source boundary, with
+// the final space mapping to the byte after the tab.
 func displayText(source []byte) (string, []rune, []int) {
 	var display []byte
 	var sourceBytes []int
 	sourceBytes = append(sourceBytes, 0)
+	displayColumn := 0
+	joinNext := false
+	regionalIndicatorCount := 0
 	for at := 0; at < len(source); {
 		r, size := utf8.DecodeRune(source[at:])
 		if r == utf8.RuneError && size == 1 && source[at] >= utf8.RuneSelf {
 			escape := fmt.Sprintf("\\x%02X", source[at])
 			display = append(display, escape...)
-			for i := range []rune(escape) {
-				if i == len([]rune(escape))-1 {
+			escapeRunes := []rune(escape)
+			for i := range escapeRunes {
+				if i == len(escapeRunes)-1 {
 					sourceBytes = append(sourceBytes, at+1)
 				} else {
 					sourceBytes = append(sourceBytes, at)
 				}
 			}
+			displayColumn += len(escapeRunes)
+			joinNext = false
+			regionalIndicatorCount = 0
 			at++
+			continue
+		}
+		if r == '\t' {
+			spaces := editorTabSize - displayColumn%editorTabSize
+			for i := 0; i < spaces; i++ {
+				display = append(display, ' ')
+				if i == spaces-1 {
+					sourceBytes = append(sourceBytes, at+size)
+				} else {
+					sourceBytes = append(sourceBytes, at)
+				}
+			}
+			displayColumn += spaces
+			at += size
 			continue
 		}
 		display = append(display, source[at:at+size]...)
 		sourceBytes = append(sourceBytes, at+size)
+		if r == '\n' {
+			displayColumn = 0
+			joinNext = false
+			regionalIndicatorCount = 0
+		} else {
+			displayColumn += editorDisplayRuneWidth(r, &joinNext, &regionalIndicatorCount)
+		}
 		at += size
 	}
 	displayText := string(display)
 	return displayText, []rune(displayText), sourceBytes
+}
+
+// editorDisplayRuneWidth returns the number of monospace columns occupied by
+// a source rune for tab-stop calculation. Shirei still owns the final pixel
+// shaping; this only keeps tab stops aligned with the editor's code-grid
+// conventions for wide, combining, and joined Unicode text.
+func editorDisplayRuneWidth(r rune, joinNext *bool, regionalIndicatorCount *int) int {
+	if r == '\u200d' {
+		*joinNext = true
+		return 0
+	}
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Mc, r) || unicode.Is(unicode.Me, r) ||
+		(r >= 0xfe00 && r <= 0xfe0f) || (r >= 0x1f3fb && r <= 0x1f3ff) {
+		return 0
+	}
+	if *joinNext {
+		*joinNext = false
+		*regionalIndicatorCount = 0
+		return 0
+	}
+	if r >= 0x1f1e6 && r <= 0x1f1ff {
+		if *regionalIndicatorCount%2 == 0 {
+			(*regionalIndicatorCount)++
+			return 2
+		}
+		(*regionalIndicatorCount)++
+		return 0
+	}
+	*regionalIndicatorCount = 0
+	if kind := width.LookupRune(r).Kind(); kind == width.EastAsianWide || kind == width.EastAsianFullwidth {
+		return 2
+	}
+	return 1
 }
 
 func boundedLineWindow(buffer *editor.Buffer, start, end, anchor int) (windowStart, windowEnd, chunkIndex, chunkCount int) {

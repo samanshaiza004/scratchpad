@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"scratchpad/application"
+	"scratchpad/commands"
 	"scratchpad/document"
 	"scratchpad/editor"
 	"scratchpad/language/markdown"
@@ -26,7 +27,7 @@ func TestMarkdownPresentationStyleMapsSemanticKinds(t *testing.T) {
 		{document.PresentationInlineCode, func(style TextStyleAttrs) bool { return len(style.FontFamilies) > 0 && style.Background != (Vec4{}) }, "inline code"},
 		{document.PresentationLink, func(style TextStyleAttrs) bool { return style.Underline }, "link"},
 		{document.PresentationStrike, func(style TextStyleAttrs) bool { return style.Strike }, "strike"},
-		{document.PresentationCodeBlock, func(style TextStyleAttrs) bool { return len(style.FontFamilies) > 0 && style.Background != (Vec4{}) }, "code block"},
+		{document.PresentationCodeBlock, func(style TextStyleAttrs) bool { return len(style.FontFamilies) > 0 && style.Background == (Vec4{}) }, "code block"},
 		{document.PresentationTableHeader, func(style TextStyleAttrs) bool { return style.Weight == WeightBold }, "table header"},
 		{document.PresentationTableDelimiter, func(style TextStyleAttrs) bool { return style.TextColor == DefaultTheme().Muted }, "table delimiter"},
 		{document.PresentationTablePipe, func(style TextStyleAttrs) bool { return style.TextColor == DefaultTheme().Border }, "table pipe"},
@@ -100,6 +101,24 @@ func TestFormatTableAtCursorIsOneUndoableEdit(t *testing.T) {
 	}
 	if err := doc.Editor.Undo(); err != nil {
 		t.Fatalf("undo = %v", err)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != string(source) {
+		t.Fatalf("undo source = %q, want %q", got, source)
+	}
+}
+
+func TestMarkdownCommandUsesOneUndoableEdit(t *testing.T) {
+	source := []byte("hello world")
+	doc := document.New("notes.md", source, "markdown")
+	doc.Editor.SetSelection(6, len(source))
+	if !applyDocumentCommand(doc, commands.MarkdownToggleStrong) {
+		t.Fatal("strong command returned false")
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != "hello **world**" {
+		t.Fatalf("command source = %q", got)
+	}
+	if err := doc.Editor.Undo(); err != nil {
+		t.Fatal(err)
 	}
 	if got := string(doc.Editor.Buffer.Text()); got != string(source) {
 		t.Fatalf("undo source = %q, want %q", got, source)

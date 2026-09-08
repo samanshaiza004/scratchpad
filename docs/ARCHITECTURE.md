@@ -79,7 +79,8 @@ Only packages with immediate scaffold value exist today:
 - `language/`: root-language detection plus the replaceable concrete Markdown
   projection adapter. Parser/provider seams for other languages remain a Gate
   E decision.
-- `commands/`: stable command names, not keybinding or context behavior.
+- `commands/`: stable IDs, typed context predicates, and source-only product
+  transformations; no Shirei dependency.
 - `ui/`: Shirei composition. It should translate application state into views;
   it should not become the document authority.
 - `cmd/scratchpad/`: native process entry point.
@@ -211,15 +212,25 @@ raw-byte search. Native platform certification remains an explicit C7 task.
 
 Commands are application concepts, not mode-specific keybinding universes:
 
+`commands.Registry` supplies stable descriptors, explicit primitive context
+predicates, and discoverable bindings. Menus, key handlers, slash pickers, and
+selection toolbars dispatch those IDs rather than implementing document
+semantics:
+
 ```text
 file.open       file.save       document.find
 outline.toggle  item.toggle     selection.expand
-comment.toggle  document.format
+comment.toggle  document.format  markdown.toggle-strong
+markdown.insert-table  markdown.smart-paste
 ```
 
 A context provider may implement `item.toggle` differently for Markdown and a
-programming language, but the command vocabulary stays stable. Configurable
-bindings come after semantics stabilize.
+programming language, but the command vocabulary stays stable. Product
+transformations return one source replacement from `commands` and the UI
+applies it through `Document.Replace`, so one conceptual action remains one
+undo step. Explicit editing commands may synchronously rebuild a stale
+Markdown projection; they never wait for the debounced worker or act on an old
+range. Configurable bindings remain deferred until semantics stabilize.
 
 ## Framework boundary
 

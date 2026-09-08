@@ -370,11 +370,20 @@ Objective: make one command vocabulary useful across prose and code contexts.
 
 Prerequisites: Gate D and Gate E semantics.
 
+Status: implementation slice complete for the command registry, explicit
+Markdown/code contexts, source-preserving Markdown authoring commands, stale
+projection refresh, one-edit undo routing, slash picker, selection toolbar,
+smart URL paste, and fence-language chooser. The F0 audit and research map
+are in [`GATE-F-AUDIT.md`](GATE-F-AUDIT.md). User-configurable bindings remain
+deferred.
+
 Implementation work: stabilize command IDs, context providers, enablement,
-undo grouping, and eventually user-configurable bindings.
+undo grouping, Markdown authoring transformations, and small contextual
+surfaces. Transformations stay in `commands`; Shirei is used only by the UI
+adapter and popup/input surfaces.
 
 Tests: command behavior independent of UI; keybinding/native smoke tests;
-snapshots for menus/palettes if added.
+headless checks for Markdown menus and contextual surfaces if added.
 
 Benchmarks: command dispatch and projection refresh under ordinary typing.
 

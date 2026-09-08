@@ -1,5 +1,6 @@
-// Package commands names the future unified command vocabulary. Behavior and
-// key bindings are intentionally deferred until document contexts exist.
+// Package commands owns Scratchpad's stable, surface-independent command
+// vocabulary. UI surfaces may discover and invoke these IDs, but document
+// transformations live in this package rather than in a particular widget.
 package commands
 
 type ID string
@@ -43,6 +44,27 @@ const (
 	EditCopy              ID = "edit.copy"
 	EditPaste             ID = "edit.paste"
 	EditSelectAll         ID = "edit.select-all"
+
+	MarkdownToggleStrong       ID = "markdown.toggle-strong"
+	MarkdownToggleEmphasis     ID = "markdown.toggle-emphasis"
+	MarkdownToggleStrike       ID = "markdown.toggle-strike"
+	MarkdownToggleInlineCode   ID = "markdown.toggle-inline-code"
+	MarkdownInsertLink         ID = "markdown.insert-link"
+	MarkdownHeading1           ID = "markdown.heading-1"
+	MarkdownHeading2           ID = "markdown.heading-2"
+	MarkdownHeading3           ID = "markdown.heading-3"
+	MarkdownToggleBulletedList ID = "markdown.toggle-bulleted-list"
+	MarkdownToggleNumberedList ID = "markdown.toggle-numbered-list"
+	MarkdownToggleQuote        ID = "markdown.toggle-quote"
+	MarkdownInsertTask         ID = "markdown.insert-task"
+	MarkdownInsertCodeBlock    ID = "markdown.insert-code-block"
+	MarkdownSetFenceLanguage   ID = "markdown.set-fence-language"
+	MarkdownInsertTable        ID = "markdown.insert-table"
+	MarkdownTableNext          ID = "markdown.table-next"
+	MarkdownTablePrevious      ID = "markdown.table-previous"
+	MarkdownTableEnter         ID = "markdown.table-enter"
+	MarkdownInsertDivider      ID = "markdown.insert-divider"
+	MarkdownSmartPaste         ID = "markdown.smart-paste"
 )
 
 var InitialVocabulary = []ID{
@@ -84,4 +106,24 @@ var InitialVocabulary = []ID{
 	EditCopy,
 	EditPaste,
 	EditSelectAll,
+	MarkdownToggleStrong,
+	MarkdownToggleEmphasis,
+	MarkdownToggleStrike,
+	MarkdownToggleInlineCode,
+	MarkdownInsertLink,
+	MarkdownHeading1,
+	MarkdownHeading2,
+	MarkdownHeading3,
+	MarkdownToggleBulletedList,
+	MarkdownToggleNumberedList,
+	MarkdownToggleQuote,
+	MarkdownInsertTask,
+	MarkdownInsertCodeBlock,
+	MarkdownSetFenceLanguage,
+	MarkdownInsertTable,
+	MarkdownTableNext,
+	MarkdownTablePrevious,
+	MarkdownTableEnter,
+	MarkdownInsertDivider,
+	MarkdownSmartPaste,
 }

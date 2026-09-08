@@ -47,7 +47,9 @@ func MarkdownPresentationStyle(kind document.PresentationKind, _ TextStyleAttrs)
 	case document.PresentationStrike:
 		return []TextStyleFn{TextStrike(true)}
 	case document.PresentationCodeBlock:
-		return []TextStyleFn{Fonts(codeFontFamilies()...), TextBackgroundVec(theme.ChromeInset)}
+		// The block surface is painted once by markdownLineDecoration. Keeping
+		// this span font-only avoids painting the same background per glyph.
+		return []TextStyleFn{Fonts(codeFontFamilies()...)}
 	case document.PresentationBlockquote, document.PresentationListMarker, document.PresentationSyntax, document.PresentationThematicBreak:
 		return []TextStyleFn{TextColorVec(theme.Muted)}
 	case document.PresentationTaskMarker:
