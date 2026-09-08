@@ -41,6 +41,11 @@ func TestRestoreStartupFallsBackToSessionWhenRecoveryFails(t *testing.T) {
 	}
 
 	state := application.New(nil)
+	t.Cleanup(func() {
+		if err := state.FlushRecovery(recoveryDir); err != nil {
+			t.Errorf("recovery cleanup flush failed: %v", err)
+		}
+	})
 	restoreStartup(state, recoveryDir, sessionPath, "")
 	if state.Active == "" {
 		t.Fatal("startup did not fall back to the saved session")
@@ -48,12 +53,25 @@ func TestRestoreStartupFallsBackToSessionWhenRecoveryFails(t *testing.T) {
 	if got := string(state.ActiveDocument().Editor.Buffer.Text()); got != "disk" {
 		t.Fatalf("startup restored %q, want session bytes", got)
 	}
+	failedDirs, err := filepath.Glob(filepath.Join(dir, "recovery.failed.*"))
+	if err != nil || len(failedDirs) != 1 {
+		t.Fatalf("quarantined recovery dirs = %v (err=%v), want one", failedDirs, err)
+	}
+	if _, err := os.Stat(filepath.Join(failedDirs[0], "manifest.json")); err != nil {
+		t.Fatalf("failed recovery manifest was not preserved: %v", err)
+	}
+
+	doc := state.ActiveDocument()
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte("-new-edit")); err != nil {
+		t.Fatal(err)
+	}
 	state.MaybeWriteRecovery(recoveryDir)
 	if err := state.FlushRecovery(recoveryDir); err != nil {
-		t.Fatalf("blocked recovery flush failed: %v", err)
+		t.Fatalf("fresh recovery flush failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(recoveryDir, "manifest.json")); err != nil {
-		t.Fatalf("failed recovery was cleared on automatic write: %v", err)
+		t.Fatalf("fresh recovery was not written after quarantine: %v", err)
 	}
 }
 
@@ -82,6 +100,11 @@ func TestRestoreStartupRecoversBeforeOpeningExplicitPath(t *testing.T) {
 	}
 
 	state := application.New(nil)
+	t.Cleanup(func() {
+		if err := state.FlushRecovery(recoveryDir); err != nil {
+			t.Errorf("recovery cleanup flush failed: %v", err)
+		}
+	})
 	restoreStartup(state, recoveryDir, filepath.Join(dir, "missing-session.json"), explicitPath)
 	if state.ActiveDocument() == nil || state.ActiveDocument().Path != explicitPath {
 		t.Fatalf("active document = %#v, want explicit path %q", state.ActiveDocument(), explicitPath)

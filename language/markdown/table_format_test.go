@@ -36,6 +36,17 @@ func TestFormatTableUsesVisibleUnicodeWidthAndKeepsEscapedPipes(t *testing.T) {
 	}
 }
 
+func TestFormatTableRefusesOverlongBodyRows(t *testing.T) {
+	source := "| a | b |\n| --- | --- |\n| x | y | z |\n"
+	_, table := projectSingleTable(t, source, 42)
+	if len(table.Columns) != 2 || len(table.Rows[2].Cells) != 3 {
+		t.Fatalf("projection schema = %d columns, %d body cells; want 2, 3", len(table.Columns), len(table.Rows[2].Cells))
+	}
+	if formatted, ok := FormatTable([]byte(source), table); ok || formatted != nil {
+		t.Fatalf("FormatTable(%q) = %q, %v; want refusal", source, formatted, ok)
+	}
+}
+
 func TestFormatTableKeepsTableTerminatingNewlineConvention(t *testing.T) {
 	for _, source := range []string{
 		"| a | b |\n| --- | --- |\n| c | d |",

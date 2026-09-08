@@ -8,6 +8,7 @@ import (
 
 	"scratchpad/document"
 	"scratchpad/editor"
+	"scratchpad/language/treesitter"
 	"scratchpad/workspace"
 )
 
@@ -212,6 +213,34 @@ func TestDerivedProjectionAnalyzesGoWithoutTypingDebounce(t *testing.T) {
 	}
 	if !doc.DerivedCurrent() {
 		t.Fatal("Go projection remained debounced during the typing window")
+	}
+}
+
+func TestDerivedProjectionSkipsUnsupportedTypeScript(t *testing.T) {
+	if treesitter.Capabilities().TypeScript {
+		t.Skip("selected Tree-sitter backend supports TypeScript")
+	}
+	dir := t.TempDir()
+	path := dir + "/component.ts"
+	if err := writeTestFile(path, []byte("export const answer: number = 42;\n")); err != nil {
+		t.Fatal(err)
+	}
+	a := New(workspace.NewOSFileStore())
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// An explicit pure/none backend advertises TypeScript as unsupported. The
+	// coordinator must treat that as plain text and avoid creating a retrying
+	// parser state for the document.
+	for i := 0; i < 10; i++ {
+		a.PollDerived(time.Now().Add(time.Duration(i) * projectionDebounce))
+	}
+	if len(a.derived) != 0 {
+		t.Fatalf("derived state for unsupported TypeScript = %+v, want none", a.derived)
+	}
+	if a.derivedRunning != 0 {
+		t.Fatalf("derived workers for unsupported TypeScript = %d, want 0", a.derivedRunning)
 	}
 }
 

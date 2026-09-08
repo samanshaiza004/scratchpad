@@ -611,13 +611,27 @@ func toggleFold(doc *document.Document, view *application.ViewState, line int) {
 }
 
 func tableAtCursor(doc *document.Document) (*document.TableProjection, bool) {
-	if doc == nil || !doc.DerivedCurrent() || doc.RootLanguage != string(language.Markdown) {
+	if doc == nil || doc.RootLanguage != string(language.Markdown) {
 		return nil, false
 	}
+	// Table commands are editing commands, so they cannot wait for the
+	// debounced derived worker. Re-project the current source when the cached
+	// projection is stale; callers only use the returned view for this action.
+	var projection *document.Projections
+	if doc.DerivedCurrent() {
+		projection = &doc.Projections
+	} else {
+		source, err := doc.Editor.Buffer.Bytes(0, doc.Editor.Buffer.ByteLen())
+		if err != nil {
+			return nil, false
+		}
+		current := markdown.Project(source, doc.Revision())
+		projection = &current
+	}
 	cursor := doc.Editor.Cursor
-	for i := range doc.Projections.Tables {
-		table := &doc.Projections.Tables[i]
-		if cursor >= table.StartByte && cursor <= table.EndByte {
+	for i := range projection.Tables {
+		table := &projection.Tables[i]
+		if cursor >= table.StartByte && cursor < table.EndByte {
 			return table, true
 		}
 	}
@@ -730,11 +744,16 @@ func navigateTableAtCursor(doc *document.Document, previous, enter bool) bool {
 	}
 	tableSource := append([]byte(nil), source[table.StartByte:table.EndByte]...)
 	formatted, formatOK := markdown.FormatTable(source, *table)
-	formatChanged := false
-	if formatOK {
-		formatChanged = !bytes.Equal(formatted, tableSource)
-		tableSource = formatted
+	if !formatOK {
+		// Navigation and formatting share the same source rewrite. Refuse the
+		// command when the formatter cannot preserve the table's schema (for
+		// example, an overlong body row) rather than moving through a shape that
+		// would be rewritten differently from what the parser recognizes.
+		return false
 	}
+	formatChanged := false
+	formatChanged = !bytes.Equal(formatted, tableSource)
+	tableSource = formatted
 	local := markdown.Project(tableSource, 1)
 	if len(local.Tables) == 0 {
 		return false
@@ -1482,7 +1501,11 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	frame := GetFrameInput()
 	mods := GetInputState().Modifiers
 	primary := PrimaryMod()
-	if doc := state.ActiveDocument(); doc != nil {
+	// Text inputs and modal controls own Tab/Enter. In particular, the active
+	// document may still have its caret inside a table while Find, Save As, or
+	// Go to Line is open; letting table navigation run first would consume the
+	// modal's key press and make those controls appear unresponsive.
+	if doc := state.ActiveDocument(); doc != nil && !transientInputOpen(shell) {
 		if frame.Key == KeyTab && (mods == 0 || mods == ModShift) {
 			if navigateTableAtCursor(doc, mods == ModShift, false) {
 				frame.Key = KeyCodeNone
@@ -1561,6 +1584,16 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 		}
 		frame.Key = KeyCodeNone
 	}
+}
+
+func transientInputOpen(shell *workbenchState) bool {
+	if shell == nil {
+		return false
+	}
+	return shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen ||
+		shell.ShowSaveAs || shell.ShowSaveAsOverwrite || shell.ShowFind ||
+		shell.ShowGoToLine || shell.ShowSearch || shell.ShowRecent ||
+		shell.ShowCompare
 }
 
 // editorZoomCommand maps the platform-independent physical key codes to the

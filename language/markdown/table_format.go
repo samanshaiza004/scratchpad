@@ -23,8 +23,12 @@ func FormatTable(source []byte, table document.TableProjection) ([]byte, bool) {
 	}
 	columnCount := len(table.Columns)
 	for _, row := range table.Rows {
-		if len(row.Cells) > columnCount {
-			columnCount = len(row.Cells)
+		// GFM derives the table schema from the header and delimiter rows.
+		// An overlong body row contains cells that the parser intentionally
+		// ignores; refusing to rewrite it avoids making those cells meaningful
+		// (or silently dropping them) during formatting or cell navigation.
+		if !row.Header && !row.Delimiter && len(row.Cells) > columnCount {
+			return nil, false
 		}
 	}
 	if columnCount == 0 {

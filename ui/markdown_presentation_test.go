@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"scratchpad/application"
 	"scratchpad/document"
 	"scratchpad/editor"
 	"scratchpad/language/markdown"
@@ -139,6 +140,90 @@ func TestTableNavigationFormatsAndMovesAcrossCells(t *testing.T) {
 	}
 	if got := string(doc.Editor.Buffer.Text()); got != string(formatted) {
 		t.Fatalf("undo navigation source = %q, want %q", got, formatted)
+	}
+}
+
+func TestTableCommandsUseCurrentSourceWhenProjectionIsStale(t *testing.T) {
+	source := []byte("| a | b |\n| --- | --- |\n| one | two |\n")
+	doc := document.New("notes.md", source, "markdown")
+	if !doc.SetDerived(nil, markdown.Project(source, doc.Revision())) {
+		t.Fatal("SetDerived rejected current table projection")
+	}
+	// A normal edit invalidates the debounced projection. Table navigation must
+	// still act on the bytes the user just edited, without waiting for a frame
+	// from the derived worker.
+	doc.Editor.SetCursor(bytes.Index(source, []byte("one")) + len("one"))
+	if err := doc.Insert([]byte("!")); err != nil {
+		t.Fatalf("edit = %v", err)
+	}
+	if doc.DerivedCurrent() {
+		t.Fatal("edit unexpectedly left the old projection current")
+	}
+	if !navigateTableAtCursor(doc, false, false) {
+		t.Fatal("stale-projection Tab navigation returned false")
+	}
+	if !bytes.Contains(doc.Editor.Buffer.Text(), []byte("one!")) {
+		t.Fatalf("navigation lost the edit: %q", doc.Editor.Buffer.Text())
+	}
+
+	// Formatting is also an editing command and must use the same current
+	// source path while the asynchronous projection is stale.
+	doc.Editor.SetCursor(bytes.Index(doc.Editor.Buffer.Text(), []byte("two")))
+	if err := doc.Insert([]byte("!")); err != nil {
+		t.Fatalf("second edit = %v", err)
+	}
+	if doc.DerivedCurrent() {
+		t.Fatal("second edit unexpectedly left the projection current")
+	}
+	if !formatTableAtCursor(doc) {
+		t.Fatal("stale-projection formatting returned false")
+	}
+	if !bytes.Contains(doc.Editor.Buffer.Text(), []byte("!two")) {
+		t.Fatalf("formatting lost the edit: %q", doc.Editor.Buffer.Text())
+	}
+}
+
+func TestTableNavigationRefusesOverlongBodyRows(t *testing.T) {
+	source := []byte("| a | b |\n| --- | --- |\n| x | y | z |\n")
+	doc := document.New("notes.md", source, "markdown")
+	if !doc.SetDerived(nil, markdown.Project(source, doc.Revision())) {
+		t.Fatal("SetDerived rejected current table projection")
+	}
+	doc.Editor.SetCursor(bytes.Index(source, []byte("x")))
+	if navigateTableAtCursor(doc, false, false) {
+		t.Fatal("navigation accepted a body row with cells beyond the GFM schema")
+	}
+	if !bytes.Equal(doc.Editor.Buffer.Text(), source) {
+		t.Fatalf("navigation rewrote overlong table: %q", doc.Editor.Buffer.Text())
+	}
+}
+
+func TestTableNavigationDoesNotStealKeysFromTransientInputs(t *testing.T) {
+	source := []byte("| a | b |\n| --- | --- |\n| one | two |\n")
+	state := application.New(nil)
+	doc := document.New("notes.md", source, "markdown")
+	if !doc.SetDerived(nil, markdown.Project(source, doc.Revision())) {
+		t.Fatal("SetDerived rejected current table projection")
+	}
+	state.Documents[application.DocumentID(doc.Path)] = doc
+	state.Order = []application.DocumentID{application.DocumentID(doc.Path)}
+	state.Active = application.DocumentID(doc.Path)
+	doc.Editor.SetCursor(bytes.Index(source, []byte("one")))
+
+	for _, modal := range []func(*workbenchState){
+		func(shell *workbenchState) { shell.ShowFind = true },
+		func(shell *workbenchState) { shell.ShowSaveAs = true },
+		func(shell *workbenchState) { shell.ShowGoToLine = true },
+	} {
+		shell := &workbenchState{}
+		modal(shell)
+		beforeRevision := doc.Revision()
+		GetFrameInput().Key = KeyTab
+		GetInputState().Modifiers = 0
+		handleGlobalInput(state, shell)
+		if doc.Revision() != beforeRevision {
+			t.Fatalf("table navigation stole Tab with transient input open: modal=%+v", shell)
+		}
 	}
 }
 

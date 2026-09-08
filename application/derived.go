@@ -264,11 +264,24 @@ func projectInjectedGo(regions []document.InjectedRegion, source []byte, revisio
 
 func analysisLanguage(id language.ID) language.ID {
 	switch id {
-	case language.Markdown, language.Go, language.TypeScript, language.TSX:
+	case language.Markdown:
 		return id
+	case language.Go:
+		if treesitter.Capabilities().Go {
+			return id
+		}
+	case language.TypeScript:
+		if treesitter.Capabilities().TypeScript {
+			return id
+		}
+	case language.TSX:
+		if treesitter.Capabilities().TSX {
+			return id
+		}
 	default:
 		return ""
 	}
+	return ""
 }
 
 func newLanguageAnalyzer(id language.ID) (languageAnalyzer, error) {

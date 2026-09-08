@@ -8,6 +8,8 @@ import (
 	"go.hasen.dev/shirei/app"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"scratchpad/application"
 	"scratchpad/language/treesitter"
@@ -58,7 +60,18 @@ func restoreStartup(state *application.Application, recoveryDir, sessionPath, ex
 		if err := state.RestoreRecovery(recoveryDir); err != nil {
 			fmt.Printf("could not restore recovery: %v\n", err)
 			recoveryFailed = true
-			state.SetRecoveryWritesBlocked(true)
+			if failedDir, quarantineErr := quarantineRecovery(recoveryDir); quarantineErr != nil {
+				// If the failed snapshot cannot be moved out of the active
+				// recovery directory, keep blocking writes so startup cannot
+				// replace evidence that may still be recoverable.
+				fmt.Printf("could not quarantine recovery: %v\n", quarantineErr)
+				state.SetRecoveryWritesBlocked(true)
+			} else {
+				// The failed snapshot is now preserved under its own name. The
+				// normal recovery directory is free to receive new snapshots.
+				fmt.Printf("failed recovery preserved at %s\n", failedDir)
+				state.SetRecoveryWritesBlocked(false)
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		fmt.Printf("could not inspect recovery: %v\n", err)
@@ -81,4 +94,30 @@ func restoreStartup(state *application.Application, recoveryDir, sessionPath, ex
 	if err := state.RestoreSession(sessionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		fmt.Printf("could not restore session: %v\n", err)
 	}
+}
+
+func quarantineRecovery(recoveryDir string) (string, error) {
+	parent := filepath.Dir(filepath.Clean(recoveryDir))
+	base := filepath.Base(filepath.Clean(recoveryDir))
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 10)
+	for attempt := 0; attempt < 100; attempt++ {
+		suffix := stamp
+		if attempt > 0 {
+			suffix += "-" + strconv.Itoa(attempt)
+		}
+		failedDir := filepath.Join(parent, base+".failed."+suffix)
+		if _, err := os.Lstat(failedDir); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if err := os.Rename(recoveryDir, failedDir); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", err
+		}
+		return failedDir, nil
+	}
+	return "", errors.New("could not choose a unique quarantine path")
 }
