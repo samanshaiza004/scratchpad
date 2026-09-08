@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"go.hasen.dev/shirei"
@@ -32,13 +33,11 @@ func main() {
 		fmt.Println("usage: scratchpad [file-or-folder]")
 		return
 	}
+	var explicitPath string
 	if flag.NArg() == 1 {
-		if err := state.OpenPath(flag.Arg(0)); err != nil {
-			fmt.Println(err)
-		}
-	} else {
-		restoreStartup(state, recoveryDir, sessionPath)
+		explicitPath = flag.Arg(0)
 	}
+	restoreStartup(state, recoveryDir, sessionPath, explicitPath)
 	watcher, _ := workspace.NewOSWatcher()
 	if watcher != nil {
 		_ = state.SetWatcher(watcher)
@@ -50,11 +49,36 @@ func main() {
 	_ = state.SaveSession(sessionPath)
 }
 
-func restoreStartup(state *application.Application, recoveryDir, sessionPath string) {
-	if _, err := os.Stat(filepath.Join(recoveryDir, "manifest.json")); err == nil {
-		if err := state.RestoreRecovery(recoveryDir); err == nil {
-			return
+func restoreStartup(state *application.Application, recoveryDir, sessionPath, explicitPath string) {
+	manifestPath := filepath.Join(recoveryDir, "manifest.json")
+	recoveryFound := false
+	recoveryFailed := false
+	if _, err := os.Stat(manifestPath); err == nil {
+		recoveryFound = true
+		if err := state.RestoreRecovery(recoveryDir); err != nil {
+			fmt.Printf("could not restore recovery: %v\n", err)
+			recoveryFailed = true
+			state.SetRecoveryWritesBlocked(true)
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		fmt.Printf("could not inspect recovery: %v\n", err)
+		recoveryFailed = true
+		state.SetRecoveryWritesBlocked(true)
 	}
-	_ = state.RestoreSession(sessionPath)
+
+	// Crash recovery takes precedence over normal session/CLI policy. An
+	// explicit path is opened afterward, preserving recovered documents while
+	// making the requested path active.
+	if explicitPath != "" {
+		if err := state.OpenPath(explicitPath); err != nil {
+			fmt.Println(err)
+		}
+		return
+	}
+	if recoveryFound && !recoveryFailed {
+		return
+	}
+	if err := state.RestoreSession(sessionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Printf("could not restore session: %v\n", err)
+	}
 }

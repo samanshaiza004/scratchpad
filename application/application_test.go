@@ -294,7 +294,7 @@ func TestConfirmSaveAsRejectsDestinationChangedAfterPrompt(t *testing.T) {
 	}
 }
 
-func TestSaveAsSameDocumentStillReplacesWithoutConfirmation(t *testing.T) {
+func TestSaveAsSameDocumentUsesOrdinarySavePolicy(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.txt")
 	if err := os.WriteFile(path, []byte("source"), 0o644); err != nil {
@@ -318,6 +318,104 @@ func TestSaveAsSameDocumentStillReplacesWithoutConfirmation(t *testing.T) {
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "source changed" {
 		t.Fatalf("same-document SaveAs target: bytes=%q err=%v", got, err)
+	}
+}
+
+func TestSaveAsSameDocumentRejectsUnreconciledExternalChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	id := a.Active
+	doc := a.Documents[id]
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.SaveAs(id, path); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same-document SaveAs error = %v, want ErrConflict", err)
+	}
+	if !doc.Dirty() || doc.Path != path {
+		t.Fatalf("rejected same-document SaveAs changed state: path=%q dirty=%v", doc.Path, doc.Dirty())
+	}
+	if _, ok := a.Conflict(id); !ok {
+		t.Fatal("same-document SaveAs did not retain the external-change conflict")
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != "external" {
+		t.Fatalf("rejected same-document SaveAs changed external bytes: %q (err=%v)", got, readErr)
+	}
+}
+
+func TestSaveAsSameDocumentRejectsExistingConflict(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	id := a.Active
+	doc := a.Documents[id]
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, err := a.Reconcile(id)
+	if err != nil || status != StatusConflict {
+		t.Fatalf("initial reconcile status=%v err=%v, want conflict", status, err)
+	}
+
+	if err := a.SaveAs(id, path); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same-document SaveAs error = %v, want ErrConflict", err)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != "external" {
+		t.Fatalf("rejected conflicted SaveAs changed external bytes: %q (err=%v)", got, readErr)
+	}
+}
+
+func TestSaveAsSameDocumentSymlinkAliasUsesOrdinarySavePolicy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	alias := filepath.Join(dir, "alias.txt")
+	if err := os.WriteFile(path, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	a := New(nil)
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	id := a.Active
+	doc := a.Documents[id]
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.SaveAs(id, alias); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same-identity alias SaveAs error = %v, want ErrConflict", err)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != "external" {
+		t.Fatalf("rejected alias SaveAs changed external bytes: %q (err=%v)", got, readErr)
 	}
 }
 

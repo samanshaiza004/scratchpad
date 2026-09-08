@@ -182,6 +182,12 @@ func (a *Application) MaybeWriteRecovery(dir string) {
 	if dir == "" {
 		return
 	}
+	// A failed startup restore must remain available for a later retry or an
+	// explicit discard. Do not let an empty session overwrite it on the first
+	// frame after startup.
+	if a.recoveryWritesBlocked {
+		return
+	}
 	select {
 	case <-a.recoveryDone:
 		a.recoveryRunning = false
@@ -194,6 +200,15 @@ func (a *Application) MaybeWriteRecovery(dir string) {
 	a.lastRecovery = time.Now()
 	a.recoveryRunning = true
 	go func() { a.recoveryDone <- writeRecovery(dir, payload) }()
+}
+
+// SetRecoveryWritesBlocked prevents automatic recovery snapshots from
+// replacing a pending snapshot that could not be restored. Startup uses this
+// while retaining the original recovery files for a later retry.
+func (a *Application) SetRecoveryWritesBlocked(blocked bool) {
+	if a != nil {
+		a.recoveryWritesBlocked = blocked
+	}
 }
 
 // refreshRecoveryAfterSave rewrites recovery synchronously after a successful
@@ -212,6 +227,9 @@ func (a *Application) refreshRecoveryAfterSave() {
 }
 
 func (a *Application) FlushRecovery(dir string) error {
+	if a.recoveryWritesBlocked {
+		return nil
+	}
 	var previousErr error
 	if a.recoveryRunning {
 		previousErr = <-a.recoveryDone
@@ -249,6 +267,7 @@ func (a *Application) RestoreRecovery(dir string) error {
 			return err
 		}
 	}
+	a.recoveryWritesBlocked = false
 	return nil
 }
 
@@ -320,7 +339,11 @@ func (a *Application) restoreRecoveredDocument(saved recoveryDocument, recovered
 }
 
 func (a *Application) ClearRecovery(dir string) error {
-	return clearRecovery(dir)
+	err := clearRecovery(dir)
+	if err == nil {
+		a.recoveryWritesBlocked = false
+	}
+	return err
 }
 
 func clearRecovery(dir string) error {

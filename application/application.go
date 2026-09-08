@@ -56,38 +56,39 @@ type Conflict struct {
 }
 
 type ViewState struct {
-	ScrollY           float32
-	ScrollInitialized bool
-	ScrollX           float32
+	ScrollY            float32
+	ScrollInitialized  bool
+	ScrollX            float32
 	ScrollXInitialized bool
-	CollapsedHeadings map[int]bool
-	LastRevision      uint64
+	CollapsedHeadings  map[int]bool
+	LastRevision       uint64
 }
 
 type Application struct {
-	Store                workspace.FileStore
-	Workspace            workspace.Workspace
-	HasWorkspace         bool
-	Documents            map[DocumentID]*document.Document
-	Order                []DocumentID
-	Active               DocumentID
-	Views                map[DocumentID]ViewState
-	Watcher              workspace.Watcher
-	watchEvents          <-chan workspace.WatchEvent
-	Stale                map[DocumentID]bool
-	Conflicts            map[DocumentID]Conflict
-	RecoveryDir          string
-	lastRecovery         time.Time
-	recoveryRunning      bool
-	recoveryDone         chan error
-	derived              map[DocumentID]*projectionState
-	derivedResults       chan projectionResult
-	derivedRunning       int
-	derivedWake          func()
-	derivedAfterFunc     func(time.Duration, func())
-	derivedWakeScheduled int32
-	recent               []string
-	closed               []string
+	Store                 workspace.FileStore
+	Workspace             workspace.Workspace
+	HasWorkspace          bool
+	Documents             map[DocumentID]*document.Document
+	Order                 []DocumentID
+	Active                DocumentID
+	Views                 map[DocumentID]ViewState
+	Watcher               workspace.Watcher
+	watchEvents           <-chan workspace.WatchEvent
+	Stale                 map[DocumentID]bool
+	Conflicts             map[DocumentID]Conflict
+	RecoveryDir           string
+	recoveryWritesBlocked bool
+	lastRecovery          time.Time
+	recoveryRunning       bool
+	recoveryDone          chan error
+	derived               map[DocumentID]*projectionState
+	derivedResults        chan projectionResult
+	derivedRunning        int
+	derivedWake           func()
+	derivedAfterFunc      func(time.Duration, func())
+	derivedWakeScheduled  int32
+	recent                []string
+	closed                []string
 }
 
 func New(store workspace.FileStore) *Application {
@@ -444,6 +445,30 @@ func (a *Application) saveAs(id DocumentID, path string, expected *workspace.Dis
 	// document in Documents and leave a duplicate ID in Order. documentID also
 	// resolves existing symlinks, keeping aliases covered by this check.
 	newID := documentID(path)
+	if newID == id {
+		// A Save As to the current document (including a symlink alias) is an
+		// ordinary save. In particular, do not use Document.SaveAs here: it
+		// skips the current-path version check and could overwrite external
+		// edits that a normal Save would reject.
+		if _, ok := a.Conflicts[id]; ok {
+			return ErrConflict
+		}
+		status, err := a.Reconcile(id)
+		if err != nil {
+			return err
+		}
+		if status == StatusConflict {
+			return ErrConflict
+		}
+		beforePath, beforeVersion, beforeDirty := doc.Path, doc.DiskVersion, doc.Dirty()
+		saveErr := doc.Save(a.Store)
+		if saveErr != nil && !committedDurabilityWarning(saveErr, doc, beforePath, beforeVersion, beforeDirty) {
+			return saveErr
+		}
+		a.completeSaveAs(id, doc, beforePath)
+		a.refreshRecoveryAfterSave()
+		return saveErr
+	}
 	if newID != id {
 		if _, exists := a.Documents[newID]; exists {
 			return ErrDocumentAlreadyOpen
