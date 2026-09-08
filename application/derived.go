@@ -39,6 +39,7 @@ type projectionState struct {
 	hasDesired      bool
 	due             time.Time
 	running         bool
+	runningRevision uint64
 	closed          bool
 	parsedRevision  uint64
 	hasParsed       bool
@@ -106,6 +107,14 @@ func (a *Application) PollDerived(now time.Time) {
 			}
 			if exists {
 				state.running = false
+				state.runningRevision = 0
+				if state.hasDesired && state.desiredRevision == result.revision {
+					// A poll may have observed the same revision while its
+					// worker was running. It is already represented by this
+					// result, so do not schedule it a second time.
+					state.hasDesired = false
+					state.desiredRevision = 0
+				}
 			}
 		default:
 			goto drained
@@ -121,14 +130,13 @@ drained:
 			state = &projectionState{}
 			a.derived[id] = state
 		}
-		if revision := doc.Revision(); (!state.hasSeen || revision != state.seenRevision) && (!state.hasDesired || revision != state.desiredRevision) {
+		if revision := doc.Revision(); (!state.hasSeen || revision != state.seenRevision) &&
+			(!state.hasDesired || revision != state.desiredRevision) &&
+			(!state.running || revision != state.runningRevision) {
 			state.desiredRevision = revision
 			state.hasDesired = true
 			delay := projectionDelay(language.ID(doc.RootLanguage))
 			state.due = now.Add(delay)
-			if a.derivedWake != nil {
-				a.scheduleDerivedWake(delay)
-			}
 		}
 	}
 	for id, state := range a.derived {
@@ -156,6 +164,7 @@ drained:
 			continue
 		}
 		state.running = true
+		state.runningRevision = revision
 		a.derivedRunning++
 		var edits []editor.SourceEdit
 		if state.hasParsed {
@@ -188,6 +197,19 @@ drained:
 		}(id, revision, snapshot, rootLanguage, edits, runtime)
 		state.desiredRevision = 0
 		state.hasDesired = false
+	}
+
+	if a.derivedWake != nil {
+		var nextDue time.Time
+		for _, state := range a.derived {
+			if !state.closed && state.hasDesired && state.due.After(now) &&
+				(nextDue.IsZero() || state.due.Before(nextDue)) {
+				nextDue = state.due
+			}
+		}
+		if !nextDue.IsZero() {
+			a.scheduleDerivedWake(nextDue.Sub(now))
+		}
 	}
 }
 
@@ -275,7 +297,13 @@ func (a *Application) ensureDerivedState() {
 
 func (a *Application) scheduleDerivedWake(delay time.Duration) {
 	if atomic.CompareAndSwapInt32(&a.derivedWakeScheduled, 0, 1) {
-		time.AfterFunc(delay, func() {
+		afterFunc := a.derivedAfterFunc
+		if afterFunc == nil {
+			afterFunc = func(delay time.Duration, wake func()) {
+				time.AfterFunc(delay, wake)
+			}
+		}
+		afterFunc(delay, func() {
 			atomic.StoreInt32(&a.derivedWakeScheduled, 0)
 			a.wakeDerived()
 		})

@@ -232,12 +232,20 @@ func (a *Application) RestoreRecovery(dir string) error {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return err
 	}
-	for _, saved := range manifest.Documents {
-		recovered, err := os.ReadFile(filepath.Join(dir, saved.BytesFile))
+	// Read every blob before mutating the document registry. A cleanup or copy
+	// interrupted after the manifest is written can leave one referenced blob
+	// unavailable; in that case startup can fall back to the regular session
+	// without retaining a partially restored recovery state.
+	recovered := make([][]byte, len(manifest.Documents))
+	for i, saved := range manifest.Documents {
+		bytes, err := os.ReadFile(filepath.Join(dir, saved.BytesFile))
 		if err != nil {
 			return err
 		}
-		if err := a.restoreRecoveredDocument(saved, recovered); err != nil {
+		recovered[i] = bytes
+	}
+	for i, saved := range manifest.Documents {
+		if err := a.restoreRecoveredDocument(saved, recovered[i]); err != nil {
 			return err
 		}
 	}
@@ -245,13 +253,31 @@ func (a *Application) RestoreRecovery(dir string) error {
 }
 
 func (a *Application) restoreRecoveredDocument(saved recoveryDocument, recovered []byte) error {
-	if _, exists := a.Documents[saved.ID]; !exists {
-		if _, err := os.Stat(saved.Path); err == nil {
+	id := saved.ID
+	identityMismatch := false
+	pathExists := false
+	if _, err := os.Stat(saved.Path); err == nil {
+		pathExists = true
+		// Document IDs resolve symlinks. The link may have been retargeted
+		// since the recovery snapshot, so opening the path can register a
+		// different ID than the one in the manifest. Keep using the current
+		// document, but force a conflict below so recovered bytes cannot be
+		// silently applied to the new target.
+		id = documentID(saved.Path)
+		identityMismatch = id != saved.ID
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if identityMismatch {
+		if _, exists := a.Documents[id]; exists {
+			return errors.New("cannot restore recovery: retargeted document is already open")
+		}
+	}
+	if _, exists := a.Documents[id]; !exists {
+		if pathExists {
 			if err := a.OpenDocument(saved.Path); err != nil {
 				return err
 			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
 		} else {
 			doc := document.New(saved.Path, recovered, string(language.DetectPath(saved.Path)))
 			doc.FileMode, doc.Format, doc.DiskVersion = saved.Mode, saved.Format, saved.BaseVersion
@@ -265,14 +291,17 @@ func (a *Application) restoreRecoveredDocument(saved recoveryDocument, recovered
 			a.Views[saved.ID] = saved.View
 		}
 	}
-	doc := a.Documents[saved.ID]
-	if !doc.DiskVersion.Equal(saved.BaseVersion) {
+	doc := a.Documents[id]
+	if doc == nil {
+		return errors.New("recovery document identity is unavailable")
+	}
+	if identityMismatch || !doc.DiskVersion.Equal(saved.BaseVersion) {
 		// Recovery stores the base fingerprint, but not a second copy of the
 		// base bytes. Keep the recovered bytes as the local side and retain the
 		// currently loaded disk bytes as the external side. The conflict gate
 		// ensures ordinary Save cannot overwrite those external changes until
 		// the user explicitly resolves the situation.
-		a.Conflicts[saved.ID] = Conflict{
+		a.Conflicts[id] = Conflict{
 			Disk:        append([]byte(nil), doc.Editor.Buffer.Text()...),
 			DiskVersion: doc.DiskVersion,
 			DiskMode:    doc.FileMode,
@@ -285,8 +314,8 @@ func (a *Application) restoreRecoveredDocument(saved recoveryDocument, recovered
 	}
 	doc.Editor.SetSelection(saved.Anchor, saved.Cursor)
 	doc.Editor.SetAffinity(saved.Affinity)
-	a.Views[saved.ID] = saved.View
-	a.Active = saved.ID
+	a.Views[id] = saved.View
+	a.Active = id
 	return nil
 }
 
@@ -302,7 +331,15 @@ func clearRecovery(dir string) error {
 	if err != nil {
 		return err
 	}
+	// Remove the manifest first. If cleanup is interrupted, leaving orphaned
+	// blobs is safe; leaving a manifest that references missing blobs is not.
+	if err := os.Remove(filepath.Join(dir, "manifest.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	for _, entry := range entries {
+		if entry.Name() == "manifest.json" {
+			continue
+		}
 		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
 			return err
 		}

@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -169,5 +170,73 @@ func TestAtomicWriteCleansTemporaryFileAfterRenameFailure(t *testing.T) {
 		if entry.Name() != "target-dir" {
 			t.Fatalf("temporary save artifact remains: %s", entry.Name())
 		}
+	}
+}
+
+func TestAtomicWriteIfVersionRefusesMutationImmediatelyBeforeReplace(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewOSFileStore()
+	expected, err := store.Verify(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeReplace := func(string) {
+		_ = os.WriteFile(target, []byte("external"), 0o644)
+	}
+	if err := atomicWriteFile(target, []byte("new"), 0, &expected, beforeReplace); !errors.Is(err, ErrVersionChanged) {
+		t.Fatalf("SaveIfVersion error = %v, want ErrVersionChanged", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "external" {
+		t.Fatalf("target = %q, err=%v", got, err)
+	}
+}
+
+func TestAtomicWriteIfVersionRefusesCreationImmediatelyBeforeReplace(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	beforeReplace := func(string) {
+		_ = os.WriteFile(target, []byte("external"), 0o644)
+	}
+	expected := DiskVersion{}
+	if err := atomicWriteFile(target, []byte("new"), 0, &expected, beforeReplace); !errors.Is(err, ErrVersionChanged) {
+		t.Fatalf("SaveIfVersion error = %v, want ErrVersionChanged", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "external" {
+		t.Fatalf("target = %q, err=%v", got, err)
+	}
+}
+
+func TestAtomicWriteIfVersionRefusesSymlinkRetargetImmediatelyBeforeReplace(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	other := filepath.Join(dir, "other")
+	link := filepath.Join(dir, "link")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	store := NewOSFileStore()
+	expected, err := store.Verify(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeReplace := func(string) {
+		_ = os.Remove(link)
+		_ = os.Symlink(other, link)
+	}
+	if err := atomicWriteFile(link, []byte("new"), 0, &expected, beforeReplace); !errors.Is(err, ErrVersionChanged) {
+		t.Fatalf("SaveIfVersion error = %v, want ErrVersionChanged", err)
+	}
+	if got, err := os.ReadFile(other); err != nil || string(got) != "old" {
+		t.Fatalf("retargeted destination = %q, err=%v", got, err)
 	}
 }

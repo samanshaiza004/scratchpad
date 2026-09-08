@@ -37,11 +37,7 @@ func main() {
 			fmt.Println(err)
 		}
 	} else {
-		if _, err := os.Stat(filepath.Join(recoveryDir, "manifest.json")); err == nil {
-			_ = state.RestoreRecovery(recoveryDir)
-		} else {
-			_ = state.RestoreSession(sessionPath)
-		}
+		restoreStartup(state, recoveryDir, sessionPath)
 	}
 	watcher, _ := workspace.NewOSWatcher()
 	if watcher != nil {
@@ -52,4 +48,13 @@ func main() {
 	app.Run(func() { ui.RootView(state) })
 	_ = state.FlushRecovery(recoveryDir)
 	_ = state.SaveSession(sessionPath)
+}
+
+func restoreStartup(state *application.Application, recoveryDir, sessionPath string) {
+	if _, err := os.Stat(filepath.Join(recoveryDir, "manifest.json")); err == nil {
+		if err := state.RestoreRecovery(recoveryDir); err == nil {
+			return
+		}
+	}
+	_ = state.RestoreSession(sessionPath)
 }

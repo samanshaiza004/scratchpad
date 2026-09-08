@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -69,6 +70,7 @@ func RootView(state *application.Application) {
 					tabs(state, shell, theme)
 				}
 				findBar(state, shell, theme)
+				saveNoticePanel(shell, theme)
 				conflictPanel(state, shell, theme)
 				closePanel(state, shell, theme)
 				if doc := state.ActiveDocument(); doc != nil {
@@ -150,6 +152,13 @@ type workbenchState struct {
 	RevealPath         func(string) error
 	TabIDs             map[application.DocumentID]ContainerId // transient handles used by interaction tests
 	TabCloseIDs        map[application.DocumentID]ContainerId // transient handles used by interaction tests
+
+	SaveAsError             string
+	SaveNotice              string
+	ShowSaveAsOverwrite     bool
+	SaveAsOverwriteDocument application.DocumentID
+	SaveAsOverwritePath     string
+	SaveAsOverwriteVersion  workspace.DiskVersion
 }
 
 type SidebarMode uint8
@@ -199,7 +208,10 @@ func setEditorFontSize(state *application.Application, shell *workbenchState, si
 	}
 	shell.EditorFontSize = clampEditorFontSize(size)
 	if state != nil {
-		if doc := state.ActiveDocument(); doc != nil {
+		for _, doc := range state.Documents {
+			if doc == nil {
+				continue
+			}
 			doc.Editor.ClearPreferredVerticalX()
 		}
 	}
@@ -851,6 +863,121 @@ func conflictPanel(state *application.Application, shell *workbenchState, theme 
 	}
 }
 
+func saveNoticePanel(shell *workbenchState, theme Theme) {
+	if shell == nil || shell.SaveNotice == "" {
+		return
+	}
+	color := theme.Warning
+	Container(Attrs(Row, CrossMid, Gap(7), FixHeight(34), Pad2(3, 8), BackgroundVec(color), BorderWidth(1), BorderColorVec(theme.Border)), func() {
+		Label(shell.SaveNotice, FontSize(11), TextColorVec(theme.Ink))
+		Container(Attrs(Grow(1)), func() {})
+		if WorkstationToolButton(theme, "Dismiss", true) {
+			shell.SaveNotice = ""
+		}
+	})
+}
+
+func saveWarningCommitted(state *application.Application, err error, path, beforePath string, beforeVersion workspace.DiskVersion, beforeDirty bool) bool {
+	if !errors.Is(err, workspace.ErrParentDirSync) || state == nil {
+		return false
+	}
+	doc := state.ActiveDocument()
+	if doc == nil || doc.Dirty() {
+		return false
+	}
+	if path != "" && filepath.Clean(doc.Path) != filepath.Clean(path) {
+		return false
+	}
+	return beforeDirty || doc.Path != beforePath || doc.DiskVersion != beforeVersion
+}
+
+func clearSaveNotice(shell *workbenchState) {
+	shell.SaveNotice = ""
+}
+
+func recordSaveNotice(shell *workbenchState, err error, committedWarning bool) {
+	if err == nil {
+		clearSaveNotice(shell)
+		return
+	}
+	if committedWarning {
+		shell.SaveNotice = "Saved with a durability warning: " + err.Error()
+		return
+	}
+	shell.SaveNotice = "Save failed: " + err.Error()
+}
+
+func saveAsFromModal(state *application.Application, shell *workbenchState, path string) {
+	if state == nil || shell == nil || state.Active == "" {
+		return
+	}
+	beforeDoc := state.ActiveDocument()
+	var beforePath string
+	var beforeVersion workspace.DiskVersion
+	var beforeDirty bool
+	if beforeDoc != nil {
+		beforePath, beforeVersion, beforeDirty = beforeDoc.Path, beforeDoc.DiskVersion, beforeDoc.Dirty()
+	}
+	err := state.SaveAs(state.Active, path)
+	if err == nil {
+		shell.ShowSaveAs = false
+		shell.SaveAsError = ""
+		clearSaveNotice(shell)
+		return
+	}
+	if saveWarningCommitted(state, err, path, beforePath, beforeVersion, beforeDirty) {
+		shell.ShowSaveAs = false
+		shell.SaveAsError = ""
+		recordSaveNotice(shell, err, true)
+		return
+	}
+	var request *application.SaveAsDestinationExistsError
+	if errors.As(err, &request) {
+		shell.ShowSaveAs = false
+		shell.ShowSaveAsOverwrite = true
+		shell.SaveAsOverwriteDocument = state.Active
+		shell.SaveAsOverwritePath = request.Path
+		shell.SaveAsOverwriteVersion = request.Version
+		shell.SaveAsError = ""
+		return
+	}
+	shell.SaveAsError = "Save failed: " + err.Error()
+}
+
+func confirmSaveAsFromModal(state *application.Application, shell *workbenchState) {
+	if state == nil || shell == nil {
+		return
+	}
+	beforeDoc := state.ActiveDocument()
+	var beforePath string
+	var beforeVersion workspace.DiskVersion
+	var beforeDirty bool
+	if beforeDoc != nil {
+		beforePath, beforeVersion, beforeDirty = beforeDoc.Path, beforeDoc.DiskVersion, beforeDoc.Dirty()
+	}
+	err := state.ConfirmSaveAs(shell.SaveAsOverwriteDocument, shell.SaveAsOverwritePath, shell.SaveAsOverwriteVersion)
+	if err == nil {
+		shell.ShowSaveAsOverwrite = false
+		shell.SaveAsError = ""
+		clearSaveNotice(shell)
+		return
+	}
+	if saveWarningCommitted(state, err, shell.SaveAsOverwritePath, beforePath, beforeVersion, beforeDirty) {
+		shell.ShowSaveAsOverwrite = false
+		shell.SaveAsError = ""
+		recordSaveNotice(shell, err, true)
+		return
+	}
+	if errors.Is(err, document.ErrDiskChanged) {
+		shell.ShowSaveAsOverwrite = false
+		shell.ShowSaveAs = true
+		shell.SaveAsPath = shell.SaveAsOverwritePath
+		shell.SaveAsError = "The destination changed on disk. Review and confirm again."
+		return
+	}
+	shell.SaveAsError = "Save failed: " + err.Error()
+}
+
 func closePanel(state *application.Application, shell *workbenchState, theme Theme) {
 	if shell.ClosePending == "" {
 		return
@@ -957,17 +1084,43 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 		})
 	}
 	if shell.ShowSaveAs {
-		WorkstationModal(theme, 520, func() { shell.ShowSaveAs = false }, func() {
+		WorkstationModal(theme, 520, func() { shell.ShowSaveAs = false; shell.SaveAsError = "" }, func() {
 			Label("Save As", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
+			if shell.SaveAsError != "" {
+				Label(shell.SaveAsError, FontSize(11), TextColorVec(theme.Warning))
+			}
 			field := DefaultTextInputAttrs()
 			field.MinWidth = 420
 			TextInputExt(&shell.SaveAsPath, field)
 			Container(Attrs(Row, Gap(6)), func() {
-				if WorkstationButton(theme, "Save As", true) && state.Active != "" && state.SaveAs(state.Active, shell.SaveAsPath) == nil {
-					shell.ShowSaveAs = false
+				if WorkstationButton(theme, "Save As", true) && state.Active != "" {
+					saveAsFromModal(state, shell, shell.SaveAsPath)
 				}
 				if WorkstationButton(theme, "Cancel", true) {
 					shell.ShowSaveAs = false
+					shell.SaveAsError = ""
+				}
+			})
+		})
+	}
+	if shell.ShowSaveAsOverwrite {
+		WorkstationModal(theme, 520, func() {
+			shell.ShowSaveAsOverwrite = false
+			shell.SaveAsError = ""
+		}, func() {
+			Label("Replace existing file?", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
+			Label(shell.SaveAsOverwritePath, FontSize(11), TextColorVec(theme.Muted))
+			Label("The file already exists. Replace it with the current document?", FontSize(11), TextColorVec(theme.Ink))
+			if shell.SaveAsError != "" {
+				Label(shell.SaveAsError, FontSize(11), TextColorVec(theme.Warning))
+			}
+			Container(Attrs(Row, Gap(6)), func() {
+				if WorkstationButton(theme, "Replace", true) {
+					confirmSaveAsFromModal(state, shell)
+				}
+				if WorkstationButton(theme, "Cancel", true) {
+					shell.ShowSaveAsOverwrite = false
+					shell.SaveAsError = ""
 				}
 			})
 		})
@@ -1232,10 +1385,25 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		openPathPicker(state, shell)
 		return true
 	case commands.FileSave:
-		_ = state.SaveActive()
+		id := state.Active
+		beforeDoc := state.Documents[id]
+		var beforePath string
+		var beforeVersion workspace.DiskVersion
+		var beforeDirty bool
+		if beforeDoc != nil {
+			beforePath, beforeVersion, beforeDirty = beforeDoc.Path, beforeDoc.DiskVersion, beforeDoc.Dirty()
+		}
+		err := state.SaveActive()
+		var path string
+		if doc := state.Documents[id]; doc != nil {
+			path = doc.Path
+		}
+		recordSaveNotice(shell, err, saveWarningCommitted(state, err, path, beforePath, beforeVersion, beforeDirty))
 	case commands.FileSaveAs:
 		if doc := state.ActiveDocument(); doc != nil {
 			shell.SaveAsPath = doc.Path
+			shell.SaveAsError = ""
+			clearSaveNotice(shell)
 			shell.ShowSaveAs = true
 		}
 	case commands.DocumentFind:
