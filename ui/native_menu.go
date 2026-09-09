@@ -40,9 +40,13 @@ func nativeMenuBar(state *application.Application, shell *workbenchState) bool {
 			commandItem(commands.EditSelectAll, "Select All", "a", state.ActiveDocument() != nil),
 			{Kind: nativemenu.SeparatorItem},
 			commandItem(commands.DocumentFind, "Find…", "f", state.ActiveDocument() != nil),
+			commandItem(commands.DocumentFindReplace, "Find and Replace…", "h", state.ActiveDocument() != nil),
+			commandItem(commands.EditJoinLines, "Join Lines", "", state.ActiveDocument() != nil),
 		}},
 		{Label: "View", Items: []nativemenu.Item{
 			commandItem(commands.OutlineToggle, "Outline", "", state.ActiveDocument() != nil),
+			commandItem(viewToggleLineNumbers, "Line Numbers", "", state.ActiveDocument() != nil),
+			commandItem(viewToggleWrap, "Word Wrap", "", state.ActiveDocument() != nil),
 			commandItemWithModifiers(commands.ViewIncreaseFontSize, "Increase Editor Font Size", "=", nativemenu.ModPrimary|nativemenu.ModShift, true),
 			commandItem(commands.ViewDecreaseFontSize, "Decrease Editor Font Size", "-", true),
 			commandItem(commands.ViewResetFontSize, "Reset Editor Font Size", "0", true),

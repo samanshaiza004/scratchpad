@@ -88,10 +88,10 @@ func Execute(request Request) Outcome {
 	if request.Cursor < 0 || request.Cursor > len(request.Source) || request.Anchor < 0 || request.Anchor > len(request.Source) {
 		return Outcome{Status: ResultFailed, Err: errors.New("caret outside source")}
 	}
-	if request.RootLanguage != "markdown" && request.ID != CommentToggle {
+	if request.RootLanguage != "markdown" && request.ID != CommentToggle && !isLineEditCommand(request.ID) {
 		return Outcome{Status: ResultUnavailable}
 	}
-	if request.RootLanguage == "markdown" && request.InFence && request.ID != MarkdownSetFenceLanguage {
+	if request.RootLanguage == "markdown" && request.InFence && request.ID != MarkdownSetFenceLanguage && !isLineEditCommand(request.ID) {
 		return Outcome{Status: ResultUnavailable}
 	}
 	start, end := orderedRange(request)
@@ -142,8 +142,37 @@ func Execute(request Request) Outcome {
 		return toggleComment(request, start, end)
 	case MarkdownSmartPaste:
 		return smartPaste(request, start, end)
+	case EditIndentLines:
+		return indentLines(request, start, end)
+	case EditOutdentLines:
+		return outdentLines(request, start, end)
+	case EditDeleteLine:
+		return deleteLines(request, start, end)
+	case EditInsertLineAbove:
+		return insertLine(request, start, end, false)
+	case EditInsertLineBelow:
+		return insertLine(request, start, end, true)
+	case EditMoveLineUp:
+		return moveLines(request, start, end, false)
+	case EditMoveLineDown:
+		return moveLines(request, start, end, true)
+	case EditDuplicateLine:
+		return duplicateLines(request, start, end)
+	case EditJoinLines:
+		return joinLines(request, start, end)
 	default:
 		return Outcome{Status: ResultUnavailable}
+	}
+}
+
+func isLineEditCommand(id ID) bool {
+	switch id {
+	case EditIndentLines, EditOutdentLines, EditDeleteLine, EditInsertLineAbove,
+		EditInsertLineBelow, EditMoveLineUp, EditMoveLineDown, EditDuplicateLine,
+		EditJoinLines:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -298,6 +327,378 @@ func lineBounds(source []byte, start, end int) (int, int) {
 		end++
 	}
 	return start, end
+}
+
+// sourceLine keeps the byte boundaries used by the editor while exposing a
+// line's text without the CR in a CRLF terminator. Line commands operate on
+// these logical lines and return one replacement so the caller can journal
+// the whole action as a single undoable edit.
+type sourceLine struct {
+	start   int
+	end     int
+	fullEnd int
+	text    string
+}
+
+func sourceLines(source []byte) []sourceLine {
+	lines := make([]sourceLine, 0, bytes.Count(source, []byte{'\n'})+1)
+	start := 0
+	for {
+		lf := bytes.IndexByte(source[start:], '\n')
+		if lf < 0 {
+			end := len(source)
+			textEnd := end
+			if textEnd > start && source[textEnd-1] == '\r' {
+				textEnd--
+			}
+			lines = append(lines, sourceLine{start: start, end: end, fullEnd: end, text: string(source[start:textEnd])})
+			return lines
+		}
+		end := start + lf
+		textEnd := end
+		if textEnd > start && source[textEnd-1] == '\r' {
+			textEnd--
+		}
+		lines = append(lines, sourceLine{start: start, end: textEnd, fullEnd: end + 1, text: string(source[start:textEnd])})
+		start = end + 1
+		if start > len(source) {
+			return lines
+		}
+	}
+}
+
+func lineEnding(source []byte) string {
+	if at := bytes.IndexByte(source, '\n'); at >= 0 {
+		if at > 0 && source[at-1] == '\r' {
+			return "\r\n"
+		}
+	}
+	return "\n"
+}
+
+func selectedLines(source []byte, start, end int) ([]sourceLine, int, int, int, int, string, bool) {
+	lines := sourceLines(source)
+	if len(lines) == 0 {
+		return nil, 0, 0, 0, 0, "\n", false
+	}
+	first, ok := lineAt(source, start)
+	if !ok {
+		first = 0
+	}
+	last, ok := lineAt(source, end)
+	if !ok {
+		last = first
+	}
+	// A selection ending at the beginning of a line selects the preceding
+	// line, which is the useful behavior for line-wise editing.
+	if start != end && end > 0 && end <= len(source) && source[end-1] == '\n' {
+		last--
+	}
+	if first < 0 {
+		first = 0
+	}
+	if first >= len(lines) {
+		first = len(lines) - 1
+	}
+	if last < first {
+		last = first
+	}
+	if last >= len(lines) {
+		last = len(lines) - 1
+	}
+	regionStart, regionEnd := lines[first].start, lines[last].fullEnd
+	terminal := regionEnd > regionStart && source[regionEnd-1] == '\n'
+	return lines, first, last, regionStart, regionEnd, lineEnding(source), terminal
+}
+
+func renderLineTexts(texts []string, eol string, terminal bool) string {
+	result := strings.Join(texts, eol)
+	if terminal {
+		result += eol
+	}
+	return result
+}
+
+func removeOneIndent(text string) string {
+	if strings.HasPrefix(text, "\t") {
+		return text[1:]
+	}
+	spaces := 0
+	for spaces < len(text) && text[spaces] == ' ' {
+		spaces++
+	}
+	if spaces == 0 {
+		return text
+	}
+	if spaces > 4 {
+		spaces = 4
+	}
+	return text[spaces:]
+}
+
+func lineRegionPosition(position, regionStart, regionEnd int, original []sourceLine, transformed []string, eol string, lineMap, localDelta []int) int {
+	oldLength := regionEnd - regionStart
+	newLength := len(renderLineTexts(transformed, eol, regionEnd > regionStart && original[len(original)-1].fullEnd > original[len(original)-1].end))
+	terminal := original[len(original)-1].fullEnd > original[len(original)-1].end
+	if position < regionStart {
+		return position
+	}
+	if position > regionEnd || (position == regionEnd && !terminal) {
+		return position + newLength - oldLength
+	}
+	lineIndex := len(original) - 1
+	for i, line := range original {
+		if position >= line.start && position <= line.end {
+			lineIndex = i
+			break
+		}
+		if position < line.fullEnd {
+			lineIndex = i
+			position = line.end
+			break
+		}
+	}
+	newIndex := lineMap[lineIndex]
+	newStart := regionStart
+	for i := 0; i < newIndex; i++ {
+		newStart += len(transformed[i]) + len(eol)
+	}
+	local := position - original[lineIndex].start + localDelta[lineIndex]
+	if local < 0 {
+		local = 0
+	}
+	if local > len(transformed[newIndex]) {
+		local = len(transformed[newIndex])
+	}
+	return newStart + local
+}
+
+func identityLineMap(count int) ([]int, []int) {
+	lineMap := make([]int, count)
+	localDelta := make([]int, count)
+	for i := range lineMap {
+		lineMap[i] = i
+	}
+	return lineMap, localDelta
+}
+
+func indentLines(request Request, start, end int) Outcome {
+	lines, first, last, regionStart, regionEnd, eol, terminal := selectedLines(request.Source, start, end)
+	original := append([]sourceLine(nil), lines[first:last+1]...)
+	transformed := make([]string, len(original))
+	localDelta := make([]int, len(original))
+	for i, line := range original {
+		transformed[i] = "\t" + line.text
+		localDelta[i] = 1
+	}
+	replacement := renderLineTexts(transformed, eol, terminal)
+	lineMap, _ := identityLineMap(len(original))
+	cursor := lineRegionPosition(request.Cursor, regionStart, regionEnd, original, transformed, eol, lineMap, localDelta)
+	anchor := lineRegionPosition(request.Anchor, regionStart, regionEnd, original, transformed, eol, lineMap, localDelta)
+	if replacement == string(request.Source[regionStart:regionEnd]) {
+		return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
+	}
+	return outcome(request, regionStart, regionEnd, replacement, cursor, anchor)
+}
+
+func outdentLines(request Request, start, end int) Outcome {
+	lines, first, last, regionStart, regionEnd, eol, terminal := selectedLines(request.Source, start, end)
+	original := append([]sourceLine(nil), lines[first:last+1]...)
+	transformed := make([]string, len(original))
+	localDelta := make([]int, len(original))
+	for i, line := range original {
+		transformed[i] = removeOneIndent(line.text)
+		localDelta[i] = len(transformed[i]) - len(line.text)
+	}
+	replacement := renderLineTexts(transformed, eol, terminal)
+	lineMap, _ := identityLineMap(len(original))
+	cursor := lineRegionPosition(request.Cursor, regionStart, regionEnd, original, transformed, eol, lineMap, localDelta)
+	anchor := lineRegionPosition(request.Anchor, regionStart, regionEnd, original, transformed, eol, lineMap, localDelta)
+	if replacement == string(request.Source[regionStart:regionEnd]) {
+		return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
+	}
+	return outcome(request, regionStart, regionEnd, replacement, cursor, anchor)
+}
+
+func deleteLines(request Request, start, end int) Outcome {
+	lines, first, _, _, regionEnd, _, _ := selectedLines(request.Source, start, end)
+	deleteStart := lines[first].start
+	deleteEnd := regionEnd
+	if deleteStart == deleteEnd {
+		return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
+	}
+	return Outcome{Status: ResultExecuted, Start: deleteStart, End: deleteEnd, Replacement: []byte{}, Cursor: deleteStart, Anchor: deleteStart}
+}
+
+func insertLine(request Request, start, end int, below bool) Outcome {
+	lines, first, last, _, _, eol, _ := selectedLines(request.Source, start, end)
+	position := lines[first].start
+	if below {
+		position = lines[last].end
+	}
+	caret := position
+	if below {
+		caret += len(eol)
+	}
+	return outcome(request, position, position, eol, caret, caret)
+}
+
+func moveLines(request Request, start, end int, down bool) Outcome {
+	lines, first, last, _, _, eol, _ := selectedLines(request.Source, start, end)
+	neighbor := first - 1
+	if down {
+		neighbor = last + 1
+	}
+	if neighbor < 0 || neighbor >= len(lines) {
+		return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
+	}
+	regionFirst, regionLast := first, last
+	if !down {
+		regionFirst = neighbor
+	} else {
+		regionLast = neighbor
+	}
+	original := append([]sourceLine(nil), lines[regionFirst:regionLast+1]...)
+	transformed := make([]string, len(original))
+	lineMap := make([]int, len(original))
+	localDelta := make([]int, len(original))
+	if down {
+		transformed[0] = original[len(original)-1].text
+		lineMap[len(original)-1] = 0
+		for i := 0; i < len(original)-1; i++ {
+			transformed[i+1] = original[i].text
+			lineMap[i] = i + 1
+		}
+	} else {
+		for i := 0; i < len(original)-1; i++ {
+			transformed[i] = original[i+1].text
+			lineMap[i+1] = i
+		}
+		transformed[len(original)-1] = original[0].text
+		lineMap[0] = len(original) - 1
+	}
+	regionStart, regionEnd := lines[regionFirst].start, lines[regionLast].fullEnd
+	terminal := regionEnd > regionStart && request.Source[regionEnd-1] == '\n'
+	replacement := renderLineTexts(transformed, eol, terminal)
+	cursor := lineRegionPosition(request.Cursor, regionStart, regionEnd, original, transformed, eol, lineMap, localDelta)
+	anchor := lineRegionPosition(request.Anchor, regionStart, regionEnd, original, transformed, eol, lineMap, localDelta)
+	if replacement == string(request.Source[regionStart:regionEnd]) {
+		return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
+	}
+	return outcome(request, regionStart, regionEnd, replacement, cursor, anchor)
+}
+
+func duplicateLines(request Request, start, end int) Outcome {
+	lines, first, last, regionStart, regionEnd, eol, terminal := selectedLines(request.Source, start, end)
+	original := append([]sourceLine(nil), lines[first:last+1]...)
+	texts := make([]string, len(original))
+	for i, line := range original {
+		texts[i] = line.text
+	}
+	copyText := renderLineTexts(texts, eol, terminal)
+	copyStart := regionEnd
+	if !terminal {
+		copyText = eol + copyText
+		copyStart += len(eol)
+	}
+	inserted := len(copyText)
+	mapPosition := func(position int) int {
+		if position < regionStart {
+			return position
+		}
+		if position > regionEnd || (position == regionEnd && !terminal) {
+			return position + inserted
+		}
+		local := position - regionStart
+		if local < 0 {
+			local = 0
+		}
+		if local > len(renderLineTexts(texts, eol, terminal)) {
+			local = len(renderLineTexts(texts, eol, terminal))
+		}
+		return copyStart + local
+	}
+	return outcome(request, regionEnd, regionEnd, copyText, mapPosition(request.Cursor), mapPosition(request.Anchor))
+}
+
+func joinLines(request Request, start, end int) Outcome {
+	lines, first, last, _, _, eol, _ := selectedLines(request.Source, start, end)
+	if start == end {
+		last++
+	}
+	if last >= len(lines) {
+		return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
+	}
+	original := append([]sourceLine(nil), lines[first:last+1]...)
+	texts := make([]string, len(original))
+	for i, line := range original {
+		texts[i] = line.text
+	}
+	joined, bases := joinedTextAndBases(texts)
+	regionStart, regionEnd := lines[first].start, lines[last].fullEnd
+	terminal := regionEnd > regionStart && request.Source[regionEnd-1] == '\n'
+	replacement := renderLineTexts([]string{joined}, eol, terminal)
+	mapPosition := func(position int) int {
+		oldLength := regionEnd - regionStart
+		newLength := len(replacement)
+		if position < regionStart {
+			return position
+		}
+		if position > regionEnd || (position == regionEnd && !terminal) {
+			return position + newLength - oldLength
+		}
+		index := len(original) - 1
+		for i, line := range original {
+			if position >= line.start && position <= line.end {
+				index = i
+				break
+			}
+			if position < line.fullEnd {
+				index = i
+				position = line.end
+				break
+			}
+		}
+		local := position - original[index].start
+		leftTrim := len(strings.TrimRight(original[index].text, " \t"))
+		leading := len(original[index].text) - len(strings.TrimLeft(original[index].text, " \t"))
+		if index > 0 {
+			local -= leading
+		}
+		if local < 0 {
+			local = 0
+		}
+		if local > leftTrim && index == 0 {
+			local = leftTrim
+		}
+		if local > len(joined)-bases[index] {
+			local = len(joined) - bases[index]
+		}
+		return regionStart + bases[index] + local
+	}
+	if replacement == string(request.Source[regionStart:regionEnd]) {
+		return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
+	}
+	return outcome(request, regionStart, regionEnd, replacement, mapPosition(request.Cursor), mapPosition(request.Anchor))
+}
+
+func joinedTextAndBases(texts []string) (string, []int) {
+	if len(texts) == 0 {
+		return "", nil
+	}
+	result := texts[0]
+	bases := make([]int, len(texts))
+	for i := 1; i < len(texts); i++ {
+		left := strings.TrimRight(result, " \t")
+		right := strings.TrimLeft(texts[i], " \t")
+		separator := ""
+		if left != "" && right != "" {
+			separator = " "
+		}
+		result = left + separator + right
+		bases[i] = len(left) + len(separator)
+	}
+	return result, bases
 }
 
 func toggleLinePrefix(request Request, start, end int, prefix string, heading bool) Outcome {

@@ -10,6 +10,7 @@ const (
 	FileSave              ID = "file.save"
 	FileSaveAs            ID = "file.save-as"
 	DocumentFind          ID = "document.find"
+	DocumentFindReplace   ID = "document.find-replace"
 	QuickOpen             ID = "file.quick-open"
 	WorkspaceSearch       ID = "workspace.search"
 	DocumentClose         ID = "document.close"
@@ -44,6 +45,15 @@ const (
 	EditCopy              ID = "edit.copy"
 	EditPaste             ID = "edit.paste"
 	EditSelectAll         ID = "edit.select-all"
+	EditIndentLines       ID = "edit.indent-lines"
+	EditOutdentLines      ID = "edit.outdent-lines"
+	EditDeleteLine        ID = "edit.delete-line"
+	EditInsertLineAbove   ID = "edit.insert-line-above"
+	EditInsertLineBelow   ID = "edit.insert-line-below"
+	EditMoveLineUp        ID = "edit.move-line-up"
+	EditMoveLineDown      ID = "edit.move-line-down"
+	EditDuplicateLine     ID = "edit.duplicate-line"
+	EditJoinLines         ID = "edit.join-lines"
 
 	MarkdownToggleStrong       ID = "markdown.toggle-strong"
 	MarkdownToggleEmphasis     ID = "markdown.toggle-emphasis"
@@ -72,6 +82,7 @@ var InitialVocabulary = []ID{
 	FileSave,
 	FileSaveAs,
 	DocumentFind,
+	DocumentFindReplace,
 	QuickOpen,
 	WorkspaceSearch,
 	DocumentClose,
@@ -106,6 +117,15 @@ var InitialVocabulary = []ID{
 	EditCopy,
 	EditPaste,
 	EditSelectAll,
+	EditIndentLines,
+	EditOutdentLines,
+	EditDeleteLine,
+	EditInsertLineAbove,
+	EditInsertLineBelow,
+	EditMoveLineUp,
+	EditMoveLineDown,
+	EditDuplicateLine,
+	EditJoinLines,
 	MarkdownToggleStrong,
 	MarkdownToggleEmphasis,
 	MarkdownToggleStrike,

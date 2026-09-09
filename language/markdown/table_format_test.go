@@ -90,8 +90,32 @@ func TestFormatTableClustersJoinedEmojiAndCombiningText(t *testing.T) {
 	if !ok {
 		t.Fatal("FormatTable returned !ok")
 	}
-	want := "| a   |\n| --- |\n| 👩‍💻  |\n| 👍🏽  |\n| 🇬🇹  |\n| é   |\n| का   |\n"
+	want := "| a   |\n| --- |\n| 👩‍💻  |\n| 👍🏽  |\n| 🇬🇹  |\n| é   |\n| का  |\n"
 	if string(formatted) != want {
 		t.Fatalf("formatted = %q, want %q", formatted, want)
+	}
+}
+
+func TestTableCellDisplayWidthUsesUnicodeGraphemeWidth(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want int
+	}{
+		{"text presentation", "☺", 1},
+		{"emoji presentation", "☺️", 2},
+		{"joined emoji", "👩‍💻", 2},
+		{"emoji modifier", "👍🏽", 2},
+		{"regional indicator pair", "🇬🇹", 2},
+		{"combining mark", "é", 1},
+		{"Indic cluster", "का", 2},
+		{"wide CJK", "界", 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := tableCellDisplayWidth([]byte(test.text)); got != test.want {
+				t.Fatalf("tableCellDisplayWidth(%q) = %d, want %d", test.text, got, test.want)
+			}
+		})
 	}
 }

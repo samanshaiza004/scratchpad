@@ -1481,12 +1481,24 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 	if primary == ModCmd {
 		wordMod = ModAlt
 	}
+	pageLines := 1
+	if rowHeight > 0 && content.Size[1] > 0 {
+		pageLines = maxInt(1, int(content.Size[1]/rowHeight))
+	}
 	if frame.Key != KeyCodeNone {
 		switch {
 		case frame.Key == KeyUp && input.Modifiers&^ModShift == 0:
 			moveEditorVerticalLayoutWithWrapPolicy(e, style, rows, -1, shift, wrap, lineWidth, lineWidthFor, lineCache, presentation, styler, spanStyler, presentationKey)
 		case frame.Key == KeyDown && input.Modifiers&^ModShift == 0:
 			moveEditorVerticalLayoutWithWrapPolicy(e, style, rows, 1, shift, wrap, lineWidth, lineWidthFor, lineCache, presentation, styler, spanStyler, presentationKey)
+		case frame.Key == KeyPageUp && input.Modifiers&^ModShift == 0:
+			e.PageUp(pageLines, shift)
+		case frame.Key == KeyPageDown && input.Modifiers&^ModShift == 0:
+			e.PageDown(pageLines, shift)
+		case frame.Key == KeyHome && input.Modifiers&^ModShift == primary:
+			e.MoveDocumentStart(shift)
+		case frame.Key == KeyEnd && input.Modifiers&^ModShift == primary:
+			e.MoveDocumentEnd(shift)
 		case frame.Key == KeyHome && input.Modifiers&^ModShift == 0:
 			moveEditorLineBoundary(e, false, shift)
 		case frame.Key == KeyEnd && input.Modifiers&^ModShift == 0:
@@ -1503,6 +1515,32 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 			_ = e.DeleteWordBackward()
 		case frame.Key == KeyDeleteForward && input.Modifiers&^ModShift == wordMod:
 			_ = e.DeleteWordForward()
+		case frame.Key == KeyTab && input.Modifiers == 0:
+			_ = e.Indent()
+		case frame.Key == KeyTab && input.Modifiers == ModShift:
+			_ = e.Outdent()
+		case frame.Key == KeyCode(']') && input.Modifiers == primary:
+			_ = e.Indent()
+		case frame.Key == KeyCode('[') && input.Modifiers == primary:
+			_ = e.Outdent()
+		case frame.Key == KeyK && input.Modifiers == primary|ModShift:
+			_ = e.DeleteLine()
+		case frame.Key == KeyEnter && input.Modifiers == primary:
+			_ = e.InsertLineBelow()
+		case frame.Key == KeyEnter && input.Modifiers == primary|ModShift:
+			_ = e.InsertLineAbove()
+		case (frame.Key == KeyUp || frame.Key == KeyDown) && input.Modifiers == ModAlt:
+			if frame.Key == KeyUp {
+				_ = e.MoveLineUp()
+			} else {
+				_ = e.MoveLineDown()
+			}
+		case (frame.Key == KeyUp || frame.Key == KeyDown) && input.Modifiers == ModAlt|ModShift:
+			if frame.Key == KeyUp {
+				_ = e.DuplicateLineUp()
+			} else {
+				_ = e.DuplicateLineDown()
+			}
 		case frame.Key == KeyLeft && input.Modifiers&^ModShift == 0:
 			e.MoveLeft(shift)
 		case frame.Key == KeyRight && input.Modifiers&^ModShift == 0:
@@ -1513,6 +1551,8 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 			_ = e.DeleteForward()
 		case frame.Key == KeyEnter && input.Modifiers == 0:
 			_ = e.Insert([]byte("\n"))
+		case frame.Key == KeyL && input.Modifiers == primary:
+			e.SelectLine()
 		case frame.Key == KeyA && input.Modifiers == primary:
 			e.SelectAll()
 		case frame.Key == KeyC && input.Modifiers == primary:

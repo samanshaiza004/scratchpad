@@ -10,8 +10,8 @@ import (
 )
 
 func TestInitialVocabularyIsStableAndUnified(t *testing.T) {
-	if len(InitialVocabulary) != 58 {
-		t.Fatalf("got %d commands, want 58", len(InitialVocabulary))
+	if len(InitialVocabulary) != 68 {
+		t.Fatalf("got %d commands, want 68", len(InitialVocabulary))
 	}
 	seen := map[ID]bool{}
 	for _, id := range InitialVocabulary {

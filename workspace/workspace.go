@@ -14,7 +14,8 @@ import (
 )
 
 type Workspace struct {
-	Root string
+	Root  string
+	state *walkerState
 }
 
 // ErrParentDirSync reports that a file replacement completed but the parent
@@ -37,7 +38,7 @@ func Open(root string) (Workspace, error) {
 	if !info.IsDir() {
 		return Workspace{}, errors.New("workspace root is not a directory")
 	}
-	return Workspace{Root: filepath.Clean(abs)}, nil
+	return Workspace{Root: filepath.Clean(abs), state: newWalkerState(filepath.Clean(abs))}, nil
 }
 
 // RelativePath accepts a path inside the workspace and rejects traversal. It

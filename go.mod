@@ -1,6 +1,6 @@
 module scratchpad
 
-go 1.25.0
+go 1.25.5
 
 require go.hasen.dev/shirei v0.6.7
 
@@ -8,6 +8,8 @@ require github.com/fsnotify/fsnotify v1.9.0
 
 require (
 	github.com/cli/browser v1.3.0
+	github.com/git-pkgs/gitignore v1.2.0
+	github.com/rivo/uniseg v0.4.7
 	github.com/yuin/goldmark/v2 v2.0.0
 	go.hasen.dev/shirei/ext/menu v0.0.0-20260831165933-74264b2ca726
 	golang.org/x/sys v0.46.0
