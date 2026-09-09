@@ -33,6 +33,11 @@ const (
 	ViewResetFontSize     ID = "view.reset-font-size"
 	WorkspaceRefresh      ID = "workspace.refresh"
 	WorkspaceToggleFolder ID = "workspace.toggle-folder"
+	WorkspaceNewFile      ID = "workspace.new-file"
+	WorkspaceNewFolder    ID = "workspace.new-folder"
+	WorkspaceRename       ID = "workspace.rename"
+	WorkspaceMove         ID = "workspace.move"
+	WorkspaceTrash        ID = "workspace.trash"
 	OutlineToggle         ID = "outline.toggle"
 	ItemToggle            ID = "item.toggle"
 	SelectionExpand       ID = "selection.expand"
@@ -95,6 +100,11 @@ var InitialVocabulary = []ID{
 	ViewResetFontSize,
 	WorkspaceRefresh,
 	WorkspaceToggleFolder,
+	WorkspaceNewFile,
+	WorkspaceNewFolder,
+	WorkspaceRename,
+	WorkspaceMove,
+	WorkspaceTrash,
 	OutlineToggle,
 	ItemToggle,
 	SelectionExpand,

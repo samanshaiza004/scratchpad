@@ -64,6 +64,13 @@ editor; opening a directory enables the workspace tree and its per-document
 views. `ui` owns this presentation choice, while `application.OpenPath` stays
 the shared file-or-directory entry seam.
 
+Workspace mutation commands take explicit paths and reconcile affected open
+documents before changing disk state. A committed move rekeys the existing
+document/editor and view state; it never reloads or duplicates authoritative
+bytes. The current shell may use the active document as a command default,
+but mutation APIs do not depend on `Application.Active`, leaving a future
+multi-pane view model free to choose its own target document.
+
 ## Package boundaries
 
 Only packages with immediate scaffold value exist today:
@@ -73,7 +80,8 @@ Only packages with immediate scaffold value exist today:
   the editor package; it has no Shirei imports.
 - `workspace/`: workspace-root validation, path containment, file-store and
   disk-fingerprint policy, atomic replacement, advisory directory watching,
-  directory listing, and raw-byte search.
+  directory listing, raw-byte search, and safe no-replace workspace
+  mutations. OS trash is a separate `Trasher` adapter.
 - `application/`: the product coordinator for OpenPath, document registry,
   active/tab state, conflict resolution, session metadata, and recovery.
 - `language/`: root-language detection plus the replaceable concrete Markdown

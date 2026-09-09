@@ -10,8 +10,8 @@ import (
 )
 
 func TestInitialVocabularyIsStableAndUnified(t *testing.T) {
-	if len(InitialVocabulary) != 58 {
-		t.Fatalf("got %d commands, want 58", len(InitialVocabulary))
+	if len(InitialVocabulary) != 63 {
+		t.Fatalf("got %d commands, want 63", len(InitialVocabulary))
 	}
 	seen := map[ID]bool{}
 	for _, id := range InitialVocabulary {
@@ -19,6 +19,31 @@ func TestInitialVocabularyIsStableAndUnified(t *testing.T) {
 			t.Fatalf("duplicate command %q", id)
 		}
 		seen[id] = true
+	}
+}
+
+func TestWorkspaceCommandsRequireWorkspace(t *testing.T) {
+	registry := DefaultRegistry()
+	for _, id := range []ID{WorkspaceNewFile, WorkspaceNewFolder, WorkspaceRename, WorkspaceMove, WorkspaceTrash} {
+		descriptor, ok := registry.Lookup(id)
+		if !ok {
+			t.Fatalf("missing workspace command %q", id)
+		}
+		if descriptor.IsEnabled(CommandContext{}) {
+			t.Fatalf("workspace command %q enabled without workspace", id)
+		}
+		if id == WorkspaceTrash {
+			if descriptor.IsEnabled(CommandContext{HasWorkspace: true}) {
+				t.Fatalf("workspace command %q enabled without trash adapter", id)
+			}
+			if !descriptor.IsEnabled(CommandContext{HasWorkspace: true, HasTrasher: true}) {
+				t.Fatalf("workspace command %q disabled with workspace and trash adapter", id)
+			}
+			continue
+		}
+		if !descriptor.IsEnabled(CommandContext{HasWorkspace: true}) {
+			t.Fatalf("workspace command %q disabled with workspace", id)
+		}
 	}
 }
 

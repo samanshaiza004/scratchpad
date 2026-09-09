@@ -123,6 +123,8 @@ type workbenchState struct {
 	ShowGoToLine       bool
 	ShowRecent         bool
 	ShowSearch         bool
+	Mutation           workspaceMutationState
+	TrashConfirmation  workspaceTrashConfirmation
 	SidebarVisible     bool
 	EditorFontSize     float32
 	SidebarInitialized bool
@@ -162,6 +164,30 @@ type workbenchState struct {
 	SaveAsOverwriteDocument application.DocumentID
 	SaveAsOverwritePath     string
 	SaveAsOverwriteVersion  workspace.DiskVersion
+}
+
+type workspaceMutationKind uint8
+
+const (
+	mutationNewFile workspaceMutationKind = iota
+	mutationNewFolder
+	mutationRename
+	mutationMove
+)
+
+type workspaceMutationState struct {
+	Open       bool
+	Kind       workspaceMutationKind
+	Path       string
+	Text       string
+	Error      string
+	Generation uint64
+}
+
+type workspaceTrashConfirmation struct {
+	Open  bool
+	Path  string
+	Error string
 }
 
 type SidebarMode uint8
@@ -512,6 +538,12 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 		}
 		Container(Attrs(Viewport, Grow(1), Expand, Clip, Pad2(6, 4)), func() {
 			ScrollOnInput()
+			ContainerWithKey("workspace-root-drop", Attrs(FixHeight(22), Expand, Pad2(0, 6)), func() {
+				if CanDropHere[treeDragPayload](treeDropTarget("")) {
+					ModAttrs(BackgroundVec(theme.Selection))
+				}
+				Label("Workspace", FontSize(11), TextColorVec(theme.Muted))
+			})
 			renderTreeWithShell(state, tree, shell, "", 0, theme)
 			ScrollBars()
 		})
@@ -981,6 +1013,9 @@ type treeState struct {
 	RowIDs   map[string]ContainerId // transient handles used by layout tests
 }
 
+type treeDragPayload string
+type treeDropTarget string
+
 func renderTree(state *application.Application, tree *treeState, relative string, depth int, theme Theme) {
 	shell := &workbenchState{Tree: *tree}
 	renderTreeWithShell(state, &shell.Tree, shell, relative, depth, theme)
@@ -1004,6 +1039,9 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 			active := !entry.Dir && isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path))
 			var button ButtonState
 			rowID := Container(Attrs(Expand), func() {
+				if entry.Dir && CanDropHere[treeDragPayload](treeDropTarget(entry.Path)) {
+					ModAttrs(BackgroundVec(theme.Selection))
+				}
 				button = WorkstationRow(theme, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), active, false, func() {
 					secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
 					if entry.Dir {
@@ -1026,6 +1064,17 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 						openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), false)
 					}
 				})
+				sourcePath := filepath.Join(state.Workspace.Root, entry.Path)
+				if DragAndDrop(treeDragPayload(sourcePath)) {
+					target := GetDropTarget[treeDropTarget]()
+					destinationDir := filepath.Join(state.Workspace.Root, string(target))
+					destination := filepath.Join(destinationDir, filepath.Base(sourcePath))
+					if err := state.MovePath(sourcePath, destination); err != nil {
+						shell.Mutation.Error = err.Error()
+					} else {
+						resetTreeAfterMutation(shell)
+					}
+				}
 			})
 			if button.Clicked && GetInputState().MouseButton == MousePrimary {
 				if entry.Dir {
@@ -1492,6 +1541,12 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 			})
 		})
 	}
+	if shell.Mutation.Open {
+		workspaceMutationModal(state, shell, theme)
+	}
+	if shell.TrashConfirmation.Open {
+		trashConfirmationModal(state, shell, theme)
+	}
 	if shell.ShowQuickOpen {
 		quickOpenPopup(state, shell, theme)
 	}
@@ -1523,6 +1578,109 @@ func openControls(state *application.Application, shell *workbenchState, themes 
 	}
 	markdownCommandPopups(state, shell, theme)
 	contextMenu(state, shell, theme)
+}
+
+func workspaceMutationModal(state *application.Application, shell *workbenchState, theme Theme) {
+	mutation := &shell.Mutation
+	WorkstationModal(theme, 500, func() {
+		mutation.Open = false
+		mutation.Error = ""
+	}, func() {
+		Label(workspaceMutationTitle(mutation.Kind), FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
+		if mutation.Kind == mutationRename || mutation.Kind == mutationMove {
+			Label(relativePath(state, mutation.Path), FontSize(11), TextColorVec(theme.Muted))
+		} else {
+			Label("Create in "+relativePath(state, mutation.Path), FontSize(11), TextColorVec(theme.Muted))
+		}
+		field := DefaultTextInputAttrs()
+		field.MinWidth = 420
+		ContainerWithKey(fmt.Sprintf("workspace-mutation-%d", mutation.Generation), Attrs(), func() {
+			TextInputExt(&mutation.Text, field)
+		})
+		if mutation.Error != "" {
+			Label(mutation.Error, FontSize(11), TextColorVec(theme.Warning))
+		}
+		Container(Attrs(Row, Gap(6)), func() {
+			if WorkstationButton(theme, workspaceMutationTitle(mutation.Kind), true) {
+				commitWorkspaceMutation(state, shell)
+			}
+			if WorkstationButton(theme, "Cancel", true) {
+				mutation.Open = false
+				mutation.Error = ""
+			}
+		})
+		if GetFrameInput().Key == KeyEnter {
+			commitWorkspaceMutation(state, shell)
+			GetFrameInput().Key = KeyCodeNone
+		}
+	})
+}
+
+func trashConfirmationModal(state *application.Application, shell *workbenchState, theme Theme) {
+	confirmation := &shell.TrashConfirmation
+	WorkstationModal(theme, 520, func() {
+		*confirmation = workspaceTrashConfirmation{}
+	}, func() {
+		Label("Move to Trash", FontWeight(WeightBold), FontSize(14), TextColorVec(theme.Ink))
+		Label(relativePath(state, confirmation.Path), FontSize(11), TextColorVec(theme.Muted))
+		Label("This entry contains unsaved documents.", FontSize(11), TextColorVec(theme.Ink))
+		Label("Save them before moving to Trash, or discard their edits explicitly.", FontSize(11), TextColorVec(theme.Ink))
+		if confirmation.Error != "" {
+			Label(confirmation.Error, FontSize(11), TextColorVec(theme.Warning))
+		}
+		Container(Attrs(Row, Gap(6)), func() {
+			if WorkstationButton(theme, "Save and Trash", true) {
+				if err := saveDocumentsUnder(state, confirmation.Path); err != nil {
+					confirmation.Error = err.Error()
+				} else if err := state.TrashPath(confirmation.Path, false); err != nil {
+					confirmation.Error = err.Error()
+				} else {
+					resetTreeAfterMutation(shell)
+				}
+			}
+			if WorkstationButton(theme, "Discard and Trash", true) {
+				if err := state.TrashPath(confirmation.Path, true); err != nil {
+					confirmation.Error = err.Error()
+				} else {
+					resetTreeAfterMutation(shell)
+				}
+			}
+			if WorkstationButton(theme, "Cancel", true) {
+				*confirmation = workspaceTrashConfirmation{}
+			}
+		})
+	})
+}
+
+func saveDocumentsUnder(state *application.Application, path string) error {
+	if state == nil {
+		return application.ErrWorkspaceRequired
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	ids := make([]application.DocumentID, 0)
+	for id, doc := range state.Documents {
+		if doc == nil || !documentPathAffected(path, doc.Path, info.IsDir()) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		if err := state.SaveDocument(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func documentPathAffected(source, path string, directory bool) bool {
+	if !directory {
+		return filepath.Clean(source) == filepath.Clean(path)
+	}
+	rel, err := filepath.Rel(filepath.Clean(source), filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func markdownCommandPopups(state *application.Application, shell *workbenchState, theme Theme) {
@@ -1816,6 +1974,12 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 		frame.Key = KeyCodeNone
 		return
 	}
+	if !transientInputOpen(shell) && mods == 0 && frame.Key == KeyF2 {
+		if executeCommand(state, shell, commands.WorkspaceRename) {
+			frame.Key = KeyCodeNone
+			return
+		}
+	}
 	if !transientInputOpen(shell) {
 		if id, ok := commandKeyBinding(state, frame.Key, frame.Text, mods, primary); ok {
 			if executeCommand(state, shell, id) {
@@ -1921,6 +2085,8 @@ func commandContext(state *application.Application) commands.CommandContext {
 	if state == nil {
 		return ctx
 	}
+	ctx.HasWorkspace = state.HasWorkspace
+	ctx.HasTrasher = state.Trasher != nil
 	doc := state.ActiveDocument()
 	if doc == nil || doc.Editor == nil {
 		return ctx
@@ -1969,7 +2135,7 @@ func transientInputOpen(shell *workbenchState) bool {
 	if shell == nil {
 		return false
 	}
-	return shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen ||
+	return shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen || shell.Mutation.Open || shell.TrashConfirmation.Open ||
 		shell.ShowSaveAs || shell.ShowSaveAsOverwrite || shell.ShowFind ||
 		shell.ShowGoToLine || shell.ShowSearch || shell.ShowRecent ||
 		shell.ShowCompare || shell.Slash.Open || shell.Fence.Open
@@ -2161,6 +2327,7 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		shell.SidebarVisible = true
 	case commands.WorkspaceRefresh:
 		shell.Tree.Expanded = make(map[string]bool)
+		shell.Tree.RowIDs = nil
 	case commands.WorkspaceToggleFolder:
 		if relative := commandString(args); relative != "" {
 			tree := &shell.Tree
@@ -2169,6 +2336,53 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 			}
 			tree.Expanded[relative] = !tree.Expanded[relative]
 		}
+	case commands.WorkspaceNewFile:
+		beginWorkspaceMutation(shell, mutationNewFile, workspaceMutationPath(state, commandString(args)), "")
+		return true
+	case commands.WorkspaceNewFolder:
+		beginWorkspaceMutation(shell, mutationNewFolder, workspaceMutationPath(state, commandString(args)), "")
+		return true
+	case commands.WorkspaceRename:
+		path := commandPath(state, args)
+		if path == "" {
+			return false
+		}
+		beginWorkspaceMutation(shell, mutationRename, path, filepath.Base(path))
+		return true
+	case commands.WorkspaceMove:
+		if len(args) > 1 {
+			source, sourceOK := args[0].(string)
+			destination, destinationOK := args[1].(string)
+			if sourceOK && destinationOK {
+				if err := state.MovePath(source, destination); err != nil {
+					shell.Mutation.Error = err.Error()
+					return false
+				}
+				resetTreeAfterMutation(shell)
+				return true
+			}
+		}
+		path := commandPath(state, args)
+		if path == "" {
+			return false
+		}
+		beginWorkspaceMutation(shell, mutationMove, path, "")
+		return true
+	case commands.WorkspaceTrash:
+		path := commandPath(state, args)
+		if path == "" {
+			return false
+		}
+		if err := state.TrashPath(path, false); err != nil {
+			if errors.Is(err, application.ErrDirty) {
+				shell.TrashConfirmation = workspaceTrashConfirmation{Open: true, Path: path}
+				return true
+			}
+			shell.Mutation.Error = err.Error()
+			return false
+		}
+		resetTreeAfterMutation(shell)
+		return true
 	case commands.FileOpenRecent:
 		if path := explicitCommandPath(args); path != "" {
 			if state.OpenPath(path) == nil {
@@ -2247,6 +2461,95 @@ func isProductCommand(id commands.ID) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func workspaceMutationPath(state *application.Application, path string) string {
+	if path != "" {
+		return path
+	}
+	if state != nil && state.HasWorkspace {
+		return state.Workspace.Root
+	}
+	return ""
+}
+
+func beginWorkspaceMutation(shell *workbenchState, kind workspaceMutationKind, path, text string) {
+	if shell == nil {
+		return
+	}
+	shell.Mutation = workspaceMutationState{
+		Open:       true,
+		Kind:       kind,
+		Path:       path,
+		Text:       text,
+		Generation: shell.Mutation.Generation + 1,
+	}
+	shell.ContextMenu.Open = false
+}
+
+func resetTreeAfterMutation(shell *workbenchState) {
+	if shell == nil {
+		return
+	}
+	shell.Tree.Expanded = make(map[string]bool)
+	shell.Tree.RowIDs = nil
+	shell.Mutation = workspaceMutationState{}
+	shell.TrashConfirmation = workspaceTrashConfirmation{}
+}
+
+func commitWorkspaceMutation(state *application.Application, shell *workbenchState) bool {
+	if state == nil || shell == nil || !shell.Mutation.Open {
+		return false
+	}
+	mutation := shell.Mutation
+	text := strings.TrimSpace(mutation.Text)
+	if text == "" {
+		shell.Mutation.Error = "Enter a name or destination."
+		return false
+	}
+	var err error
+	switch mutation.Kind {
+	case mutationNewFile:
+		err = state.CreateFile(workspaceChildPath(state, mutation.Path, text))
+	case mutationNewFolder:
+		err = state.CreateDirectory(workspaceChildPath(state, mutation.Path, text))
+	case mutationRename:
+		err = state.RenamePath(mutation.Path, text)
+	case mutationMove:
+		err = state.MovePath(mutation.Path, text)
+	}
+	if err != nil {
+		shell.Mutation.Error = err.Error()
+		return false
+	}
+	resetTreeAfterMutation(shell)
+	return true
+}
+
+func workspaceChildPath(state *application.Application, parent, name string) string {
+	if state == nil || !state.HasWorkspace {
+		return name
+	}
+	parentRelative := workspaceRelative(state, parent)
+	if parentRelative == "." {
+		parentRelative = ""
+	}
+	return filepath.Join(parentRelative, name)
+}
+
+func workspaceMutationTitle(kind workspaceMutationKind) string {
+	switch kind {
+	case mutationNewFile:
+		return "New file"
+	case mutationNewFolder:
+		return "New folder"
+	case mutationRename:
+		return "Rename"
+	case mutationMove:
+		return "Move"
+	default:
+		return "Workspace"
 	}
 }
 
@@ -2458,18 +2761,36 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 					executeCommand(state, shell, commands.DocumentReopenClosed)
 					shell.ContextMenu.Open = false
 				}
-			} else if menu.IsDir {
-				label := "Expand"
-				if shell.Tree.Expanded[workspaceRelative(state, menu.Path)] {
-					label = "Collapse"
-				}
-				if contextMenuItem(theme, label) {
-					executeCommand(state, shell, commands.WorkspaceToggleFolder, workspaceRelative(state, menu.Path))
+			} else {
+				if menu.IsDir {
+					label := "Expand"
+					if shell.Tree.Expanded[workspaceRelative(state, menu.Path)] {
+						label = "Collapse"
+					}
+					if contextMenuItem(theme, label) {
+						executeCommand(state, shell, commands.WorkspaceToggleFolder, workspaceRelative(state, menu.Path))
+						shell.ContextMenu.Open = false
+					}
+				} else if contextMenuItem(theme, "Open") {
+					executeCommand(state, shell, commands.FileOpen, menu.Path)
 					shell.ContextMenu.Open = false
 				}
-			} else if contextMenuItem(theme, "Open") {
-				executeCommand(state, shell, commands.FileOpen, menu.Path)
-				shell.ContextMenu.Open = false
+				parent := menu.Path
+				if !menu.IsDir {
+					parent = filepath.Dir(parent)
+				}
+				if contextMenuItem(theme, "New File") {
+					executeCommand(state, shell, commands.WorkspaceNewFile, parent)
+				}
+				if contextMenuItem(theme, "New Folder") {
+					executeCommand(state, shell, commands.WorkspaceNewFolder, parent)
+				}
+				if contextMenuItem(theme, "Rename") {
+					executeCommand(state, shell, commands.WorkspaceRename, menu.Path)
+				}
+				if state.Trasher != nil && contextMenuItem(theme, "Move to Trash") {
+					executeCommand(state, shell, commands.WorkspaceTrash, menu.Path)
+				}
 			}
 			if contextMenuItem(theme, "Copy Path") {
 				executeCommand(state, shell, commands.FileCopyPath, menu.Path)

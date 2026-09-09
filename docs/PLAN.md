@@ -150,7 +150,11 @@ without becoming canonical note storage.
 
 Status: implemented. The initial tree supports folders, files, expand/collapse,
 open, and refresh-by-render. Shirei's fuzzy path picker provides quick-open.
-Create/rename/delete remain deferred.
+Workspace mutation is now being added as a separate product slice: exclusive
+file/folder creation, no-replace rename/move, open-document rekeying, and
+drag-to-directory moves are application operations over the workspace kernel.
+OS trash remains a separate `workspace.Trasher` adapter; Scratchpad never
+silently turns an unavailable trash integration into permanent deletion.
 
 ### C6 — find and workspace search
 
@@ -394,6 +398,30 @@ Framework risks: focus/identity and command routing can become coupled to view
 construction; keep context explicit.
 
 Deferred: plugin API, macros, broad automation, IDE features.
+
+## Milestone H — workspace mutation and future pane seam
+
+Status: implementation in progress. This milestone adds the smallest useful
+filesystem actions without reopening document authority or the editor core:
+create file/folder, rename, no-replace move, drag-to-directory move, and
+trash confirmation for dirty documents. All actions enter through explicit
+workspace paths and the application document registry; the UI's active
+document is only a convenience default for command surfaces.
+
+The workspace mutation kernel uses Go 1.25 `os.Root` containment and
+platform-specific no-replace primitives on Linux, macOS, and Windows. Other
+platforms refuse moves when an atomic no-replace primitive is unavailable.
+Watchers remain advisory and are updated after a committed move. Trash is
+intentionally not part of `Workspace`: a platform `Trasher` must be injected,
+and clean affected tabs close only after the adapter confirms success.
+
+The future multiplexer/pane model is deliberately not introduced here. Tabs,
+documents, and per-document view state remain unchanged; a later pane slice
+may add views without changing mutation APIs that already accept explicit
+paths and document IDs.
+
+Deferred: trash UX/policy refinements, pane layout/state, split navigation,
+create/rename/delete policy beyond the basic safe actions, and shell polish.
 
 ## Gate G — release hardening
 

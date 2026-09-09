@@ -26,6 +26,7 @@ func main() {
 		return
 	}
 	state := application.New(nil)
+	state.SetTrasher(workspace.NewOSTrasher())
 	state.SetWake(shirei.RequestNextFrame)
 	stateDir, _ := application.DefaultStateDir()
 	sessionPath := filepath.Join(stateDir, "session.json")

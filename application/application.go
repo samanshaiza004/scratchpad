@@ -73,6 +73,7 @@ type Application struct {
 	Active                DocumentID
 	Views                 map[DocumentID]ViewState
 	Watcher               workspace.Watcher
+	Trasher               workspace.Trasher
 	watchEvents           <-chan workspace.WatchEvent
 	Stale                 map[DocumentID]bool
 	Conflicts             map[DocumentID]Conflict
@@ -181,6 +182,13 @@ func (a *Application) SetWatcher(watcher workspace.Watcher) error {
 		}
 	}
 	return nil
+}
+
+// SetTrasher installs the platform-specific, reversible delete adapter. It
+// is intentionally independent from Workspace so ordinary path mutations can
+// remain portable and testable without pretending that rename is trash.
+func (a *Application) SetTrasher(trasher workspace.Trasher) {
+	a.Trasher = trasher
 }
 
 // PollWatcher keeps watcher state on the application/UI goroutine. Events
@@ -667,8 +675,23 @@ func documentID(path string) DocumentID {
 		return DocumentID(filepath.Clean(path))
 	}
 	abs = filepath.Clean(abs)
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = filepath.Clean(resolved)
+	// A destination may not exist yet during Save As or a planned move. Walk
+	// up to the nearest existing ancestor, resolve that ancestor, then append
+	// the missing suffix so identity is stable before and after the operation.
+	missing := make([]string, 0, 4)
+	for current := abs; ; current = filepath.Dir(current) {
+		if resolved, resolveErr := filepath.EvalSymlinks(current); resolveErr == nil {
+			abs = filepath.Clean(resolved)
+			for i := len(missing) - 1; i >= 0; i-- {
+				abs = filepath.Join(abs, missing[i])
+			}
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		missing = append(missing, filepath.Base(current))
 	}
 	return DocumentID(abs)
 }

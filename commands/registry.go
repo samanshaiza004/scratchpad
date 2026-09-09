@@ -7,6 +7,8 @@ import "scratchpad/language"
 // toolbars; it does not expose Shirei state or parser nodes.
 type CommandContext struct {
 	ActiveDocument    bool
+	HasWorkspace      bool
+	HasTrasher        bool
 	RootLanguage      string
 	Markdown          bool
 	Code              bool
@@ -109,11 +111,18 @@ func DefaultRegistry() Registry {
 		}
 		return language.DefaultRegistry().SupportsCommentToggle(language.ID(ctx.RootLanguage))
 	}
+	workspace := func(ctx CommandContext) bool { return ctx.HasWorkspace }
+	trash := func(ctx CommandContext) bool { return ctx.HasWorkspace && ctx.HasTrasher }
 	descriptors := make([]CommandDescriptor, 0, len(InitialVocabulary))
 	for _, id := range InitialVocabulary {
 		descriptors = append(descriptors, CommandDescriptor{ID: id, Title: string(id), Category: "application", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }})
 	}
 	for _, descriptor := range []CommandDescriptor{
+		{ID: WorkspaceNewFile, Title: "New File", Category: "workspace", Visible: workspace, Enabled: workspace},
+		{ID: WorkspaceNewFolder, Title: "New Folder", Category: "workspace", Visible: workspace, Enabled: workspace},
+		{ID: WorkspaceRename, Title: "Rename", Category: "workspace", Bindings: []Keybinding{{Key: "f2"}}, Visible: workspace, Enabled: workspace},
+		{ID: WorkspaceMove, Title: "Move", Category: "workspace", Visible: workspace, Enabled: workspace},
+		{ID: WorkspaceTrash, Title: "Move to Trash", Category: "workspace", Bindings: []Keybinding{{Key: "delete"}}, Visible: workspace, Enabled: trash},
 		{ID: CommentToggle, Title: "Toggle comment", Category: "code", Bindings: []Keybinding{{Key: "primary+/"}}, Visible: func(ctx CommandContext) bool { return ctx.Code }, Enabled: codeComment},
 		{ID: ItemToggle, Title: "Toggle task", Category: "markdown", Visible: markdown, Enabled: markdown},
 		{ID: DocumentFormat, Title: "Format table", Category: "markdown", Visible: markdown, Enabled: func(ctx CommandContext) bool { return markdown(ctx) && ctx.InTable }},
