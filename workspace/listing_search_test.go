@@ -127,3 +127,100 @@ func TestFilesWalksVisibleFilesRecursively(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkspaceTraversalHonorsRootAndNestedGitignoreRules(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("node_modules/\n*.generated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "src", "generated", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", ".gitignore"), []byte("generated/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"visible.txt":                     "needle",
+		"node_modules/pkg/index.js":       "needle",
+		"generated.generated":             "needle",
+		"src/keep.txt":                    "needle",
+		"src/generated/nested/hidden.txt": "needle",
+		".scratchpad/recovery.txt":        "needle",
+		".git/internal":                   "needle",
+	}
+	for relative, contents := range files {
+		path := filepath.Join(dir, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var listed []string
+	if err := ws.Files(context.Background(), func(path string) bool {
+		relative, err := filepath.Rel(dir, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed = append(listed, filepath.ToSlash(relative))
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantListed := []string{".gitignore", "src/.gitignore", "src/keep.txt", "visible.txt"}
+	if !equalStrings(listed, wantListed) {
+		t.Fatalf("Files = %v, want %v", listed, wantListed)
+	}
+
+	rootEntries, err := ws.List("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootEntries) != 3 || rootEntries[0].Name != "src" || rootEntries[1].Name != ".gitignore" || rootEntries[2].Name != "visible.txt" {
+		t.Fatalf("root entries = %+v, want visible ignored-aware entries", rootEntries)
+	}
+	srcEntries, err := ws.List("src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srcEntries) != 2 || srcEntries[0].Name != ".gitignore" || srcEntries[1].Name != "keep.txt" {
+		t.Fatalf("src entries = %+v, want nested ignore applied", srcEntries)
+	}
+
+	var searched []string
+	if err := ws.Search(context.Background(), []byte("needle"), func(result SearchResult) bool {
+		relative, err := filepath.Rel(dir, result.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		searched = append(searched, filepath.ToSlash(relative))
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantSearched := []string{"src/keep.txt", "visible.txt"}
+	if !equalStrings(searched, wantSearched) {
+		t.Fatalf("Search = %v, want %v", searched, wantSearched)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}

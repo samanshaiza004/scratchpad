@@ -113,6 +113,9 @@ func DefaultRegistry() Registry {
 	}
 	workspace := func(ctx CommandContext) bool { return ctx.HasWorkspace }
 	trash := func(ctx CommandContext) bool { return ctx.HasWorkspace && ctx.HasTrasher }
+	editSurface := func(ctx CommandContext) bool {
+		return ctx.ActiveDocument && ctx.EditorFocused
+	}
 	descriptors := make([]CommandDescriptor, 0, len(InitialVocabulary))
 	for _, id := range InitialVocabulary {
 		descriptors = append(descriptors, CommandDescriptor{ID: id, Title: string(id), Category: "application", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }})
@@ -123,6 +126,16 @@ func DefaultRegistry() Registry {
 		{ID: WorkspaceRename, Title: "Rename", Category: "workspace", Bindings: []Keybinding{{Key: "f2"}}, Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceMove, Title: "Move", Category: "workspace", Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceTrash, Title: "Move to Trash", Category: "workspace", Bindings: []Keybinding{{Key: "delete"}}, Visible: workspace, Enabled: trash},
+		{ID: DocumentFindReplace, Title: "Find and replace", Category: "edit", Bindings: []Keybinding{{Key: "primary+h"}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditIndentLines, Title: "Indent lines", Category: "edit", Bindings: []Keybinding{{Key: "primary+]"}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditOutdentLines, Title: "Outdent lines", Category: "edit", Bindings: []Keybinding{{Key: "primary+["}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditDeleteLine, Title: "Delete line", Category: "edit", Bindings: []Keybinding{{Key: "primary+shift+k"}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditInsertLineAbove, Title: "Insert line above", Category: "edit", Bindings: []Keybinding{{Key: "primary+shift+enter"}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditInsertLineBelow, Title: "Insert line below", Category: "edit", Bindings: []Keybinding{{Key: "primary+enter"}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditMoveLineUp, Title: "Move line up", Category: "edit", Bindings: []Keybinding{{Key: "alt+arrowup"}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditMoveLineDown, Title: "Move line down", Category: "edit", Bindings: []Keybinding{{Key: "alt+arrowdown"}}, Visible: editSurface, Enabled: editSurface},
+		{ID: EditDuplicateLine, Title: "Duplicate line", Category: "edit", Visible: editSurface, Enabled: editSurface},
+		{ID: EditJoinLines, Title: "Join lines", Category: "edit", Visible: editSurface, Enabled: editSurface},
 		{ID: CommentToggle, Title: "Toggle comment", Category: "code", Bindings: []Keybinding{{Key: "primary+/"}}, Visible: func(ctx CommandContext) bool { return ctx.Code }, Enabled: codeComment},
 		{ID: ItemToggle, Title: "Toggle task", Category: "markdown", Visible: markdown, Enabled: markdown},
 		{ID: DocumentFormat, Title: "Format table", Category: "markdown", Visible: markdown, Enabled: func(ctx CommandContext) bool { return markdown(ctx) && ctx.InTable }},

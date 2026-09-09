@@ -3,8 +3,8 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"os"
-	"path/filepath"
 )
 
 type SearchResult struct {
@@ -21,17 +21,11 @@ func (w Workspace) Search(ctx context.Context, query []byte, emit func(SearchRes
 	if len(query) == 0 {
 		return nil
 	}
-	return filepath.WalkDir(w.Root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+	return w.Walker().Walk(func(path string, entry fs.DirEntry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() && (entry.Name() == ".git" || entry.Name() == ".scratchpad") {
-			return filepath.SkipDir
-		}
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 		data, err := os.ReadFile(path)

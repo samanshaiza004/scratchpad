@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,16 +25,23 @@ func (w Workspace) List(relative string) ([]Entry, error) {
 			return nil, err
 		}
 	}
+	walker := w.Walker()
+	cleanRelative := filepath.Clean(relative)
+	if cleanRelative != "." && cleanRelative != "" && walker.matchPath(cleanRelative, true) {
+		return nil, nil
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Name() == ".git" || entry.Name() == ".scratchpad" {
+		relativePath := filepath.Join(relative, entry.Name())
+		if entry.Name() == ".git" || entry.Name() == ".scratchpad" ||
+			walker.matchPath(relativePath, entry.IsDir()) {
 			continue
 		}
-		result = append(result, Entry{Name: entry.Name(), Path: filepath.Join(relative, entry.Name()), Dir: entry.IsDir()})
+		result = append(result, Entry{Name: entry.Name(), Path: relativePath, Dir: entry.IsDir()})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Dir != result[j].Dir {
@@ -48,25 +56,14 @@ func (w Workspace) List(relative string) ([]Entry, error) {
 // It is deliberately a small filesystem primitive: callers own cancellation,
 // presentation, and any asynchronous scheduling around the walk.
 func (w Workspace) Files(ctx context.Context, emit func(string) bool) error {
-	return filepath.WalkDir(w.Root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+	return w.Walker().Walk(func(path string, entry fs.DirEntry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if path != w.Root && (entry.Name() == ".git" || entry.Name() == ".scratchpad") {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
-		if path == w.Root || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if !emit(path) {
-			return nil
-		}
+		emit(path)
 		return nil
 	})
 }

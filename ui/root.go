@@ -43,6 +43,7 @@ func RootView(state *application.Application) {
 	if shell.EditorFontSize <= 0 {
 		shell.EditorFontSize = defaultEditorFontSize
 	}
+	lineNumbersEnabled(shell)
 	if !shell.SidebarInitialized || (state.HasWorkspace && !shell.WorkspaceWasOpen) {
 		shell.SidebarVisible = state.HasWorkspace
 		shell.SidebarInitialized = true
@@ -84,11 +85,11 @@ func RootView(state *application.Application) {
 					style.FontSize = editorFontSize(shell)
 					PaperWell(theme, Attrs(Grow(1), Expand, Clip), Attrs(Clip), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
-							Style: style, RowHeight: editorRowHeight(style.FontSize), Wrap: proseWraps(doc.Path), ScrollY: &view.ScrollY,
+							Style: style, RowHeight: editorRowHeight(style.FontSize), Wrap: wrapEnabled(shell, doc), ScrollY: &view.ScrollY,
 							ScrollInitialized:  view.ScrollInitialized,
 							ScrollX:            &view.ScrollX,
 							ScrollXInitialized: view.ScrollXInitialized,
-							LineNumbers:        true,
+							LineNumbers:        lineNumbersEnabled(shell),
 							Rows:               &rows,
 							LineDecoration:     markdownLineDecoration(doc, theme),
 							LineSpacing:        markdownLineSpacing(doc),
@@ -120,6 +121,7 @@ type workbenchState struct {
 	ShowQuickOpen      bool
 	ShowSaveAs         bool
 	ShowFind           bool
+	ShowReplace        bool
 	ShowGoToLine       bool
 	ShowRecent         bool
 	ShowSearch         bool
@@ -127,6 +129,9 @@ type workbenchState struct {
 	TrashConfirmation  workspaceTrashConfirmation
 	SidebarVisible     bool
 	EditorFontSize     float32
+	LineNumbers        bool
+	LineNumbersSet     bool
+	WrapOverrides      map[application.DocumentID]bool
 	SidebarInitialized bool
 	WorkspaceWasOpen   bool
 	FindEpoch          uint64
@@ -134,6 +139,7 @@ type workbenchState struct {
 	OpenEpoch          uint64
 	FilePath           string
 	FindQuery          string
+	ReplaceQuery       string
 	findMatches        []application.CurrentMatch
 	findDocument       application.DocumentID
 	findEditor         *editor.ScratchEditor
@@ -198,6 +204,71 @@ const (
 	maxEditorFontSize     float32 = 48
 	editorFontSizeStep    float32 = 1
 )
+
+const (
+	viewToggleLineNumbers commands.ID = "view.toggle-line-numbers"
+	viewToggleWrap        commands.ID = "view.toggle-wrap"
+)
+
+func lineNumbersEnabled(shell *workbenchState) bool {
+	if shell == nil {
+		return true
+	}
+	if !shell.LineNumbersSet {
+		shell.LineNumbers = true
+		shell.LineNumbersSet = true
+	}
+	return shell.LineNumbers
+}
+
+func toggleLineNumbers(shell *workbenchState) {
+	if shell == nil {
+		return
+	}
+	lineNumbersEnabled(shell)
+	shell.LineNumbers = !shell.LineNumbers
+}
+
+func wrapEnabled(shell *workbenchState, doc *document.Document) bool {
+	if doc == nil {
+		return false
+	}
+	if shell != nil && shell.WrapOverrides != nil {
+		if enabled, ok := shell.WrapOverrides[stateDocumentID(doc)]; ok {
+			return enabled
+		}
+	}
+	return proseWraps(doc.Path)
+}
+
+func toggleWrap(shell *workbenchState, doc *document.Document) {
+	if shell == nil || doc == nil {
+		return
+	}
+	if shell.WrapOverrides == nil {
+		shell.WrapOverrides = make(map[application.DocumentID]bool)
+	}
+	id := stateDocumentID(doc)
+	shell.WrapOverrides[id] = !wrapEnabled(shell, doc)
+}
+
+// stateDocumentID is only used for the UI-local wrap preference. Document IDs
+// are path-derived in Application, so matching by path keeps this helper
+// independent of application internals while retaining the preference per tab.
+func stateDocumentID(doc *document.Document) application.DocumentID {
+	if doc == nil {
+		return ""
+	}
+	path, err := filepath.Abs(doc.Path)
+	if err != nil {
+		return application.DocumentID(filepath.Clean(doc.Path))
+	}
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = filepath.Clean(resolved)
+	}
+	return application.DocumentID(path)
+}
 
 func editorFontSize(shell *workbenchState) float32 {
 	if shell == nil || shell.EditorFontSize <= 0 {
@@ -412,6 +483,12 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 				if MenuItem(NoIcon, "Find…    "+primaryShortcut("F")) {
 					executeCommand(state, shell, commands.DocumentFind)
 				}
+				if MenuItem(NoIcon, "Find and Replace…    "+primaryShortcut("H")) {
+					executeCommand(state, shell, commands.DocumentFindReplace)
+				}
+				if MenuItem(NoIcon, "Join Lines") {
+					executeCommand(state, shell, commands.EditJoinLines)
+				}
 				if MenuItem(NoIcon, "Find in Files…    "+primaryShortcut("Shift+F")) {
 					executeCommand(state, shell, commands.WorkspaceSearch)
 				}
@@ -463,6 +540,12 @@ func menuBar(state *application.Application, shell *workbenchState, theme Theme)
 			WorkstationMenuButton(theme, "View", func() {
 				if MenuItem(NoIcon, "Outline") {
 					executeCommand(state, shell, commands.OutlineToggle)
+				}
+				if MenuItem(NoIcon, "Line Numbers") {
+					executeCommand(state, shell, viewToggleLineNumbers)
+				}
+				if MenuItem(NoIcon, "Word Wrap") {
+					executeCommand(state, shell, viewToggleWrap)
 				}
 				if MenuItem(NoIcon, "Increase Editor Font Size    "+primaryShortcut("+")) {
 					executeCommand(state, shell, commands.ViewIncreaseFontSize)
@@ -1181,24 +1264,46 @@ func findBar(state *application.Application, shell *workbenchState, theme Theme)
 		return
 	}
 	search := Use[searchState]("current-find")
+	var matches []application.CurrentMatch
+	replaceFocused := false
 	Container(Attrs(Row, CrossMid, Gap(6), FixHeight(34), Pad2(3, 8), BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Border)), func() {
 		Label("Find", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
 		input := CtrlTextInputAttrs()
-		input.MinWidth = 260
+		input.MinWidth = 220
 		ContainerWithKey(fmt.Sprintf("find-field-%d", shell.FindEpoch), Attrs(Grow(1)), func() {
 			TextInputExt(&shell.FindQuery, input)
 		})
-		search.Current = currentFindMatches(state, shell)
+		matches = currentFindMatches(state, shell)
+		search.Current = matches
 		if state.Active != "" && shell.FindQuery != "" {
 			Label(fmt.Sprintf("%d matches", len(search.Current)), FontSize(10), TextColorVec(theme.Muted))
+		}
+		if shell.ShowReplace {
+			Label("Replace", FontWeight(WeightBold), FontSize(11), TextColorVec(theme.Ink))
+			replaceInput := CtrlTextInputAttrs()
+			replaceInput.MinWidth = 180
+			replaceInput.NoAutoFocus = true
+			ContainerWithKey(fmt.Sprintf("replace-field-%d", shell.FindEpoch), Attrs(Grow(1)), func() {
+				TextInputExt(&shell.ReplaceQuery, replaceInput)
+				replaceFocused = HasFocusWithin()
+			})
+			if WorkstationToolButton(theme, "Replace", len(matches) > 0) {
+				replaceCurrentMatch(state, shell)
+			}
+			if WorkstationToolButton(theme, "All", len(matches) > 0) {
+				replaceAllMatches(state, shell)
+			}
 		}
 		Container(Attrs(Grow(1)), func() {})
 		if WorkstationToolButton(theme, "Close", true) {
 			shell.ShowFind = false
+			shell.ShowReplace = false
 		}
 	})
 	if len(search.Current) > 0 && GetFrameInput().Key == KeyEnter {
-		if GetInputState().Modifiers&ModShift != 0 {
+		if shell.ShowReplace && replaceFocused {
+			replaceCurrentMatch(state, shell)
+		} else if GetInputState().Modifiers&ModShift != 0 {
 			executeCommand(state, shell, commands.DocumentFindPrevious)
 		} else {
 			executeCommand(state, shell, commands.DocumentFindNext)
@@ -1955,6 +2060,7 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	if frame.Key == KeyEscape {
 		if shell.ShowFind {
 			shell.ShowFind = false
+			shell.ShowReplace = false
 			frame.Key = KeyCodeNone
 			return
 		}
@@ -1976,6 +2082,26 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	}
 	if !transientInputOpen(shell) && mods == 0 && frame.Key == KeyF2 {
 		if executeCommand(state, shell, commands.WorkspaceRename) {
+			frame.Key = KeyCodeNone
+			return
+		}
+	}
+	if !transientInputOpen(shell) {
+		switch {
+		case mods == ModAlt && frame.Key == KeyZ:
+			toggleWrap(shell, state.ActiveDocument())
+			frame.Key = KeyCodeNone
+			return
+		case mods == primary && frame.Key == KeyH:
+			executeCommand(state, shell, commands.DocumentFindReplace)
+			frame.Key = KeyCodeNone
+			return
+		case mods == primary|ModShift && frame.Key == KeyS:
+			executeCommand(state, shell, commands.FileSaveAs)
+			frame.Key = KeyCodeNone
+			return
+		case mods == primary|ModShift && frame.Key == KeyT:
+			executeCommand(state, shell, commands.DocumentReopenClosed)
 			frame.Key = KeyCodeNone
 			return
 		}
@@ -2033,6 +2159,10 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 		switch frame.Key {
 		case KeyF:
 			executeCommand(state, shell, commands.WorkspaceSearch)
+		case KeyS:
+			executeCommand(state, shell, commands.FileSaveAs)
+		case KeyT:
+			executeCommand(state, shell, commands.DocumentReopenClosed)
 		case KeyTab:
 			executeCommand(state, shell, commands.TabPrevious)
 		default:
@@ -2043,8 +2173,29 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 }
 
 func commandKeyBinding(state *application.Application, key KeyCode, text string, mods, primary Modifiers) (commands.ID, bool) {
-	if state == nil || state.ActiveDocument() == nil || mods != primary {
+	if state == nil || state.ActiveDocument() == nil {
 		return "", false
+	}
+	if mods == ModAlt && key == KeyUp {
+		return commands.EditMoveLineUp, true
+	}
+	if mods == ModAlt && key == KeyDown {
+		return commands.EditMoveLineDown, true
+	}
+	if mods != primary && mods != primary|ModShift {
+		return "", false
+	}
+	switch {
+	case mods == primary && key == KeyCode(']'):
+		return commands.EditIndentLines, true
+	case mods == primary && key == KeyCode('['):
+		return commands.EditOutdentLines, true
+	case mods == primary|ModShift && key == KeyK:
+		return commands.EditDeleteLine, true
+	case mods == primary && key == KeyEnter:
+		return commands.EditInsertLineBelow, true
+	case mods == primary|ModShift && key == KeyEnter:
+		return commands.EditInsertLineAbove, true
 	}
 	stroke := ""
 	switch key {
@@ -2054,6 +2205,8 @@ func commandKeyBinding(state *application.Application, key KeyCode, text string,
 		stroke = "primary+i"
 	case KeyK:
 		stroke = "primary+k"
+	case KeyH:
+		stroke = "primary+h"
 	case KeyCode('/'):
 		stroke = "primary+/"
 	default:
@@ -2221,6 +2374,15 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 			shell.FindEpoch++
 		}
 		shell.ShowFind = true
+		shell.ShowReplace = false
+		shell.ShowSearch = false
+	case commands.DocumentFindReplace:
+		if !shell.ShowFind {
+			ClearFocus()
+			shell.FindEpoch++
+		}
+		shell.ShowFind = true
+		shell.ShowReplace = true
 		shell.ShowSearch = false
 	case commands.QuickOpen:
 		if !shell.ShowQuickOpen {
@@ -2229,9 +2391,11 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		}
 		shell.ShowQuickOpen = true
 		shell.ShowFind = false
+		shell.ShowReplace = false
 	case commands.WorkspaceSearch:
 		shell.ShowSearch = true
 		shell.ShowFind = false
+		shell.ShowReplace = false
 	case commands.DocumentClose:
 		target := commandDocumentID(state, args)
 		if target == "" {
@@ -2322,6 +2486,12 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.ViewResetFontSize:
 		setEditorFontSize(state, shell, defaultEditorFontSize)
 		return true
+	case viewToggleLineNumbers:
+		toggleLineNumbers(shell)
+		return true
+	case viewToggleWrap:
+		toggleWrap(shell, state.ActiveDocument())
+		return true
 	case commands.OutlineToggle:
 		shell.SidebarMode = SidebarOutline
 		shell.SidebarVisible = true
@@ -2393,6 +2563,7 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 			shell.ShowRecent = true
 			shell.ShowQuickOpen = false
 			shell.ShowFind = false
+			shell.ShowReplace = false
 			return true
 		}
 	case commands.FileCopyPath:
@@ -2457,7 +2628,10 @@ func isProductCommand(id commands.ID) bool {
 		commands.MarkdownToggleNumberedList, commands.MarkdownToggleQuote, commands.MarkdownInsertTask,
 		commands.MarkdownInsertCodeBlock, commands.MarkdownSetFenceLanguage, commands.MarkdownInsertTable, commands.MarkdownInsertDivider,
 		commands.MarkdownTableNext, commands.MarkdownTablePrevious, commands.MarkdownTableEnter,
-		commands.MarkdownSmartPaste:
+		commands.MarkdownSmartPaste, commands.EditIndentLines, commands.EditOutdentLines,
+		commands.EditDeleteLine, commands.EditInsertLineAbove, commands.EditInsertLineBelow,
+		commands.EditMoveLineUp, commands.EditMoveLineDown, commands.EditDuplicateLine,
+		commands.EditJoinLines:
 		return true
 	default:
 		return false
@@ -2707,6 +2881,94 @@ func currentFindMatches(state *application.Application, shell *workbenchState) [
 	}
 	shell.findMatches = state.FindCurrent(id, []byte(query))
 	return shell.findMatches
+}
+
+func replaceCurrentMatch(state *application.Application, shell *workbenchState) bool {
+	if state == nil || shell == nil {
+		return false
+	}
+	doc := state.ActiveDocument()
+	matches := currentFindMatches(state, shell)
+	if doc == nil || len(matches) == 0 {
+		return false
+	}
+	anchor, cursor := doc.Editor.Selection()
+	from, to := anchor, cursor
+	if from > to {
+		from, to = to, from
+	}
+	index := 0
+	for i, match := range matches {
+		if match.Start == from && match.End == to {
+			index = i
+			break
+		}
+		if match.Start >= to {
+			index = i
+			break
+		}
+		index = (i + 1) % len(matches)
+	}
+	target := matches[index]
+	replacement := []byte(shell.ReplaceQuery)
+	end := target.Start + len(replacement)
+	if err := doc.ReplaceWithSelection(target.Start, target.End, replacement, end, end); err != nil {
+		return false
+	}
+	shell.findMatchesValid = false
+	return true
+}
+
+func replaceAllMatches(state *application.Application, shell *workbenchState) bool {
+	if state == nil || shell == nil {
+		return false
+	}
+	doc := state.ActiveDocument()
+	matches := currentFindMatches(state, shell)
+	if doc == nil || len(matches) == 0 {
+		return false
+	}
+	source := doc.Editor.Buffer.Text()
+	queryLength := len([]byte(shell.FindQuery))
+	replacement := []byte(shell.ReplaceQuery)
+	next := make([]byte, 0, len(source)+len(matches)*(len(replacement)-queryLength))
+	last := 0
+	for _, match := range matches {
+		if match.Start < last || match.End > len(source) {
+			return false
+		}
+		next = append(next, source[last:match.Start]...)
+		next = append(next, replacement...)
+		last = match.End
+	}
+	next = append(next, source[last:]...)
+	anchor, cursor := doc.Editor.Selection()
+	delta := len(replacement) - queryLength
+	anchor = remapReplaceAllPosition(anchor, matches, delta)
+	cursor = remapReplaceAllPosition(cursor, matches, delta)
+	if err := doc.ReplaceWithSelection(0, len(source), next, anchor, cursor); err != nil {
+		return false
+	}
+	shell.findMatchesValid = false
+	return true
+}
+
+func remapReplaceAllPosition(position int, matches []application.CurrentMatch, delta int) int {
+	shift := 0
+	queryLength := 0
+	if len(matches) > 0 {
+		queryLength = matches[0].End - matches[0].Start
+	}
+	for _, match := range matches {
+		if position < match.Start {
+			break
+		}
+		if position <= match.End {
+			return match.Start + shift + queryLength + delta
+		}
+		shift += delta
+	}
+	return position + shift
 }
 
 func openTreeContextMenu(shell *workbenchState, path string, isDir bool) {

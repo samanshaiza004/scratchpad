@@ -180,6 +180,12 @@ func (e *ScratchEditor) ClearPreferredVerticalX() {
 
 func (e *ScratchEditor) Insert(text []byte) error {
 	from, to := e.selection()
+	// The editor's Enter key is intentionally represented as an insertion by
+	// the input adapter. Keep pasted/multi-byte text literal, but make the
+	// single LF produced by Enter carry the current line's leading indent.
+	if len(text) == 1 && text[0] == '\n' {
+		text = e.newlineText(from)
+	}
 	return e.replace(from, to, text)
 }
 
@@ -241,6 +247,97 @@ func (e *ScratchEditor) DeleteWordForward() error {
 	return e.replace(e.Cursor, e.Buffer.NextWord(e.Cursor), nil)
 }
 
+// MoveDocumentStart moves to the beginning of the document. Shift-style
+// callers can retain the existing anchor by passing extend=true.
+func (e *ScratchEditor) MoveDocumentStart(extend bool) {
+	e.moveDocumentBoundary(false, extend)
+}
+
+// MoveDocumentEnd moves to the end of the document. Shift-style callers can
+// retain the existing anchor by passing extend=true.
+func (e *ScratchEditor) MoveDocumentEnd(extend bool) {
+	e.moveDocumentBoundary(true, extend)
+}
+
+// MoveToDocumentStart and MoveToDocumentEnd are descriptive aliases for
+// input adapters whose naming follows the key action rather than the motion.
+func (e *ScratchEditor) MoveToDocumentStart(extend bool) { e.MoveDocumentStart(extend) }
+func (e *ScratchEditor) MoveToDocumentEnd(extend bool)   { e.MoveDocumentEnd(extend) }
+
+func (e *ScratchEditor) moveDocumentBoundary(end, extend bool) {
+	position := 0
+	if end {
+		position = e.Buffer.ByteLen()
+	}
+	e.Cursor = position
+	if !extend {
+		e.Anchor = position
+	}
+	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
+}
+
+// MovePage moves by pageLines logical lines while retaining the byte column
+// where possible. The view may choose the page size from its visible rows;
+// the model deliberately has no pixel/layout dependency.
+func (e *ScratchEditor) MovePage(deltaLines, pageLines int, extend bool) {
+	if pageLines < 0 {
+		pageLines = -pageLines
+	}
+	if pageLines == 0 || e.Buffer.LineCount() == 0 {
+		return
+	}
+	from, to := e.selection()
+	origin := e.Cursor
+	if !extend && from != to {
+		if deltaLines < 0 {
+			origin = from
+		} else {
+			origin = to
+		}
+	}
+	line, ok := e.Buffer.LineAt(origin)
+	if !ok {
+		return
+	}
+	start, end, ok := e.Buffer.LineRange(line)
+	if !ok {
+		return
+	}
+	column := origin - start
+	if column > end-start {
+		column = end - start
+	}
+	targetLine := line + deltaLines*pageLines
+	if targetLine < 0 {
+		targetLine = 0
+	}
+	if last := e.Buffer.LineCount() - 1; targetLine > last {
+		targetLine = last
+	}
+	targetStart, targetEnd, ok := e.Buffer.LineRange(targetLine)
+	if !ok {
+		return
+	}
+	position := e.Buffer.boundary(targetStart + clamp(column, targetEnd-targetStart))
+	e.Cursor = position
+	if !extend {
+		e.Anchor = position
+	}
+	e.Affinity = AffinityLeading
+	e.ClearPreferredVerticalX()
+}
+
+// PageUp and PageDown are model-level page motions. pageLines is normally
+// supplied by the fixed-height viewport.
+func (e *ScratchEditor) PageUp(pageLines int, extend bool) {
+	e.MovePage(-1, pageLines, extend)
+}
+
+func (e *ScratchEditor) PageDown(pageLines int, extend bool) {
+	e.MovePage(1, pageLines, extend)
+}
+
 func (e *ScratchEditor) Selection() (anchor, cursor int) {
 	return e.Anchor, e.Cursor
 }
@@ -254,18 +351,33 @@ func (e *ScratchEditor) SelectAll() {
 
 func (e *ScratchEditor) Copy() string {
 	from, to := e.selection()
+	if from == to {
+		from, to = e.currentLineEditRange()
+	}
 	data, _ := e.Buffer.Bytes(from, to)
 	return string(data)
 }
 
 func (e *ScratchEditor) Cut() (string, error) {
-	text := e.Copy()
 	from, to := e.selection()
 	if from == to {
-		return "", nil
+		from, to = e.currentLineEditRange()
 	}
+	textBytes, err := e.Buffer.Bytes(from, to)
+	if err != nil {
+		return "", err
+	}
+	text := string(textBytes)
 	return text, e.replace(from, to, nil)
 }
+
+// CopyLine and CutLine expose the whole-line clipboard behavior explicitly.
+// With a non-empty selection they preserve the ordinary selection semantics;
+// with an empty selection they include the current line's terminator when it
+// has one.
+func (e *ScratchEditor) CopyLine() string { return e.Copy() }
+
+func (e *ScratchEditor) CutLine() (string, error) { return e.Cut() }
 
 func (e *ScratchEditor) Paste(text string) error {
 	return e.Insert([]byte(text))

@@ -3,15 +3,12 @@ package markdown
 import (
 	"bytes"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
+	"github.com/rivo/uniseg"
 	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/extension"
 	"github.com/yuin/goldmark/v2/parser"
-	"golang.org/x/text/width"
 	"scratchpad/document"
-	"scratchpad/editor"
 )
 
 // FormatTable returns one explicitly aligned source replacement for table.
@@ -163,53 +160,14 @@ func delimiterWidth(alignment document.TableAlignment) int {
 }
 
 // tableCellDisplayWidth measures the rendered inline content rather than its
-// source syntax. Goldmark supplies the visible text, then the editor's local
-// grapheme clustering and Unicode width policy account for combining marks,
-// modifiers, joined emoji, flags, and wide CJK characters. A ZWJ sequence is
-// treated as one two-column glyph, which matches the supported table font
-// policy instead of summing each emoji component.
+// source syntax. Goldmark supplies the visible text, then uniseg applies UAX
+// #29 grapheme segmentation and its wcwidth-like monospace policy. This keeps
+// table padding correct for combining marks, variation selectors, modifiers,
+// joined emoji, flags, and wide CJK characters without another local Unicode
+// approximation.
 func tableCellDisplayWidth(raw []byte) int {
 	visible := tableCellDisplayText(raw)
-	buffer := editor.NewBuffer([]byte(visible))
-	width := 0
-	for at := 0; at < buffer.ByteLen(); {
-		end := buffer.NextCluster(at)
-		if end <= at {
-			end = at + 1
-		}
-		if isRegionalIndicatorPair([]byte(visible), at, end, &buffer) {
-			end = buffer.NextCluster(end)
-		}
-		width += tableClusterWidth([]byte(visible)[at:end])
-		at = end
-	}
-	return width
-}
-
-func isRegionalIndicatorPair(source []byte, start, end int, buffer *editor.Buffer) bool {
-	first, firstSize := utf8.DecodeRune(source[start:end])
-	if firstSize == 0 || first < 0x1f1e6 || first > 0x1f1ff || end >= len(source) {
-		return false
-	}
-	second, _ := utf8.DecodeRune(source[end:])
-	return second >= 0x1f1e6 && second <= 0x1f1ff && buffer.NextCluster(end) > end
-}
-
-func tableClusterWidth(cluster []byte) int {
-	hasJoiner := false
-	width := 0
-	for at := 0; at < len(cluster); {
-		r, size := utf8.DecodeRune(cluster[at:])
-		if r == '\u200d' {
-			hasJoiner = true
-		}
-		width += tableRuneWidth(r)
-		at += size
-	}
-	if hasJoiner && width > 0 {
-		return 2
-	}
-	return width
+	return uniseg.StringWidth(visible)
 }
 
 func tableCellDisplayText(raw []byte) string {
@@ -230,28 +188,6 @@ func tableCellDisplayText(raw []byte) string {
 		return ast.WalkContinue, nil
 	})
 	return displayInvalid([]byte(strings.Join(parts, "")))
-}
-
-func tableRuneWidth(r rune) int {
-	if r == '\u200d' || r == '\ufe0e' || r == '\ufe0f' ||
-		(r >= 0x1f3fb && r <= 0x1f3ff) || unicode.Is(unicode.Mn, r) ||
-		unicode.Is(unicode.Mc, r) || unicode.Is(unicode.Me, r) {
-		return 0
-	}
-	if r >= 0x1f1e6 && r <= 0x1f1ff {
-		return 1
-	}
-	if r == utf8.RuneError {
-		return 1
-	}
-	kind := width.LookupRune(r).Kind()
-	if kind == width.EastAsianWide || kind == width.EastAsianFullwidth {
-		return 2
-	}
-	if (r >= 0x1f000 && r <= 0x1faff) || (r >= 0x2600 && r <= 0x27bf) {
-		return 2
-	}
-	return 1
 }
 
 func maxTableInt(a, b int) int {
