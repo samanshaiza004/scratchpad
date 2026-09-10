@@ -17,7 +17,7 @@ func TestLoadUserSettingsMissingUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.EditorFontSize != defaultEditorFontSize || !settings.LineNumbers || len(settings.WrapOverrides) != 0 {
+	if settings.EditorFontSize != defaultEditorFontSize || !settings.LineNumbers || settings.ThemeID != ThemeScratchpadLight || len(settings.WrapOverrides) != 0 {
 		t.Fatalf("missing settings = %#v, want defaults", settings)
 	}
 }
@@ -31,7 +31,7 @@ func TestLoadUserSettingsMalformedUsesDefaults(t *testing.T) {
 	if err == nil {
 		t.Fatal("malformed settings did not return an error")
 	}
-	if settings.EditorFontSize != defaultEditorFontSize || !settings.LineNumbers {
+	if settings.EditorFontSize != defaultEditorFontSize || !settings.LineNumbers || settings.ThemeID != ThemeScratchpadLight {
 		t.Fatalf("malformed settings = %#v, want defaults", settings)
 	}
 }
@@ -45,6 +45,7 @@ func TestUserSettingsPersistAndReload(t *testing.T) {
 		WrapOverrides:      map[application.DocumentID]bool{"/tmp/notes.md": false},
 		UserSettingsPath:   path,
 		UserSettingsLoaded: true,
+		ThemeID:            ThemeScratchpadDark,
 	}
 	if err := saveUserSettingsFile(path, shell); err != nil {
 		t.Fatal(err)
@@ -54,8 +55,24 @@ func TestUserSettingsPersistAndReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	wrap, exists := settings.WrapOverrides["/tmp/notes.md"]
-	if settings.EditorFontSize != 24 || settings.LineNumbers || !exists || wrap {
+	if settings.EditorFontSize != 24 || settings.LineNumbers || settings.ThemeID != ThemeScratchpadDark || !exists || wrap {
 		t.Fatalf("reloaded settings = %#v, want persisted values", settings)
+	}
+}
+
+func TestThemeSelectionPersistsAndBumpsGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	shell := &workbenchState{ThemeID: ThemeScratchpadLight, ThemeGeneration: 1, UserSettingsPath: path}
+	setThemeSelection(shell, ThemeScratchpadDark)
+	if shell.ThemeID != ThemeScratchpadDark || shell.ThemeGeneration != 2 {
+		t.Fatalf("theme selection = %q generation %d", shell.ThemeID, shell.ThemeGeneration)
+	}
+	settings, err := loadUserSettingsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.ThemeID != ThemeScratchpadDark {
+		t.Fatalf("persisted theme = %q, want dark", settings.ThemeID)
 	}
 }
 

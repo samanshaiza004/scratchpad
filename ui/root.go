@@ -54,7 +54,8 @@ func RootView(state *application.Application) {
 		shell.SidebarVisible = false
 	}
 	handleGlobalInput(state, shell)
-	theme := DefaultTheme()
+	theme := resolveWorkbenchTheme(shell)
+	configureActiveTheme(theme)
 
 	Container(Attrs(Viewport, Expand, BackgroundVec(theme.Window), NoAnimate), func() {
 		menuBar(state, shell, theme)
@@ -86,11 +87,11 @@ func RootView(state *application.Application) {
 						view.CollapsedHeadings = nil
 					}
 					rows := rowMapForDocument(doc, view)
-					style := EditorTextStyleForDocument(doc)
+					style := EditorTextStyleForDocumentWithTheme(doc, theme)
 					style.FontSize = editorFontSize(shell)
 					PaperWell(theme, Attrs(Grow(1), Expand, Clip), Attrs(Clip), func() {
 						EditableDocumentView(id, doc, EditorViewOptions{
-							Style: style, RowHeight: editorRowHeight(style.FontSize), Wrap: wrapEnabled(shell, doc), ScrollY: &view.ScrollY,
+							Style: style, Theme: theme, RowHeight: editorRowHeight(style.FontSize), Wrap: wrapEnabled(shell, doc), ScrollY: &view.ScrollY,
 							ScrollInitialized:  view.ScrollInitialized,
 							ScrollX:            &view.ScrollX,
 							ScrollXInitialized: view.ScrollXInitialized,
@@ -138,6 +139,8 @@ type workbenchState struct {
 	LineNumbers        bool
 	LineNumbersSet     bool
 	WrapOverrides      map[application.DocumentID]bool
+	ThemeID            ThemeID
+	ThemeGeneration    uint64
 	SidebarInitialized bool
 	WorkspaceWasOpen   bool
 	FindEpoch          uint64
@@ -1876,7 +1879,7 @@ func cursorPosition(doc *document.Document) (int, int) {
 }
 
 func openControls(state *application.Application, shell *workbenchState, themes ...Theme) {
-	theme := DefaultTheme()
+	theme := resolveWorkbenchTheme(shell)
 	if len(themes) > 0 {
 		theme = themes[0]
 	}

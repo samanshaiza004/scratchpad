@@ -46,8 +46,13 @@ func codeFontFamilies() []string {
 // text. Unknown textual roots use the code surface even when they have no
 // language provider.
 func EditorTextStyle(rootLanguage language.ID) TextStyleAttrs {
+	return EditorTextStyleWithTheme(rootLanguage, ScratchpadLightTheme())
+}
+
+func EditorTextStyleWithTheme(rootLanguage language.ID, theme Theme) TextStyleAttrs {
+	theme = normalizeTheme(theme)
 	style := DefaultTextStyle()
-	style.TextColor = DefaultTheme().Ink
+	style.TextColor = theme.Ink
 	if isCodeLanguage(rootLanguage) {
 		style.FontFamilies = codeFontFamilies()
 	}
@@ -66,14 +71,21 @@ func isDefaultEditorStyle(style TextStyleAttrs) bool {
 }
 
 func EditorTextStyleForDocument(doc *document.Document) TextStyleAttrs {
+	return EditorTextStyleForDocumentWithTheme(doc, ScratchpadLightTheme())
+}
+
+func EditorTextStyleForDocumentWithTheme(doc *document.Document, theme Theme) TextStyleAttrs {
+	theme = normalizeTheme(theme)
 	if doc == nil {
-		return DefaultTextStyle()
+		style := DefaultTextStyle()
+		style.TextColor = theme.Ink
+		return style
 	}
 	if language.SurfaceForPath(doc.Path) == language.SurfaceCode {
 		style := DefaultTextStyle()
-		style.TextColor = DefaultTheme().Ink
+		style.TextColor = theme.Ink
 		style.FontFamilies = codeFontFamilies()
 		return style
 	}
-	return EditorTextStyle(language.ID(doc.RootLanguage))
+	return EditorTextStyleWithTheme(language.ID(doc.RootLanguage), theme)
 }

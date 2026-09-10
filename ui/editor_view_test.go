@@ -876,6 +876,16 @@ func TestDocumentPresentationKeySeparatesPendingFromPublished(t *testing.T) {
 	if got := effectivePresentationKey(unversioned); got == 0 {
 		t.Fatal("non-nil presentation with zero key must map to a non-zero effective key")
 	}
+	light := ScratchpadLightTheme()
+	dark := ScratchpadDarkTheme()
+	if got := effectivePresentationKey(EditorViewOptions{Theme: light}); got == 0 {
+		t.Fatal("theme generation must version an otherwise unstyled cache")
+	} else if got == effectivePresentationKey(EditorViewOptions{Theme: dark}) {
+		t.Fatal("light and dark themes must not share a presentation cache key")
+	}
+	if got := effectivePresentationKey(EditorViewOptions{Presentation: unversioned.Presentation, Theme: light}); got == effectivePresentationKey(EditorViewOptions{Presentation: unversioned.Presentation, Theme: dark}) {
+		t.Fatal("theme generation must invalidate styled rows")
+	}
 }
 
 func BenchmarkWrappedVisualLine(b *testing.B) {

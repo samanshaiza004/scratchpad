@@ -22,12 +22,14 @@ type persistedUserSettings struct {
 	EditorFontSize float32         `json:"editor_font_size,omitempty"`
 	LineNumbers    *bool           `json:"line_numbers,omitempty"`
 	WrapOverrides  map[string]bool `json:"wrap_overrides,omitempty"`
+	ThemeID        string          `json:"theme,omitempty"`
 }
 
 type userSettings struct {
 	EditorFontSize float32
 	LineNumbers    bool
 	WrapOverrides  map[application.DocumentID]bool
+	ThemeID        ThemeID
 }
 
 func userSettingsPath() (string, error) {
@@ -39,7 +41,7 @@ func userSettingsPath() (string, error) {
 }
 
 func loadUserSettingsFile(path string) (userSettings, error) {
-	settings := userSettings{EditorFontSize: defaultEditorFontSize, LineNumbers: true}
+	settings := userSettings{EditorFontSize: defaultEditorFontSize, LineNumbers: true, ThemeID: ThemeScratchpadLight}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -56,6 +58,13 @@ func loadUserSettingsFile(path string) (userSettings, error) {
 	}
 	if persisted.LineNumbers != nil {
 		settings.LineNumbers = *persisted.LineNumbers
+	}
+	if persisted.ThemeID != "" {
+		candidate := ThemeID(persisted.ThemeID)
+		if !isKnownThemeID(candidate) {
+			return settings, fmt.Errorf("unknown theme %q", persisted.ThemeID)
+		}
+		settings.ThemeID = candidate
 	}
 	if len(persisted.WrapOverrides) > 0 {
 		settings.WrapOverrides = make(map[application.DocumentID]bool, len(persisted.WrapOverrides))
@@ -75,6 +84,7 @@ func saveUserSettingsFile(path string, shell *workbenchState) error {
 	persisted := persistedUserSettings{
 		EditorFontSize: editorFontSize(shell),
 		LineNumbers:    boolPtr(lineNumbersEnabled(shell)),
+		ThemeID:        string(resolveWorkbenchTheme(shell).ID),
 	}
 	if len(shell.WrapOverrides) > 0 {
 		persisted.WrapOverrides = make(map[string]bool, len(shell.WrapOverrides))
@@ -120,6 +130,8 @@ func loadUserSettings(shell *workbenchState) {
 	shell.LineNumbers = settings.LineNumbers
 	shell.LineNumbersSet = true
 	shell.WrapOverrides = settings.WrapOverrides
+	shell.ThemeID = settings.ThemeID
+	shell.ThemeGeneration = ThemeForID(shell.ThemeID).Generation
 }
 
 func applyDefaultUserSettings(shell *workbenchState) {
@@ -130,6 +142,8 @@ func applyDefaultUserSettings(shell *workbenchState) {
 	shell.LineNumbers = true
 	shell.LineNumbersSet = true
 	shell.WrapOverrides = nil
+	shell.ThemeID = ThemeScratchpadLight
+	shell.ThemeGeneration = ScratchpadLightTheme().Generation
 }
 
 func persistUserSettings(shell *workbenchState) {
@@ -182,6 +196,18 @@ func setSettingsWrapChoice(shell *workbenchState, doc *document.Document, choice
 	persistUserSettings(shell)
 }
 
+func setThemeSelection(shell *workbenchState, id ThemeID) {
+	if shell == nil || !isKnownThemeID(id) || shell.ThemeID == id {
+		return
+	}
+	if shell.ThemeGeneration == 0 {
+		shell.ThemeGeneration = ThemeForID(shell.ThemeID).Generation
+	}
+	shell.ThemeID = id
+	shell.ThemeGeneration++
+	persistUserSettings(shell)
+}
+
 func settingsSurface(state *application.Application, shell *workbenchState, theme Theme) {
 	Container(Attrs(Viewport, Grow(1), Expand, Clip, BackgroundVec(theme.Paper), Pad(24)), func() {
 		Container(Attrs(Row, Grow(1), Expand, Gap(24)), func() {
@@ -217,6 +243,13 @@ func settingsSurface(state *application.Application, shell *workbenchState, them
 					if WorkstationSegmentedControl(theme, &shell.LineNumbers,
 						Cell("On", true), Cell("Off", false)) {
 						persistUserSettings(shell)
+					}
+				})
+				settingsRow(theme, "Theme", themeDisplayName(resolveWorkbenchTheme(shell).ID), func() {
+					choice := resolveWorkbenchTheme(shell).ID
+					if WorkstationSegmentedControl(theme, &choice,
+						Cell("Light", ThemeScratchpadLight), Cell("Dark", ThemeScratchpadDark)) {
+						setThemeSelection(shell, choice)
 					}
 				})
 				doc := state.ActiveDocument()

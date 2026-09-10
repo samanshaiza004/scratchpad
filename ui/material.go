@@ -19,9 +19,6 @@ var installChromeOnce sync.Once
 func installWorkstationChrome() {
 	installChromeOnce.Do(func() {
 		SetDefaultScrollBar(workstationScrollBar)
-		selection := DefaultTheme().Selection
-		selection[3] = 0.58
-		SelectionColor = selection
 	})
 }
 
@@ -262,7 +259,7 @@ func WorkstationModal(theme Theme, width float32, dismiss func(), fn func()) {
 // track is recessed and the thumb is raised, while scrolling behavior remains
 // entirely framework-owned.
 func workstationScrollBar() ContainerId {
-	theme := DefaultTheme()
+	theme := activeTheme()
 	return ScrollBarExt(ScrollBarAttrs{
 		TrackWidth:     13,
 		TrackPad:       2,

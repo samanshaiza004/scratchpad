@@ -849,6 +849,7 @@ func (v VisualLine) nextClusterBoundary(bounds []int, cluster int) int {
 
 type EditorViewOptions struct {
 	Style                 TextStyleAttrs
+	Theme                 Theme
 	RowHeight             float32
 	Wrap                  bool
 	ScrollY               *float32
@@ -935,18 +936,33 @@ func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool, pre
 
 // effectivePresentationKey folds the nil/non-nil presence into the explicit
 // key so a naive custom presentation that leaves PresentationKey at zero
-// still invalidates the unstyled entry when spans appear. A nil presentation
-// always maps to zero because all unstyled layouts at one revision/width are
-// interchangeable. Document-backed views set an explicit non-zero key that
-// already encodes projection arrival (see documentPresentationKey).
+// still invalidates the unstyled entry when spans appear. Theme generation is
+// mixed into the same key because syntax and semantic colors can change while
+// document bytes and the projection revision remain unchanged.
 func effectivePresentationKey(options EditorViewOptions) uint64 {
-	if options.Presentation == nil {
-		return 0
+	key := uint64(0)
+	if options.Presentation != nil {
+		key = options.PresentationKey
+		if key == 0 {
+			key = 1
+		}
 	}
-	if options.PresentationKey != 0 {
-		return options.PresentationKey
+	if options.Theme.Generation == 0 {
+		return key
 	}
-	return 1
+	const (
+		offset = uint64(14695981039346656037)
+		prime  = uint64(1099511628211)
+	)
+	hash := offset
+	hash ^= key
+	hash *= prime
+	hash ^= options.Theme.Generation
+	hash *= prime
+	if hash == 0 {
+		return 1
+	}
+	return hash
 }
 
 // documentPresentationKey versions disposable projection arrival at a fixed
@@ -1170,8 +1186,9 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 	if doc == nil || doc.Editor == nil {
 		return
 	}
+	options.Theme = normalizeTheme(options.Theme)
 	if isDefaultEditorStyle(options.Style) {
-		options.Style = EditorTextStyleForDocument(doc)
+		options.Style = EditorTextStyleForDocumentWithTheme(doc, options.Theme)
 	}
 	if options.Presentation == nil && language.ID(doc.RootLanguage) == language.Markdown && doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision() {
 		code := doc.Projections.Code
@@ -1182,8 +1199,8 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 			}
 			return spans
 		}
-		options.PresentationStyle = MarkdownPresentationStyle
-		options.PresentationSpanStyle = MarkdownPresentationSpanStyle
+		options.PresentationStyle = MarkdownPresentationStyleForTheme(options.Theme)
+		options.PresentationSpanStyle = MarkdownPresentationSpanStyleForTheme(options.Theme)
 	}
 	if options.Presentation == nil {
 		code, ok := doc.DisplayCodeProjection()
@@ -1195,8 +1212,8 @@ func EditableDocumentView(key any, doc *document.Document, options EditorViewOpt
 				}
 				return spans
 			}
-			options.PresentationStyle = MarkdownPresentationStyle
-			options.PresentationSpanStyle = MarkdownPresentationSpanStyle
+			options.PresentationStyle = MarkdownPresentationStyleForTheme(options.Theme)
+			options.PresentationSpanStyle = MarkdownPresentationSpanStyleForTheme(options.Theme)
 		}
 	}
 	options.PresentationKey = documentPresentationKey(doc, options.Presentation != nil)
@@ -1251,10 +1268,12 @@ func codePresentationKind(kind document.HighlightKind) document.PresentationKind
 // editor core remains unaware of glyphs, focus, clipboard transport, or native
 // IME state.
 func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
-	theme := DefaultTheme()
+	options.Theme = normalizeTheme(options.Theme)
+	theme := options.Theme
 	style := options.Style
 	if style.FontSize == 0 && style.TextColor == (Vec4{}) && len(style.FontFamilies) == 0 {
 		style = DefaultTextStyle()
+		style.TextColor = theme.Ink
 	}
 	rowHeight := options.RowHeight
 	if rowHeight <= 0 {
