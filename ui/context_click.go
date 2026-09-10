@@ -14,10 +14,14 @@ func contextMenuButton() bool {
 // released first. Call inside the row/tab that owns the pointer interaction so
 // opening a menu cannot also activate, close, expand, or drag that item.
 func contextMenuGesture() (pressed, secondary bool) {
+	return contextMenuGestureWithHover(IsHovered)
+}
+
+func contextMenuGestureWithHover(hovered func() bool) (pressed, secondary bool) {
 	held := Use[bool]("context-menu-gesture")
 	action := GetFrameInput().Mouse
 	if action == MouseClick {
-		*held = IsHovered() && contextMenuButton()
+		*held = hovered() && contextMenuButton()
 	}
 	secondary = *held
 	pressed = secondary && action == MouseClick

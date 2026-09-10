@@ -56,6 +56,10 @@ it. Keyboard shortcuts are Ctrl+= (or Ctrl+Shift+=), Ctrl+-, and Ctrl+0 on
 Windows/Linux, with Command in place of Ctrl on macOS. Font size applies to
 the editor across open documents for the current application session.
 
+Open **Settings** with Ctrl+, (or Command+, on macOS) to change persistent
+editor preferences. Changes apply immediately and are stored in the user
+configuration directory.
+
 Use Ctrl+Left/Right to move by word on Windows/Linux, or Option+Left/Right on
 macOS. Hold Shift to extend the selection. Up/Down follows visible wrapped
 rows in prose documents.

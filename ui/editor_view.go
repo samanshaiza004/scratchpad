@@ -1488,6 +1488,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight, scrollY float32, rows editor.RowMap, gutterWidth float32, wrap bool, noWrapLine func(int) bool, lineCache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64, spacing func(int) float32, scrollX float32) {
 	frame := GetFrameInput()
 	input := GetInputState()
+	mouseSelection := Use[editorMouseSelectionState]("editor-mouse-selection")
 	content := GetContentRect()
 	lineWidth := contentWidthIfWrapped(wrap, editorContentWidth(content.Size[0], gutterWidth))
 	lineWidthFor := func(logical int) float32 {
@@ -1634,15 +1635,72 @@ func processEditorInput(e *editor.ScratchEditor, style TextStyleAttrs, rowHeight
 			hitX := overflowHitX(input.MousePoint[0]-content.Origin[0]-gutterWidth, scrollX, unwrapped)
 			localRune, affinity := visual.HitTestAt(localY, hitX)
 			position := visual.DocStart + visual.LocalRuneToByte(localRune)
-			if IsClicked() && shift {
-				e.SetSelection(e.Anchor, position)
-			} else if IsClicked() {
-				e.SetCursor(position)
+			if IsClicked() {
+				applyEditorClickSelection(e, mouseSelection, line, position, frame.ClickCount, shift)
+			} else if mouseSelection.WordDrag {
+				selectDraggedWord(e, mouseSelection, position)
 			} else {
 				e.SetSelection(e.Anchor, position)
 			}
 			e.SetAffinity(affinity)
 		}
+	}
+	if frame.Mouse == MouseRelease {
+		mouseSelection.WordDrag = false
+	}
+}
+
+type editorMouseSelectionState struct {
+	WordDrag  bool
+	WordStart int
+	WordEnd   int
+}
+
+func applyEditorClickSelection(e *editor.ScratchEditor, selection *editorMouseSelectionState, line, position, clickCount int, shift bool) {
+	if e == nil || selection == nil {
+		return
+	}
+	switch {
+	case clickCount >= 3:
+		if start, end, ok := e.Buffer.LineRange(line); ok {
+			e.SetSelection(start, end)
+		}
+		selection.WordDrag = false
+	case clickCount == 2:
+		if start, end, ok := e.Buffer.WordRangeAt(position); ok {
+			e.SetSelection(start, end)
+			selection.WordDrag = true
+			selection.WordStart = start
+			selection.WordEnd = end
+		} else {
+			e.SetCursor(position)
+			selection.WordDrag = false
+		}
+	case shift:
+		selection.WordDrag = false
+		e.SetSelection(e.Anchor, position)
+	default:
+		selection.WordDrag = false
+		e.SetCursor(position)
+	}
+}
+
+func selectDraggedWord(e *editor.ScratchEditor, selection *editorMouseSelectionState, position int) {
+	if e == nil || selection == nil {
+		return
+	}
+	start, end, ok := e.Buffer.WordRangeAt(position)
+	if !ok {
+		return
+	}
+	switch {
+	case end <= selection.WordStart:
+		// Keep the selection direction consistent with a drag to the left.
+		e.SetSelection(selection.WordEnd, start)
+	case start >= selection.WordEnd:
+		e.SetSelection(selection.WordStart, end)
+	default:
+		e.SetSelection(selection.WordStart, selection.WordEnd)
 	}
 }
 

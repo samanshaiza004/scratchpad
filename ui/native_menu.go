@@ -44,6 +44,8 @@ func nativeMenuBar(state *application.Application, shell *workbenchState) bool {
 			commandItem(commands.EditJoinLines, "Join Lines", "", state.ActiveDocument() != nil),
 		}},
 		{Label: "View", Items: []nativemenu.Item{
+			commandItem(commands.SettingsOpen, "Settings…", ",", true),
+			{Kind: nativemenu.SeparatorItem},
 			commandItem(commands.OutlineToggle, "Outline", "", state.ActiveDocument() != nil),
 			commandItem(viewToggleLineNumbers, "Line Numbers", "", state.ActiveDocument() != nil),
 			commandItem(viewToggleWrap, "Word Wrap", "", state.ActiveDocument() != nil),

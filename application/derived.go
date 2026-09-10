@@ -284,6 +284,14 @@ func analysisLanguage(id language.ID) language.ID {
 	return ""
 }
 
+// AnalysisSupported reports whether this build has a projection adapter for
+// the requested root language. UI surfaces can use it to distinguish a
+// temporarily stale projection from a language that the compatibility build
+// intentionally leaves as plain text.
+func AnalysisSupported(id language.ID) bool {
+	return analysisLanguage(id) != ""
+}
+
 func newLanguageAnalyzer(id language.ID) (languageAnalyzer, error) {
 	switch id {
 	case language.Go:

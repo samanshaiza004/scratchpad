@@ -29,6 +29,7 @@ const (
 	FileReveal            ID = "file.reveal"
 	FileRevealActive      ID = "file.reveal-active"
 	ViewToggleSidebar     ID = "view.toggle-sidebar"
+	SettingsOpen          ID = "settings.open"
 	ViewIncreaseFontSize  ID = "view.increase-font-size"
 	ViewDecreaseFontSize  ID = "view.decrease-font-size"
 	ViewResetFontSize     ID = "view.reset-font-size"
@@ -106,6 +107,7 @@ var InitialVocabulary = []ID{
 	FileReveal,
 	FileRevealActive,
 	ViewToggleSidebar,
+	SettingsOpen,
 	ViewIncreaseFontSize,
 	ViewDecreaseFontSize,
 	ViewResetFontSize,

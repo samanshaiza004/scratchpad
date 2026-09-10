@@ -40,6 +40,7 @@ func RootView(state *application.Application) {
 	state.MaybeWriteRecovery(state.RecoveryDir)
 
 	shell := Use[workbenchState]("workbench")
+	loadUserSettings(shell)
 	if shell.EditorFontSize <= 0 {
 		shell.EditorFontSize = defaultEditorFontSize
 	}
@@ -63,6 +64,10 @@ func RootView(state *application.Application) {
 				EtchedDivider(theme, dividerVertical)
 			}
 			Container(Attrs(Grow(1), Expand, Gap(0), Clip, BackgroundVec(theme.Chrome)), func() {
+				if shell.ShowSettings {
+					settingsSurface(state, shell, theme)
+					return
+				}
 				if len(state.Order) == 0 {
 					emptyState(state, shell, theme)
 					return
@@ -125,6 +130,7 @@ type workbenchState struct {
 	ShowGoToLine       bool
 	ShowRecent         bool
 	ShowSearch         bool
+	ShowSettings       bool
 	Mutation           workspaceMutationState
 	TrashConfirmation  workspaceTrashConfirmation
 	SidebarVisible     bool
@@ -163,6 +169,9 @@ type workbenchState struct {
 	Slash              slashState
 	Fence              fenceState
 	PendingSmartPaste  bool
+	UserSettingsLoaded bool
+	UserSettingsPath   string
+	UserSettingsError  string
 
 	SaveAsError             string
 	SaveNotice              string
@@ -227,6 +236,7 @@ func toggleLineNumbers(shell *workbenchState) {
 	}
 	lineNumbersEnabled(shell)
 	shell.LineNumbers = !shell.LineNumbers
+	persistUserSettings(shell)
 }
 
 func wrapEnabled(shell *workbenchState, doc *document.Document) bool {
@@ -250,6 +260,7 @@ func toggleWrap(shell *workbenchState, doc *document.Document) {
 	}
 	id := stateDocumentID(doc)
 	shell.WrapOverrides[id] = !wrapEnabled(shell, doc)
+	persistUserSettings(shell)
 }
 
 // stateDocumentID is only used for the UI-local wrap preference. Document IDs
@@ -307,6 +318,7 @@ func setEditorFontSize(state *application.Application, shell *workbenchState, si
 		return
 	}
 	shell.EditorFontSize = clampEditorFontSize(size)
+	persistUserSettings(shell)
 	if state != nil {
 		for _, doc := range state.Documents {
 			if doc == nil {
@@ -337,14 +349,15 @@ const (
 )
 
 type contextMenuState struct {
-	Open       bool
-	Generation uint64
-	MenuID     ContainerId
-	Kind       contextMenuKind
-	ID         application.DocumentID
-	Path       string
-	IsDir      bool
-	Position   Vec2
+	Open          bool
+	Generation    uint64
+	MenuID        ContainerId
+	Kind          contextMenuKind
+	ID            application.DocumentID
+	Path          string
+	IsDir         bool
+	WorkspaceRoot bool
+	Position      Vec2
 }
 
 type closeDecision uint8
@@ -621,13 +634,50 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 		}
 		Container(Attrs(Viewport, Grow(1), Expand, Clip, Pad2(6, 4)), func() {
 			ScrollOnInput()
-			ContainerWithKey("workspace-root-drop", Attrs(FixHeight(22), Expand, Pad2(0, 6)), func() {
+			ContainerWithKey("workspace-tree-background", Attrs(Float(0, 0), FixSizeVec(GetContentRect().Size), Behind), func() {
+				rootContextClick, rootContextGesture := contextMenuGestureWithHover(func() bool {
+					return RectContainsPoint(GetScreenRect(), GetInputState().MousePoint) && !treeRowHovered(tree)
+				})
+				if rootContextClick {
+					openWorkspaceContextMenu(shell, state.Workspace.Root)
+				}
+				if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary &&
+					!rootContextGesture && IsHoveredDirectly() {
+					clearTreeSelection(tree)
+					tree.MarqueeActive = true
+					tree.MarqueeMoved = false
+					tree.MarqueeStart = GetInputState().MousePoint
+					tree.MarqueeCurrent = tree.MarqueeStart
+				}
+			})
+			ContainerWithKey("workspace-root-drop", Attrs(FixHeight(22), Pad2(0, 6)), func() {
 				if CanDropHere[treeDragPayload](treeDropTarget("")) {
 					ModAttrs(BackgroundVec(theme.Selection))
 				}
 				Label("Workspace", FontSize(11), TextColorVec(theme.Muted))
 			})
 			renderTreeWithShell(state, tree, shell, "", 0, theme)
+			if tree.MarqueeActive {
+				tree.MarqueeCurrent = GetInputState().MousePoint
+				delta := Vec2Sub(tree.MarqueeCurrent, tree.MarqueeStart)
+				if absFloat(delta[0]) > 2 || absFloat(delta[1]) > 2 {
+					tree.MarqueeMoved = true
+				}
+				updateTreeMarqueeSelection(tree)
+				if GetFrameInput().Mouse == MouseRelease {
+					tree.MarqueeActive = false
+				}
+			}
+			if tree.MarqueeActive && tree.MarqueeMoved {
+				selectionRect := treeMarqueeRect(tree.MarqueeStart, tree.MarqueeCurrent)
+				surface := GetScreenRect()
+				localOrigin := Vec2{selectionRect.Origin[0] - surface.Origin[0], selectionRect.Origin[1] - surface.Origin[1]}
+				if selectionRect.Size[0] > 0 && selectionRect.Size[1] > 0 {
+					fill := theme.Selection
+					fill[3] *= 0.35
+					Container(Attrs(FloatVec(localOrigin), FixSize(selectionRect.Size[0], selectionRect.Size[1]), InFront, BorderWidth(1), BorderColorVec(theme.Focus), BackgroundVec(fill)), func() {})
+				}
+			}
 			ScrollBars()
 		})
 	})
@@ -635,14 +685,25 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 
 func outlinePanel(state *application.Application, shell *workbenchState, theme Theme) {
 	doc := state.ActiveDocument()
-	if doc == nil || doc.RootLanguage != "markdown" {
-		Container(Attrs(Grow(1), Pad(10)), func() { Label("Outline is available for Markdown files.", FontSize(11), TextColorVec(theme.Muted)) })
+	if doc == nil {
+		Container(Attrs(Grow(1), Pad(10)), func() { Label("Open a document to view its outline.", FontSize(11), TextColorVec(theme.Muted)) })
+		return
+	}
+	if !outlineLanguageSupported(doc.RootLanguage) ||
+		!application.AnalysisSupported(language.ID(doc.RootLanguage)) {
+		Container(Attrs(Grow(1), Pad(10)), func() { Label("No outline available for this file type.", FontSize(11), TextColorVec(theme.Muted)) })
+		return
+	}
+	if !doc.DerivedCurrent() {
+		Container(Attrs(Grow(1), Pad(10)), func() { Label("Updating outline…", FontSize(11), TextColorVec(theme.Muted)) })
 		return
 	}
 	Container(Attrs(Viewport, Grow(1), Expand, Clip, Pad2(6, 4)), func() {
 		ScrollOnInput()
-		if !doc.Projections.Valid {
-			Label("Updating outline…", FontSize(11), TextColorVec(theme.Muted))
+		if doc.RootLanguage != string(language.Markdown) {
+			outlineCodeSymbols(doc, theme)
+			ScrollBars()
+			return
 		}
 		for _, heading := range doc.Projections.Headings {
 			button := WorkstationRow(theme, Attrs(Row, FixHeight(24), Expand, Pad2(0, float32(8+heading.Level*10))), false, !doc.Projections.Valid, func() {
@@ -666,6 +727,48 @@ func outlinePanel(state *application.Application, shell *workbenchState, theme T
 		}
 		ScrollBars()
 	})
+}
+
+func outlineLanguageSupported(root string) bool {
+	switch language.ID(root) {
+	case language.Markdown, language.Go, language.TypeScript, language.TSX:
+		return true
+	default:
+		return false
+	}
+}
+
+func outlineCodeSymbols(doc *document.Document, theme Theme) {
+	if len(doc.Projections.Code.Symbols) == 0 {
+		Label("No symbols found.", FontSize(11), TextColorVec(theme.Muted))
+		return
+	}
+	for _, symbol := range doc.Projections.Code.Symbols {
+		symbol := symbol
+		button := WorkstationRow(theme, Attrs(Row, FixHeight(24), Expand, Pad2(0, 10), Gap(6)), false, false, func() {
+			Label(symbol.Name, FontSize(11), TextColorVec(theme.Ink))
+			Label(outlineSymbolKind(symbol.Kind), FontSize(10), TextColorVec(theme.Muted))
+		})
+		if button.Clicked {
+			doc.Editor.SetCursor(symbol.StartByte)
+		}
+	}
+}
+
+func outlineSymbolKind(kind string) string {
+	switch kind {
+	case "function", "method":
+		return "ƒ " + kind
+	case "class", "struct", "interface", "type", "enum":
+		return "◇ " + kind
+	case "variable", "constant", "property":
+		return "· " + kind
+	default:
+		if kind == "" {
+			return "symbol"
+		}
+		return kind
+	}
 }
 
 func outlineTask(state *application.Application, doc *document.Document, task document.Task, enabled bool, theme Theme) {
@@ -1092,14 +1195,185 @@ func handleFenceInput(state *application.Application, shell *workbenchState) boo
 }
 
 type treeState struct {
-	Expanded    map[string]bool
-	RowIDs      map[string]ContainerId // transient handles used by layout tests
-	rowsDirty   bool
-	renderDepth int
+	Expanded       map[string]bool
+	Selected       map[string]bool
+	AnchorPath     string
+	LeadPath       string
+	VisiblePaths   []string
+	RowIDs         map[string]ContainerId // transient handles used by layout tests
+	MarqueeActive  bool
+	MarqueeStart   Vec2
+	MarqueeCurrent Vec2
+	MarqueeMoved   bool
+	rowsDirty      bool
+	renderDepth    int
 }
 
 type treeDragPayload string
 type treeDropTarget string
+
+func ensureTreeSelection(tree *treeState) {
+	if tree.Selected == nil {
+		tree.Selected = make(map[string]bool)
+	}
+}
+
+func clearTreeSelection(tree *treeState) {
+	if tree == nil {
+		return
+	}
+	tree.Selected = make(map[string]bool)
+	tree.AnchorPath = ""
+	tree.LeadPath = ""
+}
+
+func treeSelectionClick(tree *treeState, path string, modifiers, primary Modifiers, visible []string) {
+	if tree == nil || path == "" {
+		return
+	}
+	ensureTreeSelection(tree)
+	if modifiers&ModShift != 0 && tree.AnchorPath != "" {
+		anchor := treePathIndex(visible, tree.AnchorPath)
+		lead := treePathIndex(visible, path)
+		if anchor >= 0 && lead >= 0 {
+			anchorPath := tree.AnchorPath
+			clearTreeSelection(tree)
+			if anchor > lead {
+				anchor, lead = lead, anchor
+			}
+			for _, candidate := range visible[anchor : lead+1] {
+				tree.Selected[candidate] = true
+			}
+			tree.AnchorPath = anchorPath
+			tree.LeadPath = path
+			return
+		}
+	}
+	if modifiers&primary != 0 {
+		tree.Selected[path] = !tree.Selected[path]
+		if tree.AnchorPath == "" {
+			tree.AnchorPath = path
+		}
+		tree.LeadPath = path
+		return
+	}
+	clearTreeSelection(tree)
+	tree.Selected[path] = true
+	tree.AnchorPath = path
+	tree.LeadPath = path
+}
+
+func treePathIndex(paths []string, path string) int {
+	for index, candidate := range paths {
+		if candidate == path {
+			return index
+		}
+	}
+	return -1
+}
+
+func treeRowHovered(tree *treeState) bool {
+	if tree == nil {
+		return false
+	}
+	for _, row := range tree.RowIDs {
+		if row != nil && IdIsHovered(row) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedTreePaths(tree *treeState) []string {
+	if tree == nil || len(tree.Selected) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(tree.Selected))
+	for _, path := range tree.VisiblePaths {
+		if tree.Selected[path] {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func treeContextPaths(state *application.Application, shell *workbenchState, menu contextMenuState) []string {
+	if state == nil || shell == nil || menu.WorkspaceRoot {
+		return []string{menu.Path}
+	}
+	selected := selectedTreePaths(&shell.Tree)
+	relative := workspaceRelative(state, menu.Path)
+	if len(selected) <= 1 || !shell.Tree.Selected[relative] {
+		return []string{menu.Path}
+	}
+	paths := make([]string, 0, len(selected))
+	for _, path := range selected {
+		paths = append(paths, filepath.Join(state.Workspace.Root, path))
+	}
+	return paths
+}
+
+func visibleTreePaths(state *application.Application, tree *treeState, relative string) []string {
+	if state == nil || tree == nil || !state.HasWorkspace {
+		return nil
+	}
+	entries, err := state.Workspace.List(relative)
+	if err != nil {
+		return nil
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+		if entry.Dir && tree.Expanded[entry.Path] {
+			paths = append(paths, visibleTreePaths(state, tree, entry.Path)...)
+		}
+	}
+	return paths
+}
+
+func treeMarqueeRect(start, end Vec2) Rect {
+	origin := Vec2{minFloat(start[0], end[0]), minFloat(start[1], end[1])}
+	far := Vec2{maxFloat(start[0], end[0]), maxFloat(start[1], end[1])}
+	return Rect{Origin: origin, Size: Vec2{far[0] - origin[0], far[1] - origin[1]}}
+}
+
+func absFloat(value float32) float32 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func treeRectsIntersect(a, b Rect) bool {
+	return a.Origin[0] < b.Origin[0]+b.Size[0] && b.Origin[0] < a.Origin[0]+a.Size[0] &&
+		a.Origin[1] < b.Origin[1]+b.Size[1] && b.Origin[1] < a.Origin[1]+a.Size[1]
+}
+
+func updateTreeMarqueeSelection(tree *treeState) {
+	if tree == nil || !tree.MarqueeActive || !tree.MarqueeMoved {
+		return
+	}
+	selectionRect := treeMarqueeRect(tree.MarqueeStart, tree.MarqueeCurrent)
+	clearTreeSelection(tree)
+	for _, path := range tree.VisiblePaths {
+		row, ok := tree.RowIDs[path]
+		if !ok || treeRectsIntersect(selectionRect, GetResolvedRectOf(row)) {
+			tree.Selected[path] = ok && treeRectsIntersect(selectionRect, GetResolvedRectOf(row))
+		}
+	}
+	for _, path := range tree.VisiblePaths {
+		if tree.Selected[path] {
+			tree.AnchorPath = path
+			break
+		}
+	}
+	for index := len(tree.VisiblePaths) - 1; index >= 0; index-- {
+		if tree.Selected[tree.VisiblePaths[index]] {
+			tree.LeadPath = tree.VisiblePaths[index]
+			break
+		}
+	}
+}
 
 func renderTree(state *application.Application, tree *treeState, relative string, depth int, theme Theme) {
 	shell := &workbenchState{Tree: *tree}
@@ -1108,6 +1382,10 @@ func renderTree(state *application.Application, tree *treeState, relative string
 }
 
 func renderTreeWithShell(state *application.Application, tree *treeState, shell *workbenchState, relative string, depth int, theme Theme) {
+	ensureTreeSelection(tree)
+	if tree.renderDepth == 0 {
+		tree.VisiblePaths = visibleTreePaths(state, tree, relative)
+	}
 	if tree.renderDepth == 0 && tree.rowsDirty {
 		tree.RowIDs = nil
 		tree.rowsDirty = false
@@ -1124,6 +1402,7 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 	}
 	for _, entry := range entries {
 		entry := entry
+		selected := tree.Selected[entry.Path]
 		ContainerWithKey(entry.Path, Attrs(Expand), func() {
 			// Keep the item itself horizontal. Expanded children are siblings
 			// below it in this vertical subtree, never children of its row.
@@ -1136,7 +1415,7 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 				if entry.Dir && CanDropHere[treeDragPayload](treeDropTarget(entry.Path)) {
 					ModAttrs(BackgroundVec(theme.Selection))
 				}
-				button = WorkstationRow(theme, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), active, secondaryGesture, func() {
+				button = WorkstationRow(theme, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), active || selected, secondaryGesture, func() {
 					if entry.Dir {
 						arrow := "▸"
 						if tree.Expanded[entry.Path] {
@@ -1144,6 +1423,9 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 						}
 						Label(arrow+"  "+entry.Name, FontSize(12), TextColorVec(theme.Ink))
 						if secondaryClick && IsHovered() {
+							if !tree.Selected[entry.Path] {
+								treeSelectionClick(tree, entry.Path, 0, PrimaryMod(), tree.VisiblePaths)
+							}
 							openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), true)
 						}
 						return
@@ -1154,6 +1436,9 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 					}
 					Label(marker+entry.Name, FontSize(12), TextColorVec(theme.Ink))
 					if secondaryClick && IsHovered() {
+						if !tree.Selected[entry.Path] {
+							treeSelectionClick(tree, entry.Path, 0, PrimaryMod(), tree.VisiblePaths)
+						}
 						openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), false)
 					}
 				})
@@ -1170,10 +1455,14 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 				}
 			})
 			if button.Clicked && !secondaryGesture && GetInputState().MouseButton == MousePrimary {
-				if entry.Dir {
-					executeCommand(state, shell, commands.WorkspaceToggleFolder, entry.Path)
-				} else {
-					executeCommand(state, shell, commands.FileOpen, filepath.Join(state.Workspace.Root, entry.Path))
+				modifiers := GetInputState().Modifiers
+				treeSelectionClick(tree, entry.Path, modifiers, PrimaryMod(), tree.VisiblePaths)
+				if modifiers&(PrimaryMod()|ModShift) == 0 {
+					if entry.Dir {
+						executeCommand(state, shell, commands.WorkspaceToggleFolder, entry.Path)
+					} else {
+						executeCommand(state, shell, commands.FileOpen, filepath.Join(state.Workspace.Root, entry.Path))
+					}
 				}
 			}
 			tree.RowIDs[entry.Path] = rowID
@@ -2068,6 +2357,11 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 		}
 	}
 	if frame.Key == KeyEscape {
+		if shell.ShowSettings {
+			shell.ShowSettings = false
+			frame.Key = KeyCodeNone
+			return
+		}
 		if shell.ShowFind {
 			shell.ShowFind = false
 			shell.ShowReplace = false
@@ -2123,6 +2417,11 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 				return
 			}
 		}
+	}
+	if mods == primary && (frame.Key == KeyCode(',') || (frame.Key == KeyCodeNone && frame.Text == ",")) {
+		shell.ShowSettings = !shell.ShowSettings
+		frame.Key = KeyCodeNone
+		return
 	}
 	if mods == primary && frame.Key == KeyV && !transientInputOpen(shell) {
 		ctx := commandContext(state)
@@ -2183,6 +2482,9 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 }
 
 func commandKeyBinding(state *application.Application, key KeyCode, text string, mods, primary Modifiers) (commands.ID, bool) {
+	if mods == primary && (key == KeyCode(',') || (key == KeyCodeNone && text == ",")) {
+		return commands.SettingsOpen, true
+	}
 	if state == nil || state.ActiveDocument() == nil {
 		return "", false
 	}
@@ -2298,7 +2600,7 @@ func transientInputOpen(shell *workbenchState) bool {
 	if shell == nil {
 		return false
 	}
-	return shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen || shell.Mutation.Open || shell.TrashConfirmation.Open ||
+	return shell.ShowSettings || shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen || shell.Mutation.Open || shell.TrashConfirmation.Open ||
 		shell.ShowSaveAs || shell.ShowSaveAsOverwrite || shell.ShowFind ||
 		shell.ShowGoToLine || shell.ShowSearch || shell.ShowRecent ||
 		shell.ShowCompare || shell.Slash.Open || shell.Fence.Open
@@ -2351,10 +2653,19 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	}
 	switch id {
 	case commands.FileOpen:
+		shell.ShowSettings = false
 		if path := explicitCommandPath(args); path != "" {
 			return state.OpenPath(path) == nil
 		}
 		openPathPicker(state, shell)
+		return true
+	case commands.SettingsOpen:
+		ClearFocus()
+		shell.ShowSettings = !shell.ShowSettings
+		shell.ShowFind = false
+		shell.ShowReplace = false
+		shell.ShowSearch = false
+		shell.ShowQuickOpen = false
 		return true
 	case commands.FileSave:
 		id := state.Active
@@ -2395,6 +2706,7 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		shell.ShowReplace = true
 		shell.ShowSearch = false
 	case commands.QuickOpen:
+		shell.ShowSettings = false
 		if !shell.ShowQuickOpen {
 			ClearFocus()
 			shell.QuickOpenEpoch++
@@ -2439,6 +2751,7 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 			requestClose(state, shell, target)
 		}
 	case commands.DocumentActivate:
+		shell.ShowSettings = false
 		if target := commandDocumentID(state, args); target != "" {
 			state.Activate(target)
 		}
@@ -2508,6 +2821,8 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.WorkspaceRefresh:
 		shell.Tree.Expanded = make(map[string]bool)
 		shell.Tree.RowIDs = nil
+		clearTreeSelection(&shell.Tree)
+		shell.Tree.VisiblePaths = nil
 	case commands.WorkspaceToggleFolder:
 		if relative := commandString(args); relative != "" {
 			tree := &shell.Tree
@@ -2564,6 +2879,7 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		resetTreeAfterMutation(shell)
 		return true
 	case commands.FileOpenRecent:
+		shell.ShowSettings = false
 		if path := explicitCommandPath(args); path != "" {
 			if state.OpenPath(path) == nil {
 				shell.ShowRecent = false
@@ -2677,6 +2993,8 @@ func resetTreeAfterMutation(shell *workbenchState) {
 		return
 	}
 	shell.Tree.Expanded = make(map[string]bool)
+	clearTreeSelection(&shell.Tree)
+	shell.Tree.VisiblePaths = nil
 	if shell.Tree.renderDepth > 0 {
 		shell.Tree.rowsDirty = true
 	} else {
@@ -2993,6 +3311,13 @@ func openTreeContextMenu(shell *workbenchState, path string, isDir bool) {
 	}
 }
 
+func openWorkspaceContextMenu(shell *workbenchState, path string) {
+	shell.ContextMenu = contextMenuState{
+		Open: true, Generation: shell.ContextMenu.Generation + 1,
+		Kind: contextMenuTree, Path: path, IsDir: true, WorkspaceRoot: true, Position: GetInputState().MousePoint,
+	}
+}
+
 func openTabContextMenu(shell *workbenchState, id application.DocumentID, path string) {
 	shell.ContextMenu = contextMenuState{
 		Open: true, Generation: shell.ContextMenu.Generation + 1,
@@ -3022,6 +3347,10 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 	Popup(func() {
 		var menuID ContainerId
 		menuID = floatingSurfaceWithKey(fmt.Sprintf("context-menu-%d", menu.Generation), theme, Attrs(FloatVec(menu.Position), FixWidth(224), Clip), Attrs(Gap(1), Pad(5), Clip), func() {
+			contextPaths := []string(nil)
+			if menu.Kind == contextMenuTree {
+				contextPaths = treeContextPaths(state, shell, menu)
+			}
 			if menu.Kind == contextMenuTab {
 				if contextMenuItem(theme, "Close") {
 					executeCommand(state, shell, commands.DocumentClose, menu.ID)
@@ -3040,7 +3369,27 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 					shell.ContextMenu.Open = false
 				}
 			} else {
-				if menu.IsDir {
+				if menu.WorkspaceRoot {
+					if contextMenuItem(theme, "New File") {
+						executeCommand(state, shell, commands.WorkspaceNewFile, menu.Path)
+					}
+					if contextMenuItem(theme, "New Folder") {
+						executeCommand(state, shell, commands.WorkspaceNewFolder, menu.Path)
+					}
+					if contextMenuItem(theme, "Refresh Workspace") {
+						executeCommand(state, shell, commands.WorkspaceRefresh)
+						shell.ContextMenu.Open = false
+					}
+					if contextMenuItem(theme, "Collapse All") {
+						shell.Tree.Expanded = make(map[string]bool)
+						shell.Tree.RowIDs = nil
+						shell.ContextMenu.Open = false
+					}
+					if contextMenuItem(theme, "Reveal Workspace") {
+						executeCommand(state, shell, commands.FileReveal, menu.Path)
+						shell.ContextMenu.Open = false
+					}
+				} else if menu.IsDir {
 					label := "Expand"
 					if shell.Tree.Expanded[workspaceRelative(state, menu.Path)] {
 						label = "Collapse"
@@ -3053,32 +3402,52 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 					executeCommand(state, shell, commands.FileOpen, menu.Path)
 					shell.ContextMenu.Open = false
 				}
-				parent := menu.Path
-				if !menu.IsDir {
-					parent = filepath.Dir(parent)
-				}
-				if contextMenuItem(theme, "New File") {
-					executeCommand(state, shell, commands.WorkspaceNewFile, parent)
-				}
-				if contextMenuItem(theme, "New Folder") {
-					executeCommand(state, shell, commands.WorkspaceNewFolder, parent)
-				}
-				if contextMenuItem(theme, "Rename") {
-					executeCommand(state, shell, commands.WorkspaceRename, menu.Path)
-				}
-				if state.Trasher != nil && contextMenuItem(theme, "Move to Trash") {
-					executeCommand(state, shell, commands.WorkspaceTrash, menu.Path)
+				if !menu.WorkspaceRoot {
+					parent := menu.Path
+					if !menu.IsDir {
+						parent = filepath.Dir(parent)
+					}
+					if contextMenuItem(theme, "New File") {
+						executeCommand(state, shell, commands.WorkspaceNewFile, parent)
+					}
+					if contextMenuItem(theme, "New Folder") {
+						executeCommand(state, shell, commands.WorkspaceNewFolder, parent)
+					}
+					if contextMenuItem(theme, "Rename") {
+						executeCommand(state, shell, commands.WorkspaceRename, menu.Path)
+					}
+					if state.Trasher != nil && contextMenuItem(theme, "Move to Trash") {
+						executeCommand(state, shell, commands.WorkspaceTrash, menu.Path)
+					}
 				}
 			}
-			if contextMenuItem(theme, "Copy Path") {
-				executeCommand(state, shell, commands.FileCopyPath, menu.Path)
+			copyPathLabel := "Copy Path"
+			copyRelativeLabel := "Copy Relative Path"
+			if len(contextPaths) > 1 {
+				copyPathLabel = "Copy Paths"
+				copyRelativeLabel = "Copy Relative Paths"
+			}
+			if contextMenuItem(theme, copyPathLabel) {
+				if len(contextPaths) > 1 {
+					RequestTextCopy(strings.Join(contextPaths, "\n"))
+				} else {
+					executeCommand(state, shell, commands.FileCopyPath, menu.Path)
+				}
 				shell.ContextMenu.Open = false
 			}
-			if contextMenuItem(theme, "Copy Relative Path") {
-				executeCommand(state, shell, commands.FileCopyRelativePath, menu.Path)
+			if contextMenuItem(theme, copyRelativeLabel) {
+				if len(contextPaths) > 1 {
+					relative := make([]string, 0, len(contextPaths))
+					for _, path := range contextPaths {
+						relative = append(relative, relativePath(state, path))
+					}
+					RequestTextCopy(strings.Join(relative, "\n"))
+				} else {
+					executeCommand(state, shell, commands.FileCopyRelativePath, menu.Path)
+				}
 				shell.ContextMenu.Open = false
 			}
-			if contextMenuItem(theme, "Reveal") {
+			if !menu.WorkspaceRoot && contextMenuItem(theme, "Reveal") {
 				executeCommand(state, shell, commands.FileReveal, menu.Path)
 				shell.ContextMenu.Open = false
 			}

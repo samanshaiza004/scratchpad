@@ -477,6 +477,42 @@ func (b *Buffer) NextWord(at int) int {
 	return b.snapWordRight(i)
 }
 
+// WordRangeAt returns the maximal word-motion class run containing the rune at
+// at. It deliberately shares wordRuneClass with PreviousWord and NextWord so
+// double-click selection and Ctrl/Alt word motion agree on punctuation,
+// whitespace, and script boundaries. An end-of-buffer offset selects the last
+// run, matching the usual text-editor hit-testing behavior.
+func (b *Buffer) WordRangeAt(at int) (start, end int, ok bool) {
+	if b == nil || b.byteLen == 0 {
+		return 0, 0, false
+	}
+	at = b.boundary(at)
+	if at >= b.byteLen {
+		at = b.PreviousCluster(b.byteLen)
+	}
+	class, width := b.wordRuneClass(at)
+	if width <= 0 {
+		return at, at, false
+	}
+	start, end = at, at+width
+	for start > 0 {
+		previous := b.PreviousCluster(start)
+		previousClass, previousWidth := b.wordRuneClass(previous)
+		if previousWidth <= 0 || previousClass != class {
+			break
+		}
+		start = previous
+	}
+	for end < b.byteLen {
+		nextClass, nextWidth := b.wordRuneClass(end)
+		if nextWidth <= 0 || nextClass != class {
+			break
+		}
+		end += nextWidth
+	}
+	return start, end, true
+}
+
 // Class boundaries can occur between a base rune and an extending mark when
 // the mark belongs to the Inherited script. Keep word motion on the same
 // grapheme-like caret stops used by ordinary horizontal motion.

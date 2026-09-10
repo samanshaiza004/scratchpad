@@ -251,6 +251,37 @@ func TestEditorWordNavigationMatchesShireiClassRuns(t *testing.T) {
 	}
 }
 
+func TestBufferWordRangeAtMatchesWordMotionClasses(t *testing.T) {
+	cases := []struct {
+		text      string
+		at        int
+		wantStart int
+		wantEnd   int
+	}{
+		{"hello world", 1, 0, 5},
+		{"hello world", 5, 5, 6},
+		{"hello world", 8, 6, 11},
+		{"hello world", len("hello world"), 6, 11},
+		{"/opt/brew", 0, 0, 1},
+		{"/opt/brew", 2, 1, 4},
+		{"foo, bar", 3, 3, 4},
+		{"   ", 1, 0, 3},
+		{"漢字かなカナab", 0, 0, len([]byte("漢字"))},
+		{"cafe\u0301s", len([]byte("cafe\u0301")), 0, len([]byte("cafe\u0301s"))},
+	}
+	for _, tc := range cases {
+		b := NewBuffer([]byte(tc.text))
+		start, end, ok := b.WordRangeAt(tc.at)
+		if !ok || start != tc.wantStart || end != tc.wantEnd {
+			t.Errorf("WordRangeAt(%q, %d) = %d:%d, %v; want %d:%d, true", tc.text, tc.at, start, end, ok, tc.wantStart, tc.wantEnd)
+		}
+	}
+	empty := NewBuffer(nil)
+	if _, _, ok := empty.WordRangeAt(0); ok {
+		t.Fatal("empty buffer returned a word range")
+	}
+}
+
 func TestEditorWordNavigationPreservesSelectionAndInvalidByteSafety(t *testing.T) {
 	e := NewScratchEditor([]byte("hello world"))
 	e.SetCursor(0)

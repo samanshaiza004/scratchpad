@@ -531,6 +531,30 @@ func TestEditableViewScrolledClickUsesRenderedRowGeometry(t *testing.T) {
 	frame(Vec2{10, 10}, MouseRelease)
 }
 
+func TestEditorMouseSelectionUsesWordAndLineGranularity(t *testing.T) {
+	e := editor.NewScratchEditor([]byte("hello world\nsecond line"))
+	selection := &editorMouseSelectionState{}
+	world := len([]byte("hello "))
+	applyEditorClickSelection(e, selection, 0, world+2, 2, false)
+	if anchor, cursor := e.Selection(); anchor != world || cursor != len([]byte("hello world")) {
+		t.Fatalf("double-click selection = %d:%d, want %d:%d", anchor, cursor, world, len([]byte("hello world")))
+	}
+	if !selection.WordDrag {
+		t.Fatal("double-click did not arm word-wise drag")
+	}
+	selectDraggedWord(e, selection, len([]byte("hello world\nsecon")))
+	if anchor, cursor := e.Selection(); anchor != world || cursor != len([]byte("hello world\nsecond")) {
+		t.Fatalf("word drag selection = %d:%d, want %d:%d", anchor, cursor, world, len([]byte("hello world\nsecond")))
+	}
+	applyEditorClickSelection(e, selection, 1, len([]byte("hello world\nsecond")), 3, false)
+	if anchor, cursor := e.Selection(); anchor != len([]byte("hello world\n")) || cursor != len([]byte("hello world\nsecond line")) {
+		t.Fatalf("triple-click selection = %d:%d, want %d:%d", anchor, cursor, len([]byte("hello world\n")), len([]byte("hello world\nsecond line")))
+	}
+	if selection.WordDrag {
+		t.Fatal("triple-click left word-wise drag armed")
+	}
+}
+
 func TestEditableViewTextParityWithTextArea(t *testing.T) {
 	if shaped := ShapeText("probe", DefaultTextStyle()); len(shaped.Lines) == 0 {
 		t.Skip("Shirei has no usable font in this headless unit-test context")

@@ -121,6 +121,7 @@ func DefaultRegistry() Registry {
 		descriptors = append(descriptors, CommandDescriptor{ID: id, Title: string(id), Category: "application", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }})
 	}
 	for _, descriptor := range []CommandDescriptor{
+		{ID: SettingsOpen, Title: "Settings", Category: "application", Bindings: []Keybinding{{Key: "primary+,"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: WorkspaceNewFile, Title: "New File", Category: "workspace", Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceNewFolder, Title: "New Folder", Category: "workspace", Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceRename, Title: "Rename", Category: "workspace", Bindings: []Keybinding{{Key: "f2"}}, Visible: workspace, Enabled: workspace},
