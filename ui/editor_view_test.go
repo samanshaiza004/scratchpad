@@ -706,6 +706,51 @@ func TestEditableViewDispatchesLineNavigationKeys(t *testing.T) {
 	}
 }
 
+func TestEditableViewDispatchesCRLFEnterAndDuplicate(t *testing.T) {
+	if shaped := ShapeText("probe", DefaultTextStyle()); len(shaped.Lines) == 0 {
+		t.Skip("Shirei has no usable font in this headless unit-test context")
+	}
+	setup := func(e *editor.ScratchEditor, scope *int) func(KeyCode, Modifiers) {
+		ResetInputSession()
+		GetHost().HeadlessRender = true
+		GetHost().WindowFocused = true
+		GetHost().WindowSize = Vec2{500, 160}
+		runKey := func(key KeyCode, mods Modifiers) {
+			GetInputState().Modifiers = mods
+			GetFrameInput().Key = key
+			GetFrameInput().Text = ""
+			GetFrameInput().Mouse = 0
+			RunFrameFn(func() {
+				ContainerWithKey(scope, Attrs(Viewport), func() {
+					EditableView(scope, e, EditorViewOptions{Style: DefaultTextStyle(), RowHeight: 20})
+				})
+			})
+			GetInputState().Modifiers = 0
+			GetFrameInput().Key = KeyCodeNone
+		}
+		for range 2 {
+			runKey(KeyCodeNone, 0)
+		}
+		return runKey
+	}
+
+	e := editor.NewScratchEditor([]byte("  a\r\n  b\r\n"))
+	e.SetCursor(len([]byte("  a")))
+	runKey := setup(e, new(int))
+	runKey(KeyEnter, 0)
+	if got := string(e.Buffer.Text()); got != "  a\r\n  \r\n  b\r\n" {
+		t.Fatalf("keyboard CRLF Enter = %q", got)
+	}
+
+	e = editor.NewScratchEditor([]byte("a\r\nb\r\n"))
+	e.SetCursor(len([]byte("a\r\nb")))
+	runKey = setup(e, new(int))
+	runKey(KeyDown, ModAlt|ModShift)
+	if got := string(e.Buffer.Text()); got != "a\r\nb\r\nb\r\n" {
+		t.Fatalf("keyboard CRLF duplicate down = %q", got)
+	}
+}
+
 func currentText(useTextArea bool, text *string, custom *editor.ScratchEditor) string {
 	if useTextArea {
 		return *text
@@ -909,6 +954,28 @@ func TestOverflowLaneHelpers(t *testing.T) {
 	}
 	if got := adjustScrollXForCaret(200, 300, 200, false); got != 0 {
 		t.Fatalf("wrapped caret adjustment = %v, want 0", got)
+	}
+}
+
+func TestCurrentEditorLineBackground(t *testing.T) {
+	theme := DefaultTheme()
+	if got := currentEditorLineBackground(theme, Vec4{}, false); got != (Vec4{}) {
+		t.Fatalf("inactive background = %v, want zero", got)
+	}
+	got := currentEditorLineBackground(theme, Vec4{}, true)
+	if got == (Vec4{}) || got[3] != currentLineHighlightAlpha {
+		t.Fatalf("active background = %v, want highlight alpha %v", got, currentLineHighlightAlpha)
+	}
+
+	decoration := theme.ChromeRaised
+	decoration[3] = 0.16
+	got = currentEditorLineBackground(theme, decoration, true)
+	if got[3] <= decoration[3] || got[3] > 1 {
+		t.Fatalf("active decorated background alpha = %v, want greater than %v and at most 1", got[3], decoration[3])
+	}
+	decoration[3] = 0.96
+	if got := currentEditorLineBackground(theme, decoration, true); got[3] != 1 {
+		t.Fatalf("active decorated background alpha = %v, want clamped 1", got[3])
 	}
 }
 

@@ -60,6 +60,9 @@ Use Ctrl+Left/Right to move by word on Windows/Linux, or Option+Left/Right on
 macOS. Hold Shift to extend the selection. Up/Down follows visible wrapped
 rows in prose documents.
 
+On macOS, Control-click a file-tree row or document tab to open its context
+menu. Secondary mouse/trackpad clicks open the same menus on every platform.
+
 Host-font visual baselines are opt-in:
 
 ```bash

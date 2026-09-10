@@ -1092,8 +1092,10 @@ func handleFenceInput(state *application.Application, shell *workbenchState) boo
 }
 
 type treeState struct {
-	Expanded map[string]bool
-	RowIDs   map[string]ContainerId // transient handles used by layout tests
+	Expanded    map[string]bool
+	RowIDs      map[string]ContainerId // transient handles used by layout tests
+	rowsDirty   bool
+	renderDepth int
 }
 
 type treeDragPayload string
@@ -1106,9 +1108,15 @@ func renderTree(state *application.Application, tree *treeState, relative string
 }
 
 func renderTreeWithShell(state *application.Application, tree *treeState, shell *workbenchState, relative string, depth int, theme Theme) {
+	if tree.renderDepth == 0 && tree.rowsDirty {
+		tree.RowIDs = nil
+		tree.rowsDirty = false
+	}
 	if tree.RowIDs == nil {
 		tree.RowIDs = make(map[string]ContainerId)
 	}
+	tree.renderDepth++
+	defer func() { tree.renderDepth-- }()
 	entries, err := state.Workspace.List(relative)
 	if err != nil {
 		Label("Workspace unavailable: "+err.Error(), FontSize(11), TextColorVec(theme.Muted))
@@ -1121,12 +1129,14 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 			// below it in this vertical subtree, never children of its row.
 			active := !entry.Dir && isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path))
 			var button ButtonState
+			var secondaryGesture bool
 			rowID := Container(Attrs(Expand), func() {
+				secondaryClick, secondary := contextMenuGesture()
+				secondaryGesture = secondary
 				if entry.Dir && CanDropHere[treeDragPayload](treeDropTarget(entry.Path)) {
 					ModAttrs(BackgroundVec(theme.Selection))
 				}
-				button = WorkstationRow(theme, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), active, false, func() {
-					secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
+				button = WorkstationRow(theme, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), active, secondaryGesture, func() {
 					if entry.Dir {
 						arrow := "▸"
 						if tree.Expanded[entry.Path] {
@@ -1148,7 +1158,7 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 					}
 				})
 				sourcePath := filepath.Join(state.Workspace.Root, entry.Path)
-				if DragAndDrop(treeDragPayload(sourcePath)) {
+				if !secondaryGesture && DragAndDrop(treeDragPayload(sourcePath)) {
 					target := GetDropTarget[treeDropTarget]()
 					destinationDir := filepath.Join(state.Workspace.Root, string(target))
 					destination := filepath.Join(destinationDir, filepath.Base(sourcePath))
@@ -1159,7 +1169,7 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 					}
 				}
 			})
-			if button.Clicked && GetInputState().MouseButton == MousePrimary {
+			if button.Clicked && !secondaryGesture && GetInputState().MouseButton == MousePrimary {
 				if entry.Dir {
 					executeCommand(state, shell, commands.WorkspaceToggleFolder, entry.Path)
 				} else {
@@ -1205,8 +1215,8 @@ func tabs(state *application.Application, shell *workbenchState, theme Theme) {
 			active := id == state.Active
 			var closeID ContainerId
 			tabID := ContainerWithKey(id, Attrs(FixHeight(29)), func() {
-				button := ProcessButtonEvents(false)
-				secondaryClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseSecondary
+				secondaryClick, secondaryGesture := contextMenuGesture()
+				button := ProcessButtonEvents(secondaryGesture)
 				middleClick := GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MouseTertiary
 				drawContent := func() {
 					Container(Attrs(Row, CrossMid, FixHeight(27), Pad2(0, 8), Gap(6)), func() {
@@ -1219,7 +1229,7 @@ func tabs(state *application.Application, shell *workbenchState, theme Theme) {
 							Label("●", FontSize(8), TextColorVec(theme.Warning))
 						}
 						closeID = Container(Attrs(FixWidth(16), FixHeight(18), Center, Corners(1)), func() {
-							closeButton := ProcessButtonEvents(false)
+							closeButton := ProcessButtonEvents(secondaryGesture)
 							if closeButton.Hovered {
 								ModAttrs(BackgroundVec(theme.Highlight), BorderWidth(1), BorderColorVec(theme.Shadow))
 							}
@@ -1248,7 +1258,7 @@ func tabs(state *application.Application, shell *workbenchState, theme Theme) {
 					executeCommand(state, shell, commands.DocumentClose, id)
 				} else if secondaryClick && button.Hovered {
 					openTabContextMenu(shell, id, doc.Path)
-				} else if button.Clicked {
+				} else if button.Clicked && !secondaryGesture && GetInputState().MouseButton == MousePrimary {
 					executeCommand(state, shell, commands.DocumentActivate, id)
 				}
 			})
@@ -2667,7 +2677,12 @@ func resetTreeAfterMutation(shell *workbenchState) {
 		return
 	}
 	shell.Tree.Expanded = make(map[string]bool)
-	shell.Tree.RowIDs = nil
+	if shell.Tree.renderDepth > 0 {
+		shell.Tree.rowsDirty = true
+	} else {
+		shell.Tree.RowIDs = nil
+		shell.Tree.rowsDirty = false
+	}
 	shell.Mutation = workspaceMutationState{}
 	shell.TrashConfirmation = workspaceTrashConfirmation{}
 }
@@ -2988,12 +3003,13 @@ func openTabContextMenu(shell *workbenchState, id application.DocumentID, path s
 func contextMenuItem(theme Theme, label string) bool {
 	var clicked bool
 	Container(Attrs(Row, Expand, CrossMid, FixHeight(23), Pad2(0, 8)), func() {
-		button := ProcessButtonEvents(false)
+		_, secondaryGesture := contextMenuGesture()
+		button := ProcessButtonEvents(secondaryGesture)
 		if button.Hovered {
 			ModAttrs(BackgroundVec(theme.Selection), Grad(0, 0, -5, 0))
 		}
 		Label(label, FontSize(11), TextColorVec(theme.Ink))
-		clicked = button.Clicked && GetInputState().MouseButton == MousePrimary
+		clicked = button.Clicked && GetInputState().MouseButton == MousePrimary && !secondaryGesture
 	})
 	return clicked
 }
@@ -3068,7 +3084,7 @@ func contextMenu(state *application.Application, shell *workbenchState, theme Th
 			}
 		})
 		shell.ContextMenu.MenuID = menuID
-		if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary && !IdIsHovered(menuID) {
+		if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary && !contextMenuButton() && !IdIsHovered(menuID) {
 			shell.ContextMenu.Open = false
 		}
 	})

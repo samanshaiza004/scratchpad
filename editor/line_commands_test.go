@@ -46,6 +46,38 @@ func TestEditorEnterPreservesIndentAndUndo(t *testing.T) {
 	}
 }
 
+func TestEditorEnterPreservesCRLFAndSelectionReplacement(t *testing.T) {
+	source := []byte("  a\r\n  b\r\n")
+	e := NewScratchEditor(source)
+	e.SetCursor(len([]byte("  a")))
+	if err := e.Insert([]byte{'\n'}); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("  a\r\n  \r\n  b\r\n")
+	if got := e.Buffer.Text(); !bytes.Equal(got, want) {
+		t.Fatalf("CRLF Enter = %q, want %q", got, want)
+	}
+	if err := e.Undo(); err != nil || !bytes.Equal(e.Buffer.Text(), source) {
+		t.Fatalf("CRLF Enter undo = %q, err=%v", e.Buffer.Text(), err)
+	}
+	if err := e.Redo(); err != nil || !bytes.Equal(e.Buffer.Text(), want) {
+		t.Fatalf("CRLF Enter redo = %q, err=%v", e.Buffer.Text(), err)
+	}
+
+	e = NewScratchEditor(source)
+	e.SetSelection(len([]byte("  a")), len([]byte("  a\r\n  b")))
+	if err := e.Insert([]byte{'\n'}); err != nil {
+		t.Fatal(err)
+	}
+	want = []byte("  a\r\n  \r\n")
+	if got := e.Buffer.Text(); !bytes.Equal(got, want) {
+		t.Fatalf("CRLF selection Enter = %q, want %q", got, want)
+	}
+	if err := e.Undo(); err != nil || !bytes.Equal(e.Buffer.Text(), source) {
+		t.Fatalf("CRLF selection Enter undo = %q, err=%v", e.Buffer.Text(), err)
+	}
+}
+
 func TestEditorLineIndentOutdentAndWholeLineClipboard(t *testing.T) {
 	e := NewScratchEditor([]byte("one\n\ttwo\nthree"))
 	e.SetSelection(0, len([]byte("one\n\ttwo\n")))
@@ -93,6 +125,49 @@ func TestEditorDeleteInsertMoveAndDuplicateLines(t *testing.T) {
 	e.SetCursor(3)
 	if err := e.DeleteLine(); err != nil || string(e.Buffer.Text()) != "a\nc" {
 		t.Fatalf("delete line = %q, err=%v", e.Buffer.Text(), err)
+	}
+}
+
+func TestEditorDuplicateLineDownPreservesTerminalEOL(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{name: "LF terminated", source: "a\nb\n", want: "a\nb\nb\n"},
+		{name: "LF unterminated", source: "a\nb", want: "a\nb\nb"},
+		{name: "CRLF terminated", source: "a\r\nb\r\n", want: "a\r\nb\r\nb\r\n"},
+		{name: "CRLF unterminated", source: "a\r\nb", want: "a\r\nb\r\nb"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := NewScratchEditor([]byte(test.source))
+			e.SetCursor(len([]byte(test.source)))
+			if bytes.HasSuffix([]byte(test.source), []byte("\n")) {
+				e.SetCursor(len([]byte(test.source)) - len([]byte("\r\n")))
+			}
+			if err := e.DuplicateLineDown(); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(e.Buffer.Text()); got != test.want {
+				t.Fatalf("duplicate down = %q, want %q", got, test.want)
+			}
+			if err := e.Undo(); err != nil || string(e.Buffer.Text()) != test.source {
+				t.Fatalf("duplicate undo = %q, err=%v", e.Buffer.Text(), err)
+			}
+			if err := e.Redo(); err != nil || string(e.Buffer.Text()) != test.want {
+				t.Fatalf("duplicate redo = %q, err=%v", e.Buffer.Text(), err)
+			}
+		})
+	}
+
+	e := NewScratchEditor([]byte("a\r\nb\r\nc\r\nd\r\n"))
+	e.SetSelection(len([]byte("a\r\n")), len([]byte("a\r\nb\r\nc")))
+	if err := e.DuplicateLineDown(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(e.Buffer.Text()); got != "a\r\nb\r\nc\r\nb\r\nc\r\nd\r\n" {
+		t.Fatalf("selected CRLF block duplicate = %q", got)
 	}
 }
 

@@ -891,6 +891,28 @@ type EditorLineDecoration struct {
 	Accent Vec4
 }
 
+const currentLineHighlightAlpha float32 = 0.12
+
+// currentEditorLineBackground layers the caret-line treatment over an
+// existing semantic row decoration without replacing it. A zero decoration
+// remains zero for inactive rows so callers can distinguish an unpainted row.
+func currentEditorLineBackground(theme Theme, decoration Vec4, active bool) Vec4 {
+	if !active {
+		return decoration
+	}
+	if decoration != (Vec4{}) {
+		decoration[3] = minFloat(1, decoration[3]+currentLineHighlightAlpha)
+		return decoration
+	}
+	// The regular Highlight role is intentionally close to Paper and becomes
+	// imperceptible at this opacity. SelectionHighlight supplies the cooler,
+	// more contrastive tint used for active editor state without implying that
+	// the row's contents are selected.
+	highlight := theme.SelectionHighlight
+	highlight[3] = currentLineHighlightAlpha
+	return highlight
+}
+
 type visualLineCache struct {
 	Revision     uint64
 	Width        float32
@@ -1247,6 +1269,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		digits := len(fmt.Sprintf("%d", e.Buffer.LineCount()))
 		gutterWidth = float32(digits*8 + 23)
 	}
+	caretLine, hasCaretLine := e.Buffer.LineAt(e.Cursor)
 	ContainerWithKey(key, Attrs(Viewport, Expand, Focusable, Clip), func() {
 		AutoFocus()
 		FocusOnClick()
@@ -1337,14 +1360,24 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				if options.LineDecoration != nil {
 					decoration = options.LineDecoration(logical)
 				}
+				currentLine := hasCaretLine && logical == caretLine
+				lineBackground := currentEditorLineBackground(theme, decoration.Background, currentLine)
 				rowAttrs := Attrs(FixHeight(itemHeight), Expand, NoClip)
-				if decoration.Background != (Vec4{}) {
-					rowAttrs = AttrsWith(rowAttrs, BackgroundVec(decoration.Background))
+				if lineBackground != (Vec4{}) {
+					rowAttrs = AttrsWith(rowAttrs, BackgroundVec(lineBackground))
 				}
 				ContainerWithKey(logical, rowAttrs, func() {
 					Container(Attrs(Row, Expand, NoClip), func() {
 						if options.LineNumbers {
-							Container(Attrs(FixWidth(gutterWidth-1), FixHeight(itemHeight), Pad2(0, 8), CrossAlign(AlignStart), BackgroundVec(theme.Paper)), func() {
+							gutterBackground := theme.Paper
+							if currentLine {
+								gutterBackground = lineBackground
+							}
+							lineNumberColor := theme.Muted
+							if currentLine {
+								lineNumberColor = theme.Ink
+							}
+							Container(Attrs(FixWidth(gutterWidth-1), FixHeight(itemHeight), Pad2(0, 8), CrossAlign(AlignStart), BackgroundVec(gutterBackground)), func() {
 								if options.Foldable != nil && options.Foldable(logical) {
 									foldButton := ProcessButtonEvents(false)
 									marker := "▾"
@@ -1360,7 +1393,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 										options.OnFoldToggle(logical)
 									}
 								}
-								Label(fmt.Sprintf("%*d", len(fmt.Sprintf("%d", e.Buffer.LineCount())), logical+1), FontSize(style.FontSize*0.85), TextColorVec(theme.Muted))
+								Label(fmt.Sprintf("%*d", len(fmt.Sprintf("%d", e.Buffer.LineCount())), logical+1), FontSize(style.FontSize*0.85), TextColorVec(lineNumberColor))
 							})
 							Element(Attrs(FixWidth(1), FixHeight(itemHeight), BackgroundVec(theme.Shadow), NoAnimate))
 						}

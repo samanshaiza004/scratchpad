@@ -213,6 +213,86 @@ func TestWorkspaceTraversalHonorsRootAndNestedGitignoreRules(t *testing.T) {
 	}
 }
 
+func TestListRefreshesChangedRootAndNestedGitignoreRules(t *testing.T) {
+	dir := t.TempDir()
+	rootTarget := filepath.Join(dir, "target.txt")
+	rootOther := filepath.Join(dir, "other.txt")
+	nestedDir := filepath.Join(dir, "nested")
+	nestedTarget := filepath.Join(nestedDir, "target.txt")
+	for _, path := range []string{rootTarget, rootOther, nestedTarget} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contains := func(entries []Entry, name string) bool {
+		for _, entry := range entries {
+			if entry.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	listRoot := func() []Entry {
+		entries, err := ws.List("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries
+	}
+	listNested := func() []Entry {
+		entries, err := ws.List("nested")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries
+	}
+
+	if !contains(listRoot(), "target.txt") {
+		t.Fatal("initial root listing omitted target.txt")
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("target.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if contains(listRoot(), "target.txt") || !contains(listRoot(), "other.txt") {
+		t.Fatal("root listing did not refresh after adding .gitignore")
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("other.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(listRoot(), "target.txt") || contains(listRoot(), "other.txt") {
+		t.Fatal("root listing did not refresh after editing .gitignore")
+	}
+	if err := os.Remove(filepath.Join(dir, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(listRoot(), "target.txt") || !contains(listRoot(), "other.txt") {
+		t.Fatal("root listing did not refresh after removing .gitignore")
+	}
+
+	if !contains(listNested(), "target.txt") {
+		t.Fatal("initial nested listing omitted target.txt")
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, ".gitignore"), []byte("target.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if contains(listNested(), "target.txt") {
+		t.Fatal("nested listing did not refresh after adding .gitignore")
+	}
+	if err := os.Remove(filepath.Join(nestedDir, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(listNested(), "target.txt") {
+		t.Fatal("nested listing did not refresh after removing .gitignore")
+	}
+}
+
 func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

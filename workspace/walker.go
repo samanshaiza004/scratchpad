@@ -33,11 +33,12 @@ type WalkFunc func(path string, entry fs.DirEntry) error
 
 // Walker returns a traversal policy rooted at the workspace.
 func (w Workspace) Walker() Walker {
-	state := w.state
-	if state == nil {
-		state = newWalkerState(w.Root)
-	}
-	return Walker{root: w.Root, state: state}
+	// A Walker is one traversal snapshot. Build its matcher state here so a
+	// later List call observes newly added, edited, or removed ignore files.
+	// The state is still shared by all entries visited through this Walker,
+	// preserving nested .gitignore loading without retaining stale rules on the
+	// Workspace itself.
+	return Walker{root: w.Root, state: newWalkerState(w.Root)}
 }
 
 // Walk visits entries that are not excluded by Git's ignore rules. The

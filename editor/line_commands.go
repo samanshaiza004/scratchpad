@@ -9,24 +9,42 @@ import (
 // Callers that use spaces can pass their unit to Indent or Outdent.
 const DefaultIndent = "\t"
 
+// lineEnding returns the first line-ending convention in the document. A
+// document without a line ending defaults to LF, which is also the safest
+// representation for a new file.
+func (e *ScratchEditor) lineEnding() []byte {
+	text := e.Buffer.Text()
+	for index, value := range text {
+		if value != '\n' {
+			continue
+		}
+		if index > 0 && text[index-1] == '\r' {
+			return []byte("\r\n")
+		}
+		return []byte{'\n'}
+	}
+	return []byte{'\n'}
+}
+
 // newlineText is the single-line Enter payload used by Insert. It copies
 // only leading ASCII space/tab indentation; all other bytes remain literal.
 func (e *ScratchEditor) newlineText(at int) []byte {
+	eol := e.lineEnding()
 	line, ok := e.Buffer.LineAt(at)
 	if !ok {
-		return []byte{'\n'}
+		return append([]byte(nil), eol...)
 	}
 	text, ok := e.Buffer.Line(line)
 	if !ok {
-		return []byte{'\n'}
+		return append([]byte(nil), eol...)
 	}
 	indentEnd := 0
 	for indentEnd < len(text) && (text[indentEnd] == ' ' || text[indentEnd] == '\t') {
 		indentEnd++
 	}
-	result := make([]byte, 1+indentEnd)
-	result[0] = '\n'
-	copy(result[1:], text[:indentEnd])
+	result := make([]byte, len(eol)+indentEnd)
+	copy(result, eol)
+	copy(result[len(eol):], text[:indentEnd])
 	return result
 }
 
@@ -97,6 +115,16 @@ func (e *ScratchEditor) lineContents(first, last int) ([][]byte, bool) {
 		if err != nil {
 			return nil, false
 		}
+		// Buffer.LineRange excludes LF but intentionally leaves the CR from a
+		// CRLF terminator in the returned range. Line transformations operate
+		// on content plus an explicitly selected separator, so remove that CR
+		// only when it is immediately followed by the line's LF.
+		if bytes.HasSuffix(text, []byte{'\r'}) {
+			next, nextErr := e.Buffer.Bytes(end, end+1)
+			if nextErr == nil && len(next) == 1 && next[0] == '\n' {
+				text = text[:len(text)-1]
+			}
+		}
 		lines = append(lines, append([]byte(nil), text...))
 	}
 	return lines, true
@@ -106,7 +134,7 @@ func (e *ScratchEditor) replaceSelection(start, end int, text []byte, anchor, cu
 	return e.replaceWithSelection(start, end, text, &selectionState{anchor: anchor, cursor: cursor})
 }
 
-func joinLineContents(lines [][]byte, trailingNewline bool) []byte {
+func joinLineContents(lines [][]byte, trailingNewline bool, eol []byte) []byte {
 	if len(lines) == 0 {
 		return nil
 	}
@@ -114,29 +142,29 @@ func joinLineContents(lines [][]byte, trailingNewline bool) []byte {
 	for _, line := range lines {
 		length += len(line)
 	}
-	length += len(lines) - 1
+	length += (len(lines) - 1) * len(eol)
 	if trailingNewline {
-		length++
+		length += len(eol)
 	}
 	result := make([]byte, 0, length)
 	for i, line := range lines {
 		if i != 0 {
-			result = append(result, '\n')
+			result = append(result, eol...)
 		}
 		result = append(result, line...)
 	}
 	if trailingNewline {
-		result = append(result, '\n')
+		result = append(result, eol...)
 	}
 	return result
 }
 
-func lineContentLength(lines [][]byte) int {
+func lineContentLength(lines [][]byte, separatorLength int) int {
 	length := 0
 	for i, line := range lines {
 		length += len(line)
 		if i != 0 {
-			length++
+			length += separatorLength
 		}
 	}
 	return length
@@ -175,20 +203,15 @@ func (e *ScratchEditor) Indent(unit ...string) error {
 	if !ok {
 		return nil
 	}
-	old, err := e.Buffer.Bytes(start, end)
-	if err != nil {
-		return err
+	lines, ok := e.lineContents(first, last)
+	if !ok {
+		return nil
 	}
-	replacement := make([]byte, 0, len(old)+len(indent)*(last-first+1))
-	for line := first; line <= last; line++ {
-		lineStart, lineEnd, _ := e.Buffer.LineRange(line)
-		contents, _ := e.Buffer.Bytes(lineStart, lineEnd)
-		replacement = append(replacement, indent...)
-		replacement = append(replacement, contents...)
-		if line < last || last+1 < e.Buffer.LineCount() {
-			replacement = append(replacement, '\n')
-		}
+	for index := range lines {
+		lines[index] = append(append([]byte(nil), indent...), lines[index]...)
 	}
+	eol := e.lineEnding()
+	replacement := joinLineContents(lines, last+1 < e.Buffer.LineCount(), eol)
 	mapPosition := func(position int) int {
 		shift := 0
 		for line := first; line <= last; line++ {
@@ -229,11 +252,14 @@ func (e *ScratchEditor) Outdent(unit ...string) error {
 	if err != nil {
 		return err
 	}
+	lines, ok := e.lineContents(first, last)
+	if !ok {
+		return nil
+	}
 	replacement := make([]byte, 0, len(old))
 	removed := make([]int, 0, last-first+1)
 	for line := first; line <= last; line++ {
-		lineStart, lineEnd, _ := e.Buffer.LineRange(line)
-		contents, _ := e.Buffer.Bytes(lineStart, lineEnd)
+		contents := lines[line-first]
 		count := 0
 		for count < len(contents) && count < len(indent) && contents[count] == indent[count] {
 			count++
@@ -247,10 +273,7 @@ func (e *ScratchEditor) Outdent(unit ...string) error {
 			}
 		}
 		removed = append(removed, count)
-		replacement = append(replacement, contents[count:]...)
-		if line < last || last+1 < e.Buffer.LineCount() {
-			replacement = append(replacement, '\n')
-		}
+		lines[line-first] = contents[count:]
 	}
 	changed := false
 	for _, count := range removed {
@@ -259,6 +282,7 @@ func (e *ScratchEditor) Outdent(unit ...string) error {
 	if !changed {
 		return nil
 	}
+	replacement = joinLineContents(lines, last+1 < e.Buffer.LineCount(), e.lineEnding())
 	mapPosition := func(position int) int {
 		prior := 0
 		for index := 0; index < last-first+1; index++ {
@@ -310,7 +334,7 @@ func (e *ScratchEditor) InsertLineAbove() error {
 	if !ok {
 		return nil
 	}
-	return e.replaceSelection(start, start, []byte{'\n'}, start, start)
+	return e.replaceSelection(start, start, e.lineEnding(), start, start)
 }
 
 func (e *ScratchEditor) InsertLineBelow() error {
@@ -322,7 +346,8 @@ func (e *ScratchEditor) InsertLineBelow() error {
 	if !ok {
 		return nil
 	}
-	return e.replaceSelection(end, end, []byte{'\n'}, end+1, end+1)
+	eol := e.lineEnding()
+	return e.replaceSelection(end, end, eol, end+len(eol), end+len(eol))
 }
 
 // SelectLine selects the current line's content (not its LF). The optional
@@ -363,7 +388,8 @@ func (e *ScratchEditor) moveLines(direction int) error {
 	if !ok {
 		return nil
 	}
-	contentLength := lineContentLength(block)
+	eol := e.lineEnding()
+	contentLength := lineContentLength(block, len(eol))
 	blockStart, blockEnd, _ := e.wholeLineRange(first, last)
 	var regionStart, regionEnd, destination int
 	var replacement []byte
@@ -372,15 +398,15 @@ func (e *ScratchEditor) moveLines(direction int) error {
 		regionStart, _, _ = e.Buffer.LineRange(first - 1)
 		regionEnd = blockEnd
 		trailing := regionEnd != e.Buffer.ByteLen()
-		replacement = joinLineContents(append(block, previous[0]), trailing)
+		replacement = joinLineContents(append(block, previous[0]), trailing, eol)
 		destination = regionStart
 	} else {
 		next, _ := e.lineContents(last+1, last+1)
 		regionStart = blockStart
 		_, regionEnd, _ = e.wholeLineRange(last+1, last+1)
 		trailing := regionEnd != e.Buffer.ByteLen()
-		replacement = joinLineContents(append(next, block...), trailing)
-		destination = regionStart + len(next[0]) + 1
+		replacement = joinLineContents(append(next, block...), trailing, eol)
+		destination = regionStart + len(next[0]) + len(eol)
 	}
 	return e.replaceSelection(regionStart, regionEnd, replacement,
 		e.mapMovedSelection(blockStart, contentLength, destination, e.Anchor),
@@ -405,20 +431,25 @@ func (e *ScratchEditor) duplicateLines(direction int) error {
 		return err
 	}
 	content, _ := e.lineContents(first, last)
-	contentLength := lineContentLength(content)
+	eol := e.lineEnding()
+	contentLength := lineContentLength(content, len(eol))
 	insertAt := start
 	duplicate := append([]byte(nil), block...)
 	destination := insertAt
 	if direction > 0 {
 		insertAt = end
 		if end == e.Buffer.ByteLen() {
-			duplicate = append([]byte{'\n'}, duplicate...)
-			destination = insertAt + 1
+			if !bytes.HasSuffix(block, eol) {
+				duplicate = append(append([]byte(nil), eol...), duplicate...)
+				destination = insertAt + len(eol)
+			}
 		} else {
 			destination = insertAt
 		}
 	} else if end == e.Buffer.ByteLen() {
-		duplicate = append(duplicate, '\n')
+		if !bytes.HasSuffix(block, eol) {
+			duplicate = append(duplicate, eol...)
+		}
 	}
 	return e.replaceSelection(insertAt, insertAt, duplicate,
 		e.mapMovedSelection(start, contentLength, destination, e.Anchor),
