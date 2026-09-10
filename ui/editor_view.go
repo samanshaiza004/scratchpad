@@ -881,6 +881,14 @@ type EditorViewOptions struct {
 	// exemptions. EditableDocumentView exempts Markdown table lines so
 	// source-visible pipe rows never wrap mid-row.
 	NoWrapLine func(logicalLine int) bool
+	// VirtualListKey identifies the Shirei list for programmatic reveal
+	// commands. Nil keeps the editor's container key for standalone views.
+	VirtualListKey any
+	Reveal         *EditorRevealRequest
+	// RevealConsumed is called after the target row has been materialized by
+	// the virtual list. It lets the workbench retain a pending request while a
+	// vertical jump settles or the editor view is temporarily not mounted.
+	RevealConsumed func()
 }
 
 // EditorLineDecoration is a deliberately small, row-level presentation hook.
@@ -1289,6 +1297,13 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 		gutterWidth = float32(digits*8 + 23)
 	}
 	caretLine, hasCaretLine := e.Buffer.LineAt(e.Cursor)
+	revealLogical := -1
+	if options.Reveal != nil {
+		if logical, ok := e.Buffer.LineAt(options.Reveal.StartByte); ok {
+			revealLogical = logical
+		}
+	}
+	revealApplied := options.Reveal != nil && revealLogical < 0
 	ContainerWithKey(key, Attrs(Viewport, Expand, Focusable, Clip), func() {
 		AutoFocus()
 		FocusOnClick()
@@ -1322,10 +1337,23 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 			WantKeyboard()
 			processEditorInput(e, style, rowHeight, *scrollY, rows, gutterWidth, options.Wrap, options.NoWrapLine, lineCache, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle, presentationKey, options.LineSpacing, frameScrollX)
 		}
+		listKey := options.VirtualListKey
+		if listKey == nil {
+			listKey = key
+		}
+		if options.Reveal != nil {
+			revealEditorRequest(listKey, e, rows, *options.Reveal, *firstVisible, *lastVisible)
+		} else if HasFocus() && beforeCaret.changed(e) {
+			// Normal caret movement follows the caret minimally. Explicit
+			// navigation owns its stronger policy and is posted above.
+			if logical, ok := e.Buffer.LineAt(e.Cursor); ok {
+				VirtualListScrollIntoView(listKey, logical)
+			}
+		}
 		caretActivity := beforeCaret.changed(e) || editorCaretInputActivity()
 		editorFocused := HasFocus() && GetHost().WindowFocused
 
-		VirtualListViewExt("editor-lines", VirtualListAttrs{
+		VirtualListViewExt(listKey, VirtualListAttrs{
 			ItemCount: rows.Count(),
 			ItemKey:   func(index int) any { logical, _ := rows.Logical(index); return logical },
 			ItemHeight: func(index int, width float32) float32 {
@@ -1359,6 +1387,14 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				logical, ok := rows.Logical(index)
 				if !ok {
 					return
+				}
+				if logical == revealLogical {
+					// A row rendered here is the point at which the list has
+					// materialized the requested logical location. Keep the
+					// application request alive until this happens so a jump
+					// that also changes the virtual-list window can perform its
+					// horizontal correction on the following frame.
+					revealApplied = true
 				}
 				fullWidth := editorContentWidth(width, gutterWidth)
 				contentWidth := contentWidthIfWrapped(options.Wrap, fullWidth)
@@ -1419,6 +1455,15 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 						Container(Attrs(Grow(1), Expand, Clip), func() {
 							unwrapped := isOverflowLine(options, logical)
 							renderScrollX := frameScrollX
+							if options.Reveal != nil && options.Reveal.Horizontal && logical == revealLogical && unwrapped && e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd {
+								localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)
+								caretX, _, _ := visual.CaretPosition(localRune, e.Affinity)
+								renderScrollX = adjustScrollXForCaret(frameScrollX, caretX, fullWidth, true)
+								if renderScrollX != frameScrollX {
+									pendingScrollX = renderScrollX
+									havePendingScrollX = true
+								}
+							}
 							if e.Cursor >= visual.DocStart && e.Cursor <= visual.DocEnd && unwrapped {
 								localRune := visual.LocalByteToRune(e.Cursor - visual.DocStart)
 								caretX, _, _ := visual.CaretPosition(localRune, e.Affinity)
@@ -1492,6 +1537,9 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				})
 			},
 		})
+		if options.Reveal != nil && options.RevealConsumed != nil && revealApplied {
+			options.RevealConsumed()
+		}
 		if havePendingScrollX {
 			*scrollX = clampScrollX(pendingScrollX)
 		}

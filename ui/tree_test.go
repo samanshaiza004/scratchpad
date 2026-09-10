@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"scratchpad/application"
+	"scratchpad/commands"
 
 	. "go.hasen.dev/shirei"
 )
@@ -112,6 +113,92 @@ func TestTreeSelectionClickUsesVisiblePathModel(t *testing.T) {
 	treeSelectionClick(&tree, "folder", 0, ModCtrl, visible)
 	if len(tree.Selected) != 1 || !tree.Selected["folder"] {
 		t.Fatalf("normal click did not replace selection: %#v", tree.Selected)
+	}
+}
+
+func TestTreePathMutationRemapsViewState(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "nested", "note.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{Tree: treeState{
+		Expanded:   map[string]bool{"src": true, filepath.Join("src", "nested"): true, "keep": true},
+		Selected:   map[string]bool{"src": true, filepath.Join("src", "nested", "note.txt"): true, "keep.txt": true},
+		AnchorPath: filepath.Join("src", "nested"),
+		LeadPath:   filepath.Join("src", "nested", "note.txt"),
+	}}
+	oldPath := filepath.Join(root, "src")
+	newPath := filepath.Join(root, "archive")
+	if err := state.MovePath("src", "archive"); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTreePathMutation(shell, state, oldPath, newPath, false)
+	resetTreeAfterMutation(shell)
+
+	for _, path := range []string{"archive", filepath.Join("archive", "nested")} {
+		if !shell.Tree.Expanded[path] {
+			t.Fatalf("expanded state omitted remapped path %q: %#v", path, shell.Tree.Expanded)
+		}
+	}
+	for _, path := range []string{"archive", filepath.Join("archive", "nested", "note.txt"), "keep.txt"} {
+		if !shell.Tree.Selected[path] {
+			t.Fatalf("selection omitted path %q: %#v", path, shell.Tree.Selected)
+		}
+	}
+	if shell.Tree.AnchorPath != filepath.Join("archive", "nested") || shell.Tree.LeadPath != filepath.Join("archive", "nested", "note.txt") {
+		t.Fatalf("selection endpoints = %q:%q", shell.Tree.AnchorPath, shell.Tree.LeadPath)
+	}
+}
+
+func TestWorkspaceRefreshPrunesDeletedTreeViewState(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "gone", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "keep.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{Tree: treeState{
+		Expanded:   map[string]bool{"gone": true, filepath.Join("gone", "nested"): true},
+		Selected:   map[string]bool{"gone": true, filepath.Join("gone", "nested"): true, "keep.txt": true},
+		AnchorPath: "gone",
+		LeadPath:   filepath.Join("gone", "nested"),
+	}}
+	if err := os.RemoveAll(filepath.Join(root, "gone")); err != nil {
+		t.Fatal(err)
+	}
+	executeCommand(state, shell, commands.WorkspaceRefresh)
+	if len(shell.Tree.Expanded) != 0 || len(shell.Tree.Selected) != 1 || !shell.Tree.Selected["keep.txt"] {
+		t.Fatalf("refreshed tree state expanded=%#v selected=%#v", shell.Tree.Expanded, shell.Tree.Selected)
+	}
+	if shell.Tree.AnchorPath != "" || shell.Tree.LeadPath != "" {
+		t.Fatalf("deleted selection endpoints = %q:%q", shell.Tree.AnchorPath, shell.Tree.LeadPath)
+	}
+}
+
+func TestTreeDragSelectionMatchesSinglePathPayload(t *testing.T) {
+	tree := treeState{
+		Selected:   map[string]bool{"a.txt": true, "b.txt": true, "c.txt": true},
+		AnchorPath: "a.txt",
+		LeadPath:   "c.txt",
+	}
+	treeSelectionForDrag(&tree, "b.txt")
+	if len(tree.Selected) != 1 || !tree.Selected["b.txt"] {
+		t.Fatalf("drag selection = %#v, want only b.txt", tree.Selected)
+	}
+	if tree.AnchorPath != "b.txt" || tree.LeadPath != "b.txt" {
+		t.Fatalf("drag endpoints = %q:%q, want b.txt:b.txt", tree.AnchorPath, tree.LeadPath)
 	}
 }
 
