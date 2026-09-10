@@ -888,6 +888,262 @@ func TestDocumentPresentationKeySeparatesPendingFromPublished(t *testing.T) {
 	}
 }
 
+// TestCachedVisualLineStyleComparisonPreservesStyleSemantics protects the
+// cache hit check while allowing its implementation to avoid reflection. A
+// TextStyleAttrs contains FontFamilies, so an equivalent copied slice must be
+// treated as equal while any changed style field must force a rebuild.
+func TestCachedVisualLineStyleComparisonPreservesStyleSemantics(t *testing.T) {
+	buffer := editor.NewBuffer([]byte("hello"))
+	style := DefaultTextStyle()
+	style.FontFamilies = []string{"Scratchpad Test Mono", "Fallback"}
+	const width float32 = 500
+	cache := &visualLineCache{}
+	cache.prepare(1, width, false, 0)
+
+	presentationCalls := 0
+	presentation := func(startByte, endByte int) []document.PresentationSpan {
+		presentationCalls++
+		return []document.PresentationSpan{{StartByte: startByte, EndByte: endByte, Kind: document.PresentationCodeKeyword}}
+	}
+
+	if _, ok := cachedVisualLine(cache, &buffer, 0, 0, style, width, presentation, MarkdownPresentationStyle, nil); !ok {
+		t.Fatal("initial visual line build failed")
+	}
+	if presentationCalls != 1 {
+		t.Fatalf("initial presentation calls = %d, want 1", presentationCalls)
+	}
+
+	// This is a distinct slice with the same contents. It must hit the cache.
+	equivalent := style
+	equivalent.FontFamilies = append([]string(nil), style.FontFamilies...)
+	if _, ok := cachedVisualLine(cache, &buffer, 0, 0, equivalent, width, presentation, MarkdownPresentationStyle, nil); !ok {
+		t.Fatal("equivalent-style visual line lookup failed")
+	}
+	if presentationCalls != 1 {
+		t.Fatalf("equivalent style rebuilt visual line: presentation calls = %d, want 1", presentationCalls)
+	}
+
+	changedFamily := equivalent
+	changedFamily.FontFamilies = []string{"Scratchpad Changed Mono", "Fallback"}
+	if _, ok := cachedVisualLine(cache, &buffer, 0, 0, changedFamily, width, presentation, MarkdownPresentationStyle, nil); !ok {
+		t.Fatal("changed-family visual line rebuild failed")
+	}
+	if presentationCalls != 2 {
+		t.Fatalf("changed family reused visual line: presentation calls = %d, want 2", presentationCalls)
+	}
+
+	changedColor := changedFamily
+	changedColor.TextColor[0] += 0.1
+	if _, ok := cachedVisualLine(cache, &buffer, 0, 0, changedColor, width, presentation, MarkdownPresentationStyle, nil); !ok {
+		t.Fatal("changed-color visual line rebuild failed")
+	}
+	if presentationCalls != 3 {
+		t.Fatalf("changed color reused visual line: presentation calls = %d, want 3", presentationCalls)
+	}
+}
+
+func TestVisualLineCacheRebasesUnaffectedRowsAcrossEdit(t *testing.T) {
+	e := editor.NewScratchEditor([]byte("first\nmiddle\nlast"))
+	style := DefaultTextStyle()
+	const width float32 = 500
+	cache := &visualLineCache{}
+	cache.prepareForEditor(e, width, false, 0)
+	presentationCalls := 0
+	presentation := func(startByte, endByte int) []document.PresentationSpan {
+		presentationCalls++
+		return nil
+	}
+	for line := 0; line < e.Buffer.LineCount(); line++ {
+		if _, ok := cachedVisualLine(cache, &e.Buffer, line, anchorForLine(e, line), style, width, presentation, MarkdownPresentationStyle, nil); !ok {
+			t.Fatalf("initial visual line %d failed", line)
+		}
+	}
+	warmCalls := presentationCalls
+	oldLast := cache.Lines[2]
+
+	e.SetCursor(len([]byte("first\n")))
+	if err := e.Insert([]byte("X")); err != nil {
+		t.Fatal(err)
+	}
+	cache.prepareForEditor(e, width, false, 0)
+
+	if _, ok := cache.Lines[1]; ok {
+		t.Fatal("edited line remained cached")
+	}
+	last, ok := cache.Lines[2]
+	if !ok {
+		t.Fatal("unaffected trailing line was discarded")
+	}
+	if last.DocStart != oldLast.DocStart+1 || last.DocEnd != oldLast.DocEnd+1 {
+		t.Fatalf("trailing byte range = %d:%d, want %d:%d", last.DocStart, last.DocEnd, oldLast.DocStart+1, oldLast.DocEnd+1)
+	}
+	if _, ok := cachedVisualLine(cache, &e.Buffer, 1, anchorForLine(e, 1), style, width, presentation, MarkdownPresentationStyle, nil); !ok {
+		t.Fatal("edited line rebuild failed")
+	}
+	if presentationCalls != warmCalls+1 {
+		t.Fatalf("edited-line rebuild calls = %d, want %d", presentationCalls, warmCalls+1)
+	}
+	if _, ok := cachedVisualLine(cache, &e.Buffer, 2, anchorForLine(e, 2), style, width, presentation, MarkdownPresentationStyle, nil); !ok {
+		t.Fatal("rebased trailing line lookup failed")
+	}
+	if presentationCalls != warmCalls+1 {
+		t.Fatalf("unaffected trailing line rebuilt: presentation calls = %d, want %d", presentationCalls, warmCalls+1)
+	}
+}
+
+func TestVisualLineCacheRebasesLineKeysAfterNewlineEdit(t *testing.T) {
+	e := editor.NewScratchEditor([]byte("first\nlast"))
+	style := DefaultTextStyle()
+	const width float32 = 500
+	cache := &visualLineCache{}
+	cache.prepareForEditor(e, width, false, 0)
+	for line := 0; line < e.Buffer.LineCount(); line++ {
+		if _, ok := cachedVisualLine(cache, &e.Buffer, line, anchorForLine(e, line), style, width, nil, nil, nil); !ok {
+			t.Fatalf("initial visual line %d failed", line)
+		}
+	}
+	oldLast := cache.Lines[1]
+
+	e.SetCursor(len([]byte("first")))
+	if err := e.Insert([]byte("\nnew")); err != nil {
+		t.Fatal(err)
+	}
+	cache.prepareForEditor(e, width, false, 0)
+
+	if _, ok := cache.Lines[0]; ok {
+		t.Fatal("line containing newline edit remained cached")
+	}
+	if _, ok := cache.Lines[1]; ok {
+		t.Fatal("newly split line unexpectedly reused an old cache entry")
+	}
+	last, ok := cache.Lines[2]
+	if !ok {
+		t.Fatal("trailing line key was not shifted after newline insertion")
+	}
+	if last.DocStart != oldLast.DocStart+len([]byte("\nnew")) || last.DocEnd != oldLast.DocEnd+len([]byte("\nnew")) {
+		t.Fatalf("shifted trailing range = %d:%d, want %d:%d", last.DocStart, last.DocEnd, oldLast.DocStart+len([]byte("\nnew")), oldLast.DocEnd+len([]byte("\nnew")))
+	}
+}
+
+func TestVisualLineCacheClearsWhenEditHistoryUnavailable(t *testing.T) {
+	e := editor.NewScratchEditor([]byte("one\ntwo"))
+	style := DefaultTextStyle()
+	cache := &visualLineCache{}
+	cache.prepareForEditor(e, 500, false, 0)
+	if _, ok := cachedVisualLine(cache, &e.Buffer, 0, 0, style, 500, nil, nil, nil); !ok {
+		t.Fatal("initial visual line failed")
+	}
+	e.Reset([]byte("replacement"))
+	cache.prepareForEditor(e, 500, false, 0)
+	if len(cache.Lines) != 0 {
+		t.Fatalf("cache retained %d entries after reset", len(cache.Lines))
+	}
+}
+
+func TestAnchorForLineKeepsNonCaretRowsCacheable(t *testing.T) {
+	e := editor.NewScratchEditor([]byte("first\nsecond\nthird"))
+	style := DefaultTextStyle()
+	const width float32 = 500
+	cache := &visualLineCache{}
+	cache.prepareForEditor(e, width, false, 0)
+	presentationCalls := 0
+	presentation := func(startByte, endByte int) []document.PresentationSpan {
+		presentationCalls++
+		return nil
+	}
+	for line := 0; line < e.Buffer.LineCount(); line++ {
+		anchor := anchorForLine(e, line)
+		if _, ok := cachedVisualLine(cache, &e.Buffer, line, anchor, style, width, presentation, MarkdownPresentationStyle, nil); !ok {
+			t.Fatalf("initial visual line %d failed", line)
+		}
+	}
+	firstPassCalls := presentationCalls
+	for line := 0; line < e.Buffer.LineCount(); line++ {
+		anchor := anchorForLine(e, line)
+		if _, ok := cachedVisualLine(cache, &e.Buffer, line, anchor, style, width, presentation, MarkdownPresentationStyle, nil); !ok {
+			t.Fatalf("cached visual line %d failed", line)
+		}
+	}
+	if presentationCalls != firstPassCalls {
+		t.Fatalf("non-caret cache lookups rebuilt %d lines", presentationCalls-firstPassCalls)
+	}
+}
+
+func TestCachedVisualLineReplacementKeepsLRUEntry(t *testing.T) {
+	source := []byte(strings.Repeat("x", maxShapingBytes*2+1))
+	buffer := editor.NewBuffer(source)
+	style := DefaultTextStyle()
+	const width float32 = 500
+	cache := &visualLineCache{}
+	cache.prepare(1, width, false, 0)
+
+	if _, ok := cachedVisualLine(cache, &buffer, 0, 0, style, width, nil, nil, nil); !ok {
+		t.Fatal("initial long-line visual build failed")
+	}
+	// Fill the insertion order to its limit while keeping line 0 as the
+	// oldest entry. Rebuilding line 0 below must replace its old order slot.
+	for line := 1; line < 256; line++ {
+		cache.Lines[line] = VisualLine{DocStart: line, DocEnd: line, WrapWidth: width, baseStyle: style}
+		cache.Order = append(cache.Order, line)
+	}
+	if len(cache.Order) != 256 {
+		t.Fatalf("cache order length = %d, want 256", len(cache.Order))
+	}
+
+	if _, ok := cachedVisualLine(cache, &buffer, 0, longLineChunkBytes+1, style, width, nil, nil, nil); !ok {
+		t.Fatal("long-line replacement failed")
+	}
+	if _, ok := cache.Lines[0]; !ok {
+		t.Fatal("replacement entry was evicted by a duplicate order key")
+	}
+	if len(cache.Order) != 256 {
+		t.Fatalf("cache order length after replacement = %d, want 256", len(cache.Order))
+	}
+	occurrences := 0
+	for _, line := range cache.Order {
+		if line == 0 {
+			occurrences++
+		}
+	}
+	if occurrences != 1 {
+		t.Fatalf("replacement line occurs %d times in order, want 1", occurrences)
+	}
+}
+
+// BenchmarkCachedVisualLineHit measures the hot path after the cache has
+// already been populated. Keep this benchmark separate from shaping so a
+// before/after comparison isolates lookup and style-comparison cost.
+func BenchmarkCachedVisualLineHit(b *testing.B) {
+	const lineCount = 128
+	const width float32 = 640
+	source := []byte(strings.Repeat("A line with enough text to exercise the cached lookup path.\n", lineCount))
+	buffer := editor.NewBuffer(source)
+	style := DefaultTextStyle()
+	cache := &visualLineCache{}
+	cache.prepare(1, width, true, 0)
+	for line := 0; line < buffer.LineCount(); line++ {
+		start, _, ok := buffer.LineRange(line)
+		if !ok {
+			b.Fatalf("line range %d failed", line)
+		}
+		if _, ok := cachedVisualLine(cache, &buffer, line, start, style, width, nil, nil, nil); !ok {
+			b.Fatalf("warm visual line %d failed", line)
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		line := i % buffer.LineCount()
+		start, _, ok := buffer.LineRange(line)
+		if !ok {
+			b.Fatalf("line range %d failed", line)
+		}
+		if _, ok := cachedVisualLine(cache, &buffer, line, start, style, width, nil, nil, nil); !ok {
+			b.Fatalf("cached visual line %d failed", line)
+		}
+	}
+}
+
 func BenchmarkWrappedVisualLine(b *testing.B) {
 	for _, size := range []int{1 << 20, 10 << 20} {
 		b.Run(wrappedSizeName(size), func(b *testing.B) {

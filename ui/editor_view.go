@@ -2,7 +2,7 @@ package ui
 
 import (
 	"fmt"
-	"reflect"
+	"slices"
 	"sort"
 	"time"
 	"unicode"
@@ -932,7 +932,65 @@ type visualLineCache struct {
 }
 
 func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool, presentation uint64) {
-	if c.Lines == nil || c.Revision != revision || c.Width != width || c.Wrap != wrap || c.Presentation != presentation {
+	c.prepareContext(revision, width, wrap, presentation)
+	if c.Revision != revision {
+		c.clear(revision)
+	}
+}
+
+// prepareForEditor keeps cache entries whose source lines did not participate
+// in the edit chain. The editor revision still versions the document, but it
+// no longer forces every shaped row in the viewport to be rebuilt after one
+// keystroke.
+func (c *visualLineCache) prepareForEditor(e *editor.ScratchEditor, width float32, wrap bool, presentation uint64) {
+	if e == nil {
+		c.prepare(0, width, wrap, presentation)
+		return
+	}
+	revision := e.Revision()
+	if c.Lines == nil {
+		c.Revision = revision
+		c.Width = width
+		c.Wrap = wrap
+		c.Presentation = presentation
+		c.Lines = make(map[int]VisualLine)
+		c.Order = nil
+		return
+	}
+	if c.Width != width || c.Wrap != wrap || c.Presentation != presentation {
+		c.Revision = revision
+		c.Width = width
+		c.Wrap = wrap
+		c.Presentation = presentation
+		c.Lines = make(map[int]VisualLine)
+		c.Order = nil
+		return
+	}
+	if c.Revision == revision {
+		return
+	}
+	edits, ok := e.EditsSince(c.Revision)
+	if !ok {
+		c.clear(revision)
+		return
+	}
+	for _, edit := range edits {
+		c.applyEdit(edit)
+	}
+	c.Revision = revision
+}
+
+func (c *visualLineCache) prepareContext(revision uint64, width float32, wrap bool, presentation uint64) {
+	if c.Lines == nil {
+		c.Revision = revision
+		c.Width = width
+		c.Wrap = wrap
+		c.Presentation = presentation
+		c.Lines = make(map[int]VisualLine)
+		c.Order = nil
+		return
+	}
+	if c.Width != width || c.Wrap != wrap || c.Presentation != presentation {
 		c.Revision = revision
 		c.Width = width
 		c.Wrap = wrap
@@ -940,6 +998,93 @@ func (c *visualLineCache) prepare(revision uint64, width float32, wrap bool, pre
 		c.Lines = make(map[int]VisualLine)
 		c.Order = nil
 	}
+}
+
+func (c *visualLineCache) clear(revision uint64) {
+	c.Revision = revision
+	c.Lines = make(map[int]VisualLine)
+	c.Order = nil
+}
+
+func (c *visualLineCache) removeOrderLine(line int) {
+	if len(c.Order) == 0 {
+		return
+	}
+	kept := c.Order[:0]
+	for _, existing := range c.Order {
+		if existing != line {
+			kept = append(kept, existing)
+		}
+	}
+	c.Order = kept
+}
+
+// applyEdit transforms cached rows from the edit's pre-edit coordinate space
+// into the post-edit space. Rows touched by the edit are discarded; later
+// rows retain their shaped layout and receive only the byte/line offset shift.
+func (c *visualLineCache) applyEdit(edit editor.SourceEdit) {
+	if len(c.Lines) == 0 {
+		return
+	}
+	startRow := edit.StartPoint.Row
+	endRow := edit.OldEndPoint.Row
+	rowDelta := edit.NewEndPoint.Row - edit.OldEndPoint.Row
+	byteDelta := edit.NewEndByte - edit.OldEndByte
+	lines := make(map[int]VisualLine, len(c.Lines))
+	for oldLine, visual := range c.Lines {
+		if oldLine >= startRow && oldLine <= endRow {
+			continue
+		}
+		newLine := oldLine
+		if oldLine > endRow {
+			newLine += rowDelta
+			visual.DocStart += byteDelta
+			visual.DocEnd += byteDelta
+			visual.LogicalStart += byteDelta
+			visual.LogicalEnd += byteDelta
+		}
+		lines[newLine] = visual
+	}
+	c.Lines = lines
+
+	order := make([]int, 0, len(lines))
+	seen := make(map[int]struct{}, len(lines))
+	for _, oldLine := range c.Order {
+		if oldLine >= startRow && oldLine <= endRow {
+			continue
+		}
+		newLine := oldLine
+		if oldLine > endRow {
+			newLine += rowDelta
+		}
+		if _, ok := c.Lines[newLine]; !ok {
+			continue
+		}
+		if _, ok := seen[newLine]; ok {
+			continue
+		}
+		seen[newLine] = struct{}{}
+		order = append(order, newLine)
+	}
+	missing := make([]int, 0)
+	for line := range c.Lines {
+		if _, ok := seen[line]; !ok {
+			missing = append(missing, line)
+		}
+	}
+	sort.Ints(missing)
+	order = append(order, missing...)
+	c.Order = order
+}
+
+func textStylesEqual(a, b TextStyleAttrs) bool {
+	return slices.Equal(a.FontFamilies, b.FontFamilies) &&
+		a.FontAspect == b.FontAspect &&
+		a.TextColor == b.TextColor &&
+		a.FontSize == b.FontSize &&
+		a.Background == b.Background &&
+		a.Underline == b.Underline &&
+		a.Strike == b.Strike
 }
 
 // effectivePresentationKey folds the nil/non-nil presence into the explicit
@@ -1022,12 +1167,17 @@ func cachedVisualLine(c *visualLineCache, buffer *editor.Buffer, line, anchor in
 		// WrapWidth participates in the hit check because one revision can
 		// hold mixed widths: table lines shape unwrapped (width 0) while
 		// the surrounding prose keeps the shared wrap width.
-		if anchor >= visual.DocStart && anchor <= visual.DocEnd && visual.WrapWidth == width && reflect.DeepEqual(visual.baseStyle, style) {
+		if anchor >= visual.DocStart && anchor <= visual.DocEnd && visual.WrapWidth == width && textStylesEqual(visual.baseStyle, style) {
 			return visual, true
 		}
 	}
 	visual, ok := buildVisualLineAroundMaxStyled(buffer, line, anchor, style, width, presentation, styler, spanStyler)
 	if ok {
+		// A cache miss can replace an existing entry when a long line's
+		// shaping window follows the caret, or when the style changes without
+		// a context reset. Keep the insertion order unique so LRU eviction
+		// cannot later delete the replacement through a stale duplicate key.
+		c.removeOrderLine(line)
 		c.Lines[line] = visual
 		c.Order = append(c.Order, line)
 		const cacheLimit = 256
@@ -1041,10 +1191,17 @@ func cachedVisualLine(c *visualLineCache, buffer *editor.Buffer, line, anchor in
 }
 
 func anchorForLine(e *editor.ScratchEditor, line int) int {
-	if start, end, ok := e.Buffer.LineRange(line); ok && e.Cursor >= start && e.Cursor <= end {
+	start, end, ok := e.Buffer.LineRange(line)
+	if !ok {
+		return 0
+	}
+	if e.Cursor >= start && e.Cursor <= end {
 		return e.Cursor
 	}
-	return 0
+	// A non-caret line still needs an in-line anchor for cache hits. Using zero
+	// makes every line after the first fail the DocStart check even though its
+	// source and shaping anchor are unchanged.
+	return start
 }
 
 func editorContentWidth(width, gutter float32) float32 {
@@ -1365,7 +1522,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 					return rowHeight
 				}
 				contentWidth := editorContentWidth(width, gutterWidth)
-				lineCache.prepare(e.Revision(), contentWidth, options.Wrap, presentationKey)
+				lineCache.prepareForEditor(e, contentWidth, options.Wrap, presentationKey)
 				lineWidth := wrapWidthForLine(options, logical, contentWidth)
 				if lineWidth <= 0 {
 					return rowHeight
@@ -1398,7 +1555,7 @@ func EditableView(key any, e *editor.ScratchEditor, options EditorViewOptions) {
 				}
 				fullWidth := editorContentWidth(width, gutterWidth)
 				contentWidth := contentWidthIfWrapped(options.Wrap, fullWidth)
-				lineCache.prepare(e.Revision(), contentWidth, options.Wrap, presentationKey)
+				lineCache.prepareForEditor(e, contentWidth, options.Wrap, presentationKey)
 				lineWidth := wrapWidthForLine(options, logical, fullWidth)
 				visual, ok := cachedVisualLine(lineCache, &e.Buffer, logical, anchorForLine(e, logical), style, lineWidth, options.Presentation, options.PresentationStyle, options.PresentationSpanStyle)
 				if !ok {
@@ -1779,7 +1936,7 @@ func visualLineAtYWithWrapPolicy(e *editor.ScratchEditor, rows editor.RowMap, ta
 	if targetY < 0 {
 		targetY = 0
 	}
-	cache.prepare(e.Revision(), width, true, presentationKey)
+	cache.prepareForEditor(e, width, true, presentationKey)
 	var top float32
 	for visible := 0; visible < rows.Count(); visible++ {
 		line, ok := rows.Logical(visible)
@@ -1888,7 +2045,7 @@ func verticalVisualLine(e *editor.ScratchEditor, line, anchor int, style TextSty
 
 func verticalVisualLineWithWrapPolicy(e *editor.ScratchEditor, line, anchor int, style TextStyleAttrs, wrap bool, width float32, lineWidthFor func(int) float32, cache *visualLineCache, presentation EditorPresentationSource, styler EditorPresentationStyler, spanStyler EditorPresentationSpanStyler, presentationKey uint64) (VisualLine, bool) {
 	if wrap && cache != nil {
-		cache.prepare(e.Revision(), width, true, presentationKey)
+		cache.prepareForEditor(e, width, true, presentationKey)
 		visualWidth := width
 		if lineWidthFor != nil {
 			visualWidth = lineWidthFor(line)
