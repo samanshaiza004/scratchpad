@@ -2816,7 +2816,10 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.FileOpen:
 		shell.ShowSettings = false
 		if path := explicitCommandPath(args); path != "" {
-			return state.OpenPath(path) == nil
+			return dispatchPresentation(state, application.PresentationCommand{
+				Kind: application.PresentationOpenPath,
+				Path: path,
+			}) == nil
 		}
 		openPathPicker(state, shell)
 		return true
@@ -2837,7 +2840,9 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		if beforeDoc != nil {
 			beforePath, beforeVersion, beforeDirty = beforeDoc.Path, beforeDoc.DiskVersion, beforeDoc.Dirty()
 		}
-		err := state.SaveActive()
+		err := dispatchPresentation(state, application.PresentationCommand{
+			Kind: application.PresentationSaveDocument,
+		})
 		var path string
 		if doc := state.Documents[id]; doc != nil {
 			path = doc.Path
@@ -2890,11 +2895,18 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 				decision, _ = args[1].(closeDecision)
 			}
 			if decision == closeSave {
-				if err := state.SaveDocument(target); err != nil {
+				if err := dispatchPresentation(state, application.PresentationCommand{
+					Kind:       application.PresentationSaveDocument,
+					DocumentID: target,
+				}); err != nil {
 					return false
 				}
 			} else if decision == closeDiscard {
-				if err := state.CloseDocument(target, true); err != nil {
+				if err := dispatchPresentation(state, application.PresentationCommand{
+					Kind:       application.PresentationCloseDocument,
+					DocumentID: target,
+					Discard:    true,
+				}); err != nil {
 					return false
 				}
 				shell.ClosePending = ""
@@ -2902,7 +2914,10 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 				return true
 			}
 			if decision == closeSave {
-				if err := state.CloseDocument(target, false); err != nil {
+				if err := dispatchPresentation(state, application.PresentationCommand{
+					Kind:       application.PresentationCloseDocument,
+					DocumentID: target,
+				}); err != nil {
 					return false
 				}
 				shell.ClosePending = ""
@@ -2914,7 +2929,10 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.DocumentActivate:
 		shell.ShowSettings = false
 		if target := commandDocumentID(state, args); target != "" {
-			state.Activate(target)
+			_ = dispatchPresentation(state, application.PresentationCommand{
+				Kind:       application.PresentationSelectDocument,
+				DocumentID: target,
+			})
 		}
 	case commands.DocumentCloseOthers:
 		target := commandDocumentID(state, args)
@@ -3055,7 +3073,10 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.FileOpenRecent:
 		shell.ShowSettings = false
 		if path := explicitCommandPath(args); path != "" {
-			if state.OpenPath(path) == nil {
+			if dispatchPresentation(state, application.PresentationCommand{
+				Kind: application.PresentationOpenPath,
+				Path: path,
+			}) == nil {
 				shell.ShowRecent = false
 				return true
 			}
@@ -3117,6 +3138,11 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 		}
 	}
 	return false
+}
+
+func dispatchPresentation(state *application.Application, command application.PresentationCommand) error {
+	var client application.PresentationClient = state
+	return client.Dispatch(command)
 }
 
 func isProductCommand(id commands.ID) bool {

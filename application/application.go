@@ -90,6 +90,7 @@ type Application struct {
 	derivedWakeScheduled  int32
 	recent                []string
 	closed                []string
+	presentationRevision  uint64
 }
 
 func New(store workspace.FileStore) *Application {
@@ -97,12 +98,19 @@ func New(store workspace.FileStore) *Application {
 		store = workspace.NewOSFileStore()
 	}
 	return &Application{
-		Store:        store,
-		Documents:    make(map[DocumentID]*document.Document),
-		Views:        make(map[DocumentID]ViewState),
-		Stale:        make(map[DocumentID]bool),
-		Conflicts:    make(map[DocumentID]Conflict),
-		recoveryDone: make(chan error, 1),
+		Store:                store,
+		Documents:            make(map[DocumentID]*document.Document),
+		Views:                make(map[DocumentID]ViewState),
+		Stale:                make(map[DocumentID]bool),
+		Conflicts:            make(map[DocumentID]Conflict),
+		recoveryDone:         make(chan error, 1),
+		presentationRevision: 1,
+	}
+}
+
+func (a *Application) touchPresentation() {
+	if a.presentationRevision != ^uint64(0) {
+		a.presentationRevision++
 	}
 }
 
@@ -137,6 +145,7 @@ func (a *Application) OpenWorkspace(path string) error {
 	}
 	a.Workspace = ws
 	a.HasWorkspace = true
+	a.touchPresentation()
 	return nil
 }
 
@@ -148,6 +157,7 @@ func (a *Application) OpenDocument(path string) error {
 	if _, ok := a.Documents[id]; ok {
 		a.Active = id
 		a.recordRecent(a.Documents[id].Path)
+		a.touchPresentation()
 		return nil
 	}
 	snapshot, err := a.Store.Load(path)
@@ -160,6 +170,7 @@ func (a *Application) OpenDocument(path string) error {
 	a.Order = append(a.Order, id)
 	a.Views[id] = ViewState{}
 	a.Active = id
+	a.touchPresentation()
 	if a.Watcher != nil {
 		if err := a.Watcher.WatchDirectory(filepath.Dir(doc.Path)); err != nil {
 			return err
@@ -287,6 +298,7 @@ func (a *Application) ReloadDisk(id DocumentID) error {
 	doc := a.Documents[id]
 	doc.Reload(conflict.Disk, conflict.DiskVersion, conflict.DiskMode)
 	delete(a.Conflicts, id)
+	a.touchPresentation()
 	if state := a.derived[id]; state != nil {
 		state.closed = true
 		if !state.running && state.runtime != nil {
@@ -416,9 +428,11 @@ func (a *Application) SaveActive() error {
 			return err
 		}
 		a.refreshRecoveryAfterSave()
+		a.touchPresentation()
 		return err
 	}
 	a.refreshRecoveryAfterSave()
+	a.touchPresentation()
 	return nil
 }
 
@@ -572,6 +586,7 @@ func (a *Application) completeSaveAs(id DocumentID, doc *document.Document, befo
 	// Consume any stale hint for the old identity (identity change) and for
 	// the same identity (SaveAs overwrote disk, so the hint is obsolete).
 	delete(a.Stale, id)
+	a.touchPresentation()
 }
 
 func (a *Application) ReconcileStale() {
@@ -585,6 +600,7 @@ func (a *Application) Activate(id DocumentID) bool {
 		return false
 	}
 	a.Active = id
+	a.touchPresentation()
 	return true
 }
 
@@ -604,6 +620,7 @@ func (a *Application) Cycle(delta int) {
 		current += len(a.Order)
 	}
 	a.Active = a.Order[current]
+	a.touchPresentation()
 }
 
 // CloseDocument removes a document only when its unsaved state has been
@@ -641,6 +658,7 @@ func (a *Application) CloseDocument(id DocumentID, discard bool) error {
 		}
 	}
 	a.recordClosed(doc.Path)
+	a.touchPresentation()
 	return nil
 }
 
@@ -666,6 +684,7 @@ func (a *Application) Reorder(order []DocumentID) error {
 		seen[id] = true
 	}
 	a.Order = append(a.Order[:0], order...)
+	a.touchPresentation()
 	return nil
 }
 
