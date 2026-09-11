@@ -122,6 +122,7 @@ func DefaultRegistry() Registry {
 	}
 	for _, descriptor := range []CommandDescriptor{
 		{ID: SettingsOpen, Title: "Settings", Category: "application", Bindings: []Keybinding{{Key: "primary+,"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
+		{ID: WorkspaceFocusFiles, Title: "Focus Files", Category: "workspace", Bindings: []Keybinding{{Key: "primary+shift+e"}}, Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceNewFile, Title: "New File", Category: "workspace", Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceNewFolder, Title: "New Folder", Category: "workspace", Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceRename, Title: "Rename", Category: "workspace", Bindings: []Keybinding{{Key: "f2"}}, Visible: workspace, Enabled: workspace},

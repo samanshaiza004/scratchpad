@@ -71,6 +71,19 @@ bytes. The current shell may use the active document as a command default,
 but mutation APIs do not depend on `Application.Active`, leaving a future
 multi-pane view model free to choose its own target document.
 
+The Files sidebar is one composite keyboard focus target, not a tab stop for
+every rendered row. Its focused path is separate from the existing selected
+path set, anchor, and lead so the selection policy remains explicit: plain
+movement follows the conventional single-selection tree behavior, while
+modifier-assisted movement preserves or extends a multi-selection. Visible rows are navigated by path identity and
+reconciled after expansion or filesystem mutation; transient row/container
+handles are used only for focus and viewport reveal. Arrow keys, Home/End,
+PageUp/PageDown, type-ahead, Enter/Space activation, F2 rename, and Delete
+are dispatched only while that composite target owns focus. Modals, inline
+rename text input, the editor, and other transient controls retain precedence.
+The focus command is explicit (`primary+shift+e`), while future pane/split
+navigation remains outside this shell contract.
+
 ## Package boundaries
 
 Only packages with immediate scaffold value exist today:

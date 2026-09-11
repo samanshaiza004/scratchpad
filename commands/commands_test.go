@@ -10,8 +10,8 @@ import (
 )
 
 func TestInitialVocabularyIsStableAndUnified(t *testing.T) {
-	if len(InitialVocabulary) != 74 {
-		t.Fatalf("got %d commands, want 74", len(InitialVocabulary))
+	if len(InitialVocabulary) != 75 {
+		t.Fatalf("got %d commands, want 75", len(InitialVocabulary))
 	}
 	seen := map[ID]bool{}
 	for _, id := range InitialVocabulary {
@@ -19,6 +19,29 @@ func TestInitialVocabularyIsStableAndUnified(t *testing.T) {
 			t.Fatalf("duplicate command %q", id)
 		}
 		seen[id] = true
+	}
+}
+
+func TestFocusFilesCommandUsesPortableFocusBinding(t *testing.T) {
+	registry := DefaultRegistry()
+	descriptor, ok := registry.Lookup(WorkspaceFocusFiles)
+	if !ok {
+		t.Fatal("missing focus files command")
+	}
+	if descriptor.Title != "Focus Files" {
+		t.Fatalf("title = %q, want %q", descriptor.Title, "Focus Files")
+	}
+	if len(descriptor.Bindings) != 1 || descriptor.Bindings[0].Key != "primary+shift+e" {
+		t.Fatalf("bindings = %#v, want primary+shift+e", descriptor.Bindings)
+	}
+	if descriptor.IsEnabled(CommandContext{}) {
+		t.Fatal("focus files command enabled without workspace")
+	}
+	if !descriptor.IsEnabled(CommandContext{HasWorkspace: true}) {
+		t.Fatal("focus files command disabled with workspace")
+	}
+	if id, ok := registry.Match("primary+shift+e", CommandContext{HasWorkspace: true}); !ok || id != WorkspaceFocusFiles {
+		t.Fatalf("primary+shift+e = %q, %v; want %q", id, ok, WorkspaceFocusFiles)
 	}
 }
 

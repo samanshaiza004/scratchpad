@@ -193,6 +193,7 @@ type workbenchState struct {
 	FolderPicker       folderPickerState // compatibility alias for existing tests
 	SidebarMode        SidebarMode
 	Tree               treeState
+	TreeRename         treeRenameState
 	ContextMenu        contextMenuState
 	CloseQueue         []application.DocumentID
 	RevealPath         func(string) error
@@ -204,6 +205,7 @@ type workbenchState struct {
 	Slash              slashState
 	Fence              fenceState
 	PendingSmartPaste  bool
+	FocusFilesPending  bool
 	UserSettingsLoaded bool
 	UserSettingsPath   string
 	UserSettingsError  string
@@ -239,6 +241,14 @@ type workspaceTrashConfirmation struct {
 	Open  bool
 	Path  string
 	Error string
+}
+
+type treeRenameState struct {
+	Open       bool
+	Path       string
+	Text       string
+	Error      string
+	Generation uint64
 }
 
 type SidebarMode uint8
@@ -669,73 +679,83 @@ func sidebar(state *application.Application, shell *workbenchState, theme Theme)
 		if shell.ShowSearch {
 			workspaceSearchPanel(state, shell, theme)
 		}
-		Container(Attrs(Viewport, Grow(1), Expand, Clip, Pad2(6, 4)), func() {
-			ScrollOnInput()
-			ContainerWithKey("workspace-tree-background", Attrs(Float(0, 0), FixSizeVec(GetContentRect().Size), Behind), func() {
-				// Keep the root target registered for the whole viewport. Folder
-				// rows override it below; a file-row release is rejected by the
-				// drop handler so stale root state cannot move into a file row.
-				if CanDropHere[treeDragPayload](treeDropTarget("")) {
-					rootDropActive = !treeRowHovered(tree)
+		treeFocusID := ContainerWithKey("workspace-tree-focus", Attrs(Focusable, Grow(1), Expand, Clip, NoAnimate), func() {
+			FocusOnClick()
+			CycleFocusOnTab()
+			if shell.FocusFilesPending {
+				Focus()
+				shell.FocusFilesPending = false
+			}
+			viewportID := ContainerWithKey("workspace-tree-viewport", Attrs(Viewport, Grow(1), Expand, Clip, Pad2(6, 4)), func() {
+				ScrollOnInput()
+				ContainerWithKey("workspace-tree-background", Attrs(Float(0, 0), FixSizeVec(GetContentRect().Size), Behind), func() {
+					// Keep the root target registered for the whole viewport. Folder
+					// rows override it below; a file-row release is rejected by the
+					// drop handler so stale root state cannot move into a file row.
+					if CanDropHere[treeDragPayload](treeDropTarget("")) {
+						rootDropActive = !treeRowHovered(tree)
+						if rootDropActive {
+							ModAttrs(BorderWidth(1), BorderColorVec(theme.Focus))
+						}
+					}
+					rootContextClick, rootContextGesture := contextMenuGestureWithHover(func() bool {
+						return RectContainsPoint(GetScreenRect(), GetInputState().MousePoint) && !treeRowHovered(tree)
+					})
+					if rootContextClick {
+						openWorkspaceContextMenu(shell, state.Workspace.Root)
+					}
+					if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary &&
+						!rootContextGesture && IsHoveredDirectly() {
+						clearTreeSelection(tree)
+						tree.MarqueeActive = true
+						tree.MarqueeMoved = false
+						tree.MarqueeStart = GetInputState().MousePoint
+						tree.MarqueeCurrent = tree.MarqueeStart
+					}
+				})
+				ContainerWithKey("workspace-root-drop", Attrs(FixHeight(22), Pad2(0, 6)), func() {
 					if rootDropActive {
-						ModAttrs(BorderWidth(1), BorderColorVec(theme.Focus))
+						ModAttrs(BackgroundVec(theme.Selection), BorderWidth(1), BorderColorVec(theme.Focus))
+					}
+					Label("Workspace", FontSize(11), TextColorVec(theme.Muted))
+				})
+				renderTreeWithShell(state, tree, shell, "", 0, theme)
+				if tree.MarqueeActive {
+					tree.MarqueeCurrent = GetInputState().MousePoint
+					delta := Vec2Sub(tree.MarqueeCurrent, tree.MarqueeStart)
+					if absFloat(delta[0]) > 2 || absFloat(delta[1]) > 2 {
+						tree.MarqueeMoved = true
+					}
+					updateTreeMarqueeSelection(tree)
+					if GetFrameInput().Mouse == MouseRelease {
+						tree.MarqueeActive = false
 					}
 				}
-				rootContextClick, rootContextGesture := contextMenuGestureWithHover(func() bool {
-					return RectContainsPoint(GetScreenRect(), GetInputState().MousePoint) && !treeRowHovered(tree)
+				if tree.MarqueeActive && tree.MarqueeMoved {
+					selectionRect := treeMarqueeRect(tree.MarqueeStart, tree.MarqueeCurrent)
+					surface := GetScreenRect()
+					localOrigin := Vec2{selectionRect.Origin[0] - surface.Origin[0], selectionRect.Origin[1] - surface.Origin[1]}
+					if selectionRect.Size[0] > 0 && selectionRect.Size[1] > 0 {
+						fill := theme.Selection
+						fill[3] *= 0.35
+						Container(Attrs(FloatVec(localOrigin), FixSize(selectionRect.Size[0], selectionRect.Size[1]), InFront, BorderWidth(1), BorderColorVec(theme.Focus), BackgroundVec(fill)), func() {})
+					}
+				}
+				ScrollBars()
+			})
+			if payload, ok := GetDraggingItem[treeDragPayload](); ok {
+				rect := GetDraggingItemRect()
+				origin := Vec2Sub(rect.Origin, GetRenderData().ResolvedOrigin)
+				ContainerWithKey("workspace-tree-dnd-ghost", Attrs(Expand), func() {
+					ModAttrs(NoAnimate, FloatVec(origin), FixSizeVec(rect.Size), ClickThrough, Trans(0.45),
+						BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Focus),
+						Pad2(0, 6))
+					Label("▣  "+filepathBase(string(payload)), FontSize(11), TextColorVec(theme.Ink))
 				})
-				if rootContextClick {
-					openWorkspaceContextMenu(shell, state.Workspace.Root)
-				}
-				if GetFrameInput().Mouse == MouseClick && GetInputState().MouseButton == MousePrimary &&
-					!rootContextGesture && IsHoveredDirectly() {
-					clearTreeSelection(tree)
-					tree.MarqueeActive = true
-					tree.MarqueeMoved = false
-					tree.MarqueeStart = GetInputState().MousePoint
-					tree.MarqueeCurrent = tree.MarqueeStart
-				}
-			})
-			ContainerWithKey("workspace-root-drop", Attrs(FixHeight(22), Pad2(0, 6)), func() {
-				if rootDropActive {
-					ModAttrs(BackgroundVec(theme.Selection), BorderWidth(1), BorderColorVec(theme.Focus))
-				}
-				Label("Workspace", FontSize(11), TextColorVec(theme.Muted))
-			})
-			renderTreeWithShell(state, tree, shell, "", 0, theme)
-			if tree.MarqueeActive {
-				tree.MarqueeCurrent = GetInputState().MousePoint
-				delta := Vec2Sub(tree.MarqueeCurrent, tree.MarqueeStart)
-				if absFloat(delta[0]) > 2 || absFloat(delta[1]) > 2 {
-					tree.MarqueeMoved = true
-				}
-				updateTreeMarqueeSelection(tree)
-				if GetFrameInput().Mouse == MouseRelease {
-					tree.MarqueeActive = false
-				}
 			}
-			if tree.MarqueeActive && tree.MarqueeMoved {
-				selectionRect := treeMarqueeRect(tree.MarqueeStart, tree.MarqueeCurrent)
-				surface := GetScreenRect()
-				localOrigin := Vec2{selectionRect.Origin[0] - surface.Origin[0], selectionRect.Origin[1] - surface.Origin[1]}
-				if selectionRect.Size[0] > 0 && selectionRect.Size[1] > 0 {
-					fill := theme.Selection
-					fill[3] *= 0.35
-					Container(Attrs(FloatVec(localOrigin), FixSize(selectionRect.Size[0], selectionRect.Size[1]), InFront, BorderWidth(1), BorderColorVec(theme.Focus), BackgroundVec(fill)), func() {})
-				}
-			}
-			ScrollBars()
+			tree.ViewportID = viewportID
 		})
-		if payload, ok := GetDraggingItem[treeDragPayload](); ok {
-			rect := GetDraggingItemRect()
-			origin := Vec2Sub(rect.Origin, GetRenderData().ResolvedOrigin)
-			ContainerWithKey("workspace-tree-dnd-ghost", Attrs(Expand), func() {
-				ModAttrs(NoAnimate, FloatVec(origin), FixSizeVec(rect.Size), ClickThrough, Trans(0.45),
-					BackgroundVec(theme.ChromeRaised), BorderWidth(1), BorderColorVec(theme.Focus),
-					Pad2(0, 6))
-				Label("▣  "+filepathBase(string(payload)), FontSize(11), TextColorVec(theme.Ink))
-			})
-		}
+		tree.FocusID = treeFocusID
 	})
 }
 
@@ -1255,8 +1275,13 @@ type treeState struct {
 	Selected       map[string]bool
 	AnchorPath     string
 	LeadPath       string
+	FocusedPath    string
+	TypeAhead      string
+	TypeAheadAt    time.Time
 	VisiblePaths   []string
 	RowIDs         map[string]ContainerId // transient handles used by layout tests
+	FocusID        ContainerId            // stable handle for the composite tree focus target
+	ViewportID     ContainerId            // stable handle used to reveal keyboard focus
 	MarqueeActive  bool
 	MarqueeStart   Vec2
 	MarqueeCurrent Vec2
@@ -1466,6 +1491,9 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 	if tree.RowIDs == nil {
 		tree.RowIDs = make(map[string]ContainerId)
 	}
+	if tree.renderDepth == 0 {
+		tree.FocusedPath = treeKeyboardFallbackPath(state, tree)
+	}
 	tree.renderDepth++
 	defer func() { tree.renderDepth-- }()
 	entries, err := state.Workspace.List(relative)
@@ -1475,6 +1503,7 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 	}
 	for _, entry := range entries {
 		entry := entry
+		sourcePath := filepath.Join(state.Workspace.Root, entry.Path)
 		selected := tree.Selected[entry.Path]
 		ContainerWithKey(entry.Path, Attrs(Expand), func() {
 			// Keep the item itself horizontal. Expanded children are siblings
@@ -1482,6 +1511,7 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 			active := !entry.Dir && isActivePath(state, filepath.Join(state.Workspace.Root, entry.Path))
 			var button ButtonState
 			var secondaryGesture bool
+			renaming := shell.TreeRename.Open && filepath.Clean(shell.TreeRename.Path) == filepath.Clean(sourcePath)
 			rowID := Container(Attrs(Expand), func() {
 				// Shirei requires container attributes to be set before any
 				// child elements are added. Keep the dragged source dimmed by
@@ -1496,6 +1526,21 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 					ModAttrs(BackgroundVec(theme.Selection))
 				}
 				button = WorkstationRow(theme, Attrs(Row, CrossMid, Expand, FixHeight(24), Pad4(0, 6, 0, float32(8+depth*14))), active || selected, secondaryGesture, func() {
+					if tree.FocusedPath == entry.Path {
+						ModAttrs(BorderWidth(1), BorderColorVec(theme.Focus))
+					}
+					if renaming {
+						field := DefaultTextInputAttrs()
+						field.MinWidth = 120
+						ContainerWithKey(fmt.Sprintf("tree-rename-%d", shell.TreeRename.Generation), Attrs(Grow(1), FixHeight(22), NoAnimate), func() {
+							TextInputExt(&shell.TreeRename.Text, field)
+						})
+						if GetFrameInput().Key == KeyEnter {
+							commitTreeRename(state, shell)
+							GetFrameInput().Key = KeyCodeNone
+						}
+						return
+					}
 					if entry.Dir {
 						arrow := "▸"
 						if tree.Expanded[entry.Path] {
@@ -1522,7 +1567,6 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 						openTreeContextMenu(shell, filepath.Join(state.Workspace.Root, entry.Path), false)
 					}
 				})
-				sourcePath := filepath.Join(state.Workspace.Root, entry.Path)
 				if !secondaryGesture && DragAndDrop(treeDragPayload(sourcePath)) {
 					target := GetDropTarget[treeDropTarget]()
 					if target != treeDropTarget("") || !treeRowHovered(tree) {
@@ -1540,8 +1584,9 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 					treeSelectionForDrag(tree, entry.Path)
 				}
 			})
-			if button.Clicked && !secondaryGesture && GetInputState().MouseButton == MousePrimary {
+			if button.Clicked && !renaming && !secondaryGesture && GetInputState().MouseButton == MousePrimary {
 				modifiers := GetInputState().Modifiers
+				tree.FocusedPath = entry.Path
 				treeSelectionClick(tree, entry.Path, modifiers, PrimaryMod(), tree.VisiblePaths)
 				if modifiers&(PrimaryMod()|ModShift) == 0 {
 					if entry.Dir {
@@ -2435,6 +2480,11 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	if handleFenceInput(state, shell) {
 		return
 	}
+	if !transientInputOpen(shell) && treeHasFocus(shell) && handleTreeKeyboardInput(state, shell) {
+		frame.Key = KeyCodeNone
+		frame.Text = ""
+		return
+	}
 	// Text inputs and modal controls own Tab/Enter. In particular, the active
 	// document may still have its caret inside a table while Find, Save As, or
 	// Go to Line is open; letting table navigation run first would consume the
@@ -2458,6 +2508,11 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 		}
 	}
 	if frame.Key == KeyEscape {
+		if shell.TreeRename.Open {
+			shell.TreeRename = treeRenameState{}
+			frame.Key = KeyCodeNone
+			return
+		}
 		if shell.ShowSettings {
 			shell.ShowSettings = false
 			frame.Key = KeyCodeNone
@@ -2482,6 +2537,11 @@ func handleGlobalInput(state *application.Application, shell *workbenchState) {
 	}
 	if zoom := editorZoomCommand(frame.Key, mods, primary); zoom != "" {
 		executeCommand(state, shell, zoom)
+		frame.Key = KeyCodeNone
+		return
+	}
+	if !transientInputOpen(shell) && mods == primary|ModShift && frame.Key == KeyE {
+		executeCommand(state, shell, commands.WorkspaceFocusFiles)
 		frame.Key = KeyCodeNone
 		return
 	}
@@ -2701,7 +2761,7 @@ func transientInputOpen(shell *workbenchState) bool {
 	if shell == nil {
 		return false
 	}
-	return shell.ShowSettings || shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen || shell.Mutation.Open || shell.TrashConfirmation.Open ||
+	return shell.TreeRename.Open || shell.ShowSettings || shell.ShowOpen || shell.ShowFolder || shell.ShowQuickOpen || shell.Mutation.Open || shell.TrashConfirmation.Open ||
 		shell.ShowSaveAs || shell.ShowSaveAsOverwrite || shell.ShowFind ||
 		shell.ShowGoToLine || shell.ShowSearch || shell.ShowRecent ||
 		shell.ShowCompare || shell.Slash.Open || shell.Fence.Open
@@ -2920,6 +2980,17 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.OutlineToggle:
 		shell.SidebarMode = SidebarOutline
 		shell.SidebarVisible = true
+	case commands.WorkspaceFocusFiles:
+		if state == nil || !state.HasWorkspace {
+			return false
+		}
+		shell.SidebarMode = SidebarFiles
+		shell.SidebarVisible = true
+		shell.FocusFilesPending = true
+		if shell.Tree.FocusID != nil {
+			FocusImmediateOn(shell.Tree.FocusID)
+			shell.FocusFilesPending = false
+		}
 	case commands.WorkspaceRefresh:
 		pruneTreeViewState(state, &shell.Tree)
 		shell.Tree.RowIDs = nil
@@ -3098,6 +3169,9 @@ func resetTreeAfterMutation(shell *workbenchState) {
 	if shell.Tree.Expanded == nil {
 		shell.Tree.Expanded = make(map[string]bool)
 	}
+	shell.Tree.TypeAhead = ""
+	shell.Tree.TypeAheadAt = time.Time{}
+	shell.TreeRename = treeRenameState{}
 	shell.Tree.VisiblePaths = nil
 	if shell.Tree.renderDepth > 0 {
 		shell.Tree.rowsDirty = true
@@ -3145,6 +3219,7 @@ func reconcileTreePathMutation(shell *workbenchState, state *application.Applica
 	shell.Tree.Selected = remappedSelected
 	shell.Tree.AnchorPath = remap(shell.Tree.AnchorPath)
 	shell.Tree.LeadPath = remap(shell.Tree.LeadPath)
+	shell.Tree.FocusedPath = remap(shell.Tree.FocusedPath)
 }
 
 func remapTreePath(path, oldRel, newRel string) string {
@@ -3181,6 +3256,9 @@ func pruneTreePathSubtree(tree *treeState, root string) {
 	if belongs(tree.LeadPath) {
 		tree.LeadPath = ""
 	}
+	if belongs(tree.FocusedPath) {
+		tree.FocusedPath = ""
+	}
 }
 
 func pruneTreeViewState(state *application.Application, tree *treeState) {
@@ -3206,6 +3284,11 @@ func pruneTreeViewState(state *application.Application, tree *treeState) {
 	if tree.LeadPath != "" {
 		if _, err := state.Workspace.Lstat(tree.LeadPath); err != nil {
 			tree.LeadPath = ""
+		}
+	}
+	if tree.FocusedPath != "" {
+		if _, err := state.Workspace.Lstat(tree.FocusedPath); err != nil {
+			tree.FocusedPath = ""
 		}
 	}
 }

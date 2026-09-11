@@ -202,6 +202,92 @@ func TestTreeDragSelectionMatchesSinglePathPayload(t *testing.T) {
 	}
 }
 
+func TestTreeKeyboardMovesAndActivatesFocusedPath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{SidebarMode: SidebarFiles}
+	scope := new(int)
+	GetHost().HeadlessRender = true
+	GetHost().WindowFocused = true
+	GetHost().WindowSize = Vec2{500, 300}
+	GetInputState().MousePoint = Vec2{-1000, -1000}
+	GetFrameInput().Key = KeyCodeNone
+	RunFrameFn(func() {
+		ContainerWithKey(scope, Attrs(Viewport, FixSize(500, 300)), func() {
+			sidebar(state, shell, DefaultTheme())
+		})
+	})
+	if shell.Tree.FocusID == nil {
+		t.Fatal("tree did not create a focus target")
+	}
+	FocusImmediateOn(shell.Tree.FocusID)
+
+	GetFrameInput().Key = KeyDown
+	GetFrameInput().Text = ""
+	GetInputState().Modifiers = 0
+	if !handleTreeKeyboardInput(state, shell) {
+		t.Fatal("down was not handled by the tree")
+	}
+	if shell.Tree.FocusedPath != "a.txt" {
+		t.Fatalf("focused path = %q, want a.txt", shell.Tree.FocusedPath)
+	}
+
+	GetFrameInput().Key = KeySpace
+	if !handleTreeKeyboardInput(state, shell) {
+		t.Fatal("space activation was not handled by the tree")
+	}
+	if state.ActiveDocument() == nil || state.ActiveDocument().Path != filepath.Join(root, "a.txt") {
+		t.Fatalf("active document = %#v, want a.txt", state.ActiveDocument())
+	}
+}
+
+func TestTreeKeyboardF2StartsInlineRenameAndCommitPreservesTarget(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "old.txt")
+	if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := application.New(nil)
+	if err := state.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	shell := &workbenchState{Tree: treeState{VisiblePaths: []string{"old.txt"}, FocusedPath: "old.txt"}}
+	if !beginTreeRename(state, shell) {
+		t.Fatal("F2 did not start inline rename")
+	}
+	if shell.TreeRename.Text != "old.txt" {
+		t.Fatalf("rename text = %q, want old.txt", shell.TreeRename.Text)
+	}
+	shell.TreeRename.Text = "new.txt"
+	if !commitTreeRename(state, shell) {
+		t.Fatal("inline rename did not commit")
+	}
+	if _, err := os.Stat(filepath.Join(root, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("old path still exists: %v", err)
+	}
+	if got := state.ActiveDocument().Path; got != filepath.Join(root, "new.txt") {
+		t.Fatalf("active document path = %q, want new.txt", got)
+	}
+}
+
 func TestTreeMarqueeRectAndIntersection(t *testing.T) {
 	selection := treeMarqueeRect(Vec2{80, 70}, Vec2{20, 10})
 	if selection.Origin != (Vec2{20, 10}) || selection.Size != (Vec2{60, 60}) {
