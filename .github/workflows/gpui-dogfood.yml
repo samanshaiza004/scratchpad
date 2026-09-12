@@ -1,0 +1,33 @@
+name: GPUI dogfood
+
+on:
+  push:
+    branches: [gpui-dogfood]
+  pull_request:
+
+jobs:
+  gate-1:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: samanshaiza004/caliber
+          ref: e350c50
+          path: caliber
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes xvfb
+      - run: go run ./cmd/gpui-dev test --caliber-root "$GITHUB_WORKSPACE/caliber"
+        shell: bash
+      - run: go run ./cmd/gpui-dev smoke --caliber-root "$GITHUB_WORKSPACE/caliber"
+        shell: bash

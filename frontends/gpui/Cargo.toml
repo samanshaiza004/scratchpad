@@ -1,0 +1,20 @@
+[package]
+name = "scratchpad-gpui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+async-channel = "2"
+gpui-kit = "=0.6.1"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "scratchpad-gpui"
+path = "src/main.rs"

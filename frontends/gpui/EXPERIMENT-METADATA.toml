@@ -1,0 +1,10 @@
+status = "experimental"
+stage = "gate-1-and-gate-2"
+caliber_commit = "e350c50"
+caliber_abi_version = 1
+request_id_type = "u64"
+path_encoding = "utf8-only-reject-invalid"
+polling_timer = false
+editor_included = false
+stable_abi = false
+crates_io = false

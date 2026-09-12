@@ -14,3 +14,8 @@ coverage.out
 # Generated visual artifacts and local benchmark output
 testdata/generated/
 *.pprof
+
+# GPUI dogfood native artifacts
+/frontends/gpui/build/
+/frontends/gpui/backend/build/
+/frontends/gpui/target/
