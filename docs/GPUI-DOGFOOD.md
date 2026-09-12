@@ -98,6 +98,22 @@ The main benefit is now concrete: the unchanged Scratchpad application/editor
 packages supply both the Shirei shell and a Rust/GPUI shell, with only the
 requested visible slice crossing the boundary.
 
+The cumulative GPUI dogfood delta from the initial Gate 1 commit is 1,112
+added code/test lines and 71 deleted lines; this includes the bridge, shell,
+scheduler, runner, protocol, and acceptance tests, but excludes documentation
+and workflow text. Gate 3's hop accounting is:
+
+| hop | copy/allocation behavior |
+| --- | --- |
+| Rust command → Caliber | JSON command buffer allocation; Caliber copies the bounded command into its queue |
+| Go pump → piece buffer | each requested `Buffer.Line` is a bounded line copy; Go grows one bounded assembly buffer |
+| Go → Caliber resource | one 48-byte-header-plus-payload allocation and one Caliber immutable-resource copy |
+| Caliber → Rust | Caliber map lease; Rust allocates one bounded `Vec<u8>` and copies the resource before releasing both leases |
+| Rust cache → GPUI text | the shell retains the bounded byte vector; final lossy display conversion allocates a temporary render string |
+
+The state path has its existing bounded JSON response/state copies. No hop
+allocates in proportion to the document size beyond the requested slice.
+
 `measure` runs the foreign test path and writes its command-to-state and
 visible-resource timings into `frontends/gpui/build/measurements.json`, then
 attempts the native launch/shutdown smoke. It also records the byte size of
