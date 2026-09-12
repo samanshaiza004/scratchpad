@@ -284,28 +284,14 @@ func (r *Runtime) publishApplicationState() error {
 	if err != nil {
 		return err
 	}
-	data, readRevision, schema, err := r.caliber.readLatestStateCopy()
-	if err != nil {
-		return err
-	}
-	var published StateEnvelope
-	if err := json.Unmarshal(data, &published); err != nil {
-		return fmt.Errorf("decode published state: %w", err)
-	}
-	if schema != StateSchemaV1 {
-		return fmt.Errorf("Caliber state schema mismatch: got %d want %d", schema, StateSchemaV1)
-	}
-	if readRevision != revision {
-		return fmt.Errorf("Caliber state revision mismatch: published %d read %d", revision, readRevision)
-	}
-	if published.Revision != revision {
-		return fmt.Errorf("state envelope revision mismatch: payload %d Caliber %d", published.Revision, revision)
-	}
-	published.Schema = schema
-	published.Revision = readRevision
-	r.revision = readRevision
-	r.applicationRevision = published.ApplicationRev
-	r.state = published
+	// Caliber has copied the bounded payload by this point. The foreign client
+	// owns the read lease and validates the table/state schema on its side, so
+	// do not perform an extra Go read/copy/unmarshal merely to echo our own
+	// publication back into the runtime.
+	state.Revision = revision
+	r.revision = revision
+	r.applicationRevision = snapshot.Revision
+	r.state = state
 	return nil
 }
 
