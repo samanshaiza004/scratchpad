@@ -240,6 +240,47 @@ func (b *Buffer) LineRange(line int) (start, end int, ok bool) {
 	return start, end, true
 }
 
+// BoundedLines returns one copied byte range containing at most maxLines
+// logical lines and maxBytes bytes. endLine is exclusive. A byte-limited
+// result may end in the middle of a line; in that case endLine still includes
+// that partially returned line. The operation resolves two indexed line
+// boundaries and copies the intervening pieces once.
+func (b *Buffer) BoundedLines(startLine, maxLines, maxBytes int) ([]byte, int, bool, error) {
+	if b == nil {
+		return nil, 0, false, errors.New("nil buffer")
+	}
+	if startLine < 0 || startLine >= b.LineCount() {
+		return nil, 0, false, errors.New("start line outside buffer")
+	}
+	if maxLines <= 0 {
+		return nil, 0, false, errors.New("max lines must be positive")
+	}
+	if maxBytes <= 0 {
+		return nil, 0, false, errors.New("max bytes must be positive")
+	}
+
+	lineCount := b.LineCount()
+	endLine := startLine + maxLines
+	if endLine > lineCount {
+		endLine = lineCount
+	}
+	startByte := b.lineStart(startLine)
+	endByte := b.lineStart(endLine)
+	if endByte-startByte <= maxBytes {
+		return b.slice(startByte, endByte), endLine, endLine < lineCount, nil
+	}
+
+	data := b.slice(startByte, startByte+maxBytes)
+	returnedEndLine := startLine + bytes.Count(data, []byte{'\n'})
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		returnedEndLine++
+	}
+	if returnedEndLine > endLine {
+		returnedEndLine = endLine
+	}
+	return data, returnedEndLine, true, nil
+}
+
 func (b *Buffer) ByteAt(at int) (byte, bool) {
 	if at < 0 || at >= b.byteLen {
 		return 0, false

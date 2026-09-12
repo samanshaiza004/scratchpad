@@ -347,5 +347,21 @@ mod tests {
             start_line: 12,
         });
         assert_eq!(pending.len(), 4);
+
+        let mut scroll = PendingCommands::default();
+        for start_line in 0..100 {
+            scroll.push(BackendCommand::ReadVisibleLines {
+                document_id: "active".into(),
+                start_line,
+            });
+        }
+        assert_eq!(scroll.len(), 1);
+        assert_eq!(
+            scroll.pop(),
+            Some(BackendCommand::ReadVisibleLines {
+                document_id: "active".into(),
+                start_line: 99,
+            })
+        );
     }
 }

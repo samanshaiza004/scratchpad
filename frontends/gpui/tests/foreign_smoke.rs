@@ -4,6 +4,20 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
+fn percentile_ns(samples: &[u128], percentile: usize) -> u64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let rank = (sorted.len() * percentile).div_ceil(100).saturating_sub(1);
+    sorted[rank] as u64
+}
+
+fn latency_summary(samples: &[u128]) -> serde_json::Value {
+    serde_json::json!({
+        "median_ns": percentile_ns(samples, 50),
+        "p95_ns": percentile_ns(samples, 95),
+    })
+}
+
 #[test]
 fn rust_calls_go_and_caliber_for_gate_three_slice() {
     let Some(backend_library) = std::env::var_os("SCRATCHPAD_GPUI_BACKEND_LIBRARY") else {
@@ -70,9 +84,14 @@ fn rust_calls_go_and_caliber_for_gate_three_slice() {
     assert!(visible.bytes.len() <= scratchpad_gpui::protocol::MAX_VISIBLE_BYTES);
     assert!(visible.display_text().contains("line 900"));
 
-    let visible_started = Instant::now();
+    const SAMPLE_COUNT: usize = 64;
+    let mut visible_total_samples = Vec::with_capacity(SAMPLE_COUNT);
+    let mut dispatch_samples = Vec::with_capacity(SAMPLE_COUNT);
+    let mut pump_samples = Vec::with_capacity(SAMPLE_COUNT);
+    let mut resource_copy_samples = Vec::with_capacity(SAMPLE_COUNT);
+    let mut slice_decode_samples = Vec::with_capacity(SAMPLE_COUNT);
     let mut visible_bytes = visible.bytes.len();
-    for iteration in 0..16 {
+    for iteration in 0..SAMPLE_COUNT {
         let request = CommandRequest::read_visible_lines(
             document_id.clone(),
             900 + iteration,
@@ -80,23 +99,36 @@ fn rust_calls_go_and_caliber_for_gate_three_slice() {
             scratchpad_gpui::protocol::MAX_VISIBLE_BYTES,
             state.application_revision,
         );
+        let total_started = Instant::now();
+        let dispatch_started = Instant::now();
         session
             .dispatch(&request)
             .expect("dispatch measured visible range");
+        dispatch_samples.push(dispatch_started.elapsed().as_nanos());
+        let pump_started = Instant::now();
         let response = session
             .pump()
             .expect("pump measured visible range")
             .expect("measured visible range response");
+        pump_samples.push(pump_started.elapsed().as_nanos());
         let descriptor = response.resource.as_ref().expect("measured resource");
-        let slice = session
-            .read_visible_slice(descriptor)
-            .expect("read measured visible range");
+        let resource_copy_started = Instant::now();
+        let bytes = session
+            .read_visible_resource_copy(descriptor)
+            .expect("map and copy measured visible range");
+        resource_copy_samples.push(resource_copy_started.elapsed().as_nanos());
+        let decode_started = Instant::now();
+        let slice = scratchpad_gpui::protocol::VisibleTextSlice::decode(&bytes, descriptor)
+            .expect("decode measured visible range");
+        slice_decode_samples.push(decode_started.elapsed().as_nanos());
         visible_bytes = slice.bytes.len();
+        visible_total_samples.push(total_started.elapsed().as_nanos());
     }
-    let visible_latency_ns = visible_started.elapsed().as_nanos() / 16;
 
+    let mut command_to_state_samples = Vec::with_capacity(SAMPLE_COUNT);
     let command_started = Instant::now();
-    for _ in 0..16 {
+    for _ in 0..SAMPLE_COUNT {
+        let sample_started = Instant::now();
         let request = CommandRequest::snapshot(state.application_revision);
         session
             .dispatch(&request)
@@ -107,17 +139,25 @@ fn rust_calls_go_and_caliber_for_gate_three_slice() {
             .expect("measured snapshot response");
         assert!(response.ok, "measured snapshot response: {response:?}");
         state = session.read_state().expect("read measured state");
+        command_to_state_samples.push(sample_started.elapsed().as_nanos());
     }
-    let command_to_state_ns = command_started.elapsed().as_nanos() / 16;
+    let command_to_state_ns = command_started.elapsed().as_nanos() / SAMPLE_COUNT as u128;
 
     if let Some(path) = std::env::var_os("SCRATCHPAD_GPUI_MEASURE_PATH") {
         let measurements = serde_json::json!({
             "command_to_state_ns": command_to_state_ns,
-            "visible_resource_to_cache_ns": visible_latency_ns,
+            "latency_ns": {
+                "command_to_state": latency_summary(&command_to_state_samples),
+                "visible_resource_roundtrip": latency_summary(&visible_total_samples),
+                "rust_encode_dispatch": latency_summary(&dispatch_samples),
+                "go_pump_and_response_decode": latency_summary(&pump_samples),
+                "caliber_map_copy_release": latency_summary(&resource_copy_samples),
+                "spvs_decode_cache": latency_summary(&slice_decode_samples),
+            },
             "visible_resource_payload_bytes": visible_bytes,
             "visible_resource_max_bytes": scratchpad_gpui::protocol::MAX_VISIBLE_BYTES,
-            "sample_count": 16,
-            "scope": "Rust test calling the real Go c-shared backend through Caliber; excludes window startup"
+            "sample_count": SAMPLE_COUNT,
+            "scope": "Rust test calling the real Go c-shared backend through Caliber; excludes window startup; pump stage includes Go decode/extraction/resource publish and response JSON"
         });
         fs::write(
             path,

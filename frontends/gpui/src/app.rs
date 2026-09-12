@@ -36,12 +36,12 @@ impl ShellModel {
         if let Some(state) = update.state {
             self.state = state;
             if self.visible.as_ref().is_some_and(|slice| {
-                slice.document_id != self.state.active
-                    || !self
-                        .state
-                        .documents
-                        .iter()
-                        .any(|doc| doc.id == slice.document_id)
+                !self.state.documents.iter().any(|doc| {
+                    doc.id == self.state.active
+                        && doc.id == slice.document_id
+                        && doc.editor_revision == slice.editor_revision
+                        && self.state.application_revision == slice.application_revision
+                })
             }) {
                 self.visible = None;
             }
@@ -53,7 +53,15 @@ impl ShellModel {
             self.apply_listing(listing);
         }
         if let Some(visible) = update.visible {
-            self.visible = Some(visible);
+            let is_current = visible.document_id == self.state.active
+                && visible.application_revision == self.state.application_revision
+                && self.state.documents.iter().any(|document| {
+                    document.id == visible.document_id
+                        && document.editor_revision == visible.editor_revision
+                });
+            if is_current {
+                self.visible = Some(visible);
+            }
         }
         self.status = StatusLine::from_outcome(update.outcome, self.state.revision);
     }
@@ -156,5 +164,64 @@ impl StatusLine {
             retryable: outcome.retryable,
             revision,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(application_revision: u64, editor_revision: u64) -> StateEnvelope {
+        StateEnvelope {
+            schema: 1,
+            revision: application_revision,
+            application_revision,
+            has_workspace: true,
+            workspace_root: "/tmp/workspace".to_string(),
+            active: "doc".to_string(),
+            documents: vec![StateDocument {
+                id: "doc".to_string(),
+                path: "/tmp/workspace/note.txt".to_string(),
+                status: "open".to_string(),
+                dirty: false,
+                editor_revision,
+                language: "text".to_string(),
+            }],
+        }
+    }
+
+    fn visible(application_revision: u64, editor_revision: u64) -> VisibleTextSlice {
+        VisibleTextSlice {
+            document_id: "doc".to_string(),
+            application_revision,
+            editor_revision,
+            start_line: 0,
+            end_line: 1,
+            truncated: false,
+            bytes: b"current\n".to_vec(),
+        }
+    }
+
+    fn update(state: Option<StateEnvelope>, visible: Option<VisibleTextSlice>) -> BackendUpdate {
+        BackendUpdate {
+            response: None,
+            state,
+            listing: None,
+            visible,
+            outcome: Outcome::ok(),
+        }
+    }
+
+    #[test]
+    fn rejects_visible_content_with_stale_editor_revision() {
+        let mut model = ShellModel::default();
+        model.apply_update(update(Some(state(3, 7)), Some(visible(3, 7))));
+        assert!(model.visible.is_some());
+
+        model.apply_update(update(None, Some(visible(3, 6))));
+        assert_eq!(model.visible.as_ref().unwrap().editor_revision, 7);
+
+        model.apply_update(update(Some(state(4, 8)), None));
+        assert!(model.visible.is_none());
     }
 }

@@ -1,6 +1,6 @@
 # GPUI second-frontend dogfood
 
-Status: experimental; Gate 1 through Gate 3 implementation lives on branch
+Status: experimental; Gate 1 through Gate 3.5 implementation lives on branch
 `gpui-dogfood`. This document records the current evidence, not a product
 claim.
 
@@ -50,6 +50,35 @@ the currently requested slice. Cursor, selection, viewport ownership,
 shaping, folds, projections, IME, edit semantics, and paint data remain local
 or deferred. Gate 4 is not included.
 
+## Gate 3.5 closeout
+
+The first Gate 3 measurement was dominated by calling `Buffer.Line` once per
+requested row. The existing piece buffer now exposes one narrow
+`BoundedLines` operation: it resolves the start/end byte boundaries and copies
+the requested contiguous range once, while preserving the same line/byte
+bounds and partial-line semantics. This is an editor-internal seam used by
+the adapter, not a document-RPC abstraction.
+
+The foreign measurement now records warm medians and p95 values over 64
+iterations. On the development Apple M1 host, using the release-built Go
+backend and Caliber library, the 9.6 KiB fixture measured 84.8 µs median and
+118.1 µs p95 for command → bounded visible resource → Rust cache. The Rust
+foreign test is run through Cargo's normal test target, so these timings are
+engineering measurements rather than an all-release performance claim.
+The direct Go extraction benchmark measured 37.7 µs, 9,472 bytes, and one
+allocation for the equivalent range. The remaining foreign stages were:
+Rust encode/dispatch 10.6 µs median, backend pump/response decode 71.4 µs,
+Caliber map/copy/release 1.0 µs, and `SPVS` decode/cache 1.3 µs. The backend
+pump bucket intentionally includes Go command decode, range extraction,
+resource publication, and response JSON; these measurements localize rather
+than pretend to isolate those internal substeps.
+
+The shell now accepts a visible slice only when its document id, application
+revision, and editor revision match the current active state. A stale slice is
+ignored instead of becoming displayable. The scheduler stress test submits
+100 rapid visible-range positions and verifies that one latest request remains
+queued; each foreign resource is released before shutdown.
+
 ## Acceptance evidence
 
 - Root Scratchpad tests pass without Caliber configuration.
@@ -78,18 +107,19 @@ artifacts. A development macOS build produced approximately:
 
 | item | observed value | note |
 | --- | ---: | --- |
-| Rust executable | 92 MiB | debug build, GPUI symbols included |
-| Go backend library | 24 MiB | debug c-shared build |
-| Caliber library | 0.8 MiB | debug cdylib |
+| Rust executable | 18.6 MiB | optimized release build |
+| Go backend library | 24.2 MiB | optimized/stripped c-shared build |
+| Caliber library | 0.4 MiB | optimized cdylib |
 | native runtime artifacts | 3 | executable + Go backend + Caliber |
-| command/state transport | 21.9 µs average | Rust test path, 16 samples; command → state read |
-| visible resource round trip | 10.9 ms average | Rust test path, 16 samples; command → Go line assembly → Caliber map/copy/release |
-| visible resource payload | 9,643 bytes | 256-line request from the 2,000-line fixture; 64 KiB maximum |
+| command/state transport | 25.8 µs median / 27.9 µs p95 | Rust test path, 64 warm samples; command → state read |
+| visible resource round trip | 84.8 µs median / 118.1 µs p95 | Rust test path, 64 warm samples; command → bounded resource → Rust cache |
+| visible resource payload | 9,691 bytes | 256-line request from the 2,000-line fixture; 64 KiB maximum |
+| direct bounded extraction | 37.7 µs, 9,472 B, 1 alloc | Go editor benchmark for the equivalent contiguous range |
 | settled idle RSS | not yet sampled | use the native platform sampler |
 | cold startup | 30.0 s bounded attempt, timed out locally | native window did not complete in the managed macOS session |
 
 The transport adds JSON encode/decode and one state copy into the Rust shell.
-Gate 3 adds one bounded line assembly in Go, one Caliber immutable-resource
+Gate 3.5 keeps one bounded line assembly in Go, one Caliber immutable-resource
 copy, one Rust map copy, and one cached Rust byte vector; the complete
 document is never serialized. The most important costs so far are the Go
 runtime baseline, three-artifact packaging, dynamic-loader diagnostics,
@@ -106,7 +136,7 @@ and workflow text. Gate 3's hop accounting is:
 | hop | copy/allocation behavior |
 | --- | --- |
 | Rust command → Caliber | JSON command buffer allocation; Caliber copies the bounded command into its queue |
-| Go pump → piece buffer | each requested `Buffer.Line` is a bounded line copy; Go grows one bounded assembly buffer |
+| Go pump → piece buffer | `BoundedLines` resolves two indexed boundaries and copies one bounded contiguous range |
 | Go → Caliber resource | one 48-byte-header-plus-payload allocation and one Caliber immutable-resource copy |
 | Caliber → Rust | Caliber map lease; Rust allocates one bounded `Vec<u8>` and copies the resource before releasing both leases |
 | Rust cache → GPUI text | the shell retains the bounded byte vector; final lossy display conversion allocates a temporary render string |
@@ -114,11 +144,12 @@ and workflow text. Gate 3's hop accounting is:
 The state path has its existing bounded JSON response/state copies. No hop
 allocates in proportion to the document size beyond the requested slice.
 
-`measure` runs the foreign test path and writes its command-to-state and
-visible-resource timings into `frontends/gpui/build/measurements.json`, then
+`measure` runs the foreign test path and writes its command-to-state,
+warm-median/p95 stage timings, and visible-resource measurements into
+`frontends/gpui/build/measurements.json`, then
 attempts the native launch/shutdown smoke. It also records the byte size of
 each runtime artifact. Settled RSS still needs a native sampler. The direct
-Shirei path remains simpler and has fewer copies and artifacts; Gate 3 only
+Shirei path remains simpler and has fewer copies and artifacts; Gate 3.5 only
 tests whether the bounded data seam earns those costs.
 
 ## What stayed local
@@ -133,8 +164,9 @@ viewport, IME, shaping, and layout.
 
 ## Current verdict
 
-**continue** — only as a narrow experiment. Gate 3 demonstrates a bounded
-immutable visible-line resource over the real Go → Caliber → Rust path without
-disturbing the scalable editor. This is evidence for a data seam, not ABI
+**continue** — only as a narrow experiment. Gate 3.5 demonstrates that a
+bounded immutable visible-line resource over the real Go → Caliber → Rust path
+can use the existing piece buffer efficiently without disturbing the scalable
+editor. This is evidence for a data seam, not ABI
 stabilization, a framework, or a claim that Caliber is cheaper than direct
 Shirei integration. Gate 4 remains deferred until this cost record is reviewed.

@@ -1,5 +1,5 @@
 status = "experimental"
-stage = "gate-3"
+stage = "gate-3.5"
 caliber_commit = "e350c50"
 caliber_abi_version = 1
 request_id_type = "u64"

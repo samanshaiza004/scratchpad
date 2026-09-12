@@ -21,6 +21,7 @@ const expectedCaliberCommit = "e350c50"
 type artifactManifest struct {
 	CaliberCommit string   `json:"caliber_commit"`
 	ABIVersion    uint32   `json:"abi_version"`
+	Profile       string   `json:"profile"`
 	Artifacts     []string `json:"artifacts"`
 }
 
@@ -41,6 +42,7 @@ func run(args []string) error {
 	caliberRoot := flags.String("caliber-root", os.Getenv("CALIBER_ROOT"), "Caliber checkout")
 	allowRevision := flags.Bool("allow-caliber-revision", false, "explicitly allow a non-pinned Caliber checkout")
 	cgocheck2 := flags.Bool("cgocheck2", command == "test", "enable GOEXPERIMENT=cgocheck2")
+	releaseBuild := flags.Bool("release", false, "build optimized native artifacts")
 	outDir := flags.String("out", "frontends/gpui/build", "native artifact directory")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -49,7 +51,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	env, caliberLibrary, err := prepareCaliber(root, *caliberRoot, *allowRevision, *cgocheck2)
+	env, caliberLibrary, err := prepareCaliber(root, *caliberRoot, *allowRevision, *cgocheck2, *releaseBuild)
 	if err != nil {
 		return err
 	}
@@ -64,24 +66,24 @@ func run(args []string) error {
 
 	switch command {
 	case "build":
-		_, err = build(root, out, env, caliberLibrary)
+		_, err = build(root, out, env, caliberLibrary, *releaseBuild)
 	case "test":
-		err = test(root, env, caliberLibrary)
+		err = test(root, env, caliberLibrary, *releaseBuild)
 	case "run":
 		var exe string
-		exe, err = build(root, out, env, caliberLibrary)
+		exe, err = build(root, out, env, caliberLibrary, *releaseBuild)
 		if err == nil {
 			err = launch(exe, env, false, "")
 		}
 	case "smoke":
 		var exe string
-		exe, err = build(root, out, env, caliberLibrary)
+		exe, err = build(root, out, env, caliberLibrary, *releaseBuild)
 		if err == nil {
 			err = launch(exe, env, true, root)
 		}
 	case "measure":
 		var exe string
-		exe, err = build(root, out, env, caliberLibrary)
+		exe, err = build(root, out, env, caliberLibrary, *releaseBuild)
 		if err == nil {
 			err = measure(root, out, exe, env)
 		}
@@ -99,7 +101,7 @@ func repoRoot() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2 bool) ([]string, string, error) {
+func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2, releaseBuild bool) ([]string, string, error) {
 	if caliberRoot == "" {
 		return nil, "", errors.New("CALIBER_ROOT is required or pass --caliber-root")
 	}
@@ -115,10 +117,14 @@ func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2 bool) ([]
 	if !allowRevision && !strings.HasPrefix(commit, expectedCaliberCommit) {
 		return nil, "", fmt.Errorf("Caliber checkout is at %s; expected %s (use --allow-caliber-revision to override)", commit, expectedCaliberCommit)
 	}
-	if err := runCommand(caliberRoot, nil, "cargo", "build", "-p", "caliber-ffi", "--lib"); err != nil {
+	cargoArgs := []string{"build", "-p", "caliber-ffi", "--lib"}
+	if releaseBuild {
+		cargoArgs = append(cargoArgs, "--release")
+	}
+	if err := runCommand(caliberRoot, nil, "cargo", cargoArgs...); err != nil {
 		return nil, "", err
 	}
-	library := caliberLibraryFromRoot(caliberRoot)
+	library := caliberLibraryFromRoot(caliberRoot, releaseBuild)
 	if _, err := os.Stat(library); err != nil {
 		return nil, "", fmt.Errorf("Caliber cdylib was not found: %s: %w", library, err)
 	}
@@ -134,13 +140,18 @@ func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2 bool) ([]
 	return env, library, nil
 }
 
-func build(root, out string, env []string, caliberLibrary string) (string, error) {
+func build(root, out string, env []string, caliberLibrary string, releaseBuild bool) (string, error) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return "", err
 	}
 	backend := filepath.Join(out, backendLibraryName())
 	backendDir := filepath.Join(root, "frontends", "gpui", "backend")
-	if err := runCommand(backendDir, env, "go", "build", "-buildmode=c-shared", "-o", backend, "./cshared"); err != nil {
+	goArgs := []string{"build", "-buildmode=c-shared", "-o", backend}
+	if releaseBuild {
+		goArgs = append(goArgs, "-ldflags", "-s -w")
+	}
+	goArgs = append(goArgs, "./cshared")
+	if err := runCommand(backendDir, env, "go", goArgs...); err != nil {
 		return "", err
 	}
 	caliberCopy := filepath.Join(out, filepath.Base(caliberLibrary))
@@ -154,16 +165,25 @@ func build(root, out string, env []string, caliberLibrary string) (string, error
 	}
 	targetDir := filepath.Join(out, "cargo-target")
 	manifest := filepath.Join(root, "frontends", "gpui", "Cargo.toml")
-	if err := runCommand(root, env, "cargo", "build", "--manifest-path", manifest, "--target-dir", targetDir); err != nil {
+	cargoArgs := []string{"build", "--manifest-path", manifest, "--target-dir", targetDir}
+	if releaseBuild {
+		cargoArgs = append(cargoArgs, "--release")
+	}
+	if err := runCommand(root, env, "cargo", cargoArgs...); err != nil {
 		return "", err
 	}
+	profile := "debug"
+	if releaseBuild {
+		profile = "release"
+	}
 	exe := filepath.Join(out, "scratchpad-gpui"+exeSuffix())
-	if err := copyFile(filepath.Join(targetDir, "debug", "scratchpad-gpui"+exeSuffix()), exe); err != nil {
+	if err := copyFile(filepath.Join(targetDir, profile, "scratchpad-gpui"+exeSuffix()), exe); err != nil {
 		return "", err
 	}
 	manifestData := artifactManifest{
 		CaliberCommit: expectedCaliberCommit,
 		ABIVersion:    1,
+		Profile:       profile,
 		Artifacts:     []string{filepath.Base(exe), filepath.Base(backend), filepath.Base(caliberCopy)},
 	}
 	data, err := json.MarshalIndent(manifestData, "", "  ")
@@ -184,7 +204,7 @@ func relocateDarwinCaliber(source, copyPath, backend string) error {
 	return runCommandWithEnv(".", nil, "install_name_tool", "-change", installName, "@rpath/libcaliber_ffi.dylib", backend)
 }
 
-func test(root string, env []string, caliberLibrary string) error {
+func test(root string, env []string, caliberLibrary string, releaseBuild bool) error {
 	if err := checkGofmt(root, "cmd/gpui-dev/main.go"); err != nil {
 		return err
 	}
@@ -202,7 +222,7 @@ func test(root string, env []string, caliberLibrary string) error {
 	if err != nil {
 		return err
 	}
-	exe, err := build(root, out, env, caliberLibrary)
+	exe, err := build(root, out, env, caliberLibrary, releaseBuild)
 	if err != nil {
 		return err
 	}
@@ -396,14 +416,18 @@ func backendLibraryName() string {
 	}
 }
 
-func caliberLibraryFromRoot(root string) string {
+func caliberLibraryFromRoot(root string, releaseBuild bool) string {
 	name := "libcaliber_ffi.so"
 	if runtime.GOOS == "darwin" {
 		name = "libcaliber_ffi.dylib"
 	} else if runtime.GOOS == "windows" {
 		name = "caliber_ffi.dll"
 	}
-	return filepath.Join(root, "target", "debug", name)
+	profile := "debug"
+	if releaseBuild {
+		profile = "release"
+	}
+	return filepath.Join(root, "target", profile, name)
 }
 
 func exeSuffix() string {

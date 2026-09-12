@@ -311,48 +311,15 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		return Response{}, fmt.Errorf("start_line %d is outside the document's %d lines", request.StartLine, lineCount)
 	}
 
-	lines := make([]byte, 0, min(int(request.MaxBytes), MaxVisibleBytes))
-	endLine := request.StartLine
-	truncated := false
-	for offset := uint64(0); offset < request.MaxLines; offset++ {
-		lineNumber := request.StartLine + offset
-		if lineNumber >= uint64(lineCount) {
-			break
-		}
-		line, ok := doc.Editor.Buffer.Line(int(lineNumber))
-		if !ok {
-			return Response{}, fmt.Errorf("line %d is unavailable", lineNumber)
-		}
-		remaining := int(request.MaxBytes) - len(lines)
-		if remaining == 0 {
-			truncated = true
-			break
-		}
-
-		lineBytes := len(line)
-		if lineNumber+1 < uint64(lineCount) {
-			lineBytes++ // Reconstitute the LF omitted by Buffer.Line.
-		}
-		if lineBytes > remaining {
-			copyBytes := len(line)
-			if copyBytes > remaining {
-				copyBytes = remaining
-			}
-			lines = append(lines, line[:copyBytes]...)
-			endLine = lineNumber + 1
-			truncated = true
-			break
-		}
-		lines = append(lines, line...)
-		if lineNumber+1 < uint64(lineCount) {
-			lines = append(lines, '\n')
-		}
-		endLine = lineNumber + 1
+	lines, endLine, truncated, err := doc.Editor.Buffer.BoundedLines(
+		int(request.StartLine),
+		int(request.MaxLines),
+		int(request.MaxBytes),
+	)
+	if err != nil {
+		return Response{}, err
 	}
-	if endLine < uint64(lineCount) {
-		truncated = true
-	}
-	payload, err := encodeVisibleSlice(r.applicationRevision, doc.Revision(), request.StartLine, endLine, truncated, lines)
+	payload, err := encodeVisibleSlice(r.applicationRevision, doc.Revision(), request.StartLine, uint64(endLine), truncated, lines)
 	if err != nil {
 		return Response{}, err
 	}
@@ -369,7 +336,7 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		ApplicationRev: r.applicationRevision,
 		EditorRevision: doc.Revision(),
 		StartLine:      request.StartLine,
-		EndLine:        endLine,
+		EndLine:        uint64(endLine),
 		ByteLen:        uint64(len(lines)),
 		Truncated:      truncated,
 	}

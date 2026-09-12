@@ -1,4 +1,4 @@
-# Scratchpad GPUI Gates 1–3
+# Scratchpad GPUI Gates 1–3.5
 
 This is an experimental second frontend for Scratchpad. It asks one concrete
 question:
@@ -82,6 +82,7 @@ go run ./cmd/gpui-dev test --caliber-root /path/to/caliber
 go run ./cmd/gpui-dev run --caliber-root /path/to/caliber
 go run ./cmd/gpui-dev smoke --caliber-root /path/to/caliber
 go run ./cmd/gpui-dev measure --caliber-root /path/to/caliber
+go run ./cmd/gpui-dev measure --release --caliber-root /path/to/caliber
 ```
 
 `test` keeps the root Go suite independent, runs the nested cgo module with

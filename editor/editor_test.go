@@ -48,6 +48,47 @@ func TestBufferLineAtMatchesLineRanges(t *testing.T) {
 	}
 }
 
+func TestBufferBoundedLinesCopiesOneRange(t *testing.T) {
+	b := NewBuffer([]byte("zero\none\n😀\ntail"))
+
+	data, endLine, truncated, err := b.BoundedLines(1, 2, 100)
+	if err != nil {
+		t.Fatalf("BoundedLines = error: %v", err)
+	}
+	if string(data) != "one\n😀\n" || endLine != 3 || !truncated {
+		t.Fatalf("BoundedLines = %q, end=%d, truncated=%v", data, endLine, truncated)
+	}
+
+	limited, endLine, truncated, err := b.BoundedLines(0, 10, 8)
+	if err != nil {
+		t.Fatalf("byte-limited BoundedLines = error: %v", err)
+	}
+	if string(limited) != "zero\none" || endLine != 2 || !truncated {
+		t.Fatalf("byte-limited BoundedLines = %q, end=%d, truncated=%v", limited, endLine, truncated)
+	}
+
+	if _, _, _, err := b.BoundedLines(4, 1, 10); err == nil {
+		t.Fatal("out-of-range BoundedLines succeeded")
+	}
+	if _, _, _, err := b.BoundedLines(0, 0, 10); err == nil {
+		t.Fatal("zero-line BoundedLines succeeded")
+	}
+}
+
+func BenchmarkBufferBoundedLines(b *testing.B) {
+	line := []byte("line: immutable visible resource\n")
+	source := bytes.Repeat(line, 2_000)
+	buffer := NewBuffer(source)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data, _, _, err := buffer.BoundedLines(900, 256, 64*1024)
+		if err != nil || len(data) == 0 {
+			b.Fatalf("bounded line extraction failed: len=%d err=%v", len(data), err)
+		}
+	}
+}
+
 func TestBufferSnapshotSurvivesLaterEditsAndAddedStoreGrowth(t *testing.T) {
 	b := NewBuffer([]byte("alpha\nbeta\n"))
 	if err := b.Insert(b.ByteLen(), []byte("first")); err != nil {
