@@ -212,6 +212,7 @@ fn run_application() {
         };
         let (scheduler, updates, backend_task) = BackendScheduler::start_on_gpui(cx, config);
         backend_task.detach();
+        let _ = scheduler.submit(BackendCommand::ListDirectory(None));
         let mut view_entity = None;
         let window = cx
             .open_window(Default::default(), |_, cx| {
