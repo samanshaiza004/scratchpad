@@ -42,6 +42,14 @@ typedef struct CaliberStatePublication {
 	void *lease;
 } CaliberStatePublication;
 
+typedef struct CaliberResourceView {
+	uint64_t resource_id;
+	uint64_t generation;
+	const uint8_t *data;
+	size_t len;
+	void *lease;
+} CaliberResourceView;
+
 typedef struct CaliberApiV1 {
 	uint32_t abi_version;
 	uint32_t struct_size;
@@ -53,8 +61,8 @@ typedef struct CaliberApiV1 {
 	CaliberStatus (*context_publish_state)(const CaliberContext *, uint32_t, const uint8_t *, size_t, uint64_t *);
 	CaliberStatus (*context_read_latest_state)(const CaliberContext *, CaliberStatePublication *);
 	void (*state_publication_release)(CaliberStatePublication *);
-	CaliberStatus (*context_map_resource)(const CaliberContext *, uint64_t, uint64_t, void *);
-	void (*resource_release)(void *);
+	CaliberStatus (*context_map_resource)(const CaliberContext *, uint64_t, uint64_t, CaliberResourceView *);
+	void (*resource_release)(CaliberResourceView *);
 	CaliberStatus (*context_publish_resource)(const CaliberContext *, const uint8_t *, size_t, uint64_t *, uint64_t *);
 	CaliberStatus (*context_release_resource)(const CaliberContext *, uint64_t, uint64_t);
 	CaliberStatus (*context_publish_telemetry)(const CaliberContext *, const size_t *, size_t);
@@ -120,6 +128,33 @@ static void scratchpad_state_publication_release(const CaliberApiV1 *api, Calibe
 	if (api != NULL && api->state_publication_release != NULL) {
 		api->state_publication_release(publication);
 	}
+}
+
+static CaliberStatus scratchpad_context_map_resource(const CaliberApiV1 *api, const CaliberContext *ctx, uint64_t resource_id, uint64_t generation, CaliberResourceView *out) {
+	if (api == NULL || api->context_map_resource == NULL) {
+		return CaliberStatusInternal;
+	}
+	return api->context_map_resource(ctx, resource_id, generation, out);
+}
+
+static void scratchpad_resource_release(const CaliberApiV1 *api, CaliberResourceView *view) {
+	if (api != NULL && api->resource_release != NULL) {
+		api->resource_release(view);
+	}
+}
+
+static CaliberStatus scratchpad_context_publish_resource(const CaliberApiV1 *api, const CaliberContext *ctx, const uint8_t *data, size_t len, uint64_t *resource_id, uint64_t *generation) {
+	if (api == NULL || api->context_publish_resource == NULL) {
+		return CaliberStatusInternal;
+	}
+	return api->context_publish_resource(ctx, data, len, resource_id, generation);
+}
+
+static CaliberStatus scratchpad_context_release_resource(const CaliberApiV1 *api, const CaliberContext *ctx, uint64_t resource_id, uint64_t generation) {
+	if (api == NULL || api->context_release_resource == NULL) {
+		return CaliberStatusInternal;
+	}
+	return api->context_release_resource(ctx, resource_id, generation);
 }
 */
 import "C"
@@ -247,6 +282,49 @@ func (c *caliberRuntime) publishState(payload []byte) (uint64, error) {
 		return 0, fmt.Errorf("Caliber publish state: %s", caliberStatusString(status))
 	}
 	return uint64(revision), nil
+}
+
+func (c *caliberRuntime) publishResource(payload []byte) (uint64, uint64, error) {
+	var resourceID C.uint64_t
+	var generation C.uint64_t
+	var ptr *C.uint8_t
+	if len(payload) > 0 {
+		ptr = (*C.uint8_t)(unsafe.Pointer(&payload[0]))
+	}
+	status := C.scratchpad_context_publish_resource(c.api, c.ctx, ptr, C.size_t(len(payload)), &resourceID, &generation)
+	runtime.KeepAlive(payload)
+	if status != C.CaliberStatusOk {
+		return 0, 0, fmt.Errorf("Caliber publish resource: %s", caliberStatusString(status))
+	}
+	return uint64(resourceID), uint64(generation), nil
+}
+
+func (c *caliberRuntime) readResourceCopy(resourceID, generation uint64) ([]byte, error) {
+	var view C.CaliberResourceView
+	status := C.scratchpad_context_map_resource(c.api, c.ctx, C.uint64_t(resourceID), C.uint64_t(generation), &view)
+	if status != C.CaliberStatusOk {
+		return nil, fmt.Errorf("Caliber map resource: %s", caliberStatusString(status))
+	}
+	defer C.scratchpad_resource_release(c.api, &view)
+	if uint64(view.len) > uint64(MaxVisibleBytes+visibleSliceHeaderBytes) {
+		return nil, fmt.Errorf("Caliber resource exceeds %d byte limit", MaxVisibleBytes+visibleSliceHeaderBytes)
+	}
+	if view.len > 0 && view.data == nil {
+		return nil, errors.New("Caliber resource returned a null data pointer")
+	}
+	data := make([]byte, int(view.len))
+	if view.len > 0 {
+		copy(data, unsafe.Slice((*byte)(unsafe.Pointer(view.data)), int(view.len)))
+	}
+	return data, nil
+}
+
+func (c *caliberRuntime) releaseResourceOwner(resourceID, generation uint64) error {
+	status := C.scratchpad_context_release_resource(c.api, c.ctx, C.uint64_t(resourceID), C.uint64_t(generation))
+	if status != C.CaliberStatusOk {
+		return fmt.Errorf("Caliber release resource: %s", caliberStatusString(status))
+	}
+	return nil
 }
 
 func (c *caliberRuntime) readLatestStateCopy() ([]byte, uint64, uint32, error) {

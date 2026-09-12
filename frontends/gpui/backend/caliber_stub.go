@@ -47,6 +47,18 @@ func (c *caliberRuntime) publishState([]byte) (uint64, error) {
 	return 0, errors.New("cgo is required for Caliber state publish")
 }
 
+func (c *caliberRuntime) publishResource([]byte) (uint64, uint64, error) {
+	return 0, 0, errors.New("cgo is required for Caliber resource publish")
+}
+
+func (c *caliberRuntime) readResourceCopy(uint64, uint64) ([]byte, error) {
+	return nil, errors.New("cgo is required for Caliber resource read")
+}
+
+func (c *caliberRuntime) releaseResourceOwner(uint64, uint64) error {
+	return errors.New("cgo is required for Caliber resource release")
+}
+
 func (c *caliberRuntime) readLatestStateCopy() ([]byte, uint64, uint32, error) {
 	return nil, 0, 0, errors.New("cgo is required for Caliber state read")
 }

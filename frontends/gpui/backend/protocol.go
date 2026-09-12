@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,11 +13,15 @@ import (
 )
 
 const (
-	ProtocolVersion  uint32 = 1
-	StateSchemaV1    uint32 = 1
-	MaxInputBytes           = 1 << 20
-	DefaultListLimit        = 200
-	MaxListLimit            = 1000
+	ProtocolVersion         uint32 = 1
+	StateSchemaV1           uint32 = 1
+	MaxInputBytes                  = 1 << 20
+	DefaultListLimit               = 200
+	MaxListLimit                   = 1000
+	MaxVisibleLines                = 256
+	MaxVisibleBytes                = 64 * 1024
+	VisibleSliceSchemaV1           = 1
+	visibleSliceHeaderBytes        = 48
 )
 
 type StartRequest struct {
@@ -40,18 +45,43 @@ type CommandRequest struct {
 	Discard         bool   `json:"discard,omitempty"`
 	RelativePath    string `json:"relative_path,omitempty"`
 	Limit           int    `json:"limit,omitempty"`
+	StartLine       uint64 `json:"start_line,omitempty"`
+	MaxLines        uint64 `json:"max_lines,omitempty"`
+	MaxBytes        uint64 `json:"max_bytes,omitempty"`
 }
 
 type Response struct {
-	Version          uint32            `json:"version"`
-	RequestID        uint64            `json:"request_id,omitempty"`
-	Lifecycle        string            `json:"lifecycle"`
-	OK               bool              `json:"ok"`
-	Outcome          Outcome           `json:"outcome"`
-	Revision         uint64            `json:"revision,omitempty"`
-	BasedOnRevision  uint64            `json:"based_on_revision,omitempty"`
-	State            *StateEnvelope    `json:"state,omitempty"`
-	DirectoryListing *DirectoryListing `json:"directory_listing,omitempty"`
+	Version          uint32              `json:"version"`
+	RequestID        uint64              `json:"request_id,omitempty"`
+	Lifecycle        string              `json:"lifecycle"`
+	OK               bool                `json:"ok"`
+	Outcome          Outcome             `json:"outcome"`
+	Revision         uint64              `json:"revision,omitempty"`
+	BasedOnRevision  uint64              `json:"based_on_revision,omitempty"`
+	State            *StateEnvelope      `json:"state,omitempty"`
+	DirectoryListing *DirectoryListing   `json:"directory_listing,omitempty"`
+	Resource         *ResourceDescriptor `json:"resource,omitempty"`
+	ResourceID       uint64              `json:"resource_id,omitempty"`
+	Generation       uint64              `json:"generation,omitempty"`
+	DocumentID       string              `json:"document_id,omitempty"`
+	ApplicationRev   uint64              `json:"application_revision,omitempty"`
+	EditorRevision   uint64              `json:"editor_revision,omitempty"`
+	StartLine        uint64              `json:"start_line,omitempty"`
+	EndLine          uint64              `json:"end_line,omitempty"`
+	ByteLen          uint64              `json:"byte_len,omitempty"`
+	Truncated        bool                `json:"truncated,omitempty"`
+}
+
+type ResourceDescriptor struct {
+	ResourceID     uint64 `json:"resource_id"`
+	Generation     uint64 `json:"generation"`
+	DocumentID     string `json:"document_id"`
+	ApplicationRev uint64 `json:"application_revision"`
+	EditorRevision uint64 `json:"editor_revision"`
+	StartLine      uint64 `json:"start_line"`
+	EndLine        uint64 `json:"end_line"`
+	ByteLen        uint64 `json:"byte_len"`
+	Truncated      bool   `json:"truncated"`
 }
 
 type Outcome struct {
@@ -149,6 +179,19 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
 		}
+	case "read_visible_lines":
+		if request.DocumentID == "" {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id is required", false), false
+		}
+		if !utf8.ValidString(request.DocumentID) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
+		}
+		if request.MaxLines == 0 || request.MaxLines > MaxVisibleLines {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_visible_range", fmt.Sprintf("max_lines must be between 1 and %d", MaxVisibleLines), false), false
+		}
+		if request.MaxBytes == 0 || request.MaxBytes > MaxVisibleBytes {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_visible_range", fmt.Sprintf("max_bytes must be between 1 and %d", MaxVisibleBytes), false), false
+		}
 	case "list_directory":
 		if err := validateOptionalPath(request.RelativePath, "relative_path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
@@ -160,6 +203,32 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		return request, errorResponse(request.RequestID, lifecycle, "unknown_command", fmt.Sprintf("unknown command %q", request.Command), false), false
 	}
 	return request, Response{}, true
+}
+
+// encodeVisibleSlice is an application-owned binary resource format. It is
+// deliberately not part of Caliber: Caliber only owns the immutable bytes and
+// their lease. Little-endian fields make the format explicit for the Rust
+// foreign client while the raw payload preserves documents that are not valid
+// UTF-8.
+func encodeVisibleSlice(applicationRevision, editorRevision, startLine, endLine uint64, truncated bool, lines []byte) ([]byte, error) {
+	if len(lines) > MaxVisibleBytes {
+		return nil, fmt.Errorf("visible slice exceeds %d byte limit", MaxVisibleBytes)
+	}
+	payload := make([]byte, visibleSliceHeaderBytes+len(lines))
+	copy(payload[:4], []byte("SPVS"))
+	binary.LittleEndian.PutUint32(payload[4:8], VisibleSliceSchemaV1)
+	binary.LittleEndian.PutUint64(payload[8:16], applicationRevision)
+	binary.LittleEndian.PutUint64(payload[16:24], editorRevision)
+	binary.LittleEndian.PutUint64(payload[24:32], startLine)
+	binary.LittleEndian.PutUint64(payload[32:40], endLine)
+	var flags uint32
+	if truncated {
+		flags = 1
+	}
+	binary.LittleEndian.PutUint32(payload[40:44], flags)
+	binary.LittleEndian.PutUint32(payload[44:48], uint32(len(lines)))
+	copy(payload[visibleSliceHeaderBytes:], lines)
+	return payload, nil
 }
 
 func validateWireInput(input []byte, lifecycle string) (Response, bool) {

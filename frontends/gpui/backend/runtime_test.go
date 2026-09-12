@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -115,6 +116,34 @@ func TestLeaseAccountingRejectsCallAfterRelease(t *testing.T) {
 	}
 }
 
+func TestResourceLeaseAccountingRejectsShutdownAndDoubleRelease(t *testing.T) {
+	runtime := newStartedRuntime(t, "")
+	resourceID, generation, err := runtime.caliber.publishResource([]byte("resource"))
+	if err != nil {
+		t.Fatalf("publish resource: %v", err)
+	}
+	if err := runtime.NoteResourceLeaseAcquired(); err != nil {
+		t.Fatalf("acquire resource lease: %v", err)
+	}
+	refused := decodeResponse(t, runtime.Stop(mustJSON(t, StopRequest{
+		Version:   ProtocolVersion,
+		RequestID: 17,
+	})))
+	if refused.OK || refused.Outcome.Code != "outstanding_resource_leases" || refused.Lifecycle != lifecycleRunning {
+		t.Fatalf("stop with resource lease response = %+v", refused)
+	}
+	if err := runtime.NoteResourceLeaseReleased(); err != nil {
+		t.Fatalf("release resource lease: %v", err)
+	}
+	if err := runtime.NoteResourceLeaseReleased(); err == nil {
+		t.Fatal("double resource lease release was accepted")
+	}
+	if err := runtime.caliber.releaseResourceOwner(resourceID, generation); err != nil {
+		t.Fatalf("release resource owner: %v", err)
+	}
+	stopRuntime(t, runtime)
+}
+
 func TestRequestIDsAreNumericAndCorrelated(t *testing.T) {
 	runtime := newStartedRuntime(t, "")
 	defer stopRuntime(t, runtime)
@@ -156,6 +185,104 @@ func TestMalformedOversizedAndPathValidation(t *testing.T) {
 	badPath := decodeResponse(t, runtime.Pump())
 	if badPath.OK || badPath.Outcome.Code != "invalid_path" {
 		t.Fatalf("bad path response = %+v", badPath)
+	}
+}
+
+func TestVisibleLinesAreBoundedImmutableResource(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "large.txt")
+	content := strings.Repeat(strings.Repeat("x", 400)+"\n", 400)
+	writeFile(t, path, content)
+
+	runtime := newStartedRuntime(t, workspace)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       18,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path",
+		Path:            path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	state = latestStateForTest(t, runtime)
+	if !opened.OK || len(state.Documents) != 1 {
+		t.Fatalf("open response = %+v, state = %+v", opened, state)
+	}
+	documentID := state.Documents[0].ID
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       19,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "read_visible_lines",
+		DocumentID:      documentID,
+		StartLine:       10,
+		MaxLines:        MaxVisibleLines,
+		MaxBytes:        1024,
+	}))
+	response := decodeResponse(t, runtime.Pump())
+	if !response.OK || response.ResourceID == 0 || response.Generation == 0 {
+		t.Fatalf("visible resource response = %+v", response)
+	}
+	if response.DocumentID != documentID || response.ApplicationRev != state.ApplicationRev || response.EditorRevision != state.Documents[0].EditorRevision {
+		t.Fatalf("visible resource identity = %+v, state = %+v", response, state)
+	}
+	if response.ByteLen == 0 || response.ByteLen > MaxVisibleBytes || !response.Truncated {
+		t.Fatalf("visible resource bounds = %+v", response)
+	}
+	resource, err := runtime.caliber.readResourceCopy(response.ResourceID, response.Generation)
+	if err != nil {
+		t.Fatalf("map visible resource: %v", err)
+	}
+	if len(resource) != visibleSliceHeaderBytes+int(response.ByteLen) {
+		t.Fatalf("mapped resource length = %d, descriptor = %d", len(resource), response.ByteLen)
+	}
+	if string(resource[:4]) != "SPVS" || binary.LittleEndian.Uint32(resource[4:8]) != VisibleSliceSchemaV1 {
+		t.Fatalf("visible resource header = %q schema=%d", resource[:4], binary.LittleEndian.Uint32(resource[4:8]))
+	}
+	if got := binary.LittleEndian.Uint64(resource[8:16]); got != response.ApplicationRev {
+		t.Fatalf("resource application revision = %d, response = %d", got, response.ApplicationRev)
+	}
+	if got := binary.LittleEndian.Uint64(resource[16:24]); got != response.EditorRevision {
+		t.Fatalf("resource editor revision = %d, response = %d", got, response.EditorRevision)
+	}
+	if got := binary.LittleEndian.Uint64(resource[24:32]); got != response.StartLine || binary.LittleEndian.Uint64(resource[32:40]) != response.EndLine {
+		t.Fatalf("resource line range does not match response: start=%d end=%d response=%+v", got, binary.LittleEndian.Uint64(resource[32:40]), response)
+	}
+	if got := binary.LittleEndian.Uint32(resource[44:48]); got != uint32(response.ByteLen) {
+		t.Fatalf("resource payload length = %d, response = %d", got, response.ByteLen)
+	}
+	if binary.LittleEndian.Uint32(resource[40:44])&1 == 0 {
+		t.Fatal("bounded large-document resource was not marked truncated")
+	}
+	if len(resource) >= len(content) {
+		t.Fatalf("visible resource unexpectedly contains whole document: %d >= %d", len(resource), len(content))
+	}
+	if !bytes.Contains(resource[visibleSliceHeaderBytes:], []byte("xxxxxxxx")) {
+		t.Fatalf("visible resource did not contain line bytes")
+	}
+	if err := runtime.caliber.releaseResourceOwner(response.ResourceID, response.Generation); err != nil {
+		t.Fatalf("release visible resource owner: %v", err)
+	}
+	if _, err := runtime.caliber.readResourceCopy(response.ResourceID, response.Generation); err == nil {
+		t.Fatal("released visible resource remained mappable")
+	}
+}
+
+func TestVisibleLineRequestsRejectInvalidBounds(t *testing.T) {
+	runtime := newStartedRuntime(t, "")
+	defer stopRuntime(t, runtime)
+	for requestID, request := range map[uint64]CommandRequest{
+		20: {Version: ProtocolVersion, RequestID: 20, Command: "read_visible_lines", DocumentID: "doc", MaxLines: MaxVisibleLines + 1, MaxBytes: 1},
+		21: {Version: ProtocolVersion, RequestID: 21, Command: "read_visible_lines", DocumentID: "doc", MaxLines: 1, MaxBytes: MaxVisibleBytes + 1},
+		22: {Version: ProtocolVersion, RequestID: 22, Command: "read_visible_lines", DocumentID: "doc", MaxLines: 0, MaxBytes: 1},
+	} {
+		request.RequestID = requestID
+		dispatchForTest(t, runtime, mustJSON(t, request))
+		response := decodeResponse(t, runtime.Pump())
+		if response.OK || response.Outcome.Code != "invalid_visible_range" {
+			t.Fatalf("invalid visible request %+v response = %+v", request, response)
+		}
 	}
 }
 

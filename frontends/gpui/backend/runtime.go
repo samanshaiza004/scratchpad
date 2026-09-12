@@ -25,6 +25,7 @@ type Runtime struct {
 	applicationRevision uint64
 	state               StateEnvelope
 	stateLeases         int
+	resourceLeases      int
 }
 
 func NewRuntime() *Runtime {
@@ -60,6 +61,7 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.applicationRevision = 0
 	r.state = StateEnvelope{}
 	r.stateLeases = 0
+	r.resourceLeases = 0
 	if err := r.publishApplicationState(); err != nil {
 		r.caliber.close()
 		r.caliber = nil
@@ -85,6 +87,9 @@ func (r *Runtime) Stop(input []byte) []byte {
 	if r.stateLeases != 0 {
 		return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "outstanding_state_leases", fmt.Sprintf("cannot stop with %d outstanding state lease(s)", r.stateLeases), false))
 	}
+	if r.resourceLeases != 0 {
+		return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "outstanding_resource_leases", fmt.Sprintf("cannot stop with %d outstanding resource lease(s)", r.resourceLeases), false))
+	}
 	r.caliber.close()
 	r.caliber = nil
 	r.app = nil
@@ -93,6 +98,7 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.applicationRevision = 0
 	r.state = StateEnvelope{}
 	r.stateLeases = 0
+	r.resourceLeases = 0
 	return marshalResponse(Response{
 		Version:   ProtocolVersion,
 		RequestID: request.RequestID,
@@ -156,6 +162,31 @@ func (r *Runtime) NoteStateLeaseReleased() error {
 		return errors.New("no outstanding state lease")
 	}
 	r.stateLeases--
+	return nil
+}
+
+// NoteResourceLeaseAcquired records the short-lived mapped-resource lease
+// owned by the foreign client. The resource bytes may be copied and used only
+// until the matching release notification.
+func (r *Runtime) NoteResourceLeaseAcquired() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lifecycle != lifecycleRunning {
+		return errors.New("backend is not running")
+	}
+	r.resourceLeases++
+	return nil
+}
+
+// NoteResourceLeaseReleased is deterministic: a release without a matching
+// acquisition is rejected and does not underflow the accounting.
+func (r *Runtime) NoteResourceLeaseReleased() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.resourceLeases == 0 {
+		return errors.New("no outstanding resource lease")
+	}
+	r.resourceLeases--
 	return nil
 }
 
@@ -252,6 +283,12 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "invalid_path", err)
 		}
 		listing = &value
+	case "read_visible_lines":
+		response, err := r.readVisibleLines(request)
+		if err != nil {
+			return commandError(request, "application_error", err)
+		}
+		return response
 	default:
 		return commandError(request, "unknown_command", fmt.Errorf("unknown command %q", request.Command))
 	}
@@ -262,6 +299,90 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response.BasedOnRevision = request.BasedOnRevision
 	response.DirectoryListing = listing
 	return response
+}
+
+func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
+	doc, ok := r.app.Documents[application.DocumentID(request.DocumentID)]
+	if !ok || doc == nil || doc.Editor == nil {
+		return Response{}, errors.New("unknown document")
+	}
+	lineCount := doc.Editor.Buffer.LineCount()
+	if request.StartLine >= uint64(lineCount) {
+		return Response{}, fmt.Errorf("start_line %d is outside the document's %d lines", request.StartLine, lineCount)
+	}
+
+	lines := make([]byte, 0, min(int(request.MaxBytes), MaxVisibleBytes))
+	endLine := request.StartLine
+	truncated := false
+	for offset := uint64(0); offset < request.MaxLines; offset++ {
+		lineNumber := request.StartLine + offset
+		if lineNumber >= uint64(lineCount) {
+			break
+		}
+		line, ok := doc.Editor.Buffer.Line(int(lineNumber))
+		if !ok {
+			return Response{}, fmt.Errorf("line %d is unavailable", lineNumber)
+		}
+		remaining := int(request.MaxBytes) - len(lines)
+		if remaining == 0 {
+			truncated = true
+			break
+		}
+
+		lineBytes := len(line)
+		if lineNumber+1 < uint64(lineCount) {
+			lineBytes++ // Reconstitute the LF omitted by Buffer.Line.
+		}
+		if lineBytes > remaining {
+			copyBytes := len(line)
+			if copyBytes > remaining {
+				copyBytes = remaining
+			}
+			lines = append(lines, line[:copyBytes]...)
+			endLine = lineNumber + 1
+			truncated = true
+			break
+		}
+		lines = append(lines, line...)
+		if lineNumber+1 < uint64(lineCount) {
+			lines = append(lines, '\n')
+		}
+		endLine = lineNumber + 1
+	}
+	if endLine < uint64(lineCount) {
+		truncated = true
+	}
+	payload, err := encodeVisibleSlice(r.applicationRevision, doc.Revision(), request.StartLine, endLine, truncated, lines)
+	if err != nil {
+		return Response{}, err
+	}
+	resourceID, generation, err := r.caliber.publishResource(payload)
+	if err != nil {
+		return Response{}, err
+	}
+	response := okResponse(request.RequestID, r.lifecycle, r.revision)
+	response.BasedOnRevision = request.BasedOnRevision
+	response.ResourceID = resourceID
+	response.Generation = generation
+	response.DocumentID = request.DocumentID
+	response.ApplicationRev = r.applicationRevision
+	response.EditorRevision = doc.Revision()
+	response.StartLine = request.StartLine
+	response.EndLine = endLine
+	response.ByteLen = uint64(len(lines))
+	response.Truncated = truncated
+	response.Resource = &ResourceDescriptor{
+		ResourceID:     resourceID,
+		Generation:     generation,
+		DocumentID:     request.DocumentID,
+		ApplicationRev: r.applicationRevision,
+		EditorRevision: doc.Revision(),
+		StartLine:      request.StartLine,
+		EndLine:        endLine,
+		ByteLen:        uint64(len(lines)),
+		Truncated:      truncated,
+	}
+	return response, nil
 }
 
 func commandError(request CommandRequest, code string, err error) Response {
