@@ -61,15 +61,6 @@ type Response struct {
 	State            *StateEnvelope      `json:"state,omitempty"`
 	DirectoryListing *DirectoryListing   `json:"directory_listing,omitempty"`
 	Resource         *ResourceDescriptor `json:"resource,omitempty"`
-	ResourceID       uint64              `json:"resource_id,omitempty"`
-	Generation       uint64              `json:"generation,omitempty"`
-	DocumentID       string              `json:"document_id,omitempty"`
-	ApplicationRev   uint64              `json:"application_revision,omitempty"`
-	EditorRevision   uint64              `json:"editor_revision,omitempty"`
-	StartLine        uint64              `json:"start_line,omitempty"`
-	EndLine          uint64              `json:"end_line,omitempty"`
-	ByteLen          uint64              `json:"byte_len,omitempty"`
-	Truncated        bool                `json:"truncated,omitempty"`
 }
 
 type ResourceDescriptor struct {

@@ -1,6 +1,7 @@
 use crate::backend::ffi::{BackendSessionRaw, FfiError, LoadedBackend};
 use crate::protocol::{
-    CommandRequest, Response, StartRequest, StopRequest, decode_response, decode_state,
+    CommandRequest, Response, StartRequest, StopRequest, VisibleTextSlice, decode_response,
+    decode_state,
 };
 use std::path::PathBuf;
 use thiserror::Error;
@@ -65,6 +66,16 @@ impl BackendSession {
     pub fn read_state(&self) -> Result<crate::protocol::StateEnvelope, BackendSessionError> {
         let copy = self.raw.read_state_copy()?;
         Ok(decode_state(&copy.data)?)
+    }
+
+    pub fn read_visible_slice(
+        &self,
+        descriptor: &crate::protocol::ResourceDescriptor,
+    ) -> Result<VisibleTextSlice, BackendSessionError> {
+        let bytes = self
+            .raw
+            .read_resource_copy(descriptor.resource_id, descriptor.generation)?;
+        Ok(VisibleTextSlice::decode(&bytes, descriptor)?)
     }
 
     pub fn wake_sequence(&self) -> Result<u64, BackendSessionError> {

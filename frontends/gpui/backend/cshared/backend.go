@@ -63,6 +63,16 @@ func scratchpad_gpui_backend_state_lease_released() (status C.int) {
 	return safeStatus(func() error { return singleton.NoteStateLeaseReleased() })
 }
 
+//export scratchpad_gpui_backend_resource_lease_acquired
+func scratchpad_gpui_backend_resource_lease_acquired() (status C.int) {
+	return safeStatus(func() error { return singleton.NoteResourceLeaseAcquired() })
+}
+
+//export scratchpad_gpui_backend_resource_lease_released
+func scratchpad_gpui_backend_resource_lease_released() (status C.int) {
+	return safeStatus(func() error { return singleton.NoteResourceLeaseReleased() })
+}
+
 //export scratchpad_gpui_backend_free
 func scratchpad_gpui_backend_free(ptr unsafe.Pointer) {
 	defer func() { _ = recover() }()

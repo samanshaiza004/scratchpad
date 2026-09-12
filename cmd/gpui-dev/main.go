@@ -1,8 +1,9 @@
-// gpui-dev is the small, portable build harness for the Gate 1 experiment.
+// gpui-dev is the small, portable build harness for the GPUI dogfood gates.
 // It keeps the ordinary Scratchpad Go module independent from cgo/Caliber.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -248,13 +249,23 @@ func launch(exe string, env []string, smoke bool, workspace string) error {
 	return runCommandWithEnv(".", launchEnv, exe)
 }
 
-func measure(root, out, exe string, env []string) error {
-	start := time.Now()
-	err := launch(exe, env, true, root)
-	settled := time.Since(start)
-	if err != nil {
-		return err
+func launchForMeasure(exe string, env []string, workspace string, timeout time.Duration) error {
+	launchEnv := append([]string{}, env...)
+	launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_BACKEND_LIBRARY", filepath.Join(filepath.Dir(exe), backendLibraryName()))
+	launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_SMOKE", "1")
+	launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_WORKSPACE", workspace)
+	name := exe
+	args := []string(nil)
+	if runtime.GOOS == "linux" {
+		if xvfb, err := exec.LookPath("xvfb-run"); err == nil {
+			name = xvfb
+			args = []string{"-a", exe}
+		}
 	}
+	return runCommandWithTimeout(".", launchEnv, name, timeout, args...)
+}
+
+func measure(root, out, exe string, env []string) error {
 	manifestBytes, err := os.ReadFile(filepath.Join(out, "artifact-manifest.json"))
 	if err != nil {
 		return err
@@ -263,21 +274,58 @@ func measure(root, out, exe string, env []string) error {
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return err
 	}
-	measurements := map[string]any{
-		"cold_start_to_shutdown_ms": settled.Milliseconds(),
-		"settling_interval_ms":      1000,
-		"idle_rss_bytes":            nil,
-		"artifact_count":            len(manifest.Artifacts),
-		"artifacts":                 manifest.Artifacts,
-		"note":                      "RSS requires the native platform sampler; this runner records the launch timing and artifact set.",
+	measurementPath := filepath.Join(out, "measurements.json")
+	runtimeEnv := setEnv(env, "SCRATCHPAD_GPUI_BACKEND_LIBRARY", filepath.Join(out, backendLibraryName()))
+	runtimeEnv = setRuntimePath(runtimeEnv, out)
+	runtimeEnv = setEnv(runtimeEnv, "SCRATCHPAD_GPUI_MEASURE_PATH", measurementPath)
+	manifestPath := filepath.Join(root, "frontends", "gpui", "Cargo.toml")
+	if err := runCommand(root, runtimeEnv, "cargo", "test", "--manifest-path", manifestPath, "--test", "foreign_smoke", "--", "--nocapture"); err != nil {
+		return err
 	}
-	data, _ := json.MarshalIndent(measurements, "", "  ")
-	if err := os.WriteFile(filepath.Join(out, "measurements.json"), append(data, '\n'), 0o644); err != nil {
+	measurements := map[string]any{}
+	if data, readErr := os.ReadFile(measurementPath); readErr == nil {
+		if unmarshalErr := json.Unmarshal(data, &measurements); unmarshalErr != nil {
+			return fmt.Errorf("decode protocol measurements: %w", unmarshalErr)
+		}
+	}
+	artifactBytes := map[string]int64{}
+	for _, artifact := range manifest.Artifacts {
+		if info, statErr := os.Stat(filepath.Join(out, artifact)); statErr == nil {
+			artifactBytes[artifact] = info.Size()
+		}
+	}
+	measurements["settling_interval_ms"] = 1000
+	measurements["idle_rss_bytes"] = nil
+	measurements["artifact_count"] = len(manifest.Artifacts)
+	measurements["artifacts"] = manifest.Artifacts
+	measurements["artifact_bytes"] = artifactBytes
+	measurements["native_smoke"] = "pending"
+	writeMeasurements := func() error {
+		data, marshalErr := json.MarshalIndent(measurements, "", "  ")
+		if marshalErr != nil {
+			return marshalErr
+		}
+		return os.WriteFile(measurementPath, append(data, '\n'), 0o644)
+	}
+	if err := writeMeasurements(); err != nil {
+		return err
+	}
+	start := time.Now()
+	launchErr := launchForMeasure(exe, env, root, 30*time.Second)
+	settled := time.Since(start)
+	measurements["cold_start_to_shutdown_ms"] = settled.Milliseconds()
+	if launchErr != nil {
+		measurements["native_smoke"] = "unavailable"
+		measurements["native_smoke_error"] = launchErr.Error()
+	} else {
+		measurements["native_smoke"] = "passed"
+	}
+	measurements["note"] = "Protocol timings come from the real Rust test path; RSS requires a native platform sampler."
+	if err := writeMeasurements(); err != nil {
 		return err
 	}
 	fmt.Printf("cold start to shutdown: %s\n", settled.Round(time.Millisecond))
-	_ = root
-	return nil
+	return launchErr
 }
 
 func runCommand(dir string, env []string, name string, args ...string) error {
@@ -294,6 +342,26 @@ func runCommandWithEnv(dir string, env []string, name string, args ...string) er
 	cmd.Stderr = os.Stderr
 	started := time.Now()
 	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %s failed after %s: %w", name, strings.Join(args, " "), time.Since(started).Round(time.Millisecond), err)
+	}
+	return nil
+}
+
+func runCommandWithTimeout(dir string, env []string, name string, timeout time.Duration, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = env
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	started := time.Now()
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%s %s timed out after %s", name, strings.Join(args, " "), timeout)
+		}
 		return fmt.Errorf("%s %s failed after %s: %w", name, strings.Join(args, " "), time.Since(started).Round(time.Millisecond), err)
 	}
 	return nil

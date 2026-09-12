@@ -221,36 +221,37 @@ func TestVisibleLinesAreBoundedImmutableResource(t *testing.T) {
 		MaxBytes:        1024,
 	}))
 	response := decodeResponse(t, runtime.Pump())
-	if !response.OK || response.ResourceID == 0 || response.Generation == 0 {
+	descriptor := response.Resource
+	if !response.OK || descriptor == nil || descriptor.ResourceID == 0 || descriptor.Generation == 0 {
 		t.Fatalf("visible resource response = %+v", response)
 	}
-	if response.DocumentID != documentID || response.ApplicationRev != state.ApplicationRev || response.EditorRevision != state.Documents[0].EditorRevision {
-		t.Fatalf("visible resource identity = %+v, state = %+v", response, state)
+	if descriptor.DocumentID != documentID || descriptor.ApplicationRev != state.ApplicationRev || descriptor.EditorRevision != state.Documents[0].EditorRevision {
+		t.Fatalf("visible resource identity = %+v, state = %+v", descriptor, state)
 	}
-	if response.ByteLen == 0 || response.ByteLen > MaxVisibleBytes || !response.Truncated {
-		t.Fatalf("visible resource bounds = %+v", response)
+	if descriptor.ByteLen == 0 || descriptor.ByteLen > MaxVisibleBytes || !descriptor.Truncated {
+		t.Fatalf("visible resource bounds = %+v", descriptor)
 	}
-	resource, err := runtime.caliber.readResourceCopy(response.ResourceID, response.Generation)
+	resource, err := runtime.caliber.readResourceCopy(descriptor.ResourceID, descriptor.Generation)
 	if err != nil {
 		t.Fatalf("map visible resource: %v", err)
 	}
-	if len(resource) != visibleSliceHeaderBytes+int(response.ByteLen) {
-		t.Fatalf("mapped resource length = %d, descriptor = %d", len(resource), response.ByteLen)
+	if len(resource) != visibleSliceHeaderBytes+int(descriptor.ByteLen) {
+		t.Fatalf("mapped resource length = %d, descriptor = %d", len(resource), descriptor.ByteLen)
 	}
 	if string(resource[:4]) != "SPVS" || binary.LittleEndian.Uint32(resource[4:8]) != VisibleSliceSchemaV1 {
 		t.Fatalf("visible resource header = %q schema=%d", resource[:4], binary.LittleEndian.Uint32(resource[4:8]))
 	}
-	if got := binary.LittleEndian.Uint64(resource[8:16]); got != response.ApplicationRev {
-		t.Fatalf("resource application revision = %d, response = %d", got, response.ApplicationRev)
+	if got := binary.LittleEndian.Uint64(resource[8:16]); got != descriptor.ApplicationRev {
+		t.Fatalf("resource application revision = %d, response = %d", got, descriptor.ApplicationRev)
 	}
-	if got := binary.LittleEndian.Uint64(resource[16:24]); got != response.EditorRevision {
-		t.Fatalf("resource editor revision = %d, response = %d", got, response.EditorRevision)
+	if got := binary.LittleEndian.Uint64(resource[16:24]); got != descriptor.EditorRevision {
+		t.Fatalf("resource editor revision = %d, response = %d", got, descriptor.EditorRevision)
 	}
-	if got := binary.LittleEndian.Uint64(resource[24:32]); got != response.StartLine || binary.LittleEndian.Uint64(resource[32:40]) != response.EndLine {
-		t.Fatalf("resource line range does not match response: start=%d end=%d response=%+v", got, binary.LittleEndian.Uint64(resource[32:40]), response)
+	if got := binary.LittleEndian.Uint64(resource[24:32]); got != descriptor.StartLine || binary.LittleEndian.Uint64(resource[32:40]) != descriptor.EndLine {
+		t.Fatalf("resource line range does not match response: start=%d end=%d response=%+v", got, binary.LittleEndian.Uint64(resource[32:40]), descriptor)
 	}
-	if got := binary.LittleEndian.Uint32(resource[44:48]); got != uint32(response.ByteLen) {
-		t.Fatalf("resource payload length = %d, response = %d", got, response.ByteLen)
+	if got := binary.LittleEndian.Uint32(resource[44:48]); got != uint32(descriptor.ByteLen) {
+		t.Fatalf("resource payload length = %d, response = %d", got, descriptor.ByteLen)
 	}
 	if binary.LittleEndian.Uint32(resource[40:44])&1 == 0 {
 		t.Fatal("bounded large-document resource was not marked truncated")
@@ -261,10 +262,10 @@ func TestVisibleLinesAreBoundedImmutableResource(t *testing.T) {
 	if !bytes.Contains(resource[visibleSliceHeaderBytes:], []byte("xxxxxxxx")) {
 		t.Fatalf("visible resource did not contain line bytes")
 	}
-	if err := runtime.caliber.releaseResourceOwner(response.ResourceID, response.Generation); err != nil {
+	if err := runtime.caliber.releaseResourceOwner(descriptor.ResourceID, descriptor.Generation); err != nil {
 		t.Fatalf("release visible resource owner: %v", err)
 	}
-	if _, err := runtime.caliber.readResourceCopy(response.ResourceID, response.Generation); err == nil {
+	if _, err := runtime.caliber.readResourceCopy(descriptor.ResourceID, descriptor.Generation); err == nil {
 		t.Fatal("released visible resource remained mappable")
 	}
 }

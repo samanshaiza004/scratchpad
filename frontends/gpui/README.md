@@ -1,4 +1,4 @@
-# Scratchpad GPUI Gate 1
+# Scratchpad GPUI Gates 1–3
 
 This is an experimental second frontend for Scratchpad. It asks one concrete
 question:
@@ -49,9 +49,28 @@ The shell contains application chrome only:
 - command-palette and settings affordances;
 - a read-only document placeholder showing identity and revision.
 
-The interface does not carry document bytes, cursor/selection/viewport state,
-shaping, folds, projections, IME data, or paint data. `gpui-kit = "=0.6.1"`
-is the only GPUI dependency and supplies the matching component family.
+Gate 3 adds one bounded read-only viewport. The shell requests at most 256
+lines and 64 KiB from the active piece-backed buffer. The Go adapter copies
+only those lines into an application-owned `SPVS` payload, publishes it as an
+immutable Caliber resource, and returns a resource descriptor. Rust maps,
+copies, validates, and releases that resource before caching the slice for
+ordinary GPUI text display. No whole-document snapshot crosses the boundary.
+
+The resource contains raw bytes after a 48-byte little-endian header so
+non-UTF-8 document contents are not silently changed. Display uses a lossy
+conversion only at the final read-only text rendering step. This format is an
+experiment-local application schema, not a Caliber ABI or a promise of editor
+semantics.
+
+The following remain outside the boundary: cursor, selection, viewport
+ownership, shaping, folds, projections, IME, editing, and paint data. Gate 4
+will decide whether those presentation mechanics should become frontend-local;
+this branch does not port or rewrite Scratchpad's editor.
+
+The interface does not carry whole-document bytes, cursor/selection/viewport
+state, shaping, folds, projections, IME data, or paint data. `gpui-kit =
+"=0.6.1"` is the only GPUI dependency and supplies the matching component
+family.
 
 ## Build and test
 

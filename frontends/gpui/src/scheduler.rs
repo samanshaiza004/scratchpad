@@ -1,5 +1,8 @@
 use crate::backend::{BackendSession, BackendSessionConfig};
-use crate::protocol::{CommandRequest, DirectoryListing, Outcome, Response, StateEnvelope};
+use crate::protocol::{
+    CommandRequest, DirectoryListing, MAX_VISIBLE_BYTES, MAX_VISIBLE_LINES, Outcome, Response,
+    StateEnvelope, VisibleTextSlice,
+};
 use gpui_kit::{App, AppContext, Task};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -11,8 +14,15 @@ pub enum BackendCommand {
     OpenPath(PathBuf),
     SelectDocument(String),
     SaveDocument(String),
-    CloseDocument { document_id: String, discard: bool },
+    CloseDocument {
+        document_id: String,
+        discard: bool,
+    },
     ListDirectory(Option<PathBuf>),
+    ReadVisibleLines {
+        document_id: String,
+        start_line: usize,
+    },
     Shutdown,
 }
 
@@ -42,6 +52,16 @@ impl BackendCommand {
             BackendCommand::ListDirectory(relative_path) => Ok(Some(
                 CommandRequest::list_directory(relative_path.as_deref(), based_on_revision)?,
             )),
+            BackendCommand::ReadVisibleLines {
+                document_id,
+                start_line,
+            } => Ok(Some(CommandRequest::read_visible_lines(
+                document_id,
+                start_line,
+                MAX_VISIBLE_LINES,
+                MAX_VISIBLE_BYTES,
+                based_on_revision,
+            ))),
             BackendCommand::Shutdown => Ok(None),
         }
     }
@@ -52,6 +72,7 @@ pub struct BackendUpdate {
     pub response: Option<Response>,
     pub state: Option<StateEnvelope>,
     pub listing: Option<DirectoryListing>,
+    pub visible: Option<VisibleTextSlice>,
     pub outcome: Outcome,
 }
 
@@ -61,6 +82,7 @@ impl BackendUpdate {
             response: None,
             state: None,
             listing: None,
+            visible: None,
             outcome: Outcome::error("rust_scheduler_error", message, false),
         }
     }
@@ -99,6 +121,9 @@ impl PendingCommands {
             BackendCommand::SelectDocument(_) => self
                 .queue
                 .retain(|queued| !matches!(queued, BackendCommand::SelectDocument(_))),
+            BackendCommand::ReadVisibleLines { .. } => self
+                .queue
+                .retain(|queued| !matches!(queued, BackendCommand::ReadVisibleLines { .. })),
             BackendCommand::Shutdown => self.queue.clear(),
             _ => {}
         }
@@ -170,6 +195,7 @@ async fn worker_loop(
                 response: Some(response),
                 state,
                 listing: None,
+                visible: None,
                 outcome,
             })
             .await
@@ -192,6 +218,7 @@ async fn worker_loop(
                         response,
                         state: None,
                         listing: None,
+                        visible: None,
                         outcome: Outcome::ok(),
                     },
                     Err(error) => BackendUpdate::error(error.to_string()),
@@ -200,7 +227,32 @@ async fn worker_loop(
                 return;
             }
 
-            let update = run_one(session, command, revision);
+            let should_read_visible = matches!(
+                &command,
+                BackendCommand::OpenPath(_) | BackendCommand::SelectDocument(_)
+            );
+            let mut update = run_one(session, command, revision);
+            if should_read_visible
+                && update.outcome.code == "ok"
+                && let Some(state) = &update.state
+                && !state.active.is_empty()
+            {
+                let visible_revision = state.application_revision;
+                let visible_update = run_one(
+                    session,
+                    BackendCommand::ReadVisibleLines {
+                        document_id: state.active.clone(),
+                        start_line: 0,
+                    },
+                    visible_revision,
+                );
+                if visible_update.outcome.code == "ok" {
+                    update.visible = visible_update.visible;
+                    update.state = visible_update.state;
+                } else {
+                    update.outcome = visible_update.outcome;
+                }
+            }
             if let Some(state) = &update.state {
                 revision = state.application_revision;
             } else if let Some(response) = &update.response {
@@ -227,6 +279,24 @@ fn run_one(session: &BackendSession, command: BackendCommand, revision: u64) -> 
         Ok(response) => response,
         Err(error) => return BackendUpdate::error(error.to_string()),
     };
+    let visible = match response
+        .as_ref()
+        .and_then(|response| response.resource.as_ref())
+    {
+        Some(resource) => match session.read_visible_slice(resource) {
+            Ok(slice) => Some(slice),
+            Err(error) => {
+                return BackendUpdate {
+                    response,
+                    state: None,
+                    listing: None,
+                    visible: None,
+                    outcome: Outcome::error("resource_read_failed", error.to_string(), false),
+                };
+            }
+        },
+        None => None,
+    };
     let state = match session.read_state() {
         Ok(state) => Some(state),
         Err(error) => {
@@ -234,6 +304,7 @@ fn run_one(session: &BackendSession, command: BackendCommand, revision: u64) -> 
                 response,
                 state: None,
                 listing: None,
+                visible,
                 outcome: Outcome::error("state_read_failed", error.to_string(), false),
             };
         }
@@ -249,6 +320,7 @@ fn run_one(session: &BackendSession, command: BackendCommand, revision: u64) -> 
         response,
         state,
         listing,
+        visible,
         outcome,
     }
 }
@@ -266,6 +338,14 @@ mod tests {
         pending.push(BackendCommand::SelectDocument("b".into()));
         pending.push(BackendCommand::ListDirectory(None));
         pending.push(BackendCommand::ListDirectory(Some("src".into())));
-        assert_eq!(pending.len(), 3);
+        pending.push(BackendCommand::ReadVisibleLines {
+            document_id: "a".into(),
+            start_line: 0,
+        });
+        pending.push(BackendCommand::ReadVisibleLines {
+            document_id: "b".into(),
+            start_line: 12,
+        });
+        assert_eq!(pending.len(), 4);
     }
 }

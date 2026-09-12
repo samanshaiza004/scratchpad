@@ -1,4 +1,6 @@
-use crate::protocol::{PROTOCOL_VERSION, STATE_SCHEMA_V1};
+use crate::protocol::{
+    MAX_VISIBLE_BYTES, PROTOCOL_VERSION, STATE_SCHEMA_V1, VISIBLE_SLICE_HEADER_LEN,
+};
 use libloading::Library;
 use std::ffi::c_void;
 use std::mem::{ManuallyDrop, offset_of, size_of};
@@ -78,12 +80,25 @@ impl Default for CaliberStatePublication {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct CaliberResourceView {
     pub resource_id: u64,
     pub generation: u64,
     pub data: *const u8,
     pub len: usize,
     pub lease: *mut c_void,
+}
+
+impl Default for CaliberResourceView {
+    fn default() -> Self {
+        Self {
+            resource_id: 0,
+            generation: 0,
+            data: ptr::null(),
+            len: 0,
+            lease: ptr::null_mut(),
+        }
+    }
 }
 
 #[repr(C)]
@@ -196,6 +211,15 @@ impl CaliberApiV1 {
             release_state: self
                 .state_publication_release
                 .ok_or(FfiError::MissingApiFunction("state_publication_release"))?,
+            map_resource: self
+                .context_map_resource
+                .ok_or(FfiError::MissingApiFunction("context_map_resource"))?,
+            release_resource: self
+                .resource_release
+                .ok_or(FfiError::MissingApiFunction("resource_release"))?,
+            release_context_resource: self
+                .context_release_resource
+                .ok_or(FfiError::MissingApiFunction("context_release_resource"))?,
             wake_sequence: self
                 .context_wake_sequence
                 .ok_or(FfiError::MissingApiFunction("context_wake_sequence"))?,
@@ -209,6 +233,15 @@ pub struct ValidatedCaliberApi {
     read_latest_state:
         unsafe extern "C" fn(*const CaliberContext, *mut CaliberStatePublication) -> CaliberStatus,
     release_state: unsafe extern "C" fn(*mut CaliberStatePublication),
+    map_resource: unsafe extern "C" fn(
+        *const CaliberContext,
+        u64,
+        u64,
+        *mut CaliberResourceView,
+    ) -> CaliberStatus,
+    release_resource: unsafe extern "C" fn(*mut CaliberResourceView),
+    release_context_resource:
+        unsafe extern "C" fn(*const CaliberContext, u64, u64) -> CaliberStatus,
     wake_sequence: unsafe extern "C" fn(*const CaliberContext, *mut u64) -> CaliberStatus,
 }
 
@@ -246,6 +279,8 @@ struct BridgeSymbols {
     free: FreeFn,
     lease_acquired: LeaseFn,
     lease_released: LeaseFn,
+    resource_lease_acquired: LeaseFn,
+    resource_lease_released: LeaseFn,
 }
 
 pub struct LoadedBackend {
@@ -276,6 +311,14 @@ impl LoadedBackend {
             lease_released: load_symbol(
                 &library,
                 b"scratchpad_gpui_backend_state_lease_released\0",
+            )?,
+            resource_lease_acquired: load_symbol(
+                &library,
+                b"scratchpad_gpui_backend_resource_lease_acquired\0",
+            )?,
+            resource_lease_released: load_symbol(
+                &library,
+                b"scratchpad_gpui_backend_resource_lease_released\0",
             )?,
         };
         Ok(Self {
@@ -350,6 +393,12 @@ fn symbol_name(name: &'static [u8]) -> &'static str {
         b"scratchpad_gpui_backend_state_lease_released\0" => {
             "scratchpad_gpui_backend_state_lease_released"
         }
+        b"scratchpad_gpui_backend_resource_lease_acquired\0" => {
+            "scratchpad_gpui_backend_resource_lease_acquired"
+        }
+        b"scratchpad_gpui_backend_resource_lease_released\0" => {
+            "scratchpad_gpui_backend_resource_lease_released"
+        }
         _ => "unknown",
     }
 }
@@ -366,6 +415,7 @@ pub struct BackendSessionRaw {
 unsafe impl Send for BackendSessionRaw {}
 
 impl BackendSessionRaw {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         api: &'static CaliberApiV1,
         context: NonNull<CaliberContext>,
@@ -374,6 +424,8 @@ impl BackendSessionRaw {
         free: FreeFn,
         lease_acquired: LeaseFn,
         lease_released: LeaseFn,
+        resource_lease_acquired: LeaseFn,
+        resource_lease_released: LeaseFn,
     ) -> Result<Self, FfiError> {
         Ok(Self {
             _library: None,
@@ -383,6 +435,8 @@ impl BackendSessionRaw {
                 free,
                 lease_acquired,
                 lease_released,
+                resource_lease_acquired,
+                resource_lease_released,
             },
             api: api.validate()?,
             context,
@@ -445,6 +499,22 @@ impl BackendSessionRaw {
             self.api,
             self.symbols.lease_acquired,
             self.symbols.lease_released,
+        )?;
+        lease.copy()
+    }
+
+    pub fn read_resource_copy(
+        &self,
+        resource_id: u64,
+        generation: u64,
+    ) -> Result<Vec<u8>, FfiError> {
+        let lease = ResourceLease::acquire(
+            self.context,
+            self.api,
+            self.symbols.resource_lease_acquired,
+            self.symbols.resource_lease_released,
+            resource_id,
+            generation,
         )?;
         lease.copy()
     }
@@ -582,6 +652,105 @@ impl Drop for StateLease {
     }
 }
 
+struct ResourceLease {
+    view: CaliberResourceView,
+    api: ValidatedCaliberApi,
+    context: NonNull<CaliberContext>,
+    resource_id: u64,
+    generation: u64,
+    lease_released: LeaseFn,
+    accounted: bool,
+    released: bool,
+}
+
+impl ResourceLease {
+    fn acquire(
+        context: NonNull<CaliberContext>,
+        api: ValidatedCaliberApi,
+        lease_acquired: LeaseFn,
+        lease_released: LeaseFn,
+        resource_id: u64,
+        generation: u64,
+    ) -> Result<Self, FfiError> {
+        let mut view = CaliberResourceView::default();
+        let status =
+            unsafe { (api.map_resource)(context.as_ptr(), resource_id, generation, &mut view) };
+        if status != CaliberStatus::Ok {
+            return Err(FfiError::Status {
+                operation: "context_map_resource",
+                status,
+            });
+        }
+        if unsafe { (lease_acquired)() } != 0 {
+            unsafe { (api.release_resource)(&mut view) };
+            let _ = unsafe {
+                (api.release_context_resource)(context.as_ptr(), resource_id, generation)
+            };
+            return Err(FfiError::ResourceLeaseAccountingFailed);
+        }
+        Ok(Self {
+            view,
+            api,
+            context,
+            resource_id,
+            generation,
+            lease_released,
+            accounted: true,
+            released: false,
+        })
+    }
+
+    fn copy(mut self) -> Result<Vec<u8>, FfiError> {
+        if self.view.len > MAX_VISIBLE_BYTES + VISIBLE_SLICE_HEADER_LEN {
+            let len = self.view.len;
+            self.release();
+            return Err(FfiError::ResourceTooLarge {
+                len,
+                max: MAX_VISIBLE_BYTES + VISIBLE_SLICE_HEADER_LEN,
+            });
+        }
+        if self.view.len > 0 && self.view.data.is_null() {
+            self.release();
+            return Err(FfiError::NullResourceData);
+        }
+        let data = if self.view.len == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(self.view.data, self.view.len) }.to_vec()
+        };
+        self.release();
+        Ok(data)
+    }
+
+    fn release(&mut self) {
+        if self.released {
+            return;
+        }
+        if !self.view.lease.is_null() {
+            unsafe { (self.api.release_resource)(&mut self.view) };
+        }
+        let _ = unsafe {
+            (self.api.release_context_resource)(
+                self.context.as_ptr(),
+                self.resource_id,
+                self.generation,
+            )
+        };
+        if self.accounted {
+            let _ = unsafe { (self.lease_released)() };
+            self.accounted = false;
+        }
+        self.view = CaliberResourceView::default();
+        self.released = true;
+    }
+}
+
+impl Drop for ResourceLease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateCopy {
     pub revision: u64,
@@ -616,4 +785,10 @@ pub enum FfiError {
     NullStateData,
     #[error("backend rejected state lease accounting")]
     LeaseAccountingFailed,
+    #[error("backend rejected resource lease accounting")]
+    ResourceLeaseAccountingFailed,
+    #[error("resource returned non-zero length with null data pointer")]
+    NullResourceData,
+    #[error("resource length {len} exceeds {max} byte bound")]
+    ResourceTooLarge { len: usize, max: usize },
 }

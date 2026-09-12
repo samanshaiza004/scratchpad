@@ -46,6 +46,21 @@ impl Render for ShellView {
             .active_document()
             .map(|doc| doc.path.clone())
             .unwrap_or_else(|| "No document selected".to_string());
+        let viewport = self
+            .model
+            .visible
+            .as_ref()
+            .map(|slice| {
+                format!(
+                    "lines {}–{} · revision {}{}\n{}",
+                    slice.start_line,
+                    slice.end_line,
+                    slice.editor_revision,
+                    if slice.truncated { " · bounded" } else { "" },
+                    slice.display_text()
+                )
+            })
+            .unwrap_or_else(|| format!("Read-only document viewport\n{active}"));
         let tab_ids = self
             .model
             .state
@@ -156,12 +171,12 @@ impl Render for ShellView {
                     .flex_1()
                     .child(div().w_64().border_r_1().child(tree))
                     .child(
-                        div().flex().flex_col().flex_1().child(tabs).child(
-                            div()
-                                .flex_1()
-                                .p_4()
-                                .child(format!("Read-only document placeholder\n{active}")),
-                        ),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .child(tabs)
+                            .child(div().flex_1().p_4().child(viewport)),
                     ),
             )
             .when(self.model.command_palette_open, |this| {
@@ -328,6 +343,16 @@ async fn run_smoke_commands(
             .map_err(|error| format!("open update: {error}"))?;
         if !opened.outcome.code.eq("ok") {
             return Err(format!("open failed: {}", opened.outcome.message));
+        }
+        let visible = opened
+            .visible
+            .as_ref()
+            .ok_or_else(|| "open update did not contain a visible resource".to_string())?;
+        if visible.bytes.len() > scratchpad_gpui::protocol::MAX_VISIBLE_BYTES {
+            return Err(format!(
+                "visible resource exceeded bound: {} bytes",
+                visible.bytes.len()
+            ));
         }
         state = opened
             .state

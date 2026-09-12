@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  gate-1:
+  gate-1-through-3:
     strategy:
       fail-fast: false
       matrix:

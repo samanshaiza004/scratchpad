@@ -1,4 +1,6 @@
-use crate::protocol::{DirectoryEntry, DirectoryListing, Outcome, StateDocument, StateEnvelope};
+use crate::protocol::{
+    DirectoryEntry, DirectoryListing, Outcome, StateDocument, StateEnvelope, VisibleTextSlice,
+};
 use crate::scheduler::BackendUpdate;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +13,7 @@ pub struct ShellModel {
     pub settings_open: bool,
     pub close_dialog: Option<String>,
     pub active_selection: ActiveSelection,
+    pub visible: Option<VisibleTextSlice>,
 }
 
 impl Default for ShellModel {
@@ -23,6 +26,7 @@ impl Default for ShellModel {
             settings_open: false,
             close_dialog: None,
             active_selection: ActiveSelection::Workspace,
+            visible: None,
         }
     }
 }
@@ -31,12 +35,25 @@ impl ShellModel {
     pub fn apply_update(&mut self, update: BackendUpdate) {
         if let Some(state) = update.state {
             self.state = state;
+            if self.visible.as_ref().is_some_and(|slice| {
+                slice.document_id != self.state.active
+                    || !self
+                        .state
+                        .documents
+                        .iter()
+                        .any(|doc| doc.id == slice.document_id)
+            }) {
+                self.visible = None;
+            }
             if !self.state.active.is_empty() {
                 self.active_selection = ActiveSelection::Document(self.state.active.clone());
             }
         }
         if let Some(listing) = update.listing {
             self.apply_listing(listing);
+        }
+        if let Some(visible) = update.visible {
+            self.visible = Some(visible);
         }
         self.status = StatusLine::from_outcome(update.outcome, self.state.revision);
     }

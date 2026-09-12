@@ -362,15 +362,6 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	}
 	response := okResponse(request.RequestID, r.lifecycle, r.revision)
 	response.BasedOnRevision = request.BasedOnRevision
-	response.ResourceID = resourceID
-	response.Generation = generation
-	response.DocumentID = request.DocumentID
-	response.ApplicationRev = r.applicationRevision
-	response.EditorRevision = doc.Revision()
-	response.StartLine = request.StartLine
-	response.EndLine = endLine
-	response.ByteLen = uint64(len(lines))
-	response.Truncated = truncated
 	response.Resource = &ResourceDescriptor{
 		ResourceID:     resourceID,
 		Generation:     generation,
