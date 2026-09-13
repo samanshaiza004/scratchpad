@@ -212,6 +212,60 @@ impl EditorSession {
         self.cursor = self.bytes.len();
     }
 
+    pub fn move_home(&mut self, extend_selection: bool) -> Result<(), EditorSessionError> {
+        let target = self.line_start(self.cursor);
+        if extend_selection {
+            self.cursor = target;
+            Ok(())
+        } else {
+            self.set_caret(target)
+        }
+    }
+
+    pub fn move_end(&mut self, extend_selection: bool) -> Result<(), EditorSessionError> {
+        let target = self.line_end(self.cursor);
+        if extend_selection {
+            self.cursor = target;
+            Ok(())
+        } else {
+            self.set_caret(target)
+        }
+    }
+
+    pub fn move_vertical(
+        &mut self,
+        delta: isize,
+        extend_selection: bool,
+    ) -> Result<(), EditorSessionError> {
+        let start = self.line_start(self.cursor);
+        let column = self.cursor.saturating_sub(start);
+        let target_start = if delta < 0 {
+            if start == 0 {
+                return Ok(());
+            }
+            self.line_start(start.saturating_sub(1))
+        } else {
+            let end = self.line_end(self.cursor);
+            if end >= self.bytes.len() {
+                return Ok(());
+            }
+            end + usize::from(self.bytes.get(end) == Some(&b'\n'))
+        };
+        let target_end = self.line_end(target_start);
+        let target = (target_start + column).min(target_end);
+        let target = self
+            .bytes
+            .get(..target)
+            .and_then(|prefix| str::from_utf8(prefix).ok().map(|_| target))
+            .unwrap_or_else(|| self.previous_boundary(target));
+        if extend_selection {
+            self.cursor = target;
+            Ok(())
+        } else {
+            self.set_caret(target)
+        }
+    }
+
     pub fn replace_bytes(&mut self, replacement: &[u8]) -> Result<EditIntent, EditorSessionError> {
         if self.pending.is_some() {
             return Err(EditorSessionError::PendingEdit);
@@ -315,6 +369,24 @@ impl EditorSession {
             candidate += 1;
         }
         candidate
+    }
+
+    fn line_start(&self, position: usize) -> usize {
+        let position = position.min(self.bytes.len());
+        self.bytes[..position]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    }
+
+    fn line_end(&self, position: usize) -> usize {
+        let position = position.min(self.bytes.len());
+        self.bytes[position..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| position + index)
+            .unwrap_or(self.bytes.len())
     }
 }
 
@@ -428,5 +500,26 @@ mod tests {
         let edit = session.delete_backward().expect("delete").expect("edit");
         assert_eq!(edit.start_byte, 101);
         assert_eq!(session.bytes(), b"ab\n");
+    }
+
+    #[test]
+    fn vertical_and_line_boundary_navigation_stays_local() {
+        let mut session = EditorSession::from_visible(
+            &VisibleTextSlice {
+                bytes: b"one\ntwo-long\nthree\n".to_vec(),
+                ..visible()
+            },
+            7,
+        )
+        .expect("session");
+        session.set_caret(6).expect("inside second line");
+        session.move_home(false).expect("home");
+        assert_eq!(session.caret(), 4);
+        session.move_end(false).expect("end");
+        assert_eq!(session.caret(), 12);
+        session.move_vertical(-1, false).expect("up");
+        assert_eq!(session.caret(), 3);
+        session.move_vertical(1, false).expect("down");
+        assert_eq!(session.caret(), 7);
     }
 }

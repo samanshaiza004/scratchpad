@@ -25,6 +25,8 @@ struct ShellView {
     palette: CommandPaletteModel,
     sidebar_visible: bool,
     editor_font_size: f32,
+    viewport_start_line: usize,
+    find_open: bool,
 }
 
 impl ShellView {
@@ -43,6 +45,8 @@ impl ShellView {
             palette: CommandPaletteModel::default(),
             sidebar_visible: true,
             editor_font_size: 16.0,
+            viewport_start_line: 0,
+            find_open: false,
         }
     }
 
@@ -61,6 +65,7 @@ impl ShellView {
         self.model.apply_update(update);
 
         if let Some(slice) = self.model.visible.as_ref() {
+            self.viewport_start_line = slice.start_line;
             let reset = self.editor.as_ref().is_none_or(|editor| {
                 editor.document_id() != slice.document_id
                     || editor.editor_revision() != slice.editor_revision
@@ -101,12 +106,33 @@ impl ShellView {
         let modifiers = event.keystroke.modifiers;
         let extend = modifiers.shift;
         let mut intent = None;
+        let mut viewport_request = None;
         match key {
             "left" => {
                 let _ = editor.move_left(extend);
             }
             "right" => {
                 let _ = editor.move_right(extend);
+            }
+            "up" => {
+                let _ = editor.move_vertical(-1, extend);
+            }
+            "down" => {
+                let _ = editor.move_vertical(1, extend);
+            }
+            "home" => {
+                let _ = editor.move_home(extend);
+            }
+            "end" => {
+                let _ = editor.move_end(extend);
+            }
+            "pageup" => {
+                self.viewport_start_line = self.viewport_start_line.saturating_sub(64);
+                viewport_request = Some(self.viewport_start_line);
+            }
+            "pagedown" => {
+                self.viewport_start_line = self.viewport_start_line.saturating_add(64);
+                viewport_request = Some(self.viewport_start_line);
             }
             "backspace" => {
                 intent = editor.delete_backward().ok().flatten();
@@ -135,6 +161,12 @@ impl ShellView {
                 replacement: intent.replacement,
             });
         }
+        if let Some(start_line) = viewport_request {
+            let _ = self.scheduler.submit(BackendCommand::ReadVisibleLines {
+                document_id: editor.document_id().to_string(),
+                start_line,
+            });
+        }
     }
 
     fn dispatch_product_command(&mut self, id: ProductCommandId) {
@@ -159,6 +191,12 @@ impl ShellView {
             }
             "view.toggle-sidebar" => self.sidebar_visible = !self.sidebar_visible,
             "settings.open" => self.model.settings_open = !self.model.settings_open,
+            "document.find" | "document.find-replace" => self.find_open = true,
+            "document.find-next" | "document.find-previous" => {
+                if self.model.matches.is_empty() {
+                    self.model.status.message = "No current-document matches".to_string();
+                }
+            }
             "view.increase-font-size" => {
                 self.editor_font_size = (self.editor_font_size + 1.0).min(48.0)
             }
@@ -230,6 +268,32 @@ impl ShellView {
                     let mut query = self.palette.query().to_string();
                     query.push_str(text);
                     self.palette.set_query(query);
+                }
+            }
+        }
+    }
+
+    fn handle_find_key(&mut self, event: &gpui_kit::KeyDownEvent) {
+        match event.keystroke.key.as_str() {
+            "escape" => self.find_open = false,
+            "backspace" => {
+                self.model.find_query.pop();
+            }
+            "enter" => {
+                if !self.model.find_query.is_empty() && !self.model.state.active.is_empty() {
+                    let _ = self.scheduler.submit(BackendCommand::FindCurrent {
+                        document_id: self.model.state.active.clone(),
+                        query: self.model.find_query.clone(),
+                    });
+                }
+            }
+            _ => {
+                if !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform
+                    && let Some(text) = event.keystroke.key_char.as_deref()
+                {
+                    self.model.find_query.push_str(text);
                 }
             }
         }
@@ -351,8 +415,17 @@ impl Render for ShellView {
             view.handle_palette_key(event);
             cx.notify();
         });
+        let find = cx.listener(|view, _, _, cx| {
+            view.find_open = !view.find_open;
+            cx.notify();
+        });
+        let find_key = cx.listener(|view, event, _, cx| {
+            view.handle_find_key(event);
+            cx.notify();
+        });
         let editor_focus = self.focus.clone();
         let palette_focus = self.focus.clone();
+        let find_focus = self.focus.clone();
 
         let palette_items = self
             .palette
@@ -385,6 +458,22 @@ impl Render for ShellView {
             .border_1()
             .child(format!("Command palette  {}", self.palette.query()))
             .child(palette_items);
+        let find_panel = div()
+            .id("find-panel")
+            .track_focus(&find_focus)
+            .on_key_down(find_key)
+            .p_3()
+            .border_1()
+            .child(format!(
+                "Find: {}  ·  {}{}",
+                self.model.find_query,
+                self.model.matches.len(),
+                if self.model.matches_truncated {
+                    "+ matches"
+                } else {
+                    " matches"
+                }
+            ));
 
         let close_dialog_id = self.model.close_dialog.clone();
         let close_dialog = close_dialog_id.map(|document_id| {
@@ -483,6 +572,7 @@ impl Render for ShellView {
                             .label("Command palette")
                             .on_click(command_palette),
                     )
+                    .child(Button::new("find").label("Find").on_click(find))
                     .child(Button::new("save").label("Save").on_click(move |_, _, _| {
                         if !save_id.is_empty() {
                             let _ = save_scheduler
@@ -526,6 +616,7 @@ impl Render for ShellView {
                 self.model.command_palette_open.then_some(palette_panel),
                 |this, panel| this.child(panel),
             )
+            .when(self.find_open, |this| this.child(find_panel))
             .when_some(settings_panel, |this, panel| this.child(panel))
             .when_some(close_dialog, |this, dialog| this.child(dialog))
             .child(div().p_2().child(format!(

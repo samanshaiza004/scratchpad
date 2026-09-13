@@ -1,7 +1,7 @@
 use crate::backend::{BackendSession, BackendSessionConfig};
 use crate::protocol::{
-    CommandRequest, DirectoryListing, MAX_VISIBLE_BYTES, MAX_VISIBLE_LINES, Outcome, Response,
-    StateEnvelope, VisibleTextSlice,
+    CommandRequest, CurrentMatch, DirectoryListing, MAX_VISIBLE_BYTES, MAX_VISIBLE_LINES, Outcome,
+    Response, StateEnvelope, VisibleTextSlice,
 };
 use gpui_kit::{App, AppContext, Task};
 use std::collections::VecDeque;
@@ -12,6 +12,24 @@ pub enum BackendCommand {
     Snapshot,
     Ping,
     RefreshWorkspace,
+    CreateFile(PathBuf),
+    CreateFolder(PathBuf),
+    RenamePath {
+        path: PathBuf,
+        name: String,
+    },
+    MovePath {
+        source: PathBuf,
+        destination: PathBuf,
+    },
+    TrashPath {
+        path: PathBuf,
+        discard: bool,
+    },
+    FindCurrent {
+        document_id: String,
+        query: String,
+    },
     OpenPath(PathBuf),
     SelectDocument(String),
     SaveDocument(String),
@@ -42,6 +60,34 @@ impl BackendCommand {
             BackendCommand::RefreshWorkspace => {
                 Ok(Some(CommandRequest::refresh_workspace(based_on_revision)))
             }
+            BackendCommand::CreateFile(path) => {
+                Ok(Some(CommandRequest::create_file(&path, based_on_revision)?))
+            }
+            BackendCommand::CreateFolder(path) => Ok(Some(CommandRequest::create_folder(
+                &path,
+                based_on_revision,
+            )?)),
+            BackendCommand::RenamePath { path, name } => Ok(Some(CommandRequest::rename_path(
+                &path,
+                name,
+                based_on_revision,
+            )?)),
+            BackendCommand::MovePath {
+                source,
+                destination,
+            } => Ok(Some(CommandRequest::move_path(
+                &source,
+                &destination,
+                based_on_revision,
+            )?)),
+            BackendCommand::TrashPath { path, discard } => Ok(Some(CommandRequest::trash_path(
+                &path,
+                discard,
+                based_on_revision,
+            )?)),
+            BackendCommand::FindCurrent { document_id, query } => Ok(Some(
+                CommandRequest::find_current(document_id, query, based_on_revision),
+            )),
             BackendCommand::OpenPath(path) => {
                 Ok(Some(CommandRequest::open_path(&path, based_on_revision)?))
             }
@@ -98,6 +144,8 @@ pub struct BackendUpdate {
     pub state: Option<StateEnvelope>,
     pub listing: Option<DirectoryListing>,
     pub visible: Option<VisibleTextSlice>,
+    pub matches: Option<Vec<CurrentMatch>>,
+    pub matches_truncated: bool,
     pub outcome: Outcome,
 }
 
@@ -108,6 +156,8 @@ impl BackendUpdate {
             state: None,
             listing: None,
             visible: None,
+            matches: None,
+            matches_truncated: false,
             outcome: Outcome::error("rust_scheduler_error", message, false),
         }
     }
@@ -146,6 +196,9 @@ impl PendingCommands {
             BackendCommand::RefreshWorkspace => self
                 .queue
                 .retain(|queued| !matches!(queued, BackendCommand::RefreshWorkspace)),
+            BackendCommand::FindCurrent { .. } => self
+                .queue
+                .retain(|queued| !matches!(queued, BackendCommand::FindCurrent { .. })),
             BackendCommand::SelectDocument(_) => self
                 .queue
                 .retain(|queued| !matches!(queued, BackendCommand::SelectDocument(_))),
@@ -224,6 +277,8 @@ async fn worker_loop(
                 state,
                 listing: None,
                 visible: None,
+                matches: None,
+                matches_truncated: false,
                 outcome,
             })
             .await
@@ -247,6 +302,8 @@ async fn worker_loop(
                         state: None,
                         listing: None,
                         visible: None,
+                        matches: None,
+                        matches_truncated: false,
                         outcome: Outcome::ok(),
                     },
                     Err(error) => BackendUpdate::error(error.to_string()),
@@ -307,6 +364,13 @@ fn run_one(session: &BackendSession, command: BackendCommand, revision: u64) -> 
         Ok(response) => response,
         Err(error) => return BackendUpdate::error(error.to_string()),
     };
+    let response_matches = response
+        .as_ref()
+        .and_then(|response| response.matches.clone());
+    let response_matches_truncated = response
+        .as_ref()
+        .map(|response| response.matches_truncated)
+        .unwrap_or(false);
     let visible = match response
         .as_ref()
         .and_then(|response| response.resource.as_ref())
@@ -319,6 +383,8 @@ fn run_one(session: &BackendSession, command: BackendCommand, revision: u64) -> 
                     state: None,
                     listing: None,
                     visible: None,
+                    matches: response_matches,
+                    matches_truncated: response_matches_truncated,
                     outcome: Outcome::error("resource_read_failed", error.to_string(), false),
                 };
             }
@@ -333,6 +399,8 @@ fn run_one(session: &BackendSession, command: BackendCommand, revision: u64) -> 
                 state: None,
                 listing: None,
                 visible,
+                matches: response_matches,
+                matches_truncated: response_matches_truncated,
                 outcome: Outcome::error("state_read_failed", error.to_string(), false),
             };
         }
@@ -349,6 +417,8 @@ fn run_one(session: &BackendSession, command: BackendCommand, revision: u64) -> 
         state,
         listing,
         visible,
+        matches: response_matches,
+        matches_truncated: response_matches_truncated,
         outcome,
     }
 }

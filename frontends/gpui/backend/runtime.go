@@ -241,6 +241,8 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var listing *DirectoryListing
 	var edit *EditAck
 	var closeDecision *CloseDecision
+	var matches []CurrentMatch
+	var matchesTruncated bool
 	switch request.Command {
 	case "ping", "snapshot":
 	case "refresh_workspace":
@@ -261,6 +263,26 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "invalid_path", err)
 		}
 		listing = &value
+	case "create_file":
+		if err := r.app.CreateFile(request.Path); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "create_folder":
+		if err := r.app.CreateDirectory(request.Path); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "rename_path":
+		if err := r.app.RenamePath(request.Path, request.Name); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "move_path":
+		if err := r.app.MovePath(request.Path, request.RelativePath); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "trash_path":
+		if err := r.app.TrashPath(request.Path, request.Discard); err != nil {
+			return commandError(request, "application_error", err)
+		}
 	case "open_path":
 		if err := r.app.Dispatch(application.PresentationCommand{
 			Kind: application.PresentationOpenPath,
@@ -332,6 +354,25 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			OldEndByte:     request.EndByte,
 			NewEndByte:     request.StartByte + uint64(len(replacement)),
 		}
+	case "find_current":
+		found := r.app.FindCurrent(application.DocumentID(request.DocumentID), []byte(request.Query))
+		limit := request.MaxMatches
+		if limit == 0 {
+			limit = MaxFindMatches
+		}
+		if len(found) > limit {
+			matchesTruncated = true
+			found = found[:limit]
+		}
+		matches = make([]CurrentMatch, 0, len(found))
+		for _, match := range found {
+			matches = append(matches, CurrentMatch{
+				Start:  match.Start,
+				End:    match.End,
+				Line:   match.Line,
+				Column: match.Column,
+			})
+		}
 	case "list_directory":
 		if !r.app.HasWorkspace {
 			return commandError(request, "no_workspace", errors.New("no workspace is open"))
@@ -362,6 +403,8 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response.DirectoryListing = listing
 	response.Edit = edit
 	response.CloseDecision = closeDecision
+	response.Matches = matches
+	response.MatchesTruncated = matchesTruncated
 	return response
 }
 

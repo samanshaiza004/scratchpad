@@ -21,6 +21,7 @@ const (
 	MaxVisibleLines                = 256
 	MaxVisibleBytes                = 64 * 1024
 	MaxEditBytes                   = 64 * 1024
+	MaxFindMatches                 = 1000
 	VisibleSliceSchemaV1           = 1
 	visibleSliceHeaderBytes        = 48
 )
@@ -42,6 +43,7 @@ type CommandRequest struct {
 	BasedOnRevision uint64 `json:"based_on_revision"`
 	Command         string `json:"command"`
 	Path            string `json:"path,omitempty"`
+	Name            string `json:"name,omitempty"`
 	DocumentID      string `json:"document_id,omitempty"`
 	Discard         bool   `json:"discard,omitempty"`
 	RelativePath    string `json:"relative_path,omitempty"`
@@ -53,6 +55,8 @@ type CommandRequest struct {
 	StartByte       uint64 `json:"start_byte,omitempty"`
 	EndByte         uint64 `json:"end_byte,omitempty"`
 	Replacement     []int  `json:"replacement,omitempty"`
+	Query           string `json:"query,omitempty"`
+	MaxMatches      int    `json:"max_matches,omitempty"`
 }
 
 type Response struct {
@@ -68,6 +72,8 @@ type Response struct {
 	Resource         *ResourceDescriptor `json:"resource,omitempty"`
 	Edit             *EditAck            `json:"edit,omitempty"`
 	CloseDecision    *CloseDecision      `json:"close_decision,omitempty"`
+	Matches          []CurrentMatch      `json:"matches,omitempty"`
+	MatchesTruncated bool                `json:"matches_truncated,omitempty"`
 }
 
 type ResourceDescriptor struct {
@@ -100,6 +106,16 @@ type CloseDecision struct {
 	Dirty      bool   `json:"dirty"`
 	CanSave    bool   `json:"can_save"`
 	CanDiscard bool   `json:"can_discard"`
+}
+
+// CurrentMatch is a bounded, application-owned search result. Offsets are
+// source byte offsets so a frontend can keep raw-byte coordinates without
+// materializing or owning the document.
+type CurrentMatch struct {
+	Start  int `json:"start"`
+	End    int `json:"end"`
+	Line   int `json:"line"`
+	Column int `json:"column"`
 }
 
 type Outcome struct {
@@ -189,6 +205,24 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	}
 	switch request.Command {
 	case "snapshot", "ping", "refresh_workspace":
+	case "create_file", "create_folder", "trash_path":
+		if err := validateRequiredPath(request.Path, "path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
+	case "rename_path":
+		if err := validateRequiredPath(request.Path, "path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
+		if err := validateRequiredPath(request.Name, "name"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_name", err.Error(), false), false
+		}
+	case "move_path":
+		if err := validateRequiredPath(request.Path, "path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
+		if err := validateRequiredPath(request.RelativePath, "relative_path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
 	case "open_path":
 		if err := validateRequiredPath(request.Path, "path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
@@ -237,6 +271,22 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.Limit < 0 || request.Limit > MaxListLimit {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_limit", fmt.Sprintf("limit must be between 0 and %d", MaxListLimit), false), false
+		}
+	case "find_current":
+		if request.DocumentID == "" {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id is required", false), false
+		}
+		if !utf8.ValidString(request.DocumentID) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
+		}
+		if request.Query == "" {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_query", "query is required", false), false
+		}
+		if strings.ContainsRune(request.Query, 0) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_query", "query must not contain NUL", false), false
+		}
+		if request.MaxMatches < 0 || request.MaxMatches > MaxFindMatches {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_limit", fmt.Sprintf("max_matches must be between 0 and %d", MaxFindMatches), false), false
 		}
 	default:
 		return request, errorResponse(request.RequestID, lifecycle, "unknown_command", fmt.Sprintf("unknown command %q", request.Command), false), false

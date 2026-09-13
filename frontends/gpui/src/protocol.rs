@@ -9,6 +9,7 @@ pub const VISIBLE_SLICE_SCHEMA_V1: u32 = 1;
 pub const DEFAULT_LIST_LIMIT: usize = 200;
 pub const MAX_VISIBLE_LINES: usize = 256;
 pub const MAX_VISIBLE_BYTES: usize = 64 * 1024;
+pub const MAX_FIND_MATCHES: usize = 1000;
 pub const VISIBLE_SLICE_HEADER_LEN: usize = 48;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +60,8 @@ pub struct CommandRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub document_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discard: Option<bool>,
@@ -80,6 +83,10 @@ pub struct CommandRequest {
     pub end_byte: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replacement: Option<Vec<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_matches: Option<usize>,
 }
 
 impl CommandRequest {
@@ -93,6 +100,55 @@ impl CommandRequest {
 
     pub fn refresh_workspace(based_on_revision: u64) -> Self {
         Self::bare(CommandKind::RefreshWorkspace, based_on_revision)
+    }
+
+    pub fn create_file(path: &Path, based_on_revision: u64) -> Result<Self> {
+        let mut request = Self::bare(CommandKind::CreateFile, based_on_revision);
+        request.path = Some(required_path(path, "path")?);
+        Ok(request)
+    }
+
+    pub fn create_folder(path: &Path, based_on_revision: u64) -> Result<Self> {
+        let mut request = Self::bare(CommandKind::CreateFolder, based_on_revision);
+        request.path = Some(required_path(path, "path")?);
+        Ok(request)
+    }
+
+    pub fn rename_path(
+        path: &Path,
+        name: impl Into<String>,
+        based_on_revision: u64,
+    ) -> Result<Self> {
+        let mut request = Self::bare(CommandKind::RenamePath, based_on_revision);
+        request.path = Some(required_path(path, "path")?);
+        request.name = Some(name.into());
+        Ok(request)
+    }
+
+    pub fn move_path(source: &Path, destination: &Path, based_on_revision: u64) -> Result<Self> {
+        let mut request = Self::bare(CommandKind::MovePath, based_on_revision);
+        request.path = Some(required_path(source, "path")?);
+        request.relative_path = Some(required_path(destination, "relative_path")?);
+        Ok(request)
+    }
+
+    pub fn trash_path(path: &Path, discard: bool, based_on_revision: u64) -> Result<Self> {
+        let mut request = Self::bare(CommandKind::TrashPath, based_on_revision);
+        request.path = Some(required_path(path, "path")?);
+        request.discard = Some(discard);
+        Ok(request)
+    }
+
+    pub fn find_current(
+        document_id: impl Into<String>,
+        query: impl Into<String>,
+        based_on_revision: u64,
+    ) -> Self {
+        let mut request = Self::bare(CommandKind::FindCurrent, based_on_revision);
+        request.document_id = Some(document_id.into());
+        request.query = Some(query.into());
+        request.max_matches = Some(MAX_FIND_MATCHES);
+        request
     }
 
     pub fn open_path(path: &Path, based_on_revision: u64) -> Result<Self> {
@@ -170,6 +226,7 @@ impl CommandRequest {
             based_on_revision,
             command,
             path: None,
+            name: None,
             document_id: None,
             discard: None,
             relative_path: None,
@@ -181,6 +238,8 @@ impl CommandRequest {
             start_byte: None,
             end_byte: None,
             replacement: None,
+            query: None,
+            max_matches: None,
         }
     }
 }
@@ -191,6 +250,12 @@ pub enum CommandKind {
     Snapshot,
     Ping,
     RefreshWorkspace,
+    CreateFile,
+    CreateFolder,
+    RenamePath,
+    MovePath,
+    TrashPath,
+    FindCurrent,
     OpenPath,
     SelectDocument,
     SaveDocument,
@@ -222,6 +287,10 @@ pub struct Response {
     pub edit: Option<EditAck>,
     #[serde(default)]
     pub close_decision: Option<CloseDecision>,
+    #[serde(default)]
+    pub matches: Option<Vec<CurrentMatch>>,
+    #[serde(default)]
+    pub matches_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -320,6 +389,14 @@ pub struct CloseDecision {
     pub dirty: bool,
     pub can_save: bool,
     pub can_discard: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CurrentMatch {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -542,9 +619,57 @@ mod tests {
                 can_save: true,
                 can_discard: true,
             }),
+            matches: None,
+            matches_truncated: false,
         };
         let encoded = serde_json::to_vec(&response).expect("serialize close decision");
         let decoded: Response = serde_json::from_slice(&encoded).expect("decode close decision");
         assert_eq!(decoded.close_decision, response.close_decision);
+    }
+
+    #[test]
+    fn semantic_workspace_and_find_requests_remain_bounded() {
+        let create = CommandRequest::create_file(Path::new("notes/today.md"), 4)
+            .expect("create file request");
+        let rename = CommandRequest::rename_path(Path::new("notes/today.md"), "renamed.md", 4)
+            .expect("rename request");
+        let find = CommandRequest::find_current("doc", "needle", 4);
+        let create_json = serde_json::to_value(create).expect("serialize create request");
+        let rename_json = serde_json::to_value(rename).expect("serialize rename request");
+        let find_json = serde_json::to_value(find).expect("serialize find request");
+        assert_eq!(create_json["command"], "create_file");
+        assert_eq!(rename_json["command"], "rename_path");
+        assert_eq!(rename_json["name"], "renamed.md");
+        assert_eq!(find_json["command"], "find_current");
+        assert_eq!(find_json["max_matches"], MAX_FIND_MATCHES);
+    }
+
+    #[test]
+    fn current_matches_response_round_trips_with_truncation() {
+        let response = Response {
+            version: PROTOCOL_VERSION,
+            request_id: 5,
+            lifecycle: "running".to_string(),
+            ok: true,
+            outcome: Outcome::ok(),
+            revision: 3,
+            based_on_revision: 2,
+            state: None,
+            directory_listing: None,
+            resource: None,
+            edit: None,
+            close_decision: None,
+            matches: Some(vec![CurrentMatch {
+                start: 8,
+                end: 14,
+                line: 2,
+                column: 3,
+            }]),
+            matches_truncated: true,
+        };
+        let encoded = serde_json::to_vec(&response).expect("serialize find response");
+        let decoded: Response = serde_json::from_slice(&encoded).expect("decode find response");
+        assert_eq!(decoded.matches, response.matches);
+        assert!(decoded.matches_truncated);
     }
 }

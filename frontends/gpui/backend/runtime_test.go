@@ -535,6 +535,98 @@ func TestWorkspaceRefreshReturnsFreshListingAndReconcilesStaleDocument(t *testin
 	}
 }
 
+func TestSemanticWorkspaceMutationsAndCurrentFindRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       90,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "create_folder",
+		Path:            "notes",
+	}))
+	createdFolder := decodeResponse(t, runtime.Pump())
+	if !createdFolder.OK {
+		t.Fatalf("create folder response = %+v", createdFolder)
+	}
+	state = latestStateForTest(t, runtime)
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       91,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "create_file",
+		Path:            "notes/today.txt",
+	}))
+	createdFile := decodeResponse(t, runtime.Pump())
+	if !createdFile.OK {
+		t.Fatalf("create file response = %+v", createdFile)
+	}
+	state = latestStateForTest(t, runtime)
+	if state.Active == "" || len(state.Documents) != 1 {
+		t.Fatalf("created file state = %+v", state)
+	}
+	doc := runtime.app.Documents[application.DocumentID(state.Active)]
+	if err := doc.Insert([]byte("alpha\nbeta\nalpha\n")); err != nil {
+		t.Fatalf("seed created document: %v", err)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       92,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "find_current",
+		DocumentID:      state.Active,
+		Query:           "alpha",
+		MaxMatches:      1,
+	}))
+	found := decodeResponse(t, runtime.Pump())
+	if !found.OK || len(found.Matches) != 1 || !found.MatchesTruncated {
+		t.Fatalf("bounded current find response = %+v", found)
+	}
+	if found.Matches[0].Start != 0 || found.Matches[0].End != 5 || found.Matches[0].Line != 0 {
+		t.Fatalf("current find match = %+v", found.Matches[0])
+	}
+	state = latestStateForTest(t, runtime)
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       93,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "rename_path",
+		Path:            "notes/today.txt",
+		Name:            "renamed.txt",
+	}))
+	renamed := decodeResponse(t, runtime.Pump())
+	if !renamed.OK {
+		t.Fatalf("rename response = %+v", renamed)
+	}
+	state = latestStateForTest(t, runtime)
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       94,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "move_path",
+		Path:            "notes/renamed.txt",
+		RelativePath:    "moved.txt",
+	}))
+	moved := decodeResponse(t, runtime.Pump())
+	if !moved.OK {
+		t.Fatalf("move response = %+v", moved)
+	}
+	state = latestStateForTest(t, runtime)
+	if _, err := os.Stat(filepath.Join(root, "moved.txt")); err != nil {
+		t.Fatalf("moved file missing: %v", err)
+	}
+	if len(state.Documents) != 1 || state.Documents[0].Path != filepath.Join(root, "moved.txt") {
+		t.Fatalf("moved document state = %+v", state.Documents)
+	}
+}
+
 func TestStaleRevision(t *testing.T) {
 	runtime := newStartedRuntime(t, "")
 	defer stopRuntime(t, runtime)

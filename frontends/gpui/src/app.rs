@@ -1,5 +1,6 @@
 use crate::protocol::{
-    DirectoryEntry, DirectoryListing, Outcome, StateDocument, StateEnvelope, VisibleTextSlice,
+    CurrentMatch, DirectoryEntry, DirectoryListing, Outcome, StateDocument, StateEnvelope,
+    VisibleTextSlice,
 };
 use crate::scheduler::BackendUpdate;
 use std::collections::{BTreeMap, HashSet};
@@ -17,6 +18,9 @@ pub struct ShellModel {
     pub close_dialog: Option<String>,
     pub active_selection: ActiveSelection,
     pub visible: Option<VisibleTextSlice>,
+    pub find_query: String,
+    pub matches: Vec<CurrentMatch>,
+    pub matches_truncated: bool,
 }
 
 impl Default for ShellModel {
@@ -32,6 +36,9 @@ impl Default for ShellModel {
             close_dialog: None,
             active_selection: ActiveSelection::Workspace,
             visible: None,
+            find_query: String::new(),
+            matches: Vec::new(),
+            matches_truncated: false,
         }
     }
 }
@@ -81,6 +88,10 @@ impl ShellModel {
             if is_current {
                 self.visible = Some(visible);
             }
+        }
+        if let Some(matches) = update.matches {
+            self.matches = matches;
+            self.matches_truncated = update.matches_truncated;
         }
         self.status = StatusLine::from_outcome(update.outcome, self.state.revision);
     }
@@ -254,6 +265,8 @@ mod tests {
             state,
             listing: None,
             visible,
+            matches: None,
+            matches_truncated: false,
             outcome: Outcome::ok(),
         }
     }
