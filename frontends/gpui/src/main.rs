@@ -5,10 +5,11 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::{Tree, TreeItem, TreeState};
 use gpui_kit::{
     App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    Render, Styled, Window, application, div, prelude::FluentBuilder,
+    Render, Styled, Window, application, div, prelude::FluentBuilder, px,
 };
 use scratchpad_gpui::app::ShellModel;
 use scratchpad_gpui::backend::BackendSessionConfig;
+use scratchpad_gpui::commands::{CommandPaletteModel, ProductCommandId};
 use scratchpad_gpui::editor::EditorSession;
 use scratchpad_gpui::scheduler::BackendUpdate;
 use scratchpad_gpui::scheduler::{BackendCommand, BackendScheduler};
@@ -21,6 +22,9 @@ struct ShellView {
     tree: Entity<TreeState>,
     focus: FocusHandle,
     editor: Option<EditorSession>,
+    palette: CommandPaletteModel,
+    sidebar_visible: bool,
+    editor_font_size: f32,
 }
 
 impl ShellView {
@@ -36,6 +40,9 @@ impl ShellView {
             tree,
             focus,
             editor: None,
+            palette: CommandPaletteModel::default(),
+            sidebar_visible: true,
+            editor_font_size: 16.0,
         }
     }
 
@@ -129,6 +136,104 @@ impl ShellView {
             });
         }
     }
+
+    fn dispatch_product_command(&mut self, id: ProductCommandId) {
+        match id.as_str() {
+            "file.save" => {
+                if !self.model.state.active.is_empty() {
+                    let _ = self.scheduler.submit(BackendCommand::SaveDocument(
+                        self.model.state.active.clone(),
+                    ));
+                }
+            }
+            "document.close" => {
+                if !self.model.state.active.is_empty() {
+                    let _ = self.scheduler.submit(BackendCommand::CloseDocument {
+                        document_id: self.model.state.active.clone(),
+                        discard: false,
+                    });
+                }
+            }
+            "workspace.refresh" => {
+                let _ = self.scheduler.submit(BackendCommand::RefreshWorkspace);
+            }
+            "view.toggle-sidebar" => self.sidebar_visible = !self.sidebar_visible,
+            "settings.open" => self.model.settings_open = !self.model.settings_open,
+            "view.increase-font-size" => {
+                self.editor_font_size = (self.editor_font_size + 1.0).min(48.0)
+            }
+            "view.decrease-font-size" => {
+                self.editor_font_size = (self.editor_font_size - 1.0).max(8.0)
+            }
+            "view.reset-font-size" => self.editor_font_size = 16.0,
+            "edit.select-all" => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.select_all();
+                }
+            }
+            "tab.next" | "tab.previous" => self.select_adjacent_tab(id.as_str() == "tab.next"),
+            _ => {
+                self.model.status.message = format!(
+                    "{} is available in the command vocabulary; this surface is not wired yet",
+                    id.as_str()
+                );
+            }
+        }
+    }
+
+    fn select_adjacent_tab(&mut self, next: bool) {
+        let docs = &self.model.state.documents;
+        if docs.is_empty() {
+            return;
+        }
+        let current = docs
+            .iter()
+            .position(|doc| doc.id == self.model.state.active)
+            .unwrap_or(0);
+        let index = if next {
+            (current + 1) % docs.len()
+        } else {
+            (current + docs.len() - 1) % docs.len()
+        };
+        let _ = self
+            .scheduler
+            .submit(BackendCommand::SelectDocument(docs[index].id.clone()));
+    }
+
+    fn handle_palette_key(&mut self, event: &gpui_kit::KeyDownEvent) {
+        let key = event.keystroke.key.as_str();
+        match key {
+            "escape" => {
+                self.palette.close();
+                self.model.command_palette_open = false;
+            }
+            "up" => self.palette.move_selection(-1),
+            "down" => self.palette.move_selection(1),
+            "enter" => {
+                if let Some(command) = self.palette.selected_command() {
+                    self.dispatch_product_command(command.id);
+                    self.palette.close();
+                    self.model.command_palette_open = false;
+                }
+            }
+            "backspace" => {
+                let mut query = self.palette.query().to_string();
+                query.pop();
+                self.palette.set_query(query);
+            }
+            _ => {
+                if !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform
+                    && let Some(text) = event.keystroke.key_char.as_deref()
+                {
+                    let mut query = self.palette.query().to_string();
+                    query.push_str(text);
+                    self.palette.set_query(query);
+                }
+            }
+        }
+    }
 }
 
 impl Render for ShellView {
@@ -201,13 +306,20 @@ impl Render for ShellView {
                 entry.item().label
             );
             let mut item = ListItem::new(("workspace-entry", index))
-                .child(label)
+                .child(div().pl(px((entry.depth() as f32) * 12.0)).child(label))
                 .selected(selected);
-            if !entry.is_folder() && !workspace_root.is_empty() {
+            if !workspace_root.is_empty() {
                 let path = PathBuf::from(&workspace_root).join(relative);
                 let scheduler = tree_scheduler.clone();
+                let relative_path = entry.item().id.to_string();
+                let is_folder = entry.is_folder();
                 item = item.on_click(move |_, _, _| {
-                    let _ = scheduler.submit(BackendCommand::OpenPath(path.clone()));
+                    let command = if is_folder {
+                        BackendCommand::ListDirectory(Some(PathBuf::from(relative_path.clone())))
+                    } else {
+                        BackendCommand::OpenPath(path.clone())
+                    };
+                    let _ = scheduler.submit(command);
                 });
             }
             item
@@ -219,6 +331,11 @@ impl Render for ShellView {
         let save_scheduler = self.scheduler.clone();
         let close_scheduler = self.scheduler.clone();
         let command_palette = cx.listener(|view, _, _, cx| {
+            if view.model.command_palette_open {
+                view.palette.close();
+            } else {
+                view.palette.open();
+            }
             view.model.command_palette_open = !view.model.command_palette_open;
             cx.notify();
         });
@@ -230,7 +347,127 @@ impl Render for ShellView {
             view.handle_editor_key(event);
             cx.notify();
         });
+        let palette_key = cx.listener(|view, event, _, cx| {
+            view.handle_palette_key(event);
+            cx.notify();
+        });
         let editor_focus = self.focus.clone();
+        let palette_focus = self.focus.clone();
+
+        let palette_items = self
+            .palette
+            .filtered_commands()
+            .into_iter()
+            .take(12)
+            .enumerate()
+            .fold(div().flex().flex_col().gap_1(), |list, (index, command)| {
+                let selected = index == self.palette.selected_index();
+                let id = command.id;
+                let label = format!("{}  ·  {}", command.title, command.id.as_str());
+                let on_click = cx.listener(move |view, _, _, cx| {
+                    view.dispatch_product_command(id);
+                    view.palette.close();
+                    view.model.command_palette_open = false;
+                    cx.notify();
+                });
+                list.child(
+                    Button::new(format!("palette-command-{index}"))
+                        .label(label)
+                        .selected(selected)
+                        .on_click(on_click),
+                )
+            });
+        let palette_panel = div()
+            .id("command-palette-panel")
+            .track_focus(&palette_focus)
+            .on_key_down(palette_key)
+            .p_3()
+            .border_1()
+            .child(format!("Command palette  {}", self.palette.query()))
+            .child(palette_items);
+
+        let close_dialog_id = self.model.close_dialog.clone();
+        let close_dialog = close_dialog_id.map(|document_id| {
+            let save_scheduler = self.scheduler.clone();
+            let discard_scheduler = self.scheduler.clone();
+            let save_id = document_id.clone();
+            let discard_id = document_id.clone();
+            let save = cx.listener(move |view, _, _, cx| {
+                let _ = save_scheduler.submit(BackendCommand::SaveDocument(save_id.clone()));
+                view.model.close_dialog = None;
+                cx.notify();
+            });
+            let discard = cx.listener(move |view, _, _, cx| {
+                let _ = discard_scheduler.submit(BackendCommand::CloseDocument {
+                    document_id: discard_id.clone(),
+                    discard: true,
+                });
+                view.model.close_dialog = None;
+                cx.notify();
+            });
+            let cancel = cx.listener(|view, _, _, cx| {
+                view.model.close_dialog = None;
+                cx.notify();
+            });
+            div()
+                .id("close-dialog")
+                .p_4()
+                .border_1()
+                .child("Unsaved changes")
+                .child(format!("{} has unsaved changes.", file_name(&document_id)))
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(Button::new("close-save").label("Save").on_click(save))
+                        .child(
+                            Button::new("close-discard")
+                                .label("Discard")
+                                .on_click(discard),
+                        )
+                        .child(Button::new("close-cancel").label("Cancel").on_click(cancel)),
+                )
+        });
+        let settings_panel = if self.model.settings_open {
+            let increase = cx.listener(|view, _, _, cx| {
+                view.dispatch_product_command(
+                    scratchpad_gpui::commands::command_by_id("view.increase-font-size")
+                        .expect("known command"),
+                );
+                cx.notify();
+            });
+            let decrease = cx.listener(|view, _, _, cx| {
+                view.dispatch_product_command(
+                    scratchpad_gpui::commands::command_by_id("view.decrease-font-size")
+                        .expect("known command"),
+                );
+                cx.notify();
+            });
+            let reset = cx.listener(|view, _, _, cx| {
+                view.dispatch_product_command(
+                    scratchpad_gpui::commands::command_by_id("view.reset-font-size")
+                        .expect("known command"),
+                );
+                cx.notify();
+            });
+            Some(
+                div()
+                    .p_3()
+                    .border_1()
+                    .child("Settings")
+                    .child(format!("Editor font size: {:.0}px", self.editor_font_size))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(Button::new("font-decrease").label("−").on_click(decrease))
+                            .child(Button::new("font-reset").label("Reset").on_click(reset))
+                            .child(Button::new("font-increase").label("+").on_click(increase)),
+                    ),
+            )
+        } else {
+            None
+        };
         div()
             .size_full()
             .flex()
@@ -270,7 +507,9 @@ impl Render for ShellView {
                 div()
                     .flex()
                     .flex_1()
-                    .child(div().w_64().border_r_1().child(tree))
+                    .when(self.sidebar_visible, |this| {
+                        this.child(div().w_64().border_r_1().child(tree))
+                    })
                     .child(
                         div().flex().flex_col().flex_1().child(tabs).child(
                             div()
@@ -279,16 +518,16 @@ impl Render for ShellView {
                                 .p_4()
                                 .track_focus(&editor_focus)
                                 .on_key_down(editor_key)
-                                .child(viewport),
+                                .child(div().text_size(px(self.editor_font_size)).child(viewport)),
                         ),
                     ),
             )
-            .when(self.model.command_palette_open, |this| {
-                this.child(div().p_3().child("Command palette: semantic commands only"))
-            })
-            .when(self.model.settings_open, |this| {
-                this.child(div().p_3().child("Settings: frontend-local shell settings"))
-            })
+            .when_some(
+                self.model.command_palette_open.then_some(palette_panel),
+                |this, panel| this.child(panel),
+            )
+            .when_some(settings_panel, |this, panel| this.child(panel))
+            .when_some(close_dialog, |this, dialog| this.child(dialog))
             .child(div().p_2().child(format!(
                 "{} · revision {} · {}",
                 self.model.status.message,

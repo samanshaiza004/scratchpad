@@ -2,12 +2,15 @@ use crate::protocol::{
     DirectoryEntry, DirectoryListing, Outcome, StateDocument, StateEnvelope, VisibleTextSlice,
 };
 use crate::scheduler::BackendUpdate;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellModel {
     pub state: StateEnvelope,
     pub tree: Vec<TreeRow>,
+    directory_cache: BTreeMap<String, Vec<DirectoryEntry>>,
+    expanded_paths: HashSet<String>,
     pub status: StatusLine,
     pub command_palette_open: bool,
     pub settings_open: bool,
@@ -21,6 +24,8 @@ impl Default for ShellModel {
         Self {
             state: StateEnvelope::default(),
             tree: Vec::new(),
+            directory_cache: BTreeMap::new(),
+            expanded_paths: HashSet::new(),
             status: StatusLine::default(),
             command_palette_open: false,
             settings_open: false,
@@ -81,11 +86,53 @@ impl ShellModel {
     }
 
     pub fn apply_listing(&mut self, listing: DirectoryListing) {
-        self.tree = listing
-            .entries
-            .into_iter()
-            .map(|entry| TreeRow::from_entry(&listing.relative_path, entry))
-            .collect();
+        if !listing.relative_path.is_empty() {
+            self.expanded_paths.insert(listing.relative_path.clone());
+        }
+        self.directory_cache
+            .insert(listing.relative_path, listing.entries);
+        self.rebuild_tree();
+    }
+
+    pub fn toggle_folder(&mut self, path: &str) -> bool {
+        if !self.expanded_paths.remove(path) {
+            self.expanded_paths.insert(path.to_string());
+            return true;
+        }
+        self.rebuild_tree();
+        false
+    }
+
+    fn rebuild_tree(&mut self) {
+        let mut rows = Vec::new();
+        self.append_directory("", 0, &mut rows, &mut HashSet::new());
+        self.tree = rows;
+    }
+
+    fn append_directory(
+        &self,
+        relative_path: &str,
+        depth: usize,
+        rows: &mut Vec<TreeRow>,
+        visiting: &mut HashSet<String>,
+    ) {
+        if !visiting.insert(relative_path.to_string()) {
+            return;
+        }
+        if let Some(entries) = self.directory_cache.get(relative_path) {
+            for entry in entries {
+                rows.push(TreeRow {
+                    name: entry.name.clone(),
+                    path: entry.path.clone(),
+                    dir: entry.dir,
+                    depth,
+                });
+                if entry.dir && self.expanded_paths.contains(&entry.path) {
+                    self.append_directory(&entry.path, depth + 1, rows, visiting);
+                }
+            }
+        }
+        visiting.remove(relative_path);
     }
 
     pub fn active_document(&self) -> Option<&StateDocument> {
@@ -128,22 +175,6 @@ pub struct TreeRow {
     pub path: String,
     pub dir: bool,
     pub depth: usize,
-}
-
-impl TreeRow {
-    fn from_entry(relative_root: &str, entry: DirectoryEntry) -> Self {
-        let depth = if relative_root.is_empty() {
-            0
-        } else {
-            PathBuf::from(relative_root).components().count()
-        };
-        Self {
-            name: entry.name,
-            path: entry.path,
-            dir: entry.dir,
-            depth,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
