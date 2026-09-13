@@ -48,6 +48,20 @@ impl ShellModel {
             if !self.state.active.is_empty() {
                 self.active_selection = ActiveSelection::Document(self.state.active.clone());
             }
+            if let Some(document_id) = self.close_dialog.as_deref()
+                && !self
+                    .state
+                    .documents
+                    .iter()
+                    .any(|document| document.id == document_id)
+            {
+                self.close_dialog = None;
+            }
+        }
+        if let Some(response) = &update.response
+            && let Some(decision) = &response.close_decision
+        {
+            self.close_dialog = Some(decision.document_id.clone());
         }
         if let Some(listing) = update.listing {
             self.apply_listing(listing);

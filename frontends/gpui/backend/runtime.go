@@ -240,8 +240,27 @@ func (r *Runtime) CaliberContextPointer() unsafe.Pointer {
 func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var listing *DirectoryListing
 	var edit *EditAck
+	var closeDecision *CloseDecision
 	switch request.Command {
 	case "ping", "snapshot":
+	case "refresh_workspace":
+		if !r.app.HasWorkspace {
+			return commandError(request, "no_workspace", errors.New("no workspace is open"))
+		}
+		// Watch events are advisory; a refresh consumes them and asks the
+		// application to reconcile authoritative disk state before returning a
+		// fresh bounded root listing. Tree focus/selection remains frontend-local.
+		r.app.PollWatcher()
+		r.app.ReconcileStale()
+		entries, err := r.app.Workspace.List("")
+		if err != nil {
+			return commandError(request, "application_error", err)
+		}
+		value := directoryListing("", request.Limit, entries)
+		if err := validateDirectoryListing(value); err != nil {
+			return commandError(request, "invalid_path", err)
+		}
+		listing = &value
 	case "open_path":
 		if err := r.app.Dispatch(application.PresentationCommand{
 			Kind: application.PresentationOpenPath,
@@ -269,6 +288,22 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			DocumentID: application.DocumentID(request.DocumentID),
 			Discard:    request.Discard,
 		}); err != nil {
+			if errors.Is(err, application.ErrDirty) {
+				id := request.DocumentID
+				if id == "" {
+					id = string(r.app.Active)
+				}
+				closeDecision = &CloseDecision{
+					DocumentID: id,
+					Dirty:      true,
+					CanSave:    true,
+					CanDiscard: true,
+				}
+				response := commandError(request, "close_requires_decision", err)
+				response.CloseDecision = closeDecision
+				response.Revision = r.revision
+				return response
+			}
 			return commandError(request, "application_error", err)
 		}
 	case "replace_document":
@@ -326,6 +361,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response.BasedOnRevision = request.BasedOnRevision
 	response.DirectoryListing = listing
 	response.Edit = edit
+	response.CloseDecision = closeDecision
 	return response
 }
 

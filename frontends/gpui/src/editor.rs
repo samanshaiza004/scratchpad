@@ -121,6 +121,16 @@ impl EditorSession {
         &self.bytes
     }
 
+    pub fn display_text_with_caret(&self) -> String {
+        let text = String::from_utf8_lossy(&self.bytes);
+        let caret = self.cursor.min(self.bytes.len());
+        let mut rendered = String::with_capacity(text.len() + 1);
+        rendered.push_str(&String::from_utf8_lossy(&self.bytes[..caret]));
+        rendered.push('▏');
+        rendered.push_str(&String::from_utf8_lossy(&self.bytes[caret..]));
+        rendered
+    }
+
     pub fn caret(&self) -> usize {
         self.cursor
     }
@@ -152,6 +162,54 @@ impl EditorSession {
 
     pub fn insert_text(&mut self, text: &str) -> Result<EditIntent, EditorSessionError> {
         self.replace_bytes(text.as_bytes())
+    }
+
+    pub fn delete_backward(&mut self) -> Result<Option<EditIntent>, EditorSessionError> {
+        if self.pending.is_some() {
+            return Err(EditorSessionError::PendingEdit);
+        }
+        if self.anchor != self.cursor {
+            return self.replace_bytes(&[]).map(Some);
+        }
+        if self.cursor == 0 {
+            return Ok(None);
+        }
+        let start = self.previous_boundary(self.cursor);
+        self.set_selection(start, self.cursor)?;
+        self.replace_bytes(&[]).map(Some)
+    }
+
+    pub fn move_left(&mut self, extend_selection: bool) -> Result<(), EditorSessionError> {
+        let next = if self.cursor == 0 {
+            0
+        } else {
+            self.previous_boundary(self.cursor)
+        };
+        if extend_selection {
+            self.cursor = next;
+            Ok(())
+        } else {
+            self.set_caret(next)
+        }
+    }
+
+    pub fn move_right(&mut self, extend_selection: bool) -> Result<(), EditorSessionError> {
+        let next = if self.cursor >= self.bytes.len() {
+            self.bytes.len()
+        } else {
+            self.next_boundary(self.cursor)
+        };
+        if extend_selection {
+            self.cursor = next;
+            Ok(())
+        } else {
+            self.set_caret(next)
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = 0;
+        self.cursor = self.bytes.len();
     }
 
     pub fn replace_bytes(&mut self, replacement: &[u8]) -> Result<EditIntent, EditorSessionError> {
@@ -241,6 +299,22 @@ impl EditorSession {
 
     fn is_boundary(&self, position: usize) -> bool {
         position <= self.bytes.len() && str::from_utf8(&self.bytes[..position]).is_ok()
+    }
+
+    fn previous_boundary(&self, position: usize) -> usize {
+        let mut candidate = position.saturating_sub(1);
+        while candidate > 0 && !self.is_boundary(candidate) {
+            candidate -= 1;
+        }
+        candidate
+    }
+
+    fn next_boundary(&self, position: usize) -> usize {
+        let mut candidate = position.saturating_add(1).min(self.bytes.len());
+        while candidate < self.bytes.len() && !self.is_boundary(candidate) {
+            candidate += 1;
+        }
+        candidate
     }
 }
 
@@ -334,5 +408,25 @@ mod tests {
             EditorSession::from_visible(&truncated, 7),
             Err(EditorSessionError::TruncatedWindow)
         ));
+    }
+
+    #[test]
+    fn local_navigation_and_delete_are_utf8_boundary_safe() {
+        let mut session = EditorSession::from_visible(
+            &VisibleTextSlice {
+                bytes: "a🦀b\n".as_bytes().to_vec(),
+                ..visible()
+            },
+            7,
+        )
+        .expect("session");
+        session.set_caret(5).expect("after crab");
+        session.move_left(false).expect("left");
+        assert_eq!(session.caret(), 1);
+        session.move_right(false).expect("right");
+        assert_eq!(session.caret(), 5);
+        let edit = session.delete_backward().expect("delete").expect("edit");
+        assert_eq!(edit.start_byte, 101);
+        assert_eq!(session.bytes(), b"ab\n");
     }
 }

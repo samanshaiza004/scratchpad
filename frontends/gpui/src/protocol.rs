@@ -91,6 +91,10 @@ impl CommandRequest {
         Self::bare(CommandKind::Ping, 0)
     }
 
+    pub fn refresh_workspace(based_on_revision: u64) -> Self {
+        Self::bare(CommandKind::RefreshWorkspace, based_on_revision)
+    }
+
     pub fn open_path(path: &Path, based_on_revision: u64) -> Result<Self> {
         let mut request = Self::bare(CommandKind::OpenPath, based_on_revision);
         request.path = Some(required_path(path, "path")?);
@@ -186,6 +190,7 @@ impl CommandRequest {
 pub enum CommandKind {
     Snapshot,
     Ping,
+    RefreshWorkspace,
     OpenPath,
     SelectDocument,
     SaveDocument,
@@ -215,6 +220,8 @@ pub struct Response {
     pub resource: Option<ResourceDescriptor>,
     #[serde(default)]
     pub edit: Option<EditAck>,
+    #[serde(default)]
+    pub close_decision: Option<CloseDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -305,6 +312,14 @@ pub struct EditAck {
     pub start_byte: usize,
     pub old_end_byte: usize,
     pub new_end_byte: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloseDecision {
+    pub document_id: String,
+    pub dirty: bool,
+    pub can_save: bool,
+    pub can_discard: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,5 +512,39 @@ mod tests {
 
         let oversized = vec![0; VISIBLE_SLICE_HEADER_LEN + MAX_VISIBLE_BYTES + 1];
         assert!(VisibleTextSlice::decode(&oversized, &descriptor).is_err());
+    }
+
+    #[test]
+    fn refresh_workspace_request_uses_the_semantic_command_name() {
+        let request = CommandRequest::refresh_workspace(17);
+        let json = serde_json::to_value(&request).expect("serialize refresh request");
+        assert_eq!(json["command"], "refresh_workspace");
+        assert_eq!(json["based_on_revision"], 17);
+    }
+
+    #[test]
+    fn close_decision_is_optional_and_round_trips() {
+        let response = Response {
+            version: PROTOCOL_VERSION,
+            request_id: 4,
+            lifecycle: "running".to_string(),
+            ok: false,
+            outcome: Outcome::error("close_requires_decision", "document is dirty", false),
+            revision: 9,
+            based_on_revision: 8,
+            state: None,
+            directory_listing: None,
+            resource: None,
+            edit: None,
+            close_decision: Some(CloseDecision {
+                document_id: "doc".to_string(),
+                dirty: true,
+                can_save: true,
+                can_discard: true,
+            }),
+        };
+        let encoded = serde_json::to_vec(&response).expect("serialize close decision");
+        let decoded: Response = serde_json::from_slice(&encoded).expect("decode close decision");
+        assert_eq!(decoded.close_decision, response.close_decision);
     }
 }

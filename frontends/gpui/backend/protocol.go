@@ -67,6 +67,7 @@ type Response struct {
 	DirectoryListing *DirectoryListing   `json:"directory_listing,omitempty"`
 	Resource         *ResourceDescriptor `json:"resource,omitempty"`
 	Edit             *EditAck            `json:"edit,omitempty"`
+	CloseDecision    *CloseDecision      `json:"close_decision,omitempty"`
 }
 
 type ResourceDescriptor struct {
@@ -88,6 +89,17 @@ type EditAck struct {
 	StartByte      uint64 `json:"start_byte"`
 	OldEndByte     uint64 `json:"old_end_byte"`
 	NewEndByte     uint64 `json:"new_end_byte"`
+}
+
+// CloseDecision describes an application-owned close that needs an explicit
+// frontend decision.  The frontend may present save/discard/cancel controls,
+// but the application remains authoritative for the dirty check and the
+// eventual save/close commands.
+type CloseDecision struct {
+	DocumentID string `json:"document_id"`
+	Dirty      bool   `json:"dirty"`
+	CanSave    bool   `json:"can_save"`
+	CanDiscard bool   `json:"can_discard"`
 }
 
 type Outcome struct {
@@ -176,7 +188,7 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		return request, response, false
 	}
 	switch request.Command {
-	case "snapshot", "ping":
+	case "snapshot", "ping", "refresh_workspace":
 	case "open_path":
 		if err := validateRequiredPath(request.Path, "path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false

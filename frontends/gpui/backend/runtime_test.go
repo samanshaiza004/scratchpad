@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"scratchpad/application"
+	"scratchpad/workspace"
 )
 
 func TestLifecycleDeterminism(t *testing.T) {
@@ -466,8 +467,12 @@ func TestSmokeRoundTrip(t *testing.T) {
 		Discard:         false,
 	}))
 	dirtyClose := decodeResponse(t, runtime.Pump())
-	if dirtyClose.OK || dirtyClose.Outcome.Code != "application_error" {
+	if dirtyClose.OK || dirtyClose.Outcome.Code != "close_requires_decision" {
 		t.Fatalf("dirty close response = %+v", dirtyClose)
+	}
+	if dirtyClose.CloseDecision == nil || dirtyClose.CloseDecision.DocumentID != string(id) ||
+		!dirtyClose.CloseDecision.Dirty || !dirtyClose.CloseDecision.CanSave || !dirtyClose.CloseDecision.CanDiscard {
+		t.Fatalf("dirty close decision = %+v", dirtyClose.CloseDecision)
 	}
 	state = latestStateForTest(t, runtime)
 	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
@@ -481,6 +486,52 @@ func TestSmokeRoundTrip(t *testing.T) {
 	discardClose := decodeResponse(t, runtime.Pump())
 	if !discardClose.OK {
 		t.Fatalf("discard close response = %+v", discardClose)
+	}
+}
+
+func TestWorkspaceRefreshReturnsFreshListingAndReconcilesStaleDocument(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.txt")
+	writeFile(t, path, "before\n")
+
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       80,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path",
+		Path:            path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := application.DocumentID(state.Active)
+
+	writeFile(t, path, "after\n")
+	runtime.app.HandleWatchEvent(workspace.WatchEvent{Name: path})
+	newPath := filepath.Join(root, "new.txt")
+	writeFile(t, newPath, "new\n")
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       81,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "refresh_workspace",
+	}))
+	refreshed := decodeResponse(t, runtime.Pump())
+	if !refreshed.OK || refreshed.DirectoryListing == nil {
+		t.Fatalf("refresh response = %+v", refreshed)
+	}
+	if refreshed.DirectoryListing.RelativePath != "" || len(refreshed.DirectoryListing.Entries) != 2 {
+		t.Fatalf("refresh listing = %+v", refreshed.DirectoryListing)
+	}
+	if got := string(runtime.app.Documents[id].Editor.Buffer.Text()); got != "after\n" {
+		t.Fatalf("refresh did not reconcile stale document: %q", got)
 	}
 }
 

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 pub enum BackendCommand {
     Snapshot,
     Ping,
+    RefreshWorkspace,
     OpenPath(PathBuf),
     SelectDocument(String),
     SaveDocument(String),
@@ -38,6 +39,9 @@ impl BackendCommand {
         match self {
             BackendCommand::Snapshot => Ok(Some(CommandRequest::snapshot(based_on_revision))),
             BackendCommand::Ping => Ok(Some(CommandRequest::ping())),
+            BackendCommand::RefreshWorkspace => {
+                Ok(Some(CommandRequest::refresh_workspace(based_on_revision)))
+            }
             BackendCommand::OpenPath(path) => {
                 Ok(Some(CommandRequest::open_path(&path, based_on_revision)?))
             }
@@ -139,6 +143,9 @@ impl PendingCommands {
             BackendCommand::ListDirectory(_) => self
                 .queue
                 .retain(|queued| !matches!(queued, BackendCommand::ListDirectory(_))),
+            BackendCommand::RefreshWorkspace => self
+                .queue
+                .retain(|queued| !matches!(queued, BackendCommand::RefreshWorkspace)),
             BackendCommand::SelectDocument(_) => self
                 .queue
                 .retain(|queued| !matches!(queued, BackendCommand::SelectDocument(_))),
@@ -357,6 +364,8 @@ mod tests {
         pending.push(BackendCommand::Snapshot);
         pending.push(BackendCommand::SelectDocument("a".into()));
         pending.push(BackendCommand::SelectDocument("b".into()));
+        pending.push(BackendCommand::RefreshWorkspace);
+        pending.push(BackendCommand::RefreshWorkspace);
         pending.push(BackendCommand::ListDirectory(None));
         pending.push(BackendCommand::ListDirectory(Some("src".into())));
         pending.push(BackendCommand::ReadVisibleLines {
@@ -367,7 +376,7 @@ mod tests {
             document_id: "b".into(),
             start_line: 12,
         });
-        assert_eq!(pending.len(), 4);
+        assert_eq!(pending.len(), 5);
 
         let mut scroll = PendingCommands::default();
         for start_line in 0..100 {

@@ -4,11 +4,13 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::{Tree, TreeItem, TreeState};
 use gpui_kit::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window,
-    application, div, prelude::FluentBuilder,
+    App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement,
+    Render, Styled, Window, application, div, prelude::FluentBuilder,
 };
 use scratchpad_gpui::app::ShellModel;
 use scratchpad_gpui::backend::BackendSessionConfig;
+use scratchpad_gpui::editor::EditorSession;
+use scratchpad_gpui::scheduler::BackendUpdate;
 use scratchpad_gpui::scheduler::{BackendCommand, BackendScheduler};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -17,14 +19,23 @@ struct ShellView {
     model: ShellModel,
     scheduler: BackendScheduler,
     tree: Entity<TreeState>,
+    focus: FocusHandle,
+    editor: Option<EditorSession>,
 }
 
 impl ShellView {
-    fn new(model: ShellModel, scheduler: BackendScheduler, tree: Entity<TreeState>) -> Self {
+    fn new(
+        model: ShellModel,
+        scheduler: BackendScheduler,
+        tree: Entity<TreeState>,
+        focus: FocusHandle,
+    ) -> Self {
         Self {
             model,
             scheduler,
             tree,
+            focus,
+            editor: None,
         }
     }
 
@@ -36,6 +47,87 @@ impl ShellView {
             .map(|row| TreeItem::new(row.path.clone(), row.name.clone()))
             .collect::<Vec<_>>();
         self.tree.update(cx, |state, cx| state.set_items(items, cx));
+    }
+
+    fn apply_backend_update(&mut self, update: BackendUpdate, cx: &mut Context<Self>) {
+        let response = update.response.clone();
+        self.model.apply_update(update);
+
+        if let Some(slice) = self.model.visible.as_ref() {
+            let reset = self.editor.as_ref().is_none_or(|editor| {
+                editor.document_id() != slice.document_id
+                    || editor.editor_revision() != slice.editor_revision
+            });
+            if reset {
+                self.editor =
+                    EditorSession::from_visible(slice, self.model.state.application_revision).ok();
+            }
+        } else if self.model.active_document().is_none() {
+            self.editor = None;
+        }
+
+        if let Some(response) = response {
+            if let Some(acknowledgement) = response.edit.as_ref() {
+                if let Some(editor) = self.editor.as_mut() {
+                    if response.ok {
+                        if let Err(error) = editor.acknowledge(acknowledgement, &self.model.state) {
+                            self.model.status.message = format!("edit reconciliation: {error}");
+                        }
+                    } else if response.outcome.code == "stale_editor_revision" {
+                        let _ = editor.reject();
+                        let _ = self.scheduler.submit(BackendCommand::ReadVisibleLines {
+                            document_id: editor.document_id().to_string(),
+                            start_line: 0,
+                        });
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn handle_editor_key(&mut self, event: &gpui_kit::KeyDownEvent) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        let extend = modifiers.shift;
+        let mut intent = None;
+        match key {
+            "left" => {
+                let _ = editor.move_left(extend);
+            }
+            "right" => {
+                let _ = editor.move_right(extend);
+            }
+            "backspace" => {
+                intent = editor.delete_backward().ok().flatten();
+            }
+            "enter" => {
+                intent = editor.insert_text("\n").ok();
+            }
+            "a" if modifiers.control || modifiers.platform => editor.select_all(),
+            _ => {
+                if !modifiers.control
+                    && !modifiers.alt
+                    && !modifiers.platform
+                    && let Some(text) = event.keystroke.key_char.as_deref()
+                    && !text.is_empty()
+                {
+                    intent = editor.insert_text(text).ok();
+                }
+            }
+        }
+        if let Some(intent) = intent {
+            let _ = self.scheduler.submit(BackendCommand::ReplaceDocument {
+                document_id: intent.document_id,
+                editor_revision: intent.editor_revision,
+                start_byte: intent.start_byte,
+                end_byte: intent.end_byte,
+                replacement: intent.replacement,
+            });
+        }
     }
 }
 
@@ -51,14 +143,18 @@ impl Render for ShellView {
             .visible
             .as_ref()
             .map(|slice| {
-                format!(
-                    "lines {}–{} · revision {}{}\n{}",
+                let header = format!(
+                    "lines {}–{} · revision {}{}\n",
                     slice.start_line,
                     slice.end_line,
                     slice.editor_revision,
-                    if slice.truncated { " · bounded" } else { "" },
-                    slice.display_text()
-                )
+                    if slice.truncated { " · bounded" } else { "" }
+                );
+                if let Some(editor) = self.editor.as_ref() {
+                    format!("{header}{}", editor.display_text_with_caret())
+                } else {
+                    format!("{header}{}", slice.display_text())
+                }
             })
             .unwrap_or_else(|| format!("Read-only document viewport\n{active}"));
         let tab_ids = self
@@ -130,6 +226,11 @@ impl Render for ShellView {
             view.model.settings_open = !view.model.settings_open;
             cx.notify();
         });
+        let editor_key = cx.listener(|view, event, _, cx| {
+            view.handle_editor_key(event);
+            cx.notify();
+        });
+        let editor_focus = self.focus.clone();
         div()
             .size_full()
             .flex()
@@ -171,12 +272,15 @@ impl Render for ShellView {
                     .flex_1()
                     .child(div().w_64().border_r_1().child(tree))
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .child(tabs)
-                            .child(div().flex_1().p_4().child(viewport)),
+                        div().flex().flex_col().flex_1().child(tabs).child(
+                            div()
+                                .id("editor-surface")
+                                .flex_1()
+                                .p_4()
+                                .track_focus(&editor_focus)
+                                .on_key_down(editor_key)
+                                .child(viewport),
+                        ),
                     ),
             )
             .when(self.model.command_palette_open, |this| {
@@ -232,8 +336,14 @@ fn run_application() {
         let window = cx
             .open_window(Default::default(), |_, cx| {
                 let tree = cx.new(|cx| TreeState::new(cx));
+                let focus = cx.focus_handle();
                 let entity = cx.new(|_| {
-                    ShellView::new(ShellModel::default(), scheduler.clone(), tree.clone())
+                    ShellView::new(
+                        ShellModel::default(),
+                        scheduler.clone(),
+                        tree.clone(),
+                        focus.clone(),
+                    )
                 });
                 view_entity = Some(entity.clone());
                 entity
@@ -248,7 +358,7 @@ fn run_application() {
                 if weak_view
                     .update(cx, |view, cx| {
                         let has_listing = update.listing.is_some();
-                        view.model.apply_update(update);
+                        view.apply_backend_update(update, cx);
                         if has_listing {
                             view.sync_tree(cx);
                         }
@@ -279,7 +389,14 @@ fn run_native_smoke() -> Result<u64, String> {
         backend_task.detach();
         let tree = cx.new(|cx| TreeState::new(cx));
         cx.open_window(Default::default(), |_, cx| {
-            cx.new(|_| ShellView::new(ShellModel::default(), scheduler.clone(), tree.clone()))
+            cx.new(|cx| {
+                ShellView::new(
+                    ShellModel::default(),
+                    scheduler.clone(),
+                    tree.clone(),
+                    cx.focus_handle(),
+                )
+            })
         })
         .map_err(|error| error.to_string())
         .expect("failed to open GPUI smoke window");
