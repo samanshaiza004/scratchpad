@@ -29,7 +29,7 @@ The Go backend links one Caliber `cdylib` at build time. The Rust executable
 does not depend on `caliber-ffi`; it loads only the Go backend's small C symbol
 surface, validates the returned Caliber ABI version/table size, and calls the
 returned table directly. The expected Caliber checkout is pinned to
-`e350c50` by [`EXPERIMENT-METADATA.toml`](EXPERIMENT-METADATA.toml), with an
+`abbe4f7` by [`EXPERIMENT-METADATA.toml`](EXPERIMENT-METADATA.toml), with an
 explicit override required for another revision.
 
 The lifecycle is explicit: `start → running → stop → stopped`. State leases are
@@ -103,3 +103,24 @@ macOS, `$ORIGIN` on Linux, and the executable directory on Windows).
 
 No ABI stability, crates.io release, public generated header, IDL, or code
 generation is promised.
+
+### Windows
+
+Use 64-bit Go 1.25.5 or newer, Rust's `x86_64-pc-windows-msvc` toolchain,
+Visual Studio C++ Build Tools with the Windows SDK, and a recent 64-bit
+MinGW-w64 GCC for cgo. Check `go version`: a 32-bit Go installation earlier
+on `PATH` will not match the native Rust and GCC artifacts.
+
+```powershell
+$env:CALIBER_ROOT = (Resolve-Path ..\caliber).Path
+$env:SCRATCHPAD_GPUI_WORKSPACE = (Resolve-Path .).Path
+go run ./cmd/gpui-dev test --release
+go run ./cmd/gpui-dev smoke --release
+go run ./cmd/gpui-dev run --release
+```
+
+The workspace variable supplies the backend's initial workspace. The Windows
+cgo adapter explicitly links `caliber_ffi.dll`: an unqualified
+`-lcaliber_ffi` can select Rust's MSVC static `caliber_ffi.lib` instead and
+fail with unresolved MSVC runtime symbols. Caliber and GPUI can therefore
+both use the MSVC Rust target while the Go backend uses MinGW GCC.

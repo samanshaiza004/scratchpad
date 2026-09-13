@@ -3,7 +3,8 @@ package backend
 /*
 #cgo darwin LDFLAGS: -lcaliber_ffi -Wl,-rpath,@loader_path -Wl,-rpath,@executable_path
 #cgo linux LDFLAGS: -lcaliber_ffi -Wl,-rpath,$ORIGIN
-#cgo windows LDFLAGS: -lcaliber_ffi
+// Select the DLL explicitly: -lcaliber_ffi can pick Rust's MSVC static .lib.
+#cgo windows LDFLAGS: -l:caliber_ffi.dll
 #include <stdint.h>
 #include <stddef.h>
 
@@ -166,7 +167,7 @@ import (
 	"unsafe"
 )
 
-const requiredCaliberCommit = "e350c50"
+const requiredCaliberCommit = "abbe4f7"
 
 var errNoCommand = errors.New("no pending Caliber command")
 

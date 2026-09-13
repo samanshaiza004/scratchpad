@@ -1,0 +1,2 @@
+# Keep gofmt checks stable on Windows checkouts with core.autocrlf enabled.
+*.go text eol=lf

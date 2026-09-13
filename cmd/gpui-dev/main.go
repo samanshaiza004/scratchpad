@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const expectedCaliberCommit = "e350c50"
+const expectedCaliberCommit = "abbe4f7"
 
 type artifactManifest struct {
 	CaliberCommit string   `json:"caliber_commit"`

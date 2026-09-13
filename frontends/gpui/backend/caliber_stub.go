@@ -7,7 +7,7 @@ import (
 	"unsafe"
 )
 
-const requiredCaliberCommit = "e350c50"
+const requiredCaliberCommit = "abbe4f7"
 
 var errNoCommand = errors.New("no pending Caliber command")
 

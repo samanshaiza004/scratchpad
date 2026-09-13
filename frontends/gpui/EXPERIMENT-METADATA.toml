@@ -1,6 +1,6 @@
 status = "experimental"
 stage = "gate-4-edit-spike"
-caliber_commit = "e350c50"
+caliber_commit = "abbe4f7"
 caliber_abi_version = 1
 request_id_type = "u64"
 path_encoding = "utf8-only-reject-invalid"

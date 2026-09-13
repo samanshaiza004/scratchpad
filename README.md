@@ -46,9 +46,17 @@ go run ./cmd/scratchpad
 go run ./cmd/scratchpad --version
 ```
 
-The current window separates tactile, cool-gray application machinery from a
-quiet warm-paper editor surface. It remains ordinary Shirei composition with
-no application runtime boundary.
+The current/default application, `cmd/scratchpad`, uses Go and Shirei. Its
+window separates tactile, cool-gray application machinery from a quiet
+warm-paper editor surface.
+
+[`frontends/gpui`](frontends/gpui/README.md) is an experimental second frontend
+using Rust, GPUI, Caliber, and a Go backend to prove UI/backend independence.
+Its cgo backend is a nested Go module, so ordinary root Go tests remain
+independent. It currently provides a shell and bounded document viewport;
+the Gate 4 editing seam is exercised through foreign acceptance tests, not a
+complete interactive editor with viewport, IME, and shaping support. Shirei
+remains the default application.
 
 The editor starts at a 16-pixel font size. Use **View → Increase Editor Font
 Size**, **Decrease Editor Font Size**, or **Reset Editor Font Size** to adjust

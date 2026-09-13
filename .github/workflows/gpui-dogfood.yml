@@ -2,11 +2,11 @@ name: GPUI dogfood
 
 on:
   push:
-    branches: [gpui-dogfood]
+    branches: [main, gpui-dogfood]
   pull_request:
 
 jobs:
-  gate-1-through-3:
+  gate-1-through-4:
     strategy:
       fail-fast: false
       matrix:
@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: samanshaiza004/caliber
-          ref: e350c50
+          ref: abbe4f7
           path: caliber
       - uses: actions/setup-go@v5
         with:
