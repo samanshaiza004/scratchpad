@@ -1,6 +1,7 @@
 package application
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,6 +74,52 @@ func TestPresentationContractRejectsUnknownCommandsAndDocuments(t *testing.T) {
 	}
 	if err := client.Dispatch(PresentationCommand{Kind: PresentationSelectDocument, DocumentID: "missing"}); err == nil {
 		t.Fatal("unknown document was selected")
+	}
+}
+
+func TestPresentationContractAppliesRevisionedReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edit.txt")
+	if err := os.WriteFile(path, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := New(nil)
+	var client PresentationClient = app
+	if err := client.Dispatch(PresentationCommand{Kind: PresentationOpenPath, Path: path}); err != nil {
+		t.Fatal(err)
+	}
+	state := client.Snapshot()
+	id := state.Active
+	if err := client.Dispatch(PresentationCommand{
+		Kind:           PresentationReplaceDocument,
+		DocumentID:     id,
+		EditorRevision: state.Documents[0].EditorRevision,
+		StartByte:      5,
+		EndByte:        5,
+		Replacement:    []byte(" world"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := client.Snapshot()
+	if got := string(app.Documents[id].Editor.Buffer.Text()); got != "hello world\n" {
+		t.Fatalf("edited bytes = %q", got)
+	}
+	if updated.Documents[0].EditorRevision == state.Documents[0].EditorRevision || !updated.Documents[0].Dirty {
+		t.Fatalf("edited state = %+v", updated.Documents[0])
+	}
+
+	err := client.Dispatch(PresentationCommand{
+		Kind:           PresentationReplaceDocument,
+		DocumentID:     id,
+		EditorRevision: state.Documents[0].EditorRevision,
+		StartByte:      0,
+		EndByte:        0,
+		Replacement:    []byte("stale "),
+	})
+	if !errors.Is(err, ErrStaleEditorRevision) {
+		t.Fatalf("stale edit error = %v, want ErrStaleEditorRevision", err)
 	}
 }
 

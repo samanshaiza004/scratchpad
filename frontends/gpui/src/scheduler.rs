@@ -23,6 +23,13 @@ pub enum BackendCommand {
         document_id: String,
         start_line: usize,
     },
+    ReplaceDocument {
+        document_id: String,
+        editor_revision: u64,
+        start_byte: usize,
+        end_byte: usize,
+        replacement: Vec<u8>,
+    },
     Shutdown,
 }
 
@@ -60,6 +67,20 @@ impl BackendCommand {
                 start_line,
                 MAX_VISIBLE_LINES,
                 MAX_VISIBLE_BYTES,
+                based_on_revision,
+            ))),
+            BackendCommand::ReplaceDocument {
+                document_id,
+                editor_revision,
+                start_byte,
+                end_byte,
+                replacement,
+            } => Ok(Some(CommandRequest::replace_document(
+                document_id,
+                editor_revision,
+                start_byte,
+                end_byte,
+                &replacement,
                 based_on_revision,
             ))),
             BackendCommand::Shutdown => Ok(None),

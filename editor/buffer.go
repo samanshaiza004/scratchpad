@@ -244,33 +244,34 @@ func (b *Buffer) LineRange(line int) (start, end int, ok bool) {
 // logical lines and maxBytes bytes. endLine is exclusive. A byte-limited
 // result may end in the middle of a line; in that case endLine still includes
 // that partially returned line. The operation resolves two indexed line
-// boundaries and copies the intervening pieces once.
-func (b *Buffer) BoundedLines(startLine, maxLines, maxBytes int) ([]byte, int, bool, error) {
+// boundaries and copies the intervening pieces once. startByte identifies the
+// returned range in the document's byte coordinate space.
+func (b *Buffer) BoundedLines(startLine, maxLines, maxBytes int) (data []byte, startByte, endLine int, truncated bool, err error) {
 	if b == nil {
-		return nil, 0, false, errors.New("nil buffer")
+		return nil, 0, 0, false, errors.New("nil buffer")
 	}
 	if startLine < 0 || startLine >= b.LineCount() {
-		return nil, 0, false, errors.New("start line outside buffer")
+		return nil, 0, 0, false, errors.New("start line outside buffer")
 	}
 	if maxLines <= 0 {
-		return nil, 0, false, errors.New("max lines must be positive")
+		return nil, 0, 0, false, errors.New("max lines must be positive")
 	}
 	if maxBytes <= 0 {
-		return nil, 0, false, errors.New("max bytes must be positive")
+		return nil, 0, 0, false, errors.New("max bytes must be positive")
 	}
 
 	lineCount := b.LineCount()
-	endLine := startLine + maxLines
+	endLine = startLine + maxLines
 	if endLine > lineCount {
 		endLine = lineCount
 	}
-	startByte := b.lineStart(startLine)
+	startByte = b.lineStart(startLine)
 	endByte := b.lineStart(endLine)
 	if endByte-startByte <= maxBytes {
-		return b.slice(startByte, endByte), endLine, endLine < lineCount, nil
+		return b.slice(startByte, endByte), startByte, endLine, endLine < lineCount, nil
 	}
 
-	data := b.slice(startByte, startByte+maxBytes)
+	data = b.slice(startByte, startByte+maxBytes)
 	returnedEndLine := startLine + bytes.Count(data, []byte{'\n'})
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		returnedEndLine++
@@ -278,7 +279,7 @@ func (b *Buffer) BoundedLines(startLine, maxLines, maxBytes int) ([]byte, int, b
 	if returnedEndLine > endLine {
 		returnedEndLine = endLine
 	}
-	return data, returnedEndLine, true, nil
+	return data, startByte, returnedEndLine, true, nil
 }
 
 func (b *Buffer) ByteAt(at int) (byte, bool) {

@@ -1,4 +1,5 @@
 use scratchpad_gpui::backend::{BackendSession, BackendSessionConfig};
+use scratchpad_gpui::editor::EditorSession;
 use scratchpad_gpui::protocol::CommandRequest;
 use std::fs;
 use std::path::PathBuf;
@@ -26,10 +27,12 @@ fn rust_calls_go_and_caliber_for_gate_three_slice() {
     };
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let path = workspace.path().join("note.txt");
+    let editable_path = workspace.path().join("editable.txt");
     let content = (0..2_000)
         .map(|line| format!("line {line}: immutable visible resource\n"))
         .collect::<String>();
     fs::write(&path, content).expect("write note");
+    fs::write(&editable_path, "hello\nworld\n").expect("write editable note");
     let mut session = BackendSession::open(BackendSessionConfig {
         backend_library: Some(PathBuf::from(backend_library)),
         workspace_path: Some(workspace.path().to_path_buf()),
@@ -143,6 +146,115 @@ fn rust_calls_go_and_caliber_for_gate_three_slice() {
     }
     let command_to_state_ns = command_started.elapsed().as_nanos() / SAMPLE_COUNT as u128;
 
+    let open_editable = CommandRequest::open_path(&editable_path, state.application_revision)
+        .expect("open editable document");
+    session
+        .dispatch(&open_editable)
+        .expect("dispatch editable document open");
+    let opened_editable = session
+        .pump()
+        .expect("pump editable document open")
+        .expect("editable document open response");
+    assert!(
+        opened_editable.ok,
+        "editable open response: {opened_editable:?}"
+    );
+    state = session.read_state().expect("state after editable open");
+    let editable_id = state.active.clone();
+    let read_editable = CommandRequest::read_visible_lines(
+        editable_id.clone(),
+        0,
+        scratchpad_gpui::protocol::MAX_VISIBLE_LINES,
+        scratchpad_gpui::protocol::MAX_VISIBLE_BYTES,
+        state.application_revision,
+    );
+    session
+        .dispatch(&read_editable)
+        .expect("dispatch editable visible range");
+    let editable_resource = session
+        .pump()
+        .expect("pump editable visible range")
+        .expect("editable visible range response")
+        .resource
+        .expect("editable visible resource");
+    let editable_slice = session
+        .read_visible_slice(&editable_resource)
+        .expect("read editable visible range");
+    let mut editor = EditorSession::from_visible(&editable_slice, state.application_revision)
+        .expect("create frontend-local editor session");
+    editor.set_caret(5).expect("place editable caret");
+    let intent = editor.insert_text(" x").expect("optimistic insertion");
+    assert_eq!(editor.bytes(), b"hello x\nworld\n");
+    let edit = intent.command();
+    let edit_started = Instant::now();
+    session
+        .dispatch(&edit)
+        .expect("dispatch editable replacement");
+    let edit_response = session
+        .pump()
+        .expect("pump editable replacement")
+        .expect("editable replacement response");
+    assert!(edit_response.ok, "edit response: {edit_response:?}");
+    let acknowledgement = edit_response.edit.as_ref().expect("edit acknowledgement");
+    assert_eq!(acknowledgement.start_byte, 5);
+    assert_eq!(acknowledgement.old_end_byte, 5);
+    assert_eq!(acknowledgement.new_end_byte, 7);
+    state = session.read_state().expect("state after edit");
+    editor
+        .acknowledge(acknowledgement, &state)
+        .expect("acknowledge editable replacement");
+    assert!(!editor.has_pending_edit());
+    let edit_ack_roundtrip_ns = edit_started.elapsed().as_nanos();
+
+    let stale_edit = CommandRequest::replace_document(
+        editable_id.clone(),
+        editable_slice.editor_revision,
+        0,
+        0,
+        b"stale",
+        state.application_revision,
+    );
+    session
+        .dispatch(&stale_edit)
+        .expect("dispatch stale replacement");
+    let stale_response = session
+        .pump()
+        .expect("pump stale replacement")
+        .expect("stale replacement response");
+    assert!(!stale_response.ok);
+    assert_eq!(stale_response.outcome.code, "stale_editor_revision");
+
+    let save_editable =
+        CommandRequest::save_document(editable_id.clone(), state.application_revision);
+    session
+        .dispatch(&save_editable)
+        .expect("dispatch editable save");
+    let saved_editable = session
+        .pump()
+        .expect("pump editable save")
+        .expect("editable save response");
+    assert!(
+        saved_editable.ok,
+        "editable save response: {saved_editable:?}"
+    );
+    let saved_bytes = fs::read(&editable_path).expect("read saved editable document");
+    assert_eq!(saved_bytes, b"hello x\nworld\n");
+    state = session.read_state().expect("state after editable save");
+    let close_editable =
+        CommandRequest::close_document(editable_id, false, state.application_revision);
+    session
+        .dispatch(&close_editable)
+        .expect("dispatch editable close");
+    let closed_editable = session
+        .pump()
+        .expect("pump editable close")
+        .expect("editable close response");
+    assert!(
+        closed_editable.ok,
+        "editable close response: {closed_editable:?}"
+    );
+    state = session.read_state().expect("state after editable close");
+
     if let Some(path) = std::env::var_os("SCRATCHPAD_GPUI_MEASURE_PATH") {
         let measurements = serde_json::json!({
             "command_to_state_ns": command_to_state_ns,
@@ -153,6 +265,7 @@ fn rust_calls_go_and_caliber_for_gate_three_slice() {
                 "go_pump_and_response_decode": latency_summary(&pump_samples),
                 "caliber_map_copy_release": latency_summary(&resource_copy_samples),
                 "spvs_decode_cache": latency_summary(&slice_decode_samples),
+                "gate4_edit_ack_roundtrip": {"ns": edit_ack_roundtrip_ns},
             },
             "visible_resource_payload_bytes": visible_bytes,
             "visible_resource_max_bytes": scratchpad_gpui::protocol::MAX_VISIBLE_BYTES,

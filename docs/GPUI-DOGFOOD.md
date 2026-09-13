@@ -1,6 +1,6 @@
 # GPUI second-frontend dogfood
 
-Status: experimental; Gate 1 through Gate 3.5 implementation lives on branch
+Status: experimental; Gate 1 through Gate 4 edit-spike implementation lives on branch
 `gpui-dogfood`. This document records the current evidence, not a product
 claim.
 
@@ -47,8 +47,42 @@ The limit is 256 lines and 64 KiB of payload. The payload preserves arbitrary
 document bytes across the foreign boundary; lossy UTF-8 conversion happens
 only for the temporary display string. The shell still owns only a cache of
 the currently requested slice. Cursor, selection, viewport ownership,
-shaping, folds, projections, IME, edit semantics, and paint data remain local
-or deferred. Gate 4 is not included.
+shaping, folds, projections, IME, and paint data remain local or deferred.
+Gate 4 adds only a bounded Rust-local caret/selection session and one
+in-flight source-edit intent; it is not a port of the editor.
+
+## Gate 4: optimistic bounded editing
+
+The first editable path tests Model B without moving the scalable editor into
+Rust. Go remains authoritative for complete document bytes, editor revisions,
+undo/domain edit semantics, dirty state, and persistence. Rust owns only one
+bounded visible window plus its local caret and selection. It can produce one
+`replace_document` intent containing the document id, application revision,
+editor revision, global start/end byte offsets, and replacement bytes.
+
+The visible resource descriptor now includes the window's global `start_byte`,
+so a Rust edit can map a local selection back to the Go document without
+serializing the document or guessing through replacement characters. The
+initial Rust session accepts only non-truncated windows whose bytes are valid
+UTF-8. This is a temporary Gate 4 mapping constraint, not a change to
+Scratchpad's byte-preserving document model; the Go wire and editor still
+accept bounded raw replacement bytes.
+
+The Rust session applies the replacement locally before dispatch, then waits
+for the Go acknowledgement carrying the new editor revision and the updated
+application state. A stale editor revision is rejected before mutation. The
+session can roll back its bounded optimistic copy on failure. The foreign
+acceptance test exercises this through the real Go c-shared backend and
+Caliber ABI, saves the edited file, verifies the bytes on disk, and then
+proves that a second stale edit is rejected.
+The spike intentionally allows only one in-flight edit; batching and typing
+coalescence are deferred until a real interactive editor is justified.
+
+This gate does not send cursor motion, selection changes, viewport movement,
+IME preedit, shaping, layout, folds, projections, or paint data through
+Caliber. It also does not yet provide a full interactive GPUI text editor;
+those are separate experiments after this seam's synchronization costs are
+reviewed.
 
 ## Gate 3.5 closeout
 
@@ -72,6 +106,9 @@ Caliber map/copy/release 1.0 µs, and `SPVS` decode/cache 1.3 µs. The backend
 pump bucket intentionally includes Go command decode, range extraction,
 resource publication, and response JSON; these measurements localize rather
 than pretend to isolate those internal substeps.
+The separate optimized foreign smoke measured 29.5 µs for one Gate 4 edit
+dispatch → Go acknowledgement → state read → Rust reconciliation sample; it
+is a smoke signal, not a warm distribution.
 
 The shell now accepts a visible slice only when its document id, application
 revision, and editor revision match the current active state. A stale slice is
@@ -114,6 +151,7 @@ artifacts. A development macOS build produced approximately:
 | command/state transport | 25.8 µs median / 27.9 µs p95 | Rust test path, 64 warm samples; command → state read |
 | visible resource round trip | 84.8 µs median / 118.1 µs p95 | Rust test path, 64 warm samples; command → bounded resource → Rust cache |
 | visible resource payload | 9,691 bytes | 256-line request from the 2,000-line fixture; 64 KiB maximum |
+| Gate 4 edit acknowledgement | 29.5 µs | one optimized foreign-smoke sample; not a distribution |
 | direct bounded extraction | 37.7 µs, 9,472 B, 1 alloc | Go editor benchmark for the equivalent contiguous range |
 | settled idle RSS | not yet sampled | use the native platform sampler |
 | cold startup | 30.0 s bounded attempt, timed out locally | native window did not complete in the managed macOS session |
@@ -128,10 +166,11 @@ The main benefit is now concrete: the unchanged Scratchpad application/editor
 packages supply both the Shirei shell and a Rust/GPUI shell, with only the
 requested visible slice crossing the boundary.
 
-The cumulative GPUI dogfood delta from the initial Gate 1 commit is 1,112
-added code/test lines and 71 deleted lines; this includes the bridge, shell,
-scheduler, runner, protocol, and acceptance tests, but excludes documentation
-and workflow text. Gate 3's hop accounting is:
+The cumulative GPUI dogfood delta from the initial Gate 1 commit is about
+2,102 added code/test lines and 94 deleted lines; Gate 4 contributes 791 added
+and 27 deleted lines. This includes the bridge, shell, scheduler, runner,
+protocol, bounded editor session, and acceptance tests, but excludes
+documentation and workflow text. Gate 3's hop accounting is:
 
 | hop | copy/allocation behavior |
 | --- | --- |
@@ -156,17 +195,19 @@ tests whether the bounded data seam earns those costs.
 
 Document bytes remain authoritative in the existing piece-backed editor;
 the Gate 3 resource is only a bounded copy of the requested visible lines.
-Cursor and selection, viewport ownership, shaping, projections, folds, IME,
-editing, and rendering mechanics remain outside this boundary. This keeps the
-existing scalable editor intact. Gate 4 will test whether Go should own
-document/edit semantics while Rust owns frontend-local caret, selection,
-viewport, IME, shaping, and layout.
+Viewport ownership, shaping, projections, folds, IME, and rendering mechanics
+remain outside this boundary. This keeps the existing scalable editor intact.
+Gate 4's first spike confirms only the
+smallest part of the Model B hypothesis: Go can remain authoritative for
+document bytes and edit semantics while Rust keeps a bounded optimistic
+caret/selection session. Viewport, IME, shaping, and layout remain untested.
 
 ## Current verdict
 
-**continue** — only as a narrow experiment. Gate 3.5 demonstrates that a
-bounded immutable visible-line resource over the real Go → Caliber → Rust path
-can use the existing piece buffer efficiently without disturbing the scalable
-editor. This is evidence for a data seam, not ABI
-stabilization, a framework, or a claim that Caliber is cheaper than direct
-Shirei integration. Gate 4 remains deferred until this cost record is reviewed.
+**continue** — only as a narrow experiment. Gate 4's bounded optimistic edit
+spike shows that one Rust-local source replacement can cross the real Go →
+Caliber → Rust path, receive revisioned acknowledgement, save, and reconcile a
+stale edit without disturbing the scalable editor. This is evidence for a
+source-edit seam, not ABI stabilization, a framework, or a claim that Caliber
+is cheaper than direct Shirei integration. A full editor remains deferred until
+this synchronization cost is reviewed.

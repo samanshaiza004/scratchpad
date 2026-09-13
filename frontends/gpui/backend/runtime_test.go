@@ -287,6 +287,108 @@ func TestVisibleLineRequestsRejectInvalidBounds(t *testing.T) {
 	}
 }
 
+func TestReplaceDocumentIsRevisionedAndAcknowledged(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "edit.txt")
+	writeFile(t, path, "hello\nworld\n")
+
+	runtime := newStartedRuntime(t, workspace)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       30,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path",
+		Path:            path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := state.Active
+	if len(state.Documents) != 1 || state.Documents[0].EditorRevision != 0 {
+		t.Fatalf("opened state = %+v", state)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       31,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "replace_document",
+		DocumentID:      string(id),
+		EditorRevision:  state.Documents[0].EditorRevision,
+		StartByte:       5,
+		EndByte:         5,
+		Replacement:     []int{' ', 'x'},
+	}))
+	edited := decodeResponse(t, runtime.Pump())
+	if !edited.OK || edited.Edit == nil {
+		t.Fatalf("edit response = %+v", edited)
+	}
+	if edited.RequestID != 31 || edited.Edit.DocumentID != string(id) || edited.Edit.EditorRevision != 1 || edited.Edit.StartByte != 5 || edited.Edit.NewEndByte != 7 {
+		t.Fatalf("edit acknowledgement = %+v", edited.Edit)
+	}
+	state = latestStateForTest(t, runtime)
+	if !state.Documents[0].Dirty || state.Documents[0].EditorRevision != 1 {
+		t.Fatalf("edited state = %+v", state.Documents[0])
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       32,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "replace_document",
+		DocumentID:      string(id),
+		EditorRevision:  0,
+		StartByte:       0,
+		EndByte:         0,
+		Replacement:     []int{'x'},
+	}))
+	stale := decodeResponse(t, runtime.Pump())
+	if stale.OK || stale.RequestID != 32 || stale.Outcome.Code != "stale_editor_revision" {
+		t.Fatalf("stale edit response = %+v", stale)
+	}
+
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       33,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "save_document",
+		DocumentID:      string(id),
+	}))
+	saved := decodeResponse(t, runtime.Pump())
+	if !saved.OK {
+		t.Fatalf("save response = %+v", saved)
+	}
+	savedBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved bytes: %v", err)
+	}
+	if got := string(savedBytes); got != "hello x\nworld\n" {
+		t.Fatalf("saved bytes = %q", got)
+	}
+}
+
+func TestReplaceDocumentRejectsInvalidPackets(t *testing.T) {
+	runtime := newStartedRuntime(t, "")
+	defer stopRuntime(t, runtime)
+	requests := []CommandRequest{
+		{Version: ProtocolVersion, RequestID: 34, Command: "replace_document", DocumentID: "doc", StartByte: 2, EndByte: 1},
+		{Version: ProtocolVersion, RequestID: 35, Command: "replace_document", DocumentID: "doc", Replacement: []int{256}},
+		{Version: ProtocolVersion, RequestID: 36, Command: "replace_document", DocumentID: "doc", Replacement: make([]int, MaxEditBytes+1)},
+	}
+	for _, request := range requests {
+		dispatchForTest(t, runtime, mustJSON(t, request))
+		response := decodeResponse(t, runtime.Pump())
+		if response.OK {
+			t.Fatalf("invalid edit request %+v was accepted", request)
+		}
+	}
+}
+
 func TestSmokeRoundTrip(t *testing.T) {
 	workspace := t.TempDir()
 	writeFile(t, filepath.Join(workspace, "b.txt"), "b")

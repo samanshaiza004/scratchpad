@@ -198,6 +198,7 @@ mod tests {
             start_line: 0,
             end_line: 1,
             truncated: false,
+            start_byte: 0,
             bytes: b"current\n".to_vec(),
         }
     }

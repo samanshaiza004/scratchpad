@@ -72,6 +72,14 @@ pub struct CommandRequest {
     pub max_lines: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_byte: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_byte: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<Vec<u8>>,
 }
 
 impl CommandRequest {
@@ -134,6 +142,23 @@ impl CommandRequest {
         request
     }
 
+    pub fn replace_document(
+        document_id: impl Into<String>,
+        editor_revision: u64,
+        start_byte: usize,
+        end_byte: usize,
+        replacement: &[u8],
+        based_on_revision: u64,
+    ) -> Self {
+        let mut request = Self::bare(CommandKind::ReplaceDocument, based_on_revision);
+        request.document_id = Some(document_id.into());
+        request.editor_revision = Some(editor_revision);
+        request.start_byte = Some(start_byte);
+        request.end_byte = Some(end_byte);
+        request.replacement = Some(replacement.to_vec());
+        request
+    }
+
     fn bare(command: CommandKind, based_on_revision: u64) -> Self {
         Self {
             version: PROTOCOL_VERSION,
@@ -148,6 +173,10 @@ impl CommandRequest {
             start_line: None,
             max_lines: None,
             max_bytes: None,
+            editor_revision: None,
+            start_byte: None,
+            end_byte: None,
+            replacement: None,
         }
     }
 }
@@ -163,6 +192,7 @@ pub enum CommandKind {
     CloseDocument,
     ListDirectory,
     ReadVisibleLines,
+    ReplaceDocument,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -183,6 +213,8 @@ pub struct Response {
     pub directory_listing: Option<DirectoryListing>,
     #[serde(default)]
     pub resource: Option<ResourceDescriptor>,
+    #[serde(default)]
+    pub edit: Option<EditAck>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -263,6 +295,16 @@ pub struct ResourceDescriptor {
     pub end_line: usize,
     pub byte_len: usize,
     pub truncated: bool,
+    pub start_byte: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EditAck {
+    pub document_id: String,
+    pub editor_revision: u64,
+    pub start_byte: usize,
+    pub old_end_byte: usize,
+    pub new_end_byte: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +315,7 @@ pub struct VisibleTextSlice {
     pub start_line: usize,
     pub end_line: usize,
     pub truncated: bool,
+    pub start_byte: usize,
     pub bytes: Vec<u8>,
 }
 
@@ -332,6 +375,7 @@ impl VisibleTextSlice {
             end_line,
             truncated: flags & 1 != 0,
             bytes: bytes[VISIBLE_SLICE_HEADER_LEN..].to_vec(),
+            start_byte: descriptor.start_byte,
         })
     }
 
@@ -439,10 +483,12 @@ mod tests {
             end_line: 14,
             byte_len: payload.len(),
             truncated: false,
+            start_byte: 128,
         };
         let bytes = encoded_slice(9, 11, 12, 14, false, payload);
         let slice = VisibleTextSlice::decode(&bytes, &descriptor).expect("decode slice");
         assert_eq!(slice.bytes, payload);
+        assert_eq!(slice.start_byte, 128);
         assert_eq!(slice.display_text(), "line 12\nline 13\n");
 
         let mut mismatched = descriptor.clone();

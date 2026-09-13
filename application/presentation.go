@@ -2,12 +2,14 @@ package application
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 )
 
 // PresentationCommandKind names the small set of application-owned lifecycle
-// operations needed by a presentation client. It intentionally does not
-// include keystrokes, cursor movement, layout, or paint operations.
+// operations and bounded source edits needed by a presentation client. It
+// intentionally does not include keystrokes, cursor movement, layout, or paint
+// operations.
 type PresentationCommandKind uint8
 
 const (
@@ -15,16 +17,21 @@ const (
 	PresentationSelectDocument
 	PresentationSaveDocument
 	PresentationCloseDocument
+	PresentationReplaceDocument
 )
 
 // PresentationCommand is the first Scratchpad application/presentation
 // contract. Paths, identities, save policy, and close policy remain
 // application-owned; a frontend supplies only semantic intent.
 type PresentationCommand struct {
-	Kind       PresentationCommandKind
-	Path       string
-	DocumentID DocumentID
-	Discard    bool
+	Kind           PresentationCommandKind
+	Path           string
+	DocumentID     DocumentID
+	Discard        bool
+	EditorRevision uint64
+	StartByte      int
+	EndByte        int
+	Replacement    []byte
 }
 
 // PresentationDocument is the shell-visible portion of one open document.
@@ -59,6 +66,12 @@ type PresentationClient interface {
 	Snapshot() PresentationState
 	Dispatch(PresentationCommand) error
 }
+
+// ErrStaleEditorRevision means that a foreign presentation client attempted
+// to edit a document from an editor revision that is no longer current. The
+// client must discard or reconcile its optimistic edit and request fresh
+// bounded content; the application never applies a stale range blindly.
+var ErrStaleEditorRevision = errors.New("stale editor revision")
 
 // Snapshot returns the application-owned state needed by a presentation
 // shell. The returned slices are copies and contain no mutable document
@@ -121,6 +134,22 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 			id = a.Active
 		}
 		return a.CloseDocument(id, command.Discard)
+	case PresentationReplaceDocument:
+		doc := a.Documents[command.DocumentID]
+		if doc == nil {
+			return errors.New("unknown document")
+		}
+		if doc.Revision() != command.EditorRevision {
+			return fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, command.EditorRevision, doc.Revision())
+		}
+		before := doc.Revision()
+		if err := doc.Replace(command.StartByte, command.EndByte, command.Replacement); err != nil {
+			return err
+		}
+		if doc.Revision() != before {
+			a.touchPresentation()
+		}
+		return nil
 	default:
 		return errors.New("unknown presentation command")
 	}

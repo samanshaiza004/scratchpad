@@ -1,4 +1,4 @@
-# Scratchpad GPUI Gates 1–3.5
+# Scratchpad GPUI Gates 1–4
 
 This is an experimental second frontend for Scratchpad. It asks one concrete
 question:
@@ -62,10 +62,20 @@ conversion only at the final read-only text rendering step. This format is an
 experiment-local application schema, not a Caliber ABI or a promise of editor
 semantics.
 
-The following remain outside the boundary: cursor, selection, viewport
-ownership, shaping, folds, projections, IME, editing, and paint data. Gate 4
-will decide whether those presentation mechanics should become frontend-local;
-this branch does not port or rewrite Scratchpad's editor.
+Gate 4 adds one deliberately small editable path: Rust owns a local caret,
+selection, and optimistic copy of a non-truncated valid-UTF-8 window, then
+sends one byte-range replacement with the expected document editor revision.
+Go validates that revision, applies the replacement to the existing
+piece-backed editor, and returns a structured acknowledgement. A stale
+acknowledgement is rejected and the local window can roll back. This is a
+source-edit spike, not a port of Scratchpad's editor.
+Only one edit may be in flight in this first spike; batching and typing
+coalescence are deferred until an interactive editor experiment is justified.
+
+Viewport ownership, shaping, folds, projections, IME, and paint data remain
+outside the interface. The Go and wire layers remain byte-oriented; only the
+first Rust editing session is temporarily restricted to valid UTF-8 windows
+so source-position mapping is explicit rather than silently lossy.
 
 The interface does not carry whole-document bytes, cursor/selection/viewport
 state, shaping, folds, projections, IME data, or paint data. `gpui-kit =

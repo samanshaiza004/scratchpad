@@ -239,6 +239,7 @@ func (r *Runtime) CaliberContextPointer() unsafe.Pointer {
 
 func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var listing *DirectoryListing
+	var edit *EditAck
 	switch request.Command {
 	case "ping", "snapshot":
 	case "open_path":
@@ -270,6 +271,32 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}); err != nil {
 			return commandError(request, "application_error", err)
 		}
+	case "replace_document":
+		replacement := make([]byte, len(request.Replacement))
+		for i, value := range request.Replacement {
+			replacement[i] = byte(value)
+		}
+		if err := r.app.Dispatch(application.PresentationCommand{
+			Kind:           application.PresentationReplaceDocument,
+			DocumentID:     application.DocumentID(request.DocumentID),
+			EditorRevision: request.EditorRevision,
+			StartByte:      int(request.StartByte),
+			EndByte:        int(request.EndByte),
+			Replacement:    replacement,
+		}); err != nil {
+			if errors.Is(err, application.ErrStaleEditorRevision) {
+				return commandError(request, "stale_editor_revision", err)
+			}
+			return commandError(request, "application_error", err)
+		}
+		doc := r.app.Documents[application.DocumentID(request.DocumentID)]
+		edit = &EditAck{
+			DocumentID:     request.DocumentID,
+			EditorRevision: doc.Revision(),
+			StartByte:      request.StartByte,
+			OldEndByte:     request.EndByte,
+			NewEndByte:     request.StartByte + uint64(len(replacement)),
+		}
 	case "list_directory":
 		if !r.app.HasWorkspace {
 			return commandError(request, "no_workspace", errors.New("no workspace is open"))
@@ -298,6 +325,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response := okResponse(request.RequestID, r.lifecycle, r.revision)
 	response.BasedOnRevision = request.BasedOnRevision
 	response.DirectoryListing = listing
+	response.Edit = edit
 	return response
 }
 
@@ -311,7 +339,7 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		return Response{}, fmt.Errorf("start_line %d is outside the document's %d lines", request.StartLine, lineCount)
 	}
 
-	lines, endLine, truncated, err := doc.Editor.Buffer.BoundedLines(
+	lines, startByte, endLine, truncated, err := doc.Editor.Buffer.BoundedLines(
 		int(request.StartLine),
 		int(request.MaxLines),
 		int(request.MaxBytes),
@@ -339,6 +367,7 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		EndLine:        uint64(endLine),
 		ByteLen:        uint64(len(lines)),
 		Truncated:      truncated,
+		StartByte:      uint64(startByte),
 	}
 	return response, nil
 }

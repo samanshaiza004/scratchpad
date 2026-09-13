@@ -51,26 +51,26 @@ func TestBufferLineAtMatchesLineRanges(t *testing.T) {
 func TestBufferBoundedLinesCopiesOneRange(t *testing.T) {
 	b := NewBuffer([]byte("zero\none\n😀\ntail"))
 
-	data, endLine, truncated, err := b.BoundedLines(1, 2, 100)
+	data, startByte, endLine, truncated, err := b.BoundedLines(1, 2, 100)
 	if err != nil {
 		t.Fatalf("BoundedLines = error: %v", err)
 	}
-	if string(data) != "one\n😀\n" || endLine != 3 || !truncated {
-		t.Fatalf("BoundedLines = %q, end=%d, truncated=%v", data, endLine, truncated)
+	if string(data) != "one\n😀\n" || startByte != 5 || endLine != 3 || !truncated {
+		t.Fatalf("BoundedLines = %q, start=%d, end=%d, truncated=%v", data, startByte, endLine, truncated)
 	}
 
-	limited, endLine, truncated, err := b.BoundedLines(0, 10, 8)
+	limited, startByte, endLine, truncated, err := b.BoundedLines(0, 10, 8)
 	if err != nil {
 		t.Fatalf("byte-limited BoundedLines = error: %v", err)
 	}
-	if string(limited) != "zero\none" || endLine != 2 || !truncated {
-		t.Fatalf("byte-limited BoundedLines = %q, end=%d, truncated=%v", limited, endLine, truncated)
+	if string(limited) != "zero\none" || startByte != 0 || endLine != 2 || !truncated {
+		t.Fatalf("byte-limited BoundedLines = %q, start=%d, end=%d, truncated=%v", limited, startByte, endLine, truncated)
 	}
 
-	if _, _, _, err := b.BoundedLines(4, 1, 10); err == nil {
+	if _, _, _, _, err := b.BoundedLines(4, 1, 10); err == nil {
 		t.Fatal("out-of-range BoundedLines succeeded")
 	}
-	if _, _, _, err := b.BoundedLines(0, 0, 10); err == nil {
+	if _, _, _, _, err := b.BoundedLines(0, 0, 10); err == nil {
 		t.Fatal("zero-line BoundedLines succeeded")
 	}
 }
@@ -82,7 +82,7 @@ func BenchmarkBufferBoundedLines(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		data, _, _, err := buffer.BoundedLines(900, 256, 64*1024)
+		data, _, _, _, err := buffer.BoundedLines(900, 256, 64*1024)
 		if err != nil || len(data) == 0 {
 			b.Fatalf("bounded line extraction failed: len=%d err=%v", len(data), err)
 		}

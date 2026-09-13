@@ -20,6 +20,7 @@ const (
 	MaxListLimit                   = 1000
 	MaxVisibleLines                = 256
 	MaxVisibleBytes                = 64 * 1024
+	MaxEditBytes                   = 64 * 1024
 	VisibleSliceSchemaV1           = 1
 	visibleSliceHeaderBytes        = 48
 )
@@ -48,6 +49,10 @@ type CommandRequest struct {
 	StartLine       uint64 `json:"start_line,omitempty"`
 	MaxLines        uint64 `json:"max_lines,omitempty"`
 	MaxBytes        uint64 `json:"max_bytes,omitempty"`
+	EditorRevision  uint64 `json:"editor_revision,omitempty"`
+	StartByte       uint64 `json:"start_byte,omitempty"`
+	EndByte         uint64 `json:"end_byte,omitempty"`
+	Replacement     []int  `json:"replacement,omitempty"`
 }
 
 type Response struct {
@@ -61,6 +66,7 @@ type Response struct {
 	State            *StateEnvelope      `json:"state,omitempty"`
 	DirectoryListing *DirectoryListing   `json:"directory_listing,omitempty"`
 	Resource         *ResourceDescriptor `json:"resource,omitempty"`
+	Edit             *EditAck            `json:"edit,omitempty"`
 }
 
 type ResourceDescriptor struct {
@@ -73,6 +79,15 @@ type ResourceDescriptor struct {
 	EndLine        uint64 `json:"end_line"`
 	ByteLen        uint64 `json:"byte_len"`
 	Truncated      bool   `json:"truncated"`
+	StartByte      uint64 `json:"start_byte"`
+}
+
+type EditAck struct {
+	DocumentID     string `json:"document_id"`
+	EditorRevision uint64 `json:"editor_revision"`
+	StartByte      uint64 `json:"start_byte"`
+	OldEndByte     uint64 `json:"old_end_byte"`
+	NewEndByte     uint64 `json:"new_end_byte"`
 }
 
 type Outcome struct {
@@ -169,6 +184,27 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	case "select_document", "save_document", "close_document":
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
+		}
+	case "replace_document":
+		if request.DocumentID == "" {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id is required", false), false
+		}
+		if !utf8.ValidString(request.DocumentID) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
+		}
+		if request.EndByte < request.StartByte {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_range", "end_byte must not precede start_byte", false), false
+		}
+		if request.StartByte > uint64(^uint(0)>>1) || request.EndByte > uint64(^uint(0)>>1) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_range", "edit range does not fit the host word size", false), false
+		}
+		if len(request.Replacement) > MaxEditBytes {
+			return request, errorResponse(request.RequestID, lifecycle, "edit_too_large", fmt.Sprintf("replacement exceeds %d bytes", MaxEditBytes), false), false
+		}
+		for _, value := range request.Replacement {
+			if value < 0 || value > 255 {
+				return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_bytes", "replacement values must be bytes", false), false
+			}
 		}
 	case "read_visible_lines":
 		if request.DocumentID == "" {
