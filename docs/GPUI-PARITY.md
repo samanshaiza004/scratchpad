@@ -237,3 +237,33 @@ silently downgrade the behavior. When the parity implementation is complete,
 write `docs/GPUI-MIGRATION-RESULTS.md` with the remaining accepted Shirei-only
 capabilities and exactly one of `KEEP SHIREI DEFAULT`, `MAKE GPUI DEFAULT`, or
 `ABANDON GPUI`.
+
+## Implementation update at `d4f030a`
+
+The first migration slices have now landed after the baseline audit:
+
+* **Working/covered:** the stable 75-ID Scratchpad command vocabulary is
+  represented exactly in Rust; the command palette filters and navigates those
+  IDs; the shell has an editable bounded UTF-8 surface with local caret,
+  selection, insertion, deletion, line navigation, and PageUp/PageDown read
+  requests; dirty-close responses produce Save/Discard/Cancel controls; nested
+  directory listings are cached and flattened by path; refresh reconciles the
+  authoritative Go workspace; current-document find returns capped byte-range
+  matches; and create/rename/move/trash operations now have bounded semantic
+  Caliber requests. Root Go tests, nested cgo tests, 16 GPUI Rust tests, foreign
+  smoke, Clippy, and the Windows release native smoke all pass.
+* **Still partial or blocked:** the editor remains a temporary valid-UTF-8
+  bounded window and renders a textual caret rather than shaped glyphs;
+  selection painting, mouse hit testing, clipboard, native IME/InputHandler,
+  byte-preserving malformed input, soft wrap, Markdown/language projections,
+  workspace search, Save As/recent/recovery/conflict surfaces, persistent
+  settings, and accessibility annotations are not yet at Shirei parity.
+* **Ownership remains intact:** Go still owns document bytes, revisions,
+  persistence, workspace mutations, and search computation. Rust owns focus,
+  command palette state, tree expansion/cache, caret/selection presentation,
+  viewport requests, and shell-local settings controls. No per-frame Caliber
+  polling or whole-document frontend transfer was introduced.
+
+The acceptance gate remains open until the partial/blocked rows have native
+evidence; this update must not be read as a recommendation to replace Shirei
+yet.
