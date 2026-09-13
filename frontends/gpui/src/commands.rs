@@ -356,18 +356,11 @@ impl CommandPaletteModel {
             return PRODUCT_COMMANDS.to_vec();
         }
 
-        query
-            .split_whitespace()
-            .map(str::to_ascii_lowercase)
-            .fold(Some(PRODUCT_COMMANDS.to_vec()), |matches, token| {
-                matches.map(|commands| {
-                    commands
-                        .into_iter()
-                        .filter(|command| command_matches_token(*command, &token))
-                        .collect()
-                })
-            })
-            .unwrap_or_default()
+        let mut matches = PRODUCT_COMMANDS.to_vec();
+        for token in query.split_whitespace().map(str::to_ascii_lowercase) {
+            matches.retain(|command| command_matches_token(*command, &token));
+        }
+        matches
     }
 
     pub fn selected_index(&self) -> usize {
@@ -434,12 +427,11 @@ mod tests {
                 in_constants = false;
                 continue;
             }
-            if in_constants {
-                if let Some((name, value)) = trimmed.split_once("ID = \"") {
-                    if let Some(id) = value.split_once('"').map(|(id, _)| id) {
-                        constants.insert(name.trim().to_string(), id.to_string());
-                    }
-                }
+            if in_constants
+                && let Some((name, value)) = trimmed.split_once("ID = \"")
+                && let Some(id) = value.split_once('"').map(|(id, _)| id)
+            {
+                constants.insert(name.trim().to_string(), id.to_string());
             }
         }
 

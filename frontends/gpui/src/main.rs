@@ -78,21 +78,20 @@ impl ShellView {
             self.editor = None;
         }
 
-        if let Some(response) = response {
-            if let Some(acknowledgement) = response.edit.as_ref() {
-                if let Some(editor) = self.editor.as_mut() {
-                    if response.ok {
-                        if let Err(error) = editor.acknowledge(acknowledgement, &self.model.state) {
-                            self.model.status.message = format!("edit reconciliation: {error}");
-                        }
-                    } else if response.outcome.code == "stale_editor_revision" {
-                        let _ = editor.reject();
-                        let _ = self.scheduler.submit(BackendCommand::ReadVisibleLines {
-                            document_id: editor.document_id().to_string(),
-                            start_line: 0,
-                        });
-                    }
+        if let Some(response) = response
+            && let Some(acknowledgement) = response.edit.as_ref()
+            && let Some(editor) = self.editor.as_mut()
+        {
+            if response.ok {
+                if let Err(error) = editor.acknowledge(acknowledgement, &self.model.state) {
+                    self.model.status.message = format!("edit reconciliation: {error}");
                 }
+            } else if response.outcome.code == "stale_editor_revision" {
+                let _ = editor.reject();
+                let _ = self.scheduler.submit(BackendCommand::ReadVisibleLines {
+                    document_id: editor.document_id().to_string(),
+                    start_line: 0,
+                });
             }
         }
         cx.notify();
