@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 async-channel = "2"
+caliber-ffi = "0.0.0"
 gpui-kit = "=0.6.1"
 libloading = "0.8"
 serde = { version = "1", features = ["derive"] }

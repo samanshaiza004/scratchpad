@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -119,6 +120,9 @@ func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2, releaseB
 	if !allowRevision && commit != lockedRevision {
 		return nil, "", "", fmt.Errorf("Caliber checkout is at %s; dependencies.lock.json requires %s (use --allow-caliber-revision to override)", commit, lockedRevision)
 	}
+	if _, err := os.Stat(filepath.Join(caliberRoot, "include", "caliber.h")); err != nil {
+		return nil, "", "", fmt.Errorf("canonical Caliber header is missing from %s: %w", caliberRoot, err)
+	}
 	caliberTargetDir := filepath.Join(root, "frontends", "gpui", "build", "caliber-target")
 	cargoArgs := []string{"build", "-p", "caliber-ffi", "--lib", "--target-dir", caliberTargetDir}
 	if releaseBuild {
@@ -133,6 +137,8 @@ func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2, releaseB
 	}
 	env := os.Environ()
 	env = setEnv(env, "CGO_ENABLED", "1")
+	env = setEnv(env, "CALIBER_ROOT", caliberRoot)
+	env = setEnv(env, "CGO_CFLAGS", strings.TrimSpace(os.Getenv("CGO_CFLAGS")+" -I"+filepath.ToSlash(filepath.Join(caliberRoot, "include"))))
 	env = setEnv(env, "CGO_LDFLAGS", "-L"+filepath.Dir(library))
 	env = setEnv(env, "CGO_LDFLAGS_ALLOW", `-L.*|-l.*|-Wl,-rpath,.*`)
 	env = setRuntimePath(env, filepath.Dir(library))
@@ -196,7 +202,9 @@ func build(root, out string, env []string, caliberLibrary, caliberCommit string,
 	}
 	targetDir := filepath.Join(out, "cargo-target")
 	manifest := filepath.Join(root, "frontends", "gpui", "Cargo.toml")
-	cargoArgs := []string{"build", "--manifest-path", manifest, "--target-dir", targetDir}
+	cargoArgs := []string{"build"}
+	cargoArgs = append(cargoArgs, caliberCargoPatchArgs(env)...)
+	cargoArgs = append(cargoArgs, "--manifest-path", manifest, "--target-dir", targetDir)
 	if releaseBuild {
 		cargoArgs = append(cargoArgs, "--release")
 	}
@@ -239,7 +247,7 @@ func test(root string, env []string, caliberLibrary, caliberCommit string, relea
 	if err := checkGofmt(root, "cmd/gpui-dev/main.go"); err != nil {
 		return err
 	}
-	if err := runCommand(root, nil, "go", "test", "./..."); err != nil {
+	if err := runCommand(root, nil, "go", "test", "-tags", "treesitter_release", "./..."); err != nil {
 		return fmt.Errorf("root Scratchpad tests: %w", err)
 	}
 	backendDir := filepath.Join(root, "bridge", "caliber")
@@ -260,15 +268,21 @@ func test(root string, env []string, caliberLibrary, caliberCommit string, relea
 	_ = exe
 	manifest := filepath.Join(root, "frontends", "gpui", "Cargo.toml")
 	cargoTargetDir := filepath.Join(root, "frontends", "gpui", "build", "cargo-target")
-	if err := runCommand(root, nil, "cargo", "fmt", "--manifest-path", manifest, "--", "--check"); err != nil {
+	if err := runCommand(root, env, "cargo", "fmt", "--manifest-path", manifest, "--", "--check"); err != nil {
 		return err
 	}
 	rustEnv := setEnv(env, "SCRATCHPAD_BACKEND_LIBRARY", filepath.Join(out, backendLibraryName()))
 	rustEnv = setRuntimePath(rustEnv, out)
-	if err := runCommand(root, rustEnv, "cargo", "test", "--manifest-path", manifest, "--target-dir", cargoTargetDir); err != nil {
+	cargoTestArgs := []string{"test"}
+	cargoTestArgs = append(cargoTestArgs, caliberCargoPatchArgs(rustEnv)...)
+	cargoTestArgs = append(cargoTestArgs, "--manifest-path", manifest, "--target-dir", cargoTargetDir)
+	if err := runCommand(root, rustEnv, "cargo", cargoTestArgs...); err != nil {
 		return err
 	}
-	return runCommand(root, rustEnv, "cargo", "clippy", "--manifest-path", manifest, "--target-dir", cargoTargetDir, "--all-targets", "--", "-D", "warnings")
+	cargoClippyArgs := []string{"clippy"}
+	cargoClippyArgs = append(cargoClippyArgs, caliberCargoPatchArgs(rustEnv)...)
+	cargoClippyArgs = append(cargoClippyArgs, "--manifest-path", manifest, "--target-dir", cargoTargetDir, "--all-targets", "--", "-D", "warnings")
+	return runCommand(root, rustEnv, "cargo", cargoClippyArgs...)
 }
 
 func checkGofmt(dir string, files ...string) error {
@@ -332,7 +346,10 @@ func measure(root, out, exe string, env []string) error {
 	runtimeEnv = setEnv(runtimeEnv, "SCRATCHPAD_GPUI_MEASURE_PATH", measurementPath)
 	manifestPath := filepath.Join(root, "frontends", "gpui", "Cargo.toml")
 	cargoTargetDir := filepath.Join(root, "frontends", "gpui", "build", "cargo-target")
-	if err := runCommand(root, runtimeEnv, "cargo", "test", "--manifest-path", manifestPath, "--target-dir", cargoTargetDir, "--test", "foreign_smoke", "--", "--nocapture"); err != nil {
+	cargoTestArgs := []string{"test"}
+	cargoTestArgs = append(cargoTestArgs, caliberCargoPatchArgs(runtimeEnv)...)
+	cargoTestArgs = append(cargoTestArgs, "--manifest-path", manifestPath, "--target-dir", cargoTargetDir, "--test", "foreign_smoke", "--", "--nocapture")
+	if err := runCommand(root, runtimeEnv, "cargo", cargoTestArgs...); err != nil {
 		return err
 	}
 	measurements := map[string]any{}
@@ -479,6 +496,21 @@ func setEnv(env []string, key, value string) []string {
 		}
 	}
 	return append(env, prefix+value)
+}
+
+func caliberCargoPatchArgs(env []string) []string {
+	caliberRoot := ""
+	for _, item := range env {
+		if strings.HasPrefix(item, "CALIBER_ROOT=") {
+			caliberRoot = strings.TrimPrefix(item, "CALIBER_ROOT=")
+			break
+		}
+	}
+	if caliberRoot == "" {
+		return nil
+	}
+	ffiPath := filepath.ToSlash(filepath.Join(caliberRoot, "crates", "caliber-ffi"))
+	return []string{"--config", "patch.crates-io.caliber-ffi.path=" + strconv.Quote(ffiPath)}
 }
 
 func setRuntimePath(env []string, dir string) []string {

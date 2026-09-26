@@ -25,10 +25,12 @@ Go c-shared backend → Scratchpad application
 GPUI state model
 ```
 
-The frontend-neutral Go bridge at `bridge/caliber` links one Caliber `cdylib` at build time. The Rust executable
-does not depend on `caliber-ffi`; it loads only the Go backend's small C symbol
-surface, validates the returned Caliber ABI version/table size, and calls the
-returned table directly. Caliber's exact revision is authoritative in the
+The frontend-neutral Go bridge at `bridge/caliber` links one Caliber `cdylib` at
+build time. The Rust executable uses the lock-resolved `caliber-ffi` crate for
+ABI types at compile time, but loads Caliber at runtime only through the Go
+backend's small C symbol surface. It validates the returned Caliber ABI
+version/table size and calls the returned table directly. Caliber's exact
+revision is authoritative in the
 Scratchpad-root `dependencies.lock.json`; the GPUI build driver reads that lock
 and rejects a different checkout unless an explicit development override is
 enabled.

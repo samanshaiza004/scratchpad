@@ -2,31 +2,23 @@ use crate::protocol::{
     MAX_VISIBLE_BYTES, PROTOCOL_VERSION, STATE_SCHEMA_V1, VISIBLE_SLICE_HEADER_LEN,
 };
 use libloading::Library;
-use std::ffi::c_void;
 use std::mem::{ManuallyDrop, offset_of, size_of};
 use std::path::Path;
 use std::ptr::NonNull;
 use std::{ptr, slice};
 use thiserror::Error;
 
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CaliberStatus {
-    Ok = 0,
-    InvalidArgument = 1,
-    InvalidHandle = 2,
-    BufferTooSmall = 3,
-    LimitExceeded = 4,
-    NotFound = 5,
-    Stale = 6,
-    Unavailable = 7,
-    QueueFull = 8,
-    UnsupportedVersion = 9,
-    Internal = 10,
+pub use caliber_ffi::{
+    CaliberApiV1, CaliberContext, CaliberContextConfig, CaliberResourceView,
+    CaliberStatePublication, CaliberStatus, CaliberTelemetryInfo,
+};
+
+trait CaliberStatusDisplay {
+    fn label(self) -> &'static str;
 }
 
-impl CaliberStatus {
-    pub fn as_str(self) -> &'static str {
+impl CaliberStatusDisplay for CaliberStatus {
+    fn label(self) -> &'static str {
         match self {
             CaliberStatus::Ok => "ok",
             CaliberStatus::InvalidArgument => "invalid_argument",
@@ -39,156 +31,25 @@ impl CaliberStatus {
             CaliberStatus::QueueFull => "queue_full",
             CaliberStatus::UnsupportedVersion => "unsupported_version",
             CaliberStatus::Internal => "internal",
+            CaliberStatus::Stopped => "stopped",
         }
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct CaliberContextConfig {
-    pub struct_size: u32,
-    pub max_command_bytes: usize,
-    pub max_publication_bytes: usize,
-    pub max_resource_bytes: usize,
-    pub max_resources: usize,
-    pub telemetry_width: usize,
-    pub max_pending_commands: usize,
+trait CaliberApiExt {
+    fn required_size() -> usize;
+    fn validate(&self) -> Result<ValidatedCaliberApi, FfiError>;
 }
 
-#[repr(C)]
-#[derive(Debug)]
-pub struct CaliberStatePublication {
-    pub revision: u64,
-    pub schema: u32,
-    pub reserved: u32,
-    pub data: *const u8,
-    pub len: usize,
-    pub lease: *mut c_void,
-}
-
-impl Default for CaliberStatePublication {
-    fn default() -> Self {
-        Self {
-            revision: 0,
-            schema: 0,
-            reserved: 0,
-            data: ptr::null(),
-            len: 0,
-            lease: ptr::null_mut(),
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct CaliberResourceView {
-    pub resource_id: u64,
-    pub generation: u64,
-    pub data: *const u8,
-    pub len: usize,
-    pub lease: *mut c_void,
-}
-
-impl Default for CaliberResourceView {
-    fn default() -> Self {
-        Self {
-            resource_id: 0,
-            generation: 0,
-            data: ptr::null(),
-            len: 0,
-            lease: ptr::null_mut(),
-        }
-    }
-}
-
-#[repr(C)]
-pub struct CaliberTelemetryInfo {
-    pub sequence: u64,
-    pub schema: u32,
-    pub reserved: u32,
-    pub value_count: usize,
-    pub value_size: usize,
-}
-
-#[repr(C)]
-pub struct CaliberContext {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct CaliberApiV1 {
-    pub abi_version: u32,
-    pub struct_size: u32,
-    pub context_create: Option<
-        unsafe extern "C" fn(
-            *const CaliberContextConfig,
-            *mut *mut CaliberContext,
-        ) -> CaliberStatus,
-    >,
-    pub context_destroy: Option<unsafe extern "C" fn(*mut CaliberContext)>,
-    pub context_dispatch:
-        Option<unsafe extern "C" fn(*const CaliberContext, *const u8, usize) -> CaliberStatus>,
-    pub context_peek_command:
-        Option<unsafe extern "C" fn(*const CaliberContext, *mut usize) -> CaliberStatus>,
-    pub context_take_command: Option<
-        unsafe extern "C" fn(*const CaliberContext, *mut u8, usize, *mut usize) -> CaliberStatus,
-    >,
-    pub context_publish_state: Option<
-        unsafe extern "C" fn(
-            *const CaliberContext,
-            u32,
-            *const u8,
-            usize,
-            *mut u64,
-        ) -> CaliberStatus,
-    >,
-    pub context_read_latest_state: Option<
-        unsafe extern "C" fn(*const CaliberContext, *mut CaliberStatePublication) -> CaliberStatus,
-    >,
-    pub state_publication_release: Option<unsafe extern "C" fn(*mut CaliberStatePublication)>,
-    pub context_map_resource: Option<
-        unsafe extern "C" fn(
-            *const CaliberContext,
-            u64,
-            u64,
-            *mut CaliberResourceView,
-        ) -> CaliberStatus,
-    >,
-    pub resource_release: Option<unsafe extern "C" fn(*mut CaliberResourceView)>,
-    pub context_publish_resource: Option<
-        unsafe extern "C" fn(
-            *const CaliberContext,
-            *const u8,
-            usize,
-            *mut u64,
-            *mut u64,
-        ) -> CaliberStatus,
-    >,
-    pub context_release_resource:
-        Option<unsafe extern "C" fn(*const CaliberContext, u64, u64) -> CaliberStatus>,
-    pub context_publish_telemetry:
-        Option<unsafe extern "C" fn(*const CaliberContext, *const usize, usize) -> CaliberStatus>,
-    pub context_read_latest_telemetry: Option<
-        unsafe extern "C" fn(
-            *const CaliberContext,
-            *mut usize,
-            usize,
-            *mut CaliberTelemetryInfo,
-        ) -> CaliberStatus,
-    >,
-    pub context_wake_sequence:
-        Option<unsafe extern "C" fn(*const CaliberContext, *mut u64) -> CaliberStatus>,
-}
-
-impl CaliberApiV1 {
-    pub fn required_size() -> usize {
+impl CaliberApiExt for CaliberApiV1 {
+    fn required_size() -> usize {
         offset_of!(CaliberApiV1, context_wake_sequence)
             + size_of::<
                 Option<unsafe extern "C" fn(*const CaliberContext, *mut u64) -> CaliberStatus>,
             >()
     }
 
-    pub fn validate(&self) -> Result<ValidatedCaliberApi, FfiError> {
+    fn validate(&self) -> Result<ValidatedCaliberApi, FfiError> {
         if self.abi_version != PROTOCOL_VERSION {
             return Err(FfiError::UnsupportedAbi {
                 got: self.abi_version,
@@ -764,7 +625,7 @@ pub enum FfiError {
     NullApi,
     #[error("backend returned a null Caliber context pointer")]
     NullContext,
-    #[error("{operation} returned {status:?} ({})", status.as_str())]
+    #[error("{operation} returned {status:?} ({})", status.label())]
     Status {
         operation: &'static str,
         status: CaliberStatus,

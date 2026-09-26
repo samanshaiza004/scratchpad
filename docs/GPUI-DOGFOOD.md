@@ -6,11 +6,11 @@ claim.
 
 ## What was built
 
-The Rust frontend uses `gpui-kit = "=0.6.1"` and no direct Caliber crate. The
-frontend-neutral Go bridge in `bridge/caliber` builds
-`libscratchpad_backend` with `-buildmode=c-shared`. That library links the one
-Caliber `cdylib` and returns the `CaliberApiV1` pointer/context to Rust. Rust
-calls `context_dispatch`,
+The Rust frontend uses `gpui-kit = "=0.6.1"` and the lock-resolved
+`caliber-ffi` Rust crate for ABI types. The frontend-neutral Go bridge in
+`bridge/caliber` builds `libscratchpad_backend` with `-buildmode=c-shared`.
+That library links the one Caliber `cdylib` and returns the `CaliberApiV1`
+pointer/context to Rust. Rust calls `context_dispatch`,
 `context_read_latest_state`, `state_publication_release`, and
 `context_wake_sequence` from that returned table.
 
@@ -34,6 +34,9 @@ GPUI retains its local scheduler, focus, layout, shaping, rendering, and IME
 behavior. The native library exports `scratchpad_backend_*` symbols and is
 loaded through `SCRATCHPAD_BACKEND_LIBRARY`, so another frontend can consume
 the same Go boundary without duplicating it.
+The cgo bridge includes Caliber's canonical `include/caliber.h`; GPUI reuses
+the corresponding Rust ABI types from `caliber-ffi` instead of maintaining a
+second Rust layout.
 The build driver places Caliber's Cargo output under the ignored
 `frontends/gpui/build/caliber-target` directory, so compiling through a local
 developer override does not write build artifacts into that checkout.
@@ -148,8 +151,10 @@ queued; each foreign resource is released before shutdown.
   document and verifies that the returned bytes stay within the 64 KiB bound
   and contain only the requested range.
 - macOS loader inspection shows one backend dependency on Caliber and no Rust
-  dependency on `caliber-ffi`; the runtime artifacts are colocated and the
-  backend dependency is rewritten to `@rpath/libcaliber_ffi.dylib`.
+  runtime dependency on its dynamic library. Rust uses the lock-resolved
+  `caliber-ffi` crate for compile-time ABI types. Runtime artifacts are
+  colocated, and the backend dependency is rewritten to
+  `@rpath/libcaliber_ffi.dylib`.
 - The native smoke path is implemented to exercise start, state read/release,
   list, open, save, close, and stop through the actual Go → Caliber → Rust
   path. The managed macOS development environment terminates the GUI-linked
