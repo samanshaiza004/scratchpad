@@ -21,7 +21,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev xvfb
+        run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev mesa-vulkan-drivers xvfb
       - if: runner.os == 'Windows'
         run: .\tools\gpui.ps1 test
       - if: runner.os != 'Windows'
@@ -29,6 +29,9 @@ jobs:
         shell: bash
       - if: runner.os == 'Windows'
         run: .\tools\gpui.ps1 smoke
-      - if: runner.os != 'Windows'
+      - if: runner.os == 'Linux'
+        run: VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ./tools/gpui.sh smoke
+        shell: bash
+      - if: runner.os == 'macOS'
         run: ./tools/gpui.sh smoke
         shell: bash
