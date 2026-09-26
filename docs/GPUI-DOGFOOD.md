@@ -247,6 +247,9 @@ smoke with its HEAD and Git status unchanged, including its pre-existing
 untracked work directories.
 
 The Windows run used 64-bit Go 1.27.1 and one Cargo build job to fit the local
-toolchain/linker memory budget. macOS and Linux have not been manually run in
-this phase; CI now invokes the same wrappers from fresh project checkouts on
-all three operating systems.
+toolchain/linker memory budget. The shared Go/Caliber and GPUI test gates pass
+from clean checkouts on Windows, macOS, and Linux. Native startup/shutdown
+smoke passes on Windows and macOS. Linux native smoke remains unverified: the
+hosted Xvfb runner could not provide a surface GPUI could present to, even with
+Mesa lavapipe and X11 forced. Verify Linux window startup on a native display
+before claiming Linux desktop runtime support.
