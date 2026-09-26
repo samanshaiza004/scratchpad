@@ -20,4 +20,6 @@ testdata/generated/
 # GPUI dogfood native artifacts
 /frontends/gpui/build/
 /frontends/gpui/target/
+/frontends/alicorn/build/
 /bridge/caliber/build/
+/out/

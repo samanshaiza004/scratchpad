@@ -1,10 +1,10 @@
 # Scratchpad to Alicorn parity contract
 
-Status: Phase 0 reference freeze. The Shirei application remains the default and production path. The Alicorn frontend does not exist in this checkout yet.
+Status: Phase 1 lifecycle/state slice implemented; Windows smoke passed locally, and Windows/macOS native smoke is configured in CI. The macOS run remains pending. The Shirei application remains the default and production path. The Alicorn frontend is experimental and is not yet a Scratchpad shell/editor port.
 
 ## Purpose
 
-This document records the behavior that a future Alicorn frontend must preserve or deliberately defer. Shirei is the behavioral reference for generic input, focus, text, dialogs, and native integration. Scratchpad's application, document, workspace, language, and command packages are the authority for product behavior.
+This document records the behavior that an Alicorn frontend must preserve or deliberately defer as it grows. Shirei is the behavioral reference for generic input, focus, text, dialogs, and native integration. Scratchpad's application, document, workspace, language, and command packages are the authority for product behavior. Phase 1 proves only the foreign lifecycle and real state snapshot; it does not claim any product-parity row is complete.
 
 Parity means matching useful behavior and state transitions. It does not require pixel-identical rendering or a copy of Shirei's package structure. Keep the current Shirei frontend available until Alicorn passes the relevant rows below.
 

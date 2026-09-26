@@ -20,6 +20,26 @@
         "{candidate}",
         "--allow-caliber-revision"
       ]
+    },
+    "alicorn": {
+      "windows": [
+        "go",
+        "run",
+        "./cmd/alicorn-dev",
+        "test",
+        "--alicorn-root",
+        "{candidate}",
+        "--allow-alicorn-revision"
+      ],
+      "unix": [
+        "go",
+        "run",
+        "./cmd/alicorn-dev",
+        "test",
+        "--alicorn-root",
+        "{candidate}",
+        "--allow-alicorn-revision"
+      ]
     }
   },
   "diagnostics": {

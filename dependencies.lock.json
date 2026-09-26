@@ -1,5 +1,10 @@
 {
   "schema": 1,
+  "alicorn": {
+    "repository": "https://github.com/samanshaiza004/alicorn.git",
+    "ref": "master",
+    "revision": "968dc6837630645f8598fe4763cdc9b7da3d182f"
+  },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
     "ref": "main",
