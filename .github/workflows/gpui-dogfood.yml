@@ -30,7 +30,7 @@ jobs:
       - if: runner.os == 'Windows'
         run: .\tools\gpui.ps1 smoke
       - if: runner.os == 'Linux'
-        run: VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ./tools/gpui.sh smoke
+        run: WAYLAND_DISPLAY= VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ./tools/gpui.sh smoke
         shell: bash
       - if: runner.os == 'macOS'
         run: ./tools/gpui.sh smoke
