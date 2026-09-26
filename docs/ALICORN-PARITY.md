@@ -1,0 +1,42 @@
+# Scratchpad to Alicorn parity contract
+
+Status: Phase 0 reference freeze. The Shirei application remains the default and production path. The Alicorn frontend does not exist in this checkout yet.
+
+## Purpose
+
+This document records the behavior that a future Alicorn frontend must preserve or deliberately defer. Shirei is the behavioral reference for generic input, focus, text, dialogs, and native integration. Scratchpad's application, document, workspace, language, and command packages are the authority for product behavior.
+
+Parity means matching useful behavior and state transitions. It does not require pixel-identical rendering or a copy of Shirei's package structure. Keep the current Shirei frontend available until Alicorn passes the relevant rows below.
+
+Status labels:
+
+- **Automated** means current Scratchpad tests or a recorded deterministic benchmark cover the behavior.
+- **Native pending** means source/tests exist, but real desktop validation is not recorded for that platform.
+- **Deferred** means the product explicitly does not promise the feature in this phase.
+
+## Product parity matrix
+
+| Area | Current reference behavior | Evidence in this repository | Alicorn acceptance |
+|---|---|---|---|
+| Launch and open | Launch into a focused single-file editor or an empty workspace. Opening a file does not invent a workspace; opening a directory enables the workspace shell. CLI and UI use the same OpenPath seam. | README; application presentation tests; docs/ARCHITECTURE.md | Launch and open the same file/folder cases. Preserve the active document and workspace distinction. |
+| Documents and tabs | Multiple ordinary files share one document registry. Tabs select/close/reopen documents; dirty documents require an explicit close decision. View state belongs to each document, not its tab. | application tests; ui/workbench_test.go; docs/PLAN.md C2/C8 | Match identity, order, active tab, dirty marker, close prompt, and per-document view restoration. |
+| File bytes and saves | Raw file bytes are authoritative. Preserve invalid UTF-8, BOM, CRLF/LF, final-newline state, and file identity. Save is atomic; a no-op save does not rewrite bytes. | document lifecycle tests; workspace atomic-write tests; docs/ARCHITECTURE.md | Opening and saving fixtures must leave unrelated bytes and metadata unchanged. Test new files and existing files separately. |
+| External changes and recovery | Watchers provide hints; the app reconciles disk state. Clean files reload, dirty files enter a conflict state, and ordinary Save cannot silently overwrite the external version. Recovery/session data is disposable and separate from the source file. | application Gate C tests; docs/PLAN.md C3/C4; docs/ARCHITECTURE.md | Reproduce clean reload, dirty conflict, recover-after-restart, and explicit resolution. No silent data loss. |
+| Workspace tree and file operations | Tree supports listing, expand/collapse, keyboard focus/navigation, quick-open, refresh, create, rename, move, and move-to-trash where the OS adapter exists. | ui tree/navigation tests; workspace mutation tests; docs/PLAN.md C5 | Match path identity and focus through mutations. Unsupported trash integration must report failure instead of permanently deleting. |
+| Find and search | Current-file search uses the document buffer. Workspace search scans file bytes asynchronously, streams results, and supports cancellation; there is no persistent index. | application/search tests; workspace/search tests; docs/PLAN.md C6 | Results remain tied to the query/revision; cancellation and repeated searches do not apply stale results. |
+| Editing | Caret, selection, Unicode cluster motion/deletion, word and line movement, undo/redo, clipboard, mouse hit testing, and visible-row navigation are part of the behavior reference. The editor buffer remains the single text authority. | docs/BEHAVIOR-PARITY.md; editor tests; ui/editor_view_test.go; ui/word_navigation_test.go | Compare text, caret, directional and normalized selection, and undo/redo after each operation. Do not use byte-wise motion for grapheme clusters. |
+| IME, bidi, and focus | Composition, candidate-window anchor geometry, bidi caret affinity, selection, focus transfer, and keyboard precedence are observable editor behavior. | docs/EDITOR-AUDIT.md; docs/BEHAVIOR-PARITY.md; ui editor/reveal tests | Preserve composition commit/cancel and caret geometry. Native IME and mixed-direction text need manual platform checks; headless tests alone do not certify them. |
+| Scale and scrolling | The Scratchpad editor is designed for visible-row work on large ordinary files. Long logical lines are shaped in bounded chunks. The recorded 100 KiB/1 MiB/10 MiB tools measure latency, allocations, and memory. | docs/GATE-B-RESULTS.md; docs/PLAN.md; cmd/textbench, cmd/scratcheditor, cmd/fragmentbench | Re-run the same fixtures and operations. Compare work per edit against document size; keep scroll and typing responsive at 10 MiB. |
+| Markdown and prose | One document model supports headings, outline navigation, folding, task toggles, links, tables, and contextual Markdown commands without rewriting source during display. | docs/PLAN.md Gate D; language/markdown tests; ui markdown/outline tests | Match source-preserving projections, navigation, folds, and edits. Markdown remains application behavior, not an Alicorn widget concept. |
+| Language services | Go and TypeScript/TSX syntax projections are revision-tagged and asynchronous. Stale parser results are discarded; unsupported files remain editable plain text. | docs/GATE-E-RESULTS.md; language/treesitter tests; docs/PLAN.md Gate E | Show the same supported spans and language capabilities; stale results must never overwrite newer document state. |
+| Commands, menus, and preferences | Stable semantic command IDs are shared by menus, shortcuts, and command UI. Settings persist; editor font zoom is session-scoped. Native context menus and application menus follow platform conventions. | commands registry/tests; ui/native_menu.go; ui settings/menu tests; README | Dispatch the same command IDs from native menus and keyboard input. Preserve enabled state, shortcut labels, preference scope, and platform menu behavior. |
+| Visual shell | The current shell uses a paper-workstation visual system with host-font snapshots for key states. Snapshots document layout, not a requirement to clone pixels. | ui/testdata/snapshots; ui/workbench_snapshot_test.go; docs/PLAN.md visual milestone | Keep shell hierarchy and state legible. Use semantic/layout checks first; compare screenshots only where platform/font assumptions match. |
+| Platform and idle behavior | Official builds target macOS, Windows, and Linux natively. IME, dialogs, menus, DPI behavior, shutdown, and true idle are platform-sensitive. Current docs explicitly leave several native checks pending. | README; docs/PLAN.md C7/E6; CI workflows | Build/test on native runners. Manually verify open/save dialogs, menu keyboarding, IME, resize/DPI, wakeups, and idle behavior on each supported desktop. |
+
+## Deferred product scope
+
+The current project explicitly defers LSP, plugins, sync/collaboration, autocomplete, diagnostics, debugging, and rich-text/Markdown presentation. Do not add these to the first Alicorn parity gate. A later product decision can promote a deferred row with a concrete user need and tests.
+
+## Gate rule
+
+For every row, record one of: **pass**, **known difference accepted**, or **not yet verified**. A row is a pass only when its stated evidence exists; a successful compile or headless test does not certify native input behavior. Keep Shirei as the default until the required rows for the intended release are passed.
