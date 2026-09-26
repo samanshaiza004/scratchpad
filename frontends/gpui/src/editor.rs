@@ -424,6 +424,7 @@ mod tests {
                 editor_revision,
                 language: "text".to_string(),
             }],
+            actions: Vec::new(),
         }
     }
 

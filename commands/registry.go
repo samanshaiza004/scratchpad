@@ -8,6 +8,7 @@ import "scratchpad/language"
 type CommandContext struct {
 	ActiveDocument    bool
 	HasWorkspace      bool
+	DocumentCount     int
 	HasTrasher        bool
 	RootLanguage      string
 	Markdown          bool
@@ -113,6 +114,7 @@ func DefaultRegistry() Registry {
 	}
 	workspace := func(ctx CommandContext) bool { return ctx.HasWorkspace }
 	trash := func(ctx CommandContext) bool { return ctx.HasWorkspace && ctx.HasTrasher }
+	multipleDocuments := func(ctx CommandContext) bool { return ctx.DocumentCount > 1 }
 	editSurface := func(ctx CommandContext) bool {
 		return ctx.ActiveDocument && ctx.EditorFocused
 	}
@@ -121,6 +123,14 @@ func DefaultRegistry() Registry {
 		descriptors = append(descriptors, CommandDescriptor{ID: id, Title: string(id), Category: "application", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }})
 	}
 	for _, descriptor := range []CommandDescriptor{
+		{ID: FileOpen, Title: "Open File…", Category: "File", Bindings: []Keybinding{{Key: "primary+o"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
+		{ID: WorkspaceOpen, Title: "Open Folder…", Category: "File", Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
+		{ID: FileSave, Title: "Save", Category: "File", Bindings: []Keybinding{{Key: "primary+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
+		{ID: DocumentClose, Title: "Close Document", Category: "File", Bindings: []Keybinding{{Key: "primary+w"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
+		{ID: DocumentActivate, Title: "Activate Document", Category: "Document", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
+		{ID: TabNext, Title: "Next Document", Category: "Document", Bindings: []Keybinding{{Key: "primary+tab"}}, Visible: multipleDocuments, Enabled: multipleDocuments},
+		{ID: TabPrevious, Title: "Previous Document", Category: "Document", Bindings: []Keybinding{{Key: "primary+shift+tab"}}, Visible: multipleDocuments, Enabled: multipleDocuments},
+		{ID: WorkspaceRefresh, Title: "Refresh Workspace", Category: "Workspace", Bindings: []Keybinding{{Key: "primary+shift+r"}}, Visible: workspace, Enabled: workspace},
 		{ID: SettingsOpen, Title: "Settings", Category: "application", Bindings: []Keybinding{{Key: "primary+,"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: WorkspaceFocusFiles, Title: "Focus Files", Category: "workspace", Bindings: []Keybinding{{Key: "primary+shift+e"}}, Visible: workspace, Enabled: workspace},
 		{ID: WorkspaceNewFile, Title: "New File", Category: "workspace", Visible: workspace, Enabled: workspace},

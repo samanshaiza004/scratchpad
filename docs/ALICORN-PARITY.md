@@ -1,12 +1,21 @@
 # Scratchpad to Alicorn parity contract
 
-Status: Phase 1 lifecycle/state slice implemented; Windows smoke passed locally, and Windows/macOS native smoke is configured in CI. The macOS run remains pending. The Shirei application remains the default and production path. The Alicorn frontend is experimental and is not yet a Scratchpad shell/editor port.
+Status: Phase 1 lifecycle/state and Phase 2 workbench-shell slices are implemented in the experimental frontend. The editor is not ported. Native smoke covers startup/publication/presentation/shutdown; manual interaction verification remains platform-specific, and the user will perform the macOS check. Shirei remains the default and production frontend.
 
 ## Purpose
 
-This document records the behavior that an Alicorn frontend must preserve or deliberately defer as it grows. Shirei is the behavioral reference for generic input, focus, text, dialogs, and native integration. Scratchpad's application, document, workspace, language, and command packages are the authority for product behavior. Phase 1 proves only the foreign lifecycle and real state snapshot; it does not claim any product-parity row is complete.
+This document records the behavior that an Alicorn frontend must preserve or deliberately defer as it grows. Shirei is the behavioral reference for generic input, focus, text, dialogs, and native integration. Scratchpad's application, document, workspace, language, and command packages are the authority for product behavior. Phase 1 proves the foreign lifecycle and real state snapshot; Phase 2 proves only the shell behavior listed below, not full product parity.
 
-Parity means matching useful behavior and state transitions. It does not require pixel-identical rendering or a copy of Shirei's package structure. Keep the current Shirei frontend available until Alicorn passes the relevant rows below.
+Parity means matching useful behavior and state transitions. It does not require pixel-identical rendering or a copy of Shirei's package structure. Keep the current Shirei frontend available until Alicorn passes the relevant rows below. Phase 1 proves the foreign lifecycle and real state publication; Phase 2 proves a bounded workbench shell, not editor or full product parity.
+
+## Alicorn progress
+
+| Slice | Status | Evidence / remaining check |
+|---|---|---|
+| Phase 1 — foreign lifecycle and real state | Implemented | Uses the existing `scratchpad_backend_*` c-shared bridge and Caliber ABI; blocking wake waiter; Windows bounded native smoke; macOS native check is manual. |
+| Phase 2A — actions, menus, tabs, dialogs | Implemented in the experimental shell | Shared action metadata uses canonical Scratchpad IDs. Headless integration covers open/select/refresh/save/close and dirty-close response. Bounded smoke verifies launch/publication/shutdown; manual native menu/dialog interaction remains to be verified. |
+| Phase 2B — workspace tree | Implemented in the experimental shell | Uses the existing bounded `list_directory` and `refresh_workspace` commands. Headless integration covers root/nested listings and refresh; rows are virtualized and keyed by relative path, with semantic path focus and Up/Down/Page/Home/End/Enter navigation. Manual native tree scrolling/interaction remains to be verified. |
+| Editor, text input, IME | Deferred | Do not infer editor parity from the shell placeholder. |
 
 Status labels:
 

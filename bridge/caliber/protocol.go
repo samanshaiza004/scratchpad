@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"scratchpad/application"
+	"scratchpad/commands"
 	"scratchpad/workspace"
 )
 
@@ -132,6 +133,20 @@ type StateEnvelope struct {
 	WorkspaceRoot  string          `json:"workspace_root,omitempty"`
 	Active         string          `json:"active,omitempty"`
 	Documents      []StateDocument `json:"documents"`
+	Actions        []ActionState   `json:"actions,omitempty"`
+}
+
+// ActionState publishes the canonical Scratchpad command vocabulary to any
+// frontend. ID remains the product identity; a presentation may map it to a
+// host-local numeric action token without creating another command namespace.
+type ActionState struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Category string   `json:"category"`
+	Bindings []string `json:"bindings,omitempty"`
+	Visible  bool     `json:"visible"`
+	Enabled  bool     `json:"enabled"`
+	Checked  bool     `json:"checked"`
 }
 
 type StateDocument struct {
@@ -382,6 +397,11 @@ func errorResponse(requestID uint64, lifecycle, code, message string, retryable 
 }
 
 func stateFromApplication(revision uint64, snapshot application.PresentationState) StateEnvelope {
+	commandContext := commands.CommandContext{
+		ActiveDocument: snapshot.Active != "",
+		HasWorkspace:   snapshot.HasWorkspace,
+		DocumentCount:  len(snapshot.Documents),
+	}
 	state := StateEnvelope{
 		Schema:         StateSchemaV1,
 		Revision:       revision,
@@ -390,6 +410,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		WorkspaceRoot:  snapshot.WorkspaceRoot,
 		Active:         string(snapshot.Active),
 		Documents:      make([]StateDocument, 0, len(snapshot.Documents)),
+		Actions:        make([]ActionState, 0, len(shellActionIDs)),
 	}
 	for _, document := range snapshot.Documents {
 		state.Documents = append(state.Documents, StateDocument{
@@ -401,7 +422,36 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			Language:       document.Language,
 		})
 	}
+	registry := commands.DefaultRegistry()
+	for _, id := range shellActionIDs {
+		descriptor, found := registry.Lookup(id)
+		if !found {
+			continue
+		}
+		bindings := make([]string, 0, len(descriptor.Bindings))
+		for _, binding := range descriptor.Bindings {
+			bindings = append(bindings, binding.Key)
+		}
+		state.Actions = append(state.Actions, ActionState{
+			ID:       string(descriptor.ID),
+			Title:    descriptor.Title,
+			Category: descriptor.Category,
+			Bindings: bindings,
+			Visible:  descriptor.IsVisible(commandContext),
+			Enabled:  descriptor.IsEnabled(commandContext),
+		})
+	}
 	return state
+}
+
+var shellActionIDs = []commands.ID{
+	commands.FileOpen,
+	commands.WorkspaceOpen,
+	commands.FileSave,
+	commands.DocumentClose,
+	commands.TabNext,
+	commands.TabPrevious,
+	commands.WorkspaceRefresh,
 }
 
 func directoryListing(relative string, limit int, entries []workspace.Entry) DirectoryListing {

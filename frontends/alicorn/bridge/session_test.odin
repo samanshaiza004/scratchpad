@@ -1,6 +1,8 @@
 package alicorn_scratchpad_bridge
 
 import "core:os"
+import "core:fmt"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -112,4 +114,95 @@ test_backend_publication_lease_wake_stop_and_restart :: proc(t: ^testing.T) {
 		second_stop, second_stop_error := backend_stop(&backend, context.temp_allocator)
 		testing.expect(t, second_stop, second_stop_error)
 	}
+	exercise_shared_backend_shell_commands(t, &backend, &signal)
+}
+
+exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend, signal: ^Test_Wake_Signal) {
+	workspace, workspace_err := os.make_directory_temp("", "scratchpad-alicorn-shell-*", context.temp_allocator)
+	if workspace_err != nil { testing.expect(t, false, "could not create temporary workspace"); return }
+	defer _ = os.remove_all(workspace)
+	first_path := fmt.tprintf("%s/first.md", workspace)
+	second_path := fmt.tprintf("%s/second.txt", workspace)
+	nested_path := fmt.tprintf("%s/nested", workspace)
+	nested_file_path := fmt.tprintf("%s/nested/child.md", workspace)
+	if mkdir_err := os.make_directory(nested_path); mkdir_err != nil {
+		testing.expect(t, false, "could not create a nested test directory")
+		return
+	}
+	if write_err := os.write_entire_file_from_string(first_path, "# First\n"); write_err != nil {
+		testing.expect(t, false, "could not create first test document")
+		return
+	}
+	if write_err := os.write_entire_file_from_string(second_path, "Second\n"); write_err != nil {
+		testing.expect(t, false, "could not create second test document")
+		return
+	}
+	if write_err := os.write_entire_file_from_string(nested_file_path, "Nested\n"); write_err != nil {
+		testing.expect(t, false, "could not create a nested test document")
+		return
+	}
+	started, start_message := backend_start(backend, workspace, test_wake_callback, rawptr(signal), context.temp_allocator)
+	testing.expect(t, started, start_message)
+	if !started { return }
+	root_listing := backend_command(backend, "list_directory", allocator=context.temp_allocator)
+	testing.expect(t, root_listing.ok && root_listing.directory_listing_owned, "generic list_directory should return an owned root listing")
+	if root_listing.directory_listing_owned {
+		testing.expect(t, root_listing.directory_listing.relative_path == "" && len(root_listing.directory_listing.entries) == 3,
+			"root listing should retain the existing bounded directory schema, including subfolders")
+	}
+	backend_command_result_destroy(&root_listing, context.temp_allocator)
+	nested_listing := backend_command(backend, "list_directory", relative_path="nested", allocator=context.temp_allocator)
+	testing.expect(t, nested_listing.ok && nested_listing.directory_listing_owned, "generic list_directory should return a nested listing")
+	if nested_listing.directory_listing_owned {
+		testing.expect(t, nested_listing.directory_listing.relative_path == "nested" && len(nested_listing.directory_listing.entries) == 1 && nested_listing.directory_listing.entries[0].name == "child.md",
+			"nested listing should preserve its relative path and entry identity")
+	}
+	backend_command_result_destroy(&nested_listing, context.temp_allocator)
+	open_first := backend_command(backend, "open_path", path=first_path, allocator=context.temp_allocator)
+	testing.expect(t, open_first.ok && open_first.state_changed, "generic open_path should publish the opened document")
+	backend_command_result_destroy(&open_first, context.temp_allocator)
+	testing.expect(t, len(backend.state.documents) == 1 && backend.state.active != "", "opened file should appear in real backend state")
+	first_id, clone_err := strings.clone(backend.state.active, context.temp_allocator)
+	testing.expect(t, clone_err == nil, "could not retain the first document's stable ID")
+	defer delete(first_id, context.temp_allocator)
+	first_editor_revision := u64(0)
+	if len(backend.state.documents) == 1 { first_editor_revision = backend.state.documents[0].editor_revision }
+	testing.expect(t, len(backend.state.documents) == 1, "opened first document should have a state record")
+	replacement := [?]int{'x'}
+	edit_first := backend_command(
+		backend,
+		"replace_document",
+		document_id=first_id,
+		editor_revision=first_editor_revision,
+		start_byte=0,
+		end_byte=0,
+		replacement=replacement[:],
+		allocator=context.temp_allocator,
+	)
+	testing.expect(t, edit_first.ok && edit_first.state_changed, "generic replace_document should publish dirty state for the close-decision test")
+	backend_command_result_destroy(&edit_first, context.temp_allocator)
+	open_second := backend_command(backend, "open_path", path=second_path, allocator=context.temp_allocator)
+	testing.expect(t, open_second.ok && open_second.state_changed, "opening another path should publish a second document")
+	backend_command_result_destroy(&open_second, context.temp_allocator)
+	testing.expect(t, len(backend.state.documents) == 2, "two real documents should produce two tabs")
+	select_first := backend_command(backend, "select_document", document_id=first_id, allocator=context.temp_allocator)
+	testing.expect(t, select_first.ok && backend.state.active == first_id, "generic select_document should select the existing stable ID")
+	backend_command_result_destroy(&select_first, context.temp_allocator)
+	refresh := backend_command(backend, "refresh_workspace", allocator=context.temp_allocator)
+	testing.expect(t, refresh.ok && refresh.directory_listing_owned && refresh.directory_listing.relative_path == "" && len(refresh.directory_listing.entries) == 3,
+		"generic refresh_workspace should return a fresh root listing through the same backend")
+	backend_command_result_destroy(&refresh, context.temp_allocator)
+	dirty_close := backend_command(backend, "close_document", document_id=first_id, allocator=context.temp_allocator)
+	testing.expect(t, !dirty_close.ok && dirty_close.code == "close_requires_decision", "dirty close should return the existing application decision")
+	testing.expect(t, dirty_close.close_decision.dirty && dirty_close.close_decision.can_save && dirty_close.close_decision.can_discard, "dirty-close response should carry explicit save/discard options")
+	backend_command_result_destroy(&dirty_close, context.temp_allocator)
+	save_first := backend_command(backend, "save_document", document_id=first_id, allocator=context.temp_allocator)
+	testing.expect(t, save_first.ok && save_first.state_changed, "generic save_document should clear the dirty state before closing")
+	backend_command_result_destroy(&save_first, context.temp_allocator)
+	close_first := backend_command(backend, "close_document", document_id=first_id, allocator=context.temp_allocator)
+	testing.expect(t, close_first.ok && len(backend.state.documents) == 1, "generic close_document should remove the requested clean document")
+	backend_command_result_destroy(&close_first, context.temp_allocator)
+	testing.expect(t, backend.state_leases == 0, "shell commands must release every Caliber state lease")
+	stopped, stop_message := backend_stop(backend, context.temp_allocator)
+	testing.expect(t, stopped, stop_message)
 }

@@ -332,6 +332,25 @@ pub struct StateEnvelope {
     pub active: String,
     #[serde(default)]
     pub documents: Vec<StateDocument>,
+    #[serde(default)]
+    pub actions: Vec<ActionState>,
+}
+
+/// Stable Scratchpad command metadata shared by every frontend. A frontend
+/// may map `id` to a native numeric token, but the string remains canonical.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActionState {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+    #[serde(default)]
+    pub bindings: Vec<String>,
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub checked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -597,6 +616,23 @@ mod tests {
         let json = serde_json::to_value(&request).expect("serialize refresh request");
         assert_eq!(json["command"], "refresh_workspace");
         assert_eq!(json["based_on_revision"], 17);
+    }
+
+    #[test]
+    fn state_actions_decode_and_remain_optional_for_older_publications() {
+        let state: StateEnvelope = serde_json::from_str(
+            r#"{"schema":1,"revision":3,"application_revision":2,"has_workspace":true,"documents":[],"actions":[{"id":"file.open","title":"Open File…","category":"File","bindings":["primary+o"],"visible":true,"enabled":true,"checked":false}]}"#,
+        )
+        .expect("decode state with shared action metadata");
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(state.actions[0].id, "file.open");
+        assert_eq!(state.actions[0].bindings, ["primary+o"]);
+
+        let older: StateEnvelope = serde_json::from_str(
+            r#"{"schema":1,"revision":1,"application_revision":1,"has_workspace":false,"documents":[]}"#,
+        )
+        .expect("older Phase 1 state remains compatible");
+        assert!(older.actions.is_empty());
     }
 
     #[test]

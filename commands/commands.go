@@ -34,6 +34,7 @@ const (
 	ViewDecreaseFontSize  ID = "view.decrease-font-size"
 	ViewResetFontSize     ID = "view.reset-font-size"
 	WorkspaceRefresh      ID = "workspace.refresh"
+	WorkspaceOpen         ID = "workspace.open"
 	WorkspaceFocusFiles   ID = "workspace.focus-files"
 	WorkspaceToggleFolder ID = "workspace.toggle-folder"
 	WorkspaceNewFile      ID = "workspace.new-file"
@@ -113,6 +114,7 @@ var InitialVocabulary = []ID{
 	ViewDecreaseFontSize,
 	ViewResetFontSize,
 	WorkspaceRefresh,
+	WorkspaceOpen,
 	WorkspaceFocusFiles,
 	WorkspaceToggleFolder,
 	WorkspaceNewFile,
