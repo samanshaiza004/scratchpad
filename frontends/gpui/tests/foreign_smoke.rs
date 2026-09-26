@@ -21,8 +21,8 @@ fn latency_summary(samples: &[u128]) -> serde_json::Value {
 
 #[test]
 fn rust_calls_go_and_caliber_for_gate_three_slice() {
-    let Some(backend_library) = std::env::var_os("SCRATCHPAD_GPUI_BACKEND_LIBRARY") else {
-        eprintln!("skipping foreign smoke: SCRATCHPAD_GPUI_BACKEND_LIBRARY is not set");
+    let Some(backend_library) = std::env::var_os("SCRATCHPAD_BACKEND_LIBRARY") else {
+        eprintln!("skipping foreign smoke: SCRATCHPAD_BACKEND_LIBRARY is not set");
         return;
     };
     let workspace = tempfile::tempdir().expect("temporary workspace");

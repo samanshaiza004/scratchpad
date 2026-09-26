@@ -94,8 +94,9 @@ must be authored against its own Go/Caliber ownership model.
 
 ## Existing Scratchpad code review
 
-The files under `frontends/gpui/src/`, `frontends/gpui/tests/`, and
-`frontends/gpui/backend/` at the audit commit contain no copied third-party
+The files under `frontends/gpui/src/`, `frontends/gpui/tests/`, and the
+then-nested `frontends/gpui/backend/` (now `bridge/caliber`) at the audit
+commit contain no copied third-party
 license headers, Zed application code, or adapted upstream file blocks. The
 current shell and bounded editor spike are Scratchpad-authored code that uses
 the `gpui-kit` API. Their source remains covered by the repository's MIT

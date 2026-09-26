@@ -23,7 +23,6 @@ impl BackendSession {
     pub fn open(config: BackendSessionConfig) -> Result<Self, BackendSessionError> {
         let backend_library = config
             .backend_library
-            .or_else(|| std::env::var_os("SCRATCHPAD_GPUI_BACKEND_LIBRARY").map(PathBuf::from))
             .or_else(|| std::env::var_os("SCRATCHPAD_BACKEND_LIBRARY").map(PathBuf::from))
             .ok_or(BackendSessionError::MissingBackendLibrary)?;
         let request = StartRequest::new(config.workspace_path)?;
@@ -101,7 +100,7 @@ impl BackendSession {
 
 #[derive(Debug, Error)]
 pub enum BackendSessionError {
-    #[error("SCRATCHPAD_GPUI_BACKEND_LIBRARY is required")]
+    #[error("SCRATCHPAD_BACKEND_LIBRARY is required")]
     MissingBackendLibrary,
     #[error(transparent)]
     ProtocolPath(#[from] crate::protocol::ProtocolError),

@@ -14,11 +14,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: samanshaiza004/caliber
-          ref: abbe4f7
-          path: caliber
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
@@ -27,7 +22,13 @@ jobs:
           components: rustfmt, clippy
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes xvfb
-      - run: go run ./cmd/gpui-dev test --caliber-root "$GITHUB_WORKSPACE/caliber"
+      - if: runner.os == 'Windows'
+        run: .\tools\gpui.ps1 test
+      - if: runner.os != 'Windows'
+        run: ./tools/gpui.sh test
         shell: bash
-      - run: go run ./cmd/gpui-dev smoke --caliber-root "$GITHUB_WORKSPACE/caliber"
+      - if: runner.os == 'Windows'
+        run: .\tools\gpui.ps1 smoke
+      - if: runner.os != 'Windows'
+        run: ./tools/gpui.sh smoke
         shell: bash

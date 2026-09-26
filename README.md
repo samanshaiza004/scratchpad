@@ -52,11 +52,16 @@ warm-paper editor surface.
 
 [`frontends/gpui`](frontends/gpui/README.md) is an experimental second frontend
 using Rust, GPUI, Caliber, and a Go backend to prove UI/backend independence.
-Its cgo backend is a nested Go module, so ordinary root Go tests remain
+Its shared cgo bridge is a separate Go module, so ordinary root Go tests remain
 independent. It currently provides a shell and bounded document viewport;
 the Gate 4 editing seam is exercised through foreign acceptance tests, not a
 complete interactive editor with viewport, IME, and shaping support. Shirei
 remains the default application.
+
+To build or test the experimental GPUI frontend, use the platform wrapper in
+[`frontends/gpui/README.md`](frontends/gpui/README.md). It bootstraps Caliber's
+pinned CLI when needed and synchronizes the exact revisions in
+`dependencies.lock.json`; a sibling Caliber checkout is not required.
 
 The editor starts at a 16-pixel font size. Use **View → Increase Editor Font
 Size**, **Decrease Editor Font Size**, or **Reset Editor Font Size** to adjust

@@ -653,7 +653,7 @@ fn run_application() {
     application().run(|cx: &mut App| {
         gpui_kit::init(cx);
         let config = BackendSessionConfig {
-            backend_library: std::env::var_os("SCRATCHPAD_GPUI_BACKEND_LIBRARY")
+            backend_library: std::env::var_os("SCRATCHPAD_BACKEND_LIBRARY")
                 .map(std::path::PathBuf::from),
             workspace_path: std::env::var_os("SCRATCHPAD_GPUI_WORKSPACE")
                 .map(std::path::PathBuf::from),
@@ -707,7 +707,7 @@ fn run_native_smoke() -> Result<u64, String> {
     let result = Arc::new(Mutex::new(None));
     let result_for_app = result.clone();
     let config = BackendSessionConfig {
-        backend_library: std::env::var_os("SCRATCHPAD_GPUI_BACKEND_LIBRARY").map(PathBuf::from),
+        backend_library: std::env::var_os("SCRATCHPAD_BACKEND_LIBRARY").map(PathBuf::from),
         workspace_path: std::env::var_os("SCRATCHPAD_GPUI_WORKSPACE").map(PathBuf::from),
     };
     let workspace = config.workspace_path.clone();

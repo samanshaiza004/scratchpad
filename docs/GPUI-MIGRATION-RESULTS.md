@@ -51,11 +51,12 @@ revisioned-edit messages; no generic UI RPC or renderer schema was added.
 
 ## Validation
 
-On Windows with Go 1.25-era cgo, Rust/Cargo, MinGW, Visual Studio tooling, and
-Caliber `abbe4f7`, the following passed:
+Historical baseline (before the shared dependency lock) on Windows with Go
+1.25-era cgo, Rust/Cargo, MinGW, Visual Studio tooling, and Caliber `abbe4f7`:
 
 * root `go test ./...` with `GOARCH=amd64` and `CGO_ENABLED=1`;
-* nested `frontends/gpui/backend` cgo tests against the Caliber release DLL;
+* nested `frontends/gpui/backend` cgo tests against the Caliber release DLL
+  (the bridge now lives at `bridge/caliber`);
 * 16 GPUI Rust unit tests and the foreign smoke test;
 * GPUI Clippy with `-D warnings`;
 * `go run ./cmd/gpui-dev test --release --allow-caliber-revision`;

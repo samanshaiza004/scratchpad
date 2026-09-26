@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "validation": {
+    "caliber": {
+      "windows": ["go", "run", "./cmd/gpui-dev", "test", "--caliber-root", "{candidate}", "--allow-caliber-revision"],
+      "unix": ["go", "run", "./cmd/gpui-dev", "test", "--caliber-root", "{candidate}", "--allow-caliber-revision"]
+    }
+  }
+}

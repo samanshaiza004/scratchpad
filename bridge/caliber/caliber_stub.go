@@ -7,8 +7,6 @@ import (
 	"unsafe"
 )
 
-const requiredCaliberCommit = "abbe4f7"
-
 var errNoCommand = errors.New("no pending Caliber command")
 
 type caliberRuntime struct{}

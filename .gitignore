@@ -1,6 +1,8 @@
 # Build output
 /scratchpad
 /bin/
+/.deps/
+/.tools/
 
 # Go tooling
 *.test
@@ -17,5 +19,5 @@ testdata/generated/
 
 # GPUI dogfood native artifacts
 /frontends/gpui/build/
-/frontends/gpui/backend/build/
 /frontends/gpui/target/
+/bridge/caliber/build/

@@ -11,20 +11,20 @@ import (
 	"runtime"
 	"unsafe"
 
-	backend "scratchpad-gpui-backend"
+	backend "scratchpad-caliber-bridge"
 )
 
 var singleton = backend.NewRuntime()
 
 func main() {}
 
-//export scratchpad_gpui_backend_start
-func scratchpad_gpui_backend_start(input unsafe.Pointer, inputLen C.size_t, out *unsafe.Pointer, outLen *C.size_t) C.int {
+//export scratchpad_backend_start
+func scratchpad_backend_start(input unsafe.Pointer, inputLen C.size_t, out *unsafe.Pointer, outLen *C.size_t) C.int {
 	return safeOutput(out, outLen, func() []byte { return singleton.Start(copyInput(input, inputLen)) })
 }
 
-//export scratchpad_gpui_backend_caliber_api
-func scratchpad_gpui_backend_caliber_api() (ptr unsafe.Pointer) {
+//export scratchpad_backend_caliber_api
+func scratchpad_backend_caliber_api() (ptr unsafe.Pointer) {
 	defer func() {
 		if recover() != nil {
 			ptr = nil
@@ -33,8 +33,8 @@ func scratchpad_gpui_backend_caliber_api() (ptr unsafe.Pointer) {
 	return singleton.CaliberAPIPointer()
 }
 
-//export scratchpad_gpui_backend_caliber_context
-func scratchpad_gpui_backend_caliber_context() (ptr unsafe.Pointer) {
+//export scratchpad_backend_caliber_context
+func scratchpad_backend_caliber_context() (ptr unsafe.Pointer) {
 	defer func() {
 		if recover() != nil {
 			ptr = nil
@@ -43,38 +43,38 @@ func scratchpad_gpui_backend_caliber_context() (ptr unsafe.Pointer) {
 	return singleton.CaliberContextPointer()
 }
 
-//export scratchpad_gpui_backend_pump
-func scratchpad_gpui_backend_pump(out *unsafe.Pointer, outLen *C.size_t) C.int {
+//export scratchpad_backend_pump
+func scratchpad_backend_pump(out *unsafe.Pointer, outLen *C.size_t) C.int {
 	return safeOutput(out, outLen, singleton.Pump)
 }
 
-//export scratchpad_gpui_backend_stop
-func scratchpad_gpui_backend_stop(input unsafe.Pointer, inputLen C.size_t, out *unsafe.Pointer, outLen *C.size_t) C.int {
+//export scratchpad_backend_stop
+func scratchpad_backend_stop(input unsafe.Pointer, inputLen C.size_t, out *unsafe.Pointer, outLen *C.size_t) C.int {
 	return safeOutput(out, outLen, func() []byte { return singleton.Stop(copyInput(input, inputLen)) })
 }
 
-//export scratchpad_gpui_backend_state_lease_acquired
-func scratchpad_gpui_backend_state_lease_acquired() (status C.int) {
+//export scratchpad_backend_state_lease_acquired
+func scratchpad_backend_state_lease_acquired() (status C.int) {
 	return safeStatus(func() error { return singleton.NoteStateLeaseAcquired() })
 }
 
-//export scratchpad_gpui_backend_state_lease_released
-func scratchpad_gpui_backend_state_lease_released() (status C.int) {
+//export scratchpad_backend_state_lease_released
+func scratchpad_backend_state_lease_released() (status C.int) {
 	return safeStatus(func() error { return singleton.NoteStateLeaseReleased() })
 }
 
-//export scratchpad_gpui_backend_resource_lease_acquired
-func scratchpad_gpui_backend_resource_lease_acquired() (status C.int) {
+//export scratchpad_backend_resource_lease_acquired
+func scratchpad_backend_resource_lease_acquired() (status C.int) {
 	return safeStatus(func() error { return singleton.NoteResourceLeaseAcquired() })
 }
 
-//export scratchpad_gpui_backend_resource_lease_released
-func scratchpad_gpui_backend_resource_lease_released() (status C.int) {
+//export scratchpad_backend_resource_lease_released
+func scratchpad_backend_resource_lease_released() (status C.int) {
 	return safeStatus(func() error { return singleton.NoteResourceLeaseReleased() })
 }
 
-//export scratchpad_gpui_backend_free
-func scratchpad_gpui_backend_free(ptr unsafe.Pointer) {
+//export scratchpad_backend_free
+func scratchpad_backend_free(ptr unsafe.Pointer) {
 	defer func() { _ = recover() }()
 	if ptr != nil {
 		C.free(ptr)

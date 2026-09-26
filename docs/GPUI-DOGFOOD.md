@@ -6,10 +6,11 @@ claim.
 
 ## What was built
 
-The Rust frontend uses `gpui-kit = "=0.6.1"` and no direct Caliber crate. A
-nested Go module builds `libscratchpad_gpui_backend` with `-buildmode=c-shared`.
-That library links the one Caliber `cdylib` and returns the `CaliberApiV1`
-pointer/context to Rust. Rust calls `context_dispatch`,
+The Rust frontend uses `gpui-kit = "=0.6.1"` and no direct Caliber crate. The
+frontend-neutral Go bridge in `bridge/caliber` builds
+`libscratchpad_backend` with `-buildmode=c-shared`. That library links the one
+Caliber `cdylib` and returns the `CaliberApiV1` pointer/context to Rust. Rust
+calls `context_dispatch`,
 `context_read_latest_state`, `state_publication_release`, and
 `context_wake_sequence` from that returned table.
 
@@ -22,8 +23,26 @@ state, save/close controls, command-palette/settings affordances, and a
 read-only placeholder.
 
 The root Scratchpad module remains independent of Caliber. The cgo-dependent
-backend has its own `go.mod`, and its tests run separately with
+shared bridge has its own `go.mod`, and its tests run separately with
 `GOEXPERIMENT=cgocheck2`.
+
+## Shared bridge ownership
+
+The application/Caliber adapter is `bridge/caliber`, not a GPUI-owned backend.
+Its protocol and application semantics are shared Scratchpad responsibilities;
+GPUI retains its local scheduler, focus, layout, shaping, rendering, and IME
+behavior. The native library exports `scratchpad_backend_*` symbols and is
+loaded through `SCRATCHPAD_BACKEND_LIBRARY`, so another frontend can consume
+the same Go boundary without duplicating it.
+The build driver places Caliber's Cargo output under the ignored
+`frontends/gpui/build/caliber-target` directory, so compiling through a local
+developer override does not write build artifacts into that checkout.
+
+The exact Caliber source revision lives only in the root
+`dependencies.lock.json`. `tools/gpui.ps1` and `tools/gpui.sh` run `caliber
+sync` before building or testing. The first run bootstraps Caliber CLI from the
+revision in `.caliber-cli-revision`; the project validation hook tests a
+candidate before `caliber update` or `caliber pin` changes the lock.
 
 ## Gate 3: bounded visible-line resource
 
@@ -211,3 +230,23 @@ stale edit without disturbing the scalable editor. This is evidence for a
 source-edit seam, not ABI stabilization, a framework, or a claim that Caliber
 is cheaper than direct Shirei integration. A full editor remains deferred until
 this synchronization cost is reviewed.
+
+## Phase 0B dependency and shared-bridge validation
+
+On Windows, Scratchpad bootstrapped Caliber CLI from its pinned source commit,
+synced the original Caliber pin, and then ran `caliber update caliber`. The
+candidate hook passed root Go tests, the `bridge/caliber` cgo tests, all 16 GPUI
+unit tests, the foreign Go↔Caliber smoke test, Rust formatting, and Clippy
+before the lock changed to `43aa905ba86e12b29f755afd40e7ebbdcc544e5f`.
+Subsequent `caliber status` reported a clean synchronized checkout, and a
+second sync succeeded with Git restricted to local protocols. The documented
+Windows GPUI wrapper passed native startup/shutdown smoke:
+`scratchpad-gpui ready revision=5 shutdown=ok`.
+The developer-owned sibling Caliber override also built and passed native
+smoke with its HEAD and Git status unchanged, including its pre-existing
+untracked work directories.
+
+The Windows run used 64-bit Go 1.27.1 and one Cargo build job to fit the local
+toolchain/linker memory budget. macOS and Linux have not been manually run in
+this phase; CI now invokes the same wrappers from fresh project checkouts on
+all three operating systems.

@@ -16,8 +16,6 @@ import (
 	"time"
 )
 
-const expectedCaliberCommit = "abbe4f7"
-
 type artifactManifest struct {
 	CaliberCommit string   `json:"caliber_commit"`
 	ABIVersion    uint32   `json:"abi_version"`
@@ -51,7 +49,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	env, caliberLibrary, err := prepareCaliber(root, *caliberRoot, *allowRevision, *cgocheck2, *releaseBuild)
+	env, caliberLibrary, caliberCommit, err := prepareCaliber(root, *caliberRoot, *allowRevision, *cgocheck2, *releaseBuild)
 	if err != nil {
 		return err
 	}
@@ -66,24 +64,24 @@ func run(args []string) error {
 
 	switch command {
 	case "build":
-		_, err = build(root, out, env, caliberLibrary, *releaseBuild)
+		_, err = build(root, out, env, caliberLibrary, caliberCommit, *releaseBuild)
 	case "test":
-		err = test(root, env, caliberLibrary, *releaseBuild)
+		err = test(root, env, caliberLibrary, caliberCommit, *releaseBuild)
 	case "run":
 		var exe string
-		exe, err = build(root, out, env, caliberLibrary, *releaseBuild)
+		exe, err = build(root, out, env, caliberLibrary, caliberCommit, *releaseBuild)
 		if err == nil {
 			err = launch(exe, env, false, "")
 		}
 	case "smoke":
 		var exe string
-		exe, err = build(root, out, env, caliberLibrary, *releaseBuild)
+		exe, err = build(root, out, env, caliberLibrary, caliberCommit, *releaseBuild)
 		if err == nil {
 			err = launch(exe, env, true, root)
 		}
 	case "measure":
 		var exe string
-		exe, err = build(root, out, env, caliberLibrary, *releaseBuild)
+		exe, err = build(root, out, env, caliberLibrary, caliberCommit, *releaseBuild)
 		if err == nil {
 			err = measure(root, out, exe, env)
 		}
@@ -101,32 +99,37 @@ func repoRoot() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2, releaseBuild bool) ([]string, string, error) {
-	if caliberRoot == "" {
-		return nil, "", errors.New("CALIBER_ROOT is required or pass --caliber-root")
-	}
-	caliberRoot, err := filepath.Abs(caliberRoot)
+func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2, releaseBuild bool) ([]string, string, string, error) {
+	lockedRevision, err := lockedCaliberRevision(root)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
+	}
+	if caliberRoot == "" {
+		caliberRoot = filepath.Join(root, ".deps", "caliber")
+	}
+	caliberRoot, err = filepath.Abs(caliberRoot)
+	if err != nil {
+		return nil, "", "", err
 	}
 	commitBytes, err := commandOutput(caliberRoot, "git", "rev-parse", "HEAD")
 	if err != nil {
-		return nil, "", fmt.Errorf("inspect Caliber revision: %w", err)
+		return nil, "", "", fmt.Errorf("inspect Caliber revision: %w", err)
 	}
 	commit := strings.TrimSpace(string(commitBytes))
-	if !allowRevision && !strings.HasPrefix(commit, expectedCaliberCommit) {
-		return nil, "", fmt.Errorf("Caliber checkout is at %s; expected %s (use --allow-caliber-revision to override)", commit, expectedCaliberCommit)
+	if !allowRevision && commit != lockedRevision {
+		return nil, "", "", fmt.Errorf("Caliber checkout is at %s; dependencies.lock.json requires %s (use --allow-caliber-revision to override)", commit, lockedRevision)
 	}
-	cargoArgs := []string{"build", "-p", "caliber-ffi", "--lib"}
+	caliberTargetDir := filepath.Join(root, "frontends", "gpui", "build", "caliber-target")
+	cargoArgs := []string{"build", "-p", "caliber-ffi", "--lib", "--target-dir", caliberTargetDir}
 	if releaseBuild {
 		cargoArgs = append(cargoArgs, "--release")
 	}
 	if err := runCommand(caliberRoot, nil, "cargo", cargoArgs...); err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
-	library := caliberLibraryFromRoot(caliberRoot, releaseBuild)
+	library := caliberLibraryFromTarget(caliberTargetDir, releaseBuild)
 	if _, err := os.Stat(library); err != nil {
-		return nil, "", fmt.Errorf("Caliber cdylib was not found: %s: %w", library, err)
+		return nil, "", "", fmt.Errorf("Caliber cdylib was not found: %s: %w", library, err)
 	}
 	env := os.Environ()
 	env = setEnv(env, "CGO_ENABLED", "1")
@@ -136,16 +139,44 @@ func prepareCaliber(root, caliberRoot string, allowRevision, cgocheck2, releaseB
 	if cgocheck2 {
 		env = setEnv(env, "GOEXPERIMENT", mergeGoExperiment(os.Getenv("GOEXPERIMENT"), "cgocheck2"))
 	}
-	_ = root
-	return env, library, nil
+	return env, library, commit, nil
 }
 
-func build(root, out string, env []string, caliberLibrary string, releaseBuild bool) (string, error) {
+func lockedCaliberRevision(root string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(root, "dependencies.lock.json"))
+	if err != nil {
+		return "", fmt.Errorf("read dependencies.lock.json: %w", err)
+	}
+	var lock struct {
+		Schema  uint32 `json:"schema"`
+		Caliber struct {
+			Revision string `json:"revision"`
+		} `json:"caliber"`
+	}
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return "", fmt.Errorf("parse dependencies.lock.json: %w", err)
+	}
+	if lock.Schema != 1 {
+		return "", fmt.Errorf("unsupported dependency lock schema %d", lock.Schema)
+	}
+	revision := lock.Caliber.Revision
+	if len(revision) != 40 {
+		return "", errors.New("dependencies.lock.json has a malformed Caliber revision")
+	}
+	for _, c := range revision {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return "", errors.New("dependencies.lock.json has a malformed Caliber revision")
+		}
+	}
+	return revision, nil
+}
+
+func build(root, out string, env []string, caliberLibrary, caliberCommit string, releaseBuild bool) (string, error) {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return "", err
 	}
 	backend := filepath.Join(out, backendLibraryName())
-	backendDir := filepath.Join(root, "frontends", "gpui", "backend")
+	backendDir := filepath.Join(root, "bridge", "caliber")
 	goArgs := []string{"build", "-buildmode=c-shared", "-o", backend}
 	if releaseBuild {
 		goArgs = append(goArgs, "-ldflags", "-s -w")
@@ -181,7 +212,7 @@ func build(root, out string, env []string, caliberLibrary string, releaseBuild b
 		return "", err
 	}
 	manifestData := artifactManifest{
-		CaliberCommit: expectedCaliberCommit,
+		CaliberCommit: caliberCommit,
 		ABIVersion:    1,
 		Profile:       profile,
 		Artifacts:     []string{filepath.Base(exe), filepath.Base(backend), filepath.Base(caliberCopy)},
@@ -204,14 +235,14 @@ func relocateDarwinCaliber(source, copyPath, backend string) error {
 	return runCommandWithEnv(".", nil, "install_name_tool", "-change", installName, "@rpath/libcaliber_ffi.dylib", backend)
 }
 
-func test(root string, env []string, caliberLibrary string, releaseBuild bool) error {
+func test(root string, env []string, caliberLibrary, caliberCommit string, releaseBuild bool) error {
 	if err := checkGofmt(root, "cmd/gpui-dev/main.go"); err != nil {
 		return err
 	}
 	if err := runCommand(root, nil, "go", "test", "./..."); err != nil {
 		return fmt.Errorf("root Scratchpad tests: %w", err)
 	}
-	backendDir := filepath.Join(root, "frontends", "gpui", "backend")
+	backendDir := filepath.Join(root, "bridge", "caliber")
 	if err := checkGofmt(backendDir, "protocol.go", "runtime.go", "caliber_cgo.go", "caliber_stub.go", "runtime_test.go", "cshared/backend.go"); err != nil {
 		return err
 	}
@@ -222,21 +253,22 @@ func test(root string, env []string, caliberLibrary string, releaseBuild bool) e
 	if err != nil {
 		return err
 	}
-	exe, err := build(root, out, env, caliberLibrary, releaseBuild)
+	exe, err := build(root, out, env, caliberLibrary, caliberCommit, releaseBuild)
 	if err != nil {
 		return err
 	}
 	_ = exe
 	manifest := filepath.Join(root, "frontends", "gpui", "Cargo.toml")
+	cargoTargetDir := filepath.Join(root, "frontends", "gpui", "build", "cargo-target")
 	if err := runCommand(root, nil, "cargo", "fmt", "--manifest-path", manifest, "--", "--check"); err != nil {
 		return err
 	}
-	rustEnv := setEnv(env, "SCRATCHPAD_GPUI_BACKEND_LIBRARY", filepath.Join(out, backendLibraryName()))
+	rustEnv := setEnv(env, "SCRATCHPAD_BACKEND_LIBRARY", filepath.Join(out, backendLibraryName()))
 	rustEnv = setRuntimePath(rustEnv, out)
-	if err := runCommand(root, rustEnv, "cargo", "test", "--manifest-path", manifest); err != nil {
+	if err := runCommand(root, rustEnv, "cargo", "test", "--manifest-path", manifest, "--target-dir", cargoTargetDir); err != nil {
 		return err
 	}
-	return runCommand(root, rustEnv, "cargo", "clippy", "--manifest-path", manifest, "--all-targets", "--", "-D", "warnings")
+	return runCommand(root, rustEnv, "cargo", "clippy", "--manifest-path", manifest, "--target-dir", cargoTargetDir, "--all-targets", "--", "-D", "warnings")
 }
 
 func checkGofmt(dir string, files ...string) error {
@@ -254,7 +286,7 @@ func checkGofmt(dir string, files ...string) error {
 
 func launch(exe string, env []string, smoke bool, workspace string) error {
 	launchEnv := append([]string{}, env...)
-	launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_BACKEND_LIBRARY", filepath.Join(filepath.Dir(exe), backendLibraryName()))
+	launchEnv = setEnv(launchEnv, "SCRATCHPAD_BACKEND_LIBRARY", filepath.Join(filepath.Dir(exe), backendLibraryName()))
 	if smoke {
 		launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_SMOKE", "1")
 	}
@@ -271,7 +303,7 @@ func launch(exe string, env []string, smoke bool, workspace string) error {
 
 func launchForMeasure(exe string, env []string, workspace string, timeout time.Duration) error {
 	launchEnv := append([]string{}, env...)
-	launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_BACKEND_LIBRARY", filepath.Join(filepath.Dir(exe), backendLibraryName()))
+	launchEnv = setEnv(launchEnv, "SCRATCHPAD_BACKEND_LIBRARY", filepath.Join(filepath.Dir(exe), backendLibraryName()))
 	launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_SMOKE", "1")
 	launchEnv = setEnv(launchEnv, "SCRATCHPAD_GPUI_WORKSPACE", workspace)
 	name := exe
@@ -295,11 +327,12 @@ func measure(root, out, exe string, env []string) error {
 		return err
 	}
 	measurementPath := filepath.Join(out, "measurements.json")
-	runtimeEnv := setEnv(env, "SCRATCHPAD_GPUI_BACKEND_LIBRARY", filepath.Join(out, backendLibraryName()))
+	runtimeEnv := setEnv(env, "SCRATCHPAD_BACKEND_LIBRARY", filepath.Join(out, backendLibraryName()))
 	runtimeEnv = setRuntimePath(runtimeEnv, out)
 	runtimeEnv = setEnv(runtimeEnv, "SCRATCHPAD_GPUI_MEASURE_PATH", measurementPath)
 	manifestPath := filepath.Join(root, "frontends", "gpui", "Cargo.toml")
-	if err := runCommand(root, runtimeEnv, "cargo", "test", "--manifest-path", manifestPath, "--test", "foreign_smoke", "--", "--nocapture"); err != nil {
+	cargoTargetDir := filepath.Join(root, "frontends", "gpui", "build", "cargo-target")
+	if err := runCommand(root, runtimeEnv, "cargo", "test", "--manifest-path", manifestPath, "--target-dir", cargoTargetDir, "--test", "foreign_smoke", "--", "--nocapture"); err != nil {
 		return err
 	}
 	measurements := map[string]any{}
@@ -408,15 +441,15 @@ func copyFile(source, destination string) error {
 func backendLibraryName() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "libscratchpad_gpui_backend.dylib"
+		return "libscratchpad_backend.dylib"
 	case "windows":
-		return "scratchpad_gpui_backend.dll"
+		return "scratchpad_backend.dll"
 	default:
-		return "libscratchpad_gpui_backend.so"
+		return "libscratchpad_backend.so"
 	}
 }
 
-func caliberLibraryFromRoot(root string, releaseBuild bool) string {
+func caliberLibraryFromTarget(targetDir string, releaseBuild bool) string {
 	name := "libcaliber_ffi.so"
 	if runtime.GOOS == "darwin" {
 		name = "libcaliber_ffi.dylib"
@@ -427,7 +460,7 @@ func caliberLibraryFromRoot(root string, releaseBuild bool) string {
 	if releaseBuild {
 		profile = "release"
 	}
-	return filepath.Join(root, "target", profile, name)
+	return filepath.Join(targetDir, profile, name)
 }
 
 func exeSuffix() string {

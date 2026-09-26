@@ -25,12 +25,13 @@ Go c-shared backend → Scratchpad application
 GPUI state model
 ```
 
-The Go backend links one Caliber `cdylib` at build time. The Rust executable
+The frontend-neutral Go bridge at `bridge/caliber` links one Caliber `cdylib` at build time. The Rust executable
 does not depend on `caliber-ffi`; it loads only the Go backend's small C symbol
 surface, validates the returned Caliber ABI version/table size, and calls the
-returned table directly. The expected Caliber checkout is pinned to
-`abbe4f7` by [`EXPERIMENT-METADATA.toml`](EXPERIMENT-METADATA.toml), with an
-explicit override required for another revision.
+returned table directly. Caliber's exact revision is authoritative in the
+Scratchpad-root `dependencies.lock.json`; the GPUI build driver reads that lock
+and rejects a different checkout unless an explicit development override is
+enabled.
 
 The lifecycle is explicit: `start → running → stop → stopped`. State leases are
 accounted for across the foreign boundary, and shutdown is refused while one is
@@ -84,15 +85,24 @@ family.
 
 ## Build and test
 
-From the Scratchpad repository root:
+From the Scratchpad repository root, use the wrapper to resolve the locked
+Caliber source automatically (the first run bootstraps the pinned CLI; later
+runs reuse it):
 
-```text
-go run ./cmd/gpui-dev build --caliber-root /path/to/caliber
-go run ./cmd/gpui-dev test --caliber-root /path/to/caliber
-go run ./cmd/gpui-dev run --caliber-root /path/to/caliber
-go run ./cmd/gpui-dev smoke --caliber-root /path/to/caliber
-go run ./cmd/gpui-dev measure --caliber-root /path/to/caliber
-go run ./cmd/gpui-dev measure --release --caliber-root /path/to/caliber
+```powershell
+.\tools\gpui.ps1 build
+.\tools\gpui.ps1 test
+.\tools\gpui.ps1 run
+.\tools\gpui.ps1 smoke
+.\tools\gpui.ps1 measure
+```
+
+```sh
+./tools/gpui.sh build
+./tools/gpui.sh test
+./tools/gpui.sh run
+./tools/gpui.sh smoke
+./tools/gpui.sh measure
 ```
 
 `test` keeps the root Go suite independent, runs the nested cgo module with
@@ -112,11 +122,10 @@ MinGW-w64 GCC for cgo. Check `go version`: a 32-bit Go installation earlier
 on `PATH` will not match the native Rust and GCC artifacts.
 
 ```powershell
-$env:CALIBER_ROOT = (Resolve-Path ..\caliber).Path
 $env:SCRATCHPAD_GPUI_WORKSPACE = (Resolve-Path .).Path
-go run ./cmd/gpui-dev test --release
-go run ./cmd/gpui-dev smoke --release
-go run ./cmd/gpui-dev run --release
+.\tools\gpui.ps1 test --release
+.\tools\gpui.ps1 smoke --release
+.\tools\gpui.ps1 run --release
 ```
 
 The workspace variable supplies the backend's initial workspace. The Windows
@@ -124,3 +133,20 @@ cgo adapter explicitly links `caliber_ffi.dll`: an unqualified
 `-lcaliber_ffi` can select Rust's MSVC static `caliber_ffi.lib` instead and
 fail with unresolved MSVC runtime symbols. Caliber and GPUI can therefore
 both use the MSVC Rust target while the Go backend uses MinGW GCC.
+
+For local dependency development, set `CALIBER_ROOT` to an existing checkout.
+The wrapper treats it as a read-only override by default; setting
+`SCRATCHPAD_DEV_DEPS=1` permits a dirty checkout and explicitly allows a
+non-locked revision for that developer run.
+
+Contributor dependency commands from the repository root:
+
+```powershell
+.\tools\caliber.ps1 status
+.\tools\caliber.ps1 sync
+.\tools\caliber.ps1 update caliber
+.\tools\caliber.ps1 pin caliber ..\caliber
+```
+
+Use `pin` only when intentionally validating a clean local Caliber checkout;
+the checkout remains developer-owned and is never changed by the command.

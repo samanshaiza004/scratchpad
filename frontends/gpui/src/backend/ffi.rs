@@ -297,28 +297,22 @@ impl LoadedBackend {
         // The library is retained by BackendSessionRaw for the full lifetime of
         // copied function pointers and returned opaque handles.
         let library = unsafe { Library::new(path) }.map_err(FfiError::LoadLibrary)?;
-        let start = load_symbol(&library, b"scratchpad_gpui_backend_start\0")?;
-        let caliber_api = load_symbol(&library, b"scratchpad_gpui_backend_caliber_api\0")?;
-        let caliber_context = load_symbol(&library, b"scratchpad_gpui_backend_caliber_context\0")?;
+        let start = load_symbol(&library, b"scratchpad_backend_start\0")?;
+        let caliber_api = load_symbol(&library, b"scratchpad_backend_caliber_api\0")?;
+        let caliber_context = load_symbol(&library, b"scratchpad_backend_caliber_context\0")?;
         let symbols = BridgeSymbols {
-            pump: load_symbol(&library, b"scratchpad_gpui_backend_pump\0")?,
-            stop: load_symbol(&library, b"scratchpad_gpui_backend_stop\0")?,
-            free: load_symbol(&library, b"scratchpad_gpui_backend_free\0")?,
-            lease_acquired: load_symbol(
-                &library,
-                b"scratchpad_gpui_backend_state_lease_acquired\0",
-            )?,
-            lease_released: load_symbol(
-                &library,
-                b"scratchpad_gpui_backend_state_lease_released\0",
-            )?,
+            pump: load_symbol(&library, b"scratchpad_backend_pump\0")?,
+            stop: load_symbol(&library, b"scratchpad_backend_stop\0")?,
+            free: load_symbol(&library, b"scratchpad_backend_free\0")?,
+            lease_acquired: load_symbol(&library, b"scratchpad_backend_state_lease_acquired\0")?,
+            lease_released: load_symbol(&library, b"scratchpad_backend_state_lease_released\0")?,
             resource_lease_acquired: load_symbol(
                 &library,
-                b"scratchpad_gpui_backend_resource_lease_acquired\0",
+                b"scratchpad_backend_resource_lease_acquired\0",
             )?,
             resource_lease_released: load_symbol(
                 &library,
-                b"scratchpad_gpui_backend_resource_lease_released\0",
+                b"scratchpad_backend_resource_lease_released\0",
             )?,
         };
         Ok(Self {
@@ -381,23 +375,19 @@ fn load_symbol<T: Copy>(library: &Library, name: &'static [u8]) -> Result<T, Ffi
 
 fn symbol_name(name: &'static [u8]) -> &'static str {
     match name {
-        b"scratchpad_gpui_backend_start\0" => "scratchpad_gpui_backend_start",
-        b"scratchpad_gpui_backend_caliber_api\0" => "scratchpad_gpui_backend_caliber_api",
-        b"scratchpad_gpui_backend_caliber_context\0" => "scratchpad_gpui_backend_caliber_context",
-        b"scratchpad_gpui_backend_pump\0" => "scratchpad_gpui_backend_pump",
-        b"scratchpad_gpui_backend_stop\0" => "scratchpad_gpui_backend_stop",
-        b"scratchpad_gpui_backend_free\0" => "scratchpad_gpui_backend_free",
-        b"scratchpad_gpui_backend_state_lease_acquired\0" => {
-            "scratchpad_gpui_backend_state_lease_acquired"
+        b"scratchpad_backend_start\0" => "scratchpad_backend_start",
+        b"scratchpad_backend_caliber_api\0" => "scratchpad_backend_caliber_api",
+        b"scratchpad_backend_caliber_context\0" => "scratchpad_backend_caliber_context",
+        b"scratchpad_backend_pump\0" => "scratchpad_backend_pump",
+        b"scratchpad_backend_stop\0" => "scratchpad_backend_stop",
+        b"scratchpad_backend_free\0" => "scratchpad_backend_free",
+        b"scratchpad_backend_state_lease_acquired\0" => "scratchpad_backend_state_lease_acquired",
+        b"scratchpad_backend_state_lease_released\0" => "scratchpad_backend_state_lease_released",
+        b"scratchpad_backend_resource_lease_acquired\0" => {
+            "scratchpad_backend_resource_lease_acquired"
         }
-        b"scratchpad_gpui_backend_state_lease_released\0" => {
-            "scratchpad_gpui_backend_state_lease_released"
-        }
-        b"scratchpad_gpui_backend_resource_lease_acquired\0" => {
-            "scratchpad_gpui_backend_resource_lease_acquired"
-        }
-        b"scratchpad_gpui_backend_resource_lease_released\0" => {
-            "scratchpad_gpui_backend_resource_lease_released"
+        b"scratchpad_backend_resource_lease_released\0" => {
+            "scratchpad_backend_resource_lease_released"
         }
         _ => "unknown",
     }
