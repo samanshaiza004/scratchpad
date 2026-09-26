@@ -253,3 +253,14 @@ smoke passes on Windows and macOS. Linux native smoke remains unverified: the
 hosted Xvfb runner could not provide a surface GPUI could present to, even with
 Mesa lavapipe and X11 forced. Verify Linux window startup on a native display
 before claiming Linux desktop runtime support.
+
+## Phase 0C Caliber diagnostics
+
+The project wrappers expose caliber doctor and caliber check. Doctor reports
+the local dependency lock/materialization, declared tools, native Caliber
+library loadability, host architecture compatibility, ABI version/table size,
+and required function entries. Check exercises context creation, command and
+state transport, resource map/release, wake sequence, blocking wait, stop,
+thread join, and context destruction. It never launches a GUI or installs
+tools. The GPUI dogfood workflow runs both commands after building the native
+artifacts on Windows, macOS, and Linux.

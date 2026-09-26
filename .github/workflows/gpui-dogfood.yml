@@ -27,6 +27,17 @@ jobs:
       - if: runner.os != 'Windows'
         run: ./tools/gpui.sh test
         shell: bash
+      - name: Check Caliber boundary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          .\tools\caliber.ps1 doctor
+          .\tools\caliber.ps1 check
+      - name: Check Caliber boundary (macOS and Linux)
+        if: runner.os != 'Windows'
+        run: |
+          sh tools/caliber.sh doctor
+          sh tools/caliber.sh check
+        shell: bash
       - if: runner.os == 'Windows'
         run: .\tools\gpui.ps1 smoke
       - if: runner.os == 'Linux'
