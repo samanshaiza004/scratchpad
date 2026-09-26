@@ -21,7 +21,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev xvfb
+        run: sudo apt-get update && sudo apt-get install --yes libfontconfig1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev xvfb
       - if: runner.os == 'Windows'
         run: .\tools\gpui.ps1 test
       - if: runner.os != 'Windows'
