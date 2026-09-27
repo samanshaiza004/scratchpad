@@ -262,8 +262,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	                  app.editor_window.document_id == document.id &&
 	                  app.editor_window.editor_revision == document.editor_revision
 	gutter_width := editor_line_number_gutter_width(document.line_count)
-	content_width: f32 = 0
-	if window_matches { content_width = editor_window_content_width(&app.editor_window, 0, gutter_width) }
+	content_width := view.horizontal_extent
+	if window_matches {
+		measured_width := editor_window_content_width(&app.editor_window, 0, gutter_width)
+		content_width = editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
+	}
 	line_count := int(document.line_count)
 	if line_count < 1 { line_count = 1 }
 	list := alicorn.virtual_list_begin(

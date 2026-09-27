@@ -33,6 +33,8 @@ Editor_View_State :: struct {
 	document_id:       string,
 	scroll_y:          f32,
 	scroll_x:          f32,
+	horizontal_extent: f32,
+	extent_revision:    u64,
 	restore_y_pending: bool,
 	restore_x_pending: bool,
 }
@@ -64,6 +66,23 @@ editor_view_mark_active :: proc(view: ^Editor_View_State) {
 	if view == nil { return }
 	view.restore_y_pending = true
 	view.restore_x_pending = true
+}
+
+// A bounded source window only provides a lower bound for the document's
+// horizontal extent. Keep the widest observed window for this editor revision
+// so paging through shorter windows cannot make the viewport geometry contract.
+editor_view_observe_horizontal_extent :: proc(
+	view: ^Editor_View_State,
+	editor_revision: u64,
+	measured_width: f32,
+) -> f32 {
+	if view == nil { return max(measured_width, 0) }
+	if view.extent_revision != editor_revision {
+		view.extent_revision = editor_revision
+		view.horizontal_extent = 0
+	}
+	view.horizontal_extent = max(view.horizontal_extent, max(measured_width, 0))
+	return view.horizontal_extent
 }
 
 // Scroll offsets flow from the retained runtime into the document's saved

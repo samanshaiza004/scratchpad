@@ -50,6 +50,21 @@ test_editor_line_number_text_has_no_fixed_zero_padding :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_editor_horizontal_extent_is_high_water_per_revision :: proc(t: ^testing.T) {
+	view := Editor_View_State{}
+	width := editor_view_observe_horizontal_extent(&view, 3, 1_800)
+	testing.expect(t, width == 1_800, "the first bounded window establishes a minimum horizontal extent")
+	width = editor_view_observe_horizontal_extent(&view, 3, 600)
+	testing.expect(t, width == 1_800, "a shorter bounded window must not shrink horizontal scroll geometry")
+	width = editor_view_observe_horizontal_extent(&view, 3, 2_400)
+	testing.expect(t, width == 2_400, "a newly observed wider window should grow horizontal extent")
+	width = editor_view_observe_horizontal_extent(&view, 3, 900)
+	testing.expect(t, width == 2_400, "later short windows should preserve the widest observed extent")
+	width = editor_view_observe_horizontal_extent(&view, 4, 720)
+	testing.expect(t, width == 720, "a new editor revision should reset the old revision's extent")
+}
+
+@(test)
 test_editor_projection_preserves_source_bytes_and_maps_expansions :: proc(t: ^testing.T) {
 	raw := [?]u8{0xEF, 0xBB, 0xBF, 'A', '\t', 0xFF, '\r', '\n', 'e', 0xCC, 0x81}
 	source_bytes, allocation_error := make([]u8, len(raw), context.temp_allocator)
