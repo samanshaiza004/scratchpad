@@ -4,6 +4,7 @@ import "core:dynlib"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
+import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -99,6 +100,7 @@ State_Document :: struct {
 	path:            string `json:"path"`,
 	status:          string `json:"status"`,
 	dirty:           bool   `json:"dirty"`,
+	preview:         bool   `json:"preview"`,
 	editor_revision: u64    `json:"editor_revision"`,
 	language:        string `json:"language"`,
 }
@@ -177,6 +179,7 @@ Backend_Command_Request :: struct {
 	based_on_revision: u64    `json:"based_on_revision"`,
 	command:          string `json:"command"`,
 	path:             string `json:"path,omitempty"`,
+	disposition:      string `json:"disposition,omitempty"`,
 	document_id:      string `json:"document_id,omitempty"`,
 	discard:          bool   `json:"discard,omitempty"`,
 	relative_path:    string `json:"relative_path,omitempty"`,
@@ -333,9 +336,27 @@ Backend :: struct {
 backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, message: string) {
 	if backend == nil { return false, "backend state is nil" }
 	if backend.library_loaded { return backend.load_error == "", backend.load_error }
-	if library_path == "" { return false, "SCRATCHPAD_BACKEND_LIBRARY is not set" }
-	library, loaded := dynlib.load_library(library_path)
-	if !loaded { return false, fmt.tprintf("load backend library %q: %s", library_path, dynlib.last_error()) }
+	resolved_library_path := library_path
+	owned_library_path := false
+	if library_path == "" {
+		directory, directory_error := os.get_executable_directory(context.allocator)
+		if directory_error != nil { return false, "could not locate the Scratchpad executable directory" }
+		name := "libscratchpad_backend.so"
+		when ODIN_OS == .Windows { name = "scratchpad_backend.dll" }
+		when ODIN_OS == .Darwin { name = "libscratchpad_backend.dylib" }
+		resolved_path, join_error := os.join_path({directory, name}, context.allocator)
+		delete(directory, context.allocator)
+		if join_error != nil { return false, "could not resolve the sibling Scratchpad backend library" }
+		resolved_library_path = resolved_path
+		owned_library_path = true
+	}
+	library, loaded := dynlib.load_library(resolved_library_path)
+	if !loaded {
+		message := fmt.tprintf("load backend library %q: %s. Place the backend beside this application or set SCRATCHPAD_BACKEND_LIBRARY to override.", resolved_library_path, dynlib.last_error())
+		if owned_library_path { delete(resolved_library_path, context.allocator) }
+		return false, message
+	}
+	if owned_library_path { delete(resolved_library_path, context.allocator) }
 	backend.library = library
 	load_proc :: proc(library: dynlib.Library, name: string) -> rawptr {
 		address, found := dynlib.symbol_address(library, name)
@@ -569,6 +590,7 @@ backend_command :: proc(
 	backend: ^Backend,
 	command: string,
 	path := "",
+	disposition := "",
 	document_id := "",
 	discard := false,
 	relative_path := "",
@@ -592,6 +614,7 @@ backend_command :: proc(
 		based_on_revision=request_revision,
 		command=command,
 		path=path,
+		disposition=disposition,
 		document_id=document_id,
 		discard=discard,
 		relative_path=relative_path,

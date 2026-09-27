@@ -77,6 +77,85 @@ func TestPresentationContractRejectsUnknownCommandsAndDocuments(t *testing.T) {
 	}
 }
 
+func TestPreviewTabsReplaceCleanPreviewAndPinOnEdit(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.md")
+	second := filepath.Join(dir, "second.md")
+	third := filepath.Join(dir, "third.md")
+	for path, body := range map[string]string{first: "first", second: "second", third: "third"} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	app := New(nil)
+	if err := app.Dispatch(PresentationCommand{Kind: PresentationOpenPath, Path: first, Preview: true}); err != nil {
+		t.Fatal(err)
+	}
+	firstID := app.Active
+	if state := app.Snapshot(); len(state.Documents) != 1 || !state.Documents[0].Preview {
+		t.Fatalf("first tree-open state = %+v, want one preview", state)
+	}
+	if err := app.Dispatch(PresentationCommand{Kind: PresentationOpenPath, Path: second, Preview: true}); err != nil {
+		t.Fatal(err)
+	}
+	secondID := app.Active
+	if _, open := app.Documents[firstID]; open || len(app.Order) != 1 || app.Preview != secondID {
+		t.Fatalf("clean preview was not replaced: order=%v preview=%q", app.Order, app.Preview)
+	}
+
+	doc := app.Documents[secondID]
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte(" edited")); err != nil {
+		t.Fatal(err)
+	}
+	state := app.Snapshot()
+	if !state.Documents[0].Dirty || state.Documents[0].Preview {
+		t.Fatalf("application replacement edit did not pin preview: %+v", state.Documents[0])
+	}
+
+	if err := app.Dispatch(PresentationCommand{Kind: PresentationOpenPath, Path: third, Preview: true}); err != nil {
+		t.Fatal(err)
+	}
+	thirdID := app.Active
+	if len(app.Order) != 2 || app.Documents[secondID] == nil || app.Preview != app.Active {
+		t.Fatalf("dirty preview should remain pinned beside the new preview: order=%v preview=%q active=%q", app.Order, app.Preview, app.Active)
+	}
+	if err := app.OpenPath(first); err != nil {
+		t.Fatal(err)
+	}
+	if app.Preview != thirdID || app.Active == thirdID || len(app.Order) != 3 {
+		t.Fatalf("explicit open should add a pinned tab without replacing preview: order=%v preview=%q active=%q", app.Order, app.Preview, app.Active)
+	}
+}
+
+func TestDirtyDirectEditPinsPreviewAndCloseClearsIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "preview.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := New(nil)
+	if err := app.OpenPreviewPath(path); err != nil {
+		t.Fatal(err)
+	}
+	id := app.Active
+	doc := app.Documents[id]
+	doc.Editor.SetCursor(doc.Editor.Buffer.ByteLen())
+	if err := doc.Insert([]byte("!")); err != nil {
+		t.Fatal(err)
+	}
+	if !app.PinDirtyPreview() || app.Preview != "" {
+		t.Fatal("direct application edit should promote the dirty preview")
+	}
+	if err := app.CloseDocument(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if app.Preview != "" {
+		t.Fatalf("closing preview left stale preview identity %q", app.Preview)
+	}
+}
+
 func TestPresentationContractAppliesRevisionedReplacement(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "edit.txt")

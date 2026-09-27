@@ -191,10 +191,12 @@ func run(args []string) error {
 		if workspacePath == "" {
 			workspacePath = root
 		}
-		launchEnv := setEnv(frontendEnv, "SCRATCHPAD_BACKEND_LIBRARY", backendPath)
-		launchEnv = setRuntimePath(launchEnv, out)
+		launchEnv := setRuntimePath(frontendEnv, out)
 		launchEnv = setEnv(launchEnv, "SCRATCHPAD_ALICORN_WORKSPACE", workspacePath)
 		if command == "smoke" {
+			// Smoke the packaged sibling-library discovery path, even if the
+			// developer's shell happens to have a backend override configured.
+			launchEnv = unsetEnv(launchEnv, "SCRATCHPAD_BACKEND_LIBRARY")
 			if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 				return errors.New("native smoke skipped: Linux has no DISPLAY/WAYLAND_DISPLAY; use `test` for headless foreign/type checks")
 			}
@@ -340,7 +342,13 @@ func buildCaliberAndBackend(root, caliberRoot, goExe, out string, release bool) 
 	goEnv = setEnv(goEnv, "CGO_ENABLED", "1")
 	goEnv = setEnv(goEnv, "CALIBER_ROOT", caliberRoot)
 	goEnv = setEnv(goEnv, "CGO_CFLAGS", strings.TrimSpace(os.Getenv("CGO_CFLAGS")+" -I"+filepath.ToSlash(filepath.Join(caliberRoot, "include"))))
-	goEnv = setEnv(goEnv, "CGO_LDFLAGS", "-L"+filepath.Dir(caliberLibrary))
+	cgoLdflags := "-L" + filepath.Dir(caliberLibrary)
+	if runtime.GOOS == "linux" {
+		// Linux does not search the executable directory for a shared
+		// dependency by default; make the staged Caliber sibling discoverable.
+		cgoLdflags += " -Wl,-rpath,$ORIGIN"
+	}
+	goEnv = setEnv(goEnv, "CGO_LDFLAGS", cgoLdflags)
 	goEnv = setEnv(goEnv, "CGO_LDFLAGS_ALLOW", `-L.*|-l.*|-Wl,-rpath,.*`)
 	goEnv = setRuntimePath(goEnv, filepath.Dir(caliberLibrary))
 	goArgs := []string{"build", "-buildmode=c-shared", "-o", backend}
@@ -453,7 +461,10 @@ func relocateDarwinCaliber(source, copyPath, backend string) error {
 		return err
 	}
 	encoded := filepath.Join(filepath.Dir(source), "deps", filepath.Base(source))
-	return runCommand(".", nil, "install_name_tool", "install_name_tool", "-change", encoded, "@rpath/libcaliber_ffi.dylib", backend)
+	if err := runCommand(".", nil, "install_name_tool", "install_name_tool", "-change", encoded, "@rpath/libcaliber_ffi.dylib", backend); err != nil {
+		return err
+	}
+	return runCommand(".", nil, "install_name_tool", "install_name_tool", "-add_rpath", "@loader_path", backend)
 }
 
 func writeManifest(out string, manifest artifactManifest) error {
@@ -567,6 +578,17 @@ func setEnv(env []string, key, value string) []string {
 		}
 	}
 	return append(filtered, prefix+value)
+}
+
+func unsetEnv(env []string, key string) []string {
+	prefix := key + "="
+	filtered := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func setRuntimePath(env []string, directory string) []string {

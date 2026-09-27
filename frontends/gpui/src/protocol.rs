@@ -60,6 +60,8 @@ pub struct CommandRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_id: Option<String>,
@@ -157,6 +159,13 @@ impl CommandRequest {
         Ok(request)
     }
 
+    pub fn open_preview_path(path: &Path, based_on_revision: u64) -> Result<Self> {
+        let mut request = Self::bare(CommandKind::OpenPath, based_on_revision);
+        request.path = Some(required_path(path, "path")?);
+        request.disposition = Some("preview".into());
+        Ok(request)
+    }
+
     pub fn select_document(document_id: impl Into<String>, based_on_revision: u64) -> Self {
         let mut request = Self::bare(CommandKind::SelectDocument, based_on_revision);
         request.document_id = Some(document_id.into());
@@ -226,6 +235,7 @@ impl CommandRequest {
             based_on_revision,
             command,
             path: None,
+            disposition: None,
             name: None,
             document_id: None,
             discard: None,
@@ -362,6 +372,8 @@ pub struct StateDocument {
     pub editor_revision: u64,
     #[serde(default)]
     pub language: String,
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -616,6 +628,27 @@ mod tests {
         let json = serde_json::to_value(&request).expect("serialize refresh request");
         assert_eq!(json["command"], "refresh_workspace");
         assert_eq!(json["based_on_revision"], 17);
+    }
+
+    #[test]
+    fn tree_preview_request_and_state_are_backward_compatible() {
+        let request = CommandRequest::open_preview_path(Path::new("notes.md"), 21)
+            .expect("valid preview path");
+        let json = serde_json::to_value(&request).expect("serialize preview request");
+        assert_eq!(json["command"], "open_path");
+        assert_eq!(json["disposition"], "preview");
+
+        let preview: StateEnvelope = serde_json::from_str(
+            r#"{"schema":1,"revision":2,"application_revision":2,"has_workspace":true,"documents":[{"id":"doc","path":"notes.md","status":"synced","dirty":false,"preview":true,"editor_revision":0}]}"#,
+        )
+        .expect("decode preview state");
+        assert!(preview.documents[0].preview);
+
+        let old: StateEnvelope = serde_json::from_str(
+            r#"{"schema":1,"revision":1,"application_revision":1,"has_workspace":false,"documents":[{"id":"doc","path":"notes.md","status":"synced","dirty":false,"editor_revision":0}]}"#,
+        )
+        .expect("older state without preview remains compatible");
+        assert!(!old.documents[0].preview);
     }
 
     #[test]

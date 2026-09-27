@@ -105,3 +105,34 @@ func TestFindCurrentCommandValidationBoundsMatches(t *testing.T) {
 		t.Fatalf("find response = %+v", decoded)
 	}
 }
+
+func TestOpenPathPreviewDispositionValidation(t *testing.T) {
+	base := CommandRequest{Version: ProtocolVersion, RequestID: 19, Command: "open_path", Path: "notes.md", Disposition: "preview"}
+	input, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, response, ok := decodeCommandRequest(input, lifecycleRunning)
+	if !ok || request.Disposition != "preview" {
+		t.Fatalf("preview open request = %+v, response = %+v, ok=%v", request, response, ok)
+	}
+
+	base.Disposition = "replace"
+	input, err = json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, response, ok := decodeCommandRequest(input, lifecycleRunning); ok || response.Outcome.Code != "invalid_disposition" {
+		t.Fatalf("unknown disposition response = %+v, ok=%v", response, ok)
+	}
+
+	base.Command = "save_document"
+	base.Disposition = "preview"
+	input, err = json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, response, ok := decodeCommandRequest(input, lifecycleRunning); ok || response.Outcome.Code != "invalid_disposition" {
+		t.Fatalf("disposition on non-open command response = %+v, ok=%v", response, ok)
+	}
+}

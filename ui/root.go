@@ -33,6 +33,7 @@ func RootView(state *application.Application) {
 	if state == nil {
 		return
 	}
+	state.PinDirtyPreview()
 	installWorkstationChrome()
 	state.PollWatcher()
 	state.ReconcileStale()
@@ -1592,7 +1593,11 @@ func renderTreeWithShell(state *application.Application, tree *treeState, shell 
 					if entry.Dir {
 						executeCommand(state, shell, commands.WorkspaceToggleFolder, entry.Path)
 					} else {
-						executeCommand(state, shell, commands.FileOpen, filepath.Join(state.Workspace.Root, entry.Path))
+						_ = dispatchPresentation(state, application.PresentationCommand{
+							Kind:    application.PresentationOpenPath,
+							Path:    filepath.Join(state.Workspace.Root, entry.Path),
+							Preview: true,
+						})
 					}
 				}
 			}
@@ -1644,7 +1649,11 @@ func tabs(state *application.Application, shell *workbenchState, theme Theme) {
 						if active {
 							weight = WeightBold
 						}
-						Label(filepathBase(doc.Path), FontSize(12), FontWeight(weight), TextColorVec(theme.Ink))
+						if state.Preview == id && !doc.Dirty() {
+							Label(filepathBase(doc.Path), FontSize(12), FontWeight(weight), FontStyle(StyleItalic), TextColorVec(theme.Ink))
+						} else {
+							Label(filepathBase(doc.Path), FontSize(12), FontWeight(weight), TextColorVec(theme.Ink))
+						}
 						if doc.Dirty() {
 							Label("●", FontSize(8), TextColorVec(theme.Warning))
 						}

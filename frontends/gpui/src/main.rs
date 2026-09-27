@@ -380,7 +380,7 @@ impl Render for ShellView {
                     let command = if is_folder {
                         BackendCommand::ListDirectory(Some(PathBuf::from(relative_path.clone())))
                     } else {
-                        BackendCommand::OpenPath(path.clone())
+                        BackendCommand::OpenPreviewPath(path.clone())
                     };
                     let _ = scheduler.submit(command);
                 });

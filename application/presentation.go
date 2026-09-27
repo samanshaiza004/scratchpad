@@ -26,6 +26,7 @@ const (
 type PresentationCommand struct {
 	Kind           PresentationCommandKind
 	Path           string
+	Preview        bool
 	DocumentID     DocumentID
 	Discard        bool
 	EditorRevision uint64
@@ -42,6 +43,7 @@ type PresentationDocument struct {
 	Path           string
 	Status         DocumentStatus
 	Dirty          bool
+	Preview        bool
 	EditorRevision uint64
 	Language       string
 }
@@ -100,6 +102,7 @@ func (a *Application) Snapshot() PresentationState {
 			Path:           doc.Path,
 			Status:         a.Status(id),
 			Dirty:          doc.Dirty(),
+			Preview:        a.Preview == id && !doc.Dirty(),
 			EditorRevision: doc.Revision(),
 			Language:       doc.RootLanguage,
 		})
@@ -116,6 +119,9 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 	}
 	switch command.Kind {
 	case PresentationOpenPath:
+		if command.Preview {
+			return a.OpenPreviewPath(command.Path)
+		}
 		return a.OpenPath(command.Path)
 	case PresentationSelectDocument:
 		if !a.Activate(command.DocumentID) {
@@ -147,6 +153,7 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 			return err
 		}
 		if doc.Revision() != before {
+			a.PinPreview(command.DocumentID)
 			a.touchPresentation()
 		}
 		return nil

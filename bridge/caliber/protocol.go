@@ -44,6 +44,7 @@ type CommandRequest struct {
 	BasedOnRevision uint64 `json:"based_on_revision"`
 	Command         string `json:"command"`
 	Path            string `json:"path,omitempty"`
+	Disposition     string `json:"disposition,omitempty"`
 	Name            string `json:"name,omitempty"`
 	DocumentID      string `json:"document_id,omitempty"`
 	Discard         bool   `json:"discard,omitempty"`
@@ -154,6 +155,7 @@ type StateDocument struct {
 	Path           string `json:"path"`
 	Status         string `json:"status"`
 	Dirty          bool   `json:"dirty"`
+	Preview        bool   `json:"preview,omitempty"`
 	EditorRevision uint64 `json:"editor_revision"`
 	Language       string `json:"language,omitempty"`
 }
@@ -218,6 +220,9 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	if response, ok := validateEnvelope(request.Version, request.RequestID, lifecycle); !ok {
 		return request, response, false
 	}
+	if request.Disposition != "" && request.Command != "open_path" {
+		return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "disposition is only valid for open_path", false), false
+	}
 	switch request.Command {
 	case "snapshot", "ping", "refresh_workspace":
 	case "create_file", "create_folder", "trash_path":
@@ -241,6 +246,9 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	case "open_path":
 		if err := validateRequiredPath(request.Path, "path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
+		if request.Disposition != "" && request.Disposition != "preview" {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "open_path disposition must be empty or preview", false), false
 		}
 	case "select_document", "save_document", "close_document":
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {
@@ -418,6 +426,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			Path:           document.Path,
 			Status:         documentStatusString(document.Status),
 			Dirty:          document.Dirty,
+			Preview:        document.Preview,
 			EditorRevision: document.EditorRevision,
 			Language:       document.Language,
 		})

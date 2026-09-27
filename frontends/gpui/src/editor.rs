@@ -421,6 +421,7 @@ mod tests {
                 path: "/tmp/doc.txt".to_string(),
                 status: "dirty".to_string(),
                 dirty: true,
+                preview: false,
                 editor_revision,
                 language: "text".to_string(),
             }],

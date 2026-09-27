@@ -31,6 +31,7 @@ pub enum BackendCommand {
         query: String,
     },
     OpenPath(PathBuf),
+    OpenPreviewPath(PathBuf),
     SelectDocument(String),
     SaveDocument(String),
     CloseDocument {
@@ -91,6 +92,9 @@ impl BackendCommand {
             BackendCommand::OpenPath(path) => {
                 Ok(Some(CommandRequest::open_path(&path, based_on_revision)?))
             }
+            BackendCommand::OpenPreviewPath(path) => Ok(Some(
+                CommandRequest::open_preview_path(&path, based_on_revision)?,
+            )),
             BackendCommand::SelectDocument(document_id) => Ok(Some(
                 CommandRequest::select_document(document_id, based_on_revision),
             )),
@@ -205,6 +209,9 @@ impl PendingCommands {
             BackendCommand::ReadVisibleLines { .. } => self
                 .queue
                 .retain(|queued| !matches!(queued, BackendCommand::ReadVisibleLines { .. })),
+            BackendCommand::OpenPreviewPath(_) => self
+                .queue
+                .retain(|queued| !matches!(queued, BackendCommand::OpenPreviewPath(_))),
             BackendCommand::Shutdown => self.queue.clear(),
             _ => {}
         }
@@ -314,7 +321,9 @@ async fn worker_loop(
 
             let should_read_visible = matches!(
                 &command,
-                BackendCommand::OpenPath(_) | BackendCommand::SelectDocument(_)
+                BackendCommand::OpenPath(_)
+                    | BackendCommand::OpenPreviewPath(_)
+                    | BackendCommand::SelectDocument(_)
             );
             let mut update = run_one(session, command, revision);
             if should_read_visible

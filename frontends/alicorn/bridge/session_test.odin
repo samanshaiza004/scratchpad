@@ -9,7 +9,7 @@ import "core:time"
 
 @(test)
 test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
-	json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"editor_revision":3,"language":"markdown"}]}`
+ json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"language":"markdown"}]}`
 	data := transmute([]u8)json_text
 	state, ok, message := decode_state_envelope(data, context.temp_allocator)
 	testing.expect(t, ok, message)
@@ -19,6 +19,7 @@ test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
 	if len(state.documents) == 1 {
 		doc := state.documents[0]
 		testing.expect(t, doc.path == "C:/work/readme.md" && doc.language == "markdown", "document identity fields should decode")
+		testing.expect(t, doc.preview, "preview tab state should decode from the shared StateEnvelope")
 	}
 }
 
@@ -81,16 +82,11 @@ test_wake_callback :: proc(data: rawptr) {
 @(test)
 // This is an integration test against the real existing Go c-shared bridge
 // and Caliber ABI. The project wrapper builds and stages both libraries and
-// supplies SCRATCHPAD_BACKEND_LIBRARY before invoking `odin test`.
+// stages the shared backend beside the test executable before invoking `odin test`.
 test_backend_publication_lease_wake_stop_and_restart :: proc(t: ^testing.T) {
-	library_path, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
-	if !found || library_path == "" {
-		testing.expect(t, false, "run this integration test through tools/alicorn.ps1 or tools/alicorn.sh test")
-		return
-	}
 	backend: Backend
-	loaded, message := backend_load(&backend, library_path)
-	testing.expect(t, loaded, message)
+	loaded, message := backend_load(&backend, "")
+	testing.expect(t, loaded, fmt.tprintf("backend should be discovered beside this executable: %s", message))
 	if !loaded { return }
 	signal: Test_Wake_Signal
 	started, start_message := backend_start(&backend, "", test_wake_callback, rawptr(&signal), context.temp_allocator)
@@ -158,16 +154,32 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 			"nested listing should preserve its relative path and entry identity")
 	}
 	backend_command_result_destroy(&nested_listing, context.temp_allocator)
-	open_first := backend_command(backend, "open_path", path=first_path, allocator=context.temp_allocator)
-	testing.expect(t, open_first.ok && open_first.state_changed, "generic open_path should publish the opened document")
+	open_first := backend_command(backend, "open_path", path=first_path, disposition="preview", allocator=context.temp_allocator)
+	testing.expect(t, open_first.ok && open_first.state_changed, "preview open_path should publish the opened document")
 	backend_command_result_destroy(&open_first, context.temp_allocator)
 	testing.expect(t, len(backend.state.documents) == 1 && backend.state.active != "", "opened file should appear in real backend state")
+	if len(backend.state.documents) == 1 {
+		testing.expect(t, backend.state.documents[0].preview, "tree-style opening should be marked as a preview")
+	}
 	first_id, clone_err := strings.clone(backend.state.active, context.temp_allocator)
 	testing.expect(t, clone_err == nil, "could not retain the first document's stable ID")
 	defer delete(first_id, context.temp_allocator)
+	open_second_preview := backend_command(backend, "open_path", path=second_path, disposition="preview", allocator=context.temp_allocator)
+	testing.expect(t, open_second_preview.ok && len(backend.state.documents) == 1, "opening another preview should replace the prior clean preview")
+	backend_command_result_destroy(&open_second_preview, context.temp_allocator)
+	open_first_pinned := backend_command(backend, "open_path", path=first_path, allocator=context.temp_allocator)
+	testing.expect(t, open_first_pinned.ok && len(backend.state.documents) == 2, "ordinary open_path should stay pinned and preserve the preview tab")
+	backend_command_result_destroy(&open_first_pinned, context.temp_allocator)
 	first_editor_revision := u64(0)
-	if len(backend.state.documents) == 1 { first_editor_revision = backend.state.documents[0].editor_revision }
-	testing.expect(t, len(backend.state.documents) == 1, "opened first document should have a state record")
+	first_document_found := false
+	for document in backend.state.documents {
+		if document.id == first_id {
+			first_document_found = true
+			first_editor_revision = document.editor_revision
+			break
+		}
+	}
+	testing.expect(t, first_document_found, "opened first document should have a state record")
 	replacement := [?]int{'x'}
 	edit_first := backend_command(
 		backend,
@@ -182,7 +194,7 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 	testing.expect(t, edit_first.ok && edit_first.state_changed, "generic replace_document should publish dirty state for the close-decision test")
 	backend_command_result_destroy(&edit_first, context.temp_allocator)
 	open_second := backend_command(backend, "open_path", path=second_path, allocator=context.temp_allocator)
-	testing.expect(t, open_second.ok && open_second.state_changed, "opening another path should publish a second document")
+	testing.expect(t, open_second.ok && open_second.state_changed, "opening another path should pin and select the existing preview document")
 	backend_command_result_destroy(&open_second, context.temp_allocator)
 	testing.expect(t, len(backend.state.documents) == 2, "two real documents should produce two tabs")
 	select_first := backend_command(backend, "select_document", document_id=first_id, allocator=context.temp_allocator)

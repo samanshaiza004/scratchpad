@@ -148,6 +148,11 @@ pub const PRODUCT_COMMANDS: &[ProductCommand] = &[
         CommandCategory::Workspace,
     ),
     command(
+        "workspace.open",
+        "Open Workspace…",
+        CommandCategory::Workspace,
+    ),
+    command(
         "workspace.focus-files",
         "Focus Files",
         CommandCategory::Workspace,
@@ -463,7 +468,7 @@ mod tests {
             .iter()
             .map(|command| command.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(go_ids.len(), 75);
+        assert_eq!(go_ids.len(), PRODUCT_COMMANDS.len());
         assert_eq!(rust_ids, go_ids);
     }
 

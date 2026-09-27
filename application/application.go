@@ -71,6 +71,7 @@ type Application struct {
 	Documents             map[DocumentID]*document.Document
 	Order                 []DocumentID
 	Active                DocumentID
+	Preview               DocumentID
 	Views                 map[DocumentID]ViewState
 	Watcher               workspace.Watcher
 	Trasher               workspace.Trasher
@@ -138,6 +139,98 @@ func (a *Application) OpenPath(path string) error {
 	return a.OpenDocument(abs)
 }
 
+// OpenPreviewPath opens a path in the single replaceable preview slot used by
+// workspace browsing. Explicit OpenPath/OpenDocument calls remain pinned.
+// A clean previous preview is replaced only after the new document loads
+// successfully; a dirty preview is retained and promoted to a normal tab.
+func (a *Application) OpenPreviewPath(path string) error {
+	if a == nil {
+		return errors.New("nil application")
+	}
+	if path == "" {
+		return errors.New("empty path")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+	info, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return a.OpenWorkspace(abs)
+	}
+
+	id := documentID(abs)
+	if doc := a.Documents[id]; doc != nil {
+		if a.Preview == id && doc.Dirty() {
+			a.PinPreview(id)
+		}
+		a.Active = id
+		a.recordRecent(doc.Path)
+		a.touchPresentation()
+		return nil
+	}
+
+	// Load before retiring the old preview, so a transient I/O failure never
+	// makes the current document disappear.
+	snapshot, err := a.Store.Load(abs)
+	if err != nil {
+		return err
+	}
+	doc := document.NewLoaded(snapshot.Path, snapshot.Data, snapshot.Version, snapshot.Mode, string(language.DetectPath(snapshot.Path)))
+	if previous := a.Preview; previous != "" {
+		if old := a.Documents[previous]; old != nil && old.Dirty() {
+			a.PinPreview(previous)
+		} else if old != nil {
+			if err := a.closeDocument(previous, false, false); err != nil {
+				return err
+			}
+		} else {
+			a.Preview = ""
+		}
+	}
+	a.Documents[id] = doc
+	a.Order = append(a.Order, id)
+	a.Views[id] = ViewState{}
+	a.Active = id
+	a.Preview = id
+	a.touchPresentation()
+	if a.Watcher != nil {
+		if err := a.Watcher.WatchDirectory(filepath.Dir(doc.Path)); err != nil {
+			return err
+		}
+	}
+	a.recordRecent(doc.Path)
+	return nil
+}
+
+// PinPreview makes a preview document persistent without changing its active
+// state. It is a no-op for documents that are not the current preview.
+func (a *Application) PinPreview(id DocumentID) bool {
+	if a == nil || id == "" || a.Preview != id {
+		return false
+	}
+	a.Preview = ""
+	a.touchPresentation()
+	return true
+}
+
+// PinDirtyPreview promotes a preview after application-owned content changes.
+// Frontends that edit documents directly call this after handling input.
+func (a *Application) PinDirtyPreview() bool {
+	if a == nil || a.Preview == "" {
+		return false
+	}
+	doc := a.Documents[a.Preview]
+	if doc != nil && !doc.Dirty() {
+		return false
+	}
+	return a.PinPreview(a.Preview)
+}
+
 func (a *Application) OpenWorkspace(path string) error {
 	ws, err := workspace.Open(path)
 	if err != nil {
@@ -155,6 +248,7 @@ func (a *Application) OpenDocument(path string) error {
 	}
 	id := documentID(path)
 	if _, ok := a.Documents[id]; ok {
+		a.PinPreview(id)
 		a.Active = id
 		a.recordRecent(a.Documents[id].Path)
 		a.touchPresentation()
@@ -429,10 +523,12 @@ func (a *Application) SaveActive() error {
 		}
 		a.refreshRecoveryAfterSave()
 		a.touchPresentation()
+		a.PinPreview(a.Active)
 		return err
 	}
 	a.refreshRecoveryAfterSave()
 	a.touchPresentation()
+	a.PinPreview(a.Active)
 	return nil
 }
 
@@ -564,6 +660,9 @@ func (a *Application) completeSaveAs(id DocumentID, doc *document.Document, befo
 		if a.Active == id {
 			a.Active = newID
 		}
+		if a.Preview == id {
+			a.Preview = newID
+		}
 		// Close (don't migrate) derived state for the old identity, mirroring
 		// CloseDocument/ReloadDisk. PollDerived recreates state for newID on
 		// demand and reaps the closed entry without leaking goroutines.
@@ -627,6 +726,10 @@ func (a *Application) Cycle(delta int) {
 // explicitly handled by the caller. Tabs are application views, so closing a
 // tab never changes the document's content authority before this check.
 func (a *Application) CloseDocument(id DocumentID, discard bool) error {
+	return a.closeDocument(id, discard, true)
+}
+
+func (a *Application) closeDocument(id DocumentID, discard bool, rememberClosed bool) error {
 	doc := a.Documents[id]
 	if doc == nil {
 		return errors.New("unknown document")
@@ -635,6 +738,9 @@ func (a *Application) CloseDocument(id DocumentID, discard bool) error {
 		return ErrDirty
 	}
 	delete(a.Documents, id)
+	if a.Preview == id {
+		a.Preview = ""
+	}
 	delete(a.Views, id)
 	delete(a.Stale, id)
 	delete(a.Conflicts, id)
@@ -657,7 +763,9 @@ func (a *Application) CloseDocument(id DocumentID, discard bool) error {
 			a.Active = a.Order[len(a.Order)-1]
 		}
 	}
-	a.recordClosed(doc.Path)
+	if rememberClosed {
+		a.recordClosed(doc.Path)
+	}
 	a.touchPresentation()
 	return nil
 }

@@ -240,6 +240,7 @@ mod tests {
                 path: "/tmp/workspace/note.txt".to_string(),
                 status: "open".to_string(),
                 dirty: false,
+                preview: false,
                 editor_revision,
                 language: "text".to_string(),
             }],

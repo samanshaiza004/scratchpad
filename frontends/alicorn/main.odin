@@ -110,7 +110,9 @@ build_app :: proc(
 	alicorn.container_end(&ui)
 
 	if app.error_message != "" {
-		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, padding=9), color=alicorn.Color{0.28, 0.11, 0.12, 1})
+		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.Color{0.28, 0.11, 0.12, 1})
+		alicorn.text(&ui, "Scratchpad backend could not be loaded.")
+		alicorn.text(&ui, "Place the backend library beside scratchpad-alicorn, or set SCRATCHPAD_BACKEND_LIBRARY.")
 		alicorn.text(&ui, app.error_message)
 		alicorn.container_end(&ui)
 	}
@@ -150,6 +152,7 @@ build_app :: proc(
 		alicorn.container_begin(&ui, .Container, label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), color=COLOR_SUBTLE)
 		for document in state.documents {
 			title := document_title(document.path)
+			if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
 			if document.dirty { title = fmt.tprintf("%s •", title) }
 			selected := state.active == document.id
 			if alicorn.button(&ui, title, key=alicorn.key_string(fmt.tprintf("tab:%s", document.id)), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
@@ -424,7 +427,7 @@ tree_activate_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row) {
 		alicorn.invalidate_root(rt, "Scratchpad workspace path resolution failed")
 		return
 	}
-	response := bridge.backend_command(&app.backend, "open_path", path=absolute_path)
+	response := bridge.backend_command(&app.backend, "open_path", path=absolute_path, disposition="preview")
 	delete(absolute_path, context.allocator)
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)

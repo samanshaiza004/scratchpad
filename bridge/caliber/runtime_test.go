@@ -72,6 +72,45 @@ func TestLifecycleDeterminism(t *testing.T) {
 	}
 }
 
+func TestOpenPathPreviewDispositionPublishesPreviewState(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first.md")
+	second := filepath.Join(root, "second.md")
+	writeFile(t, first, "first")
+	writeFile(t, second, "second")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       91,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path",
+		Path:            first,
+		Disposition:     "preview",
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	state = latestStateForTest(t, runtime)
+	if !opened.OK || len(state.Documents) != 1 || !state.Documents[0].Preview {
+		t.Fatalf("first preview open: response=%+v state=%+v", opened, state)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       92,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path",
+		Path:            second,
+		Disposition:     "preview",
+	}))
+	secondResponse := decodeResponse(t, runtime.Pump())
+	state = latestStateForTest(t, runtime)
+	if !secondResponse.OK || len(state.Documents) != 1 || !state.Documents[0].Preview || state.Documents[0].Path != second {
+		t.Fatalf("second preview open did not replace clean first preview: response=%+v state=%+v", secondResponse, state)
+	}
+}
+
 func TestLinkedCaliberAPIPointerSurvivesRestart(t *testing.T) {
 	runtime := newStartedRuntime(t, "")
 	firstAPI := runtime.CaliberAPIPointer()

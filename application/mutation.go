@@ -302,6 +302,9 @@ func (a *Application) applyPathMutation(plan PathMutationPlan) {
 			if a.Active == relocation.OldID {
 				a.Active = relocation.NewID
 			}
+			if a.Preview == relocation.OldID {
+				a.Preview = relocation.NewID
+			}
 			a.Views[relocation.NewID] = a.Views[relocation.OldID]
 			delete(a.Views, relocation.OldID)
 			if a.Stale[relocation.OldID] {
