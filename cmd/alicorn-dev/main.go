@@ -173,6 +173,16 @@ func run(args []string) error {
 		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn", "bridge"), "-out:"+testExe); err != nil {
 			return fmt.Errorf("Alicorn Caliber bridge/lifecycle tests: %w", err)
 		}
+		if runtime.GOOS == "windows" {
+			sdl := filepath.Join(filepath.Dir(odinExe), "vendor", "sdl3", "SDL3.dll")
+			if err := copyFile(sdl, filepath.Join(out, "SDL3.dll")); err != nil {
+				return fmt.Errorf("stage SDL3 for Alicorn frontend tests: %w", err)
+			}
+		}
+		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
+		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn"), "-out:"+frontendTestExe, collectionArg); err != nil {
+			return fmt.Errorf("Alicorn workbench integration tests: %w", err)
+		}
 		return nil
 	case "run", "smoke":
 		frontendEnv, err := prepareNativeFrontendEnv(root, env)
