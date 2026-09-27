@@ -264,6 +264,7 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	parse := fmt.tprintf("%s/Runa/parse", workspace)
 	cff2 := fmt.tprintf("%s/Runa/parse/cff2.odin", workspace)
 	avar := fmt.tprintf("%s/Runa/parse/avar.odin", workspace)
+	stable_file := fmt.tprintf("%s/stable.txt", workspace)
 	if err := os.make_directory(runa); err != nil {
 		testing.expect(t, false, "could not create Runa test directory")
 		return
@@ -278,6 +279,10 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	}
 	if err := os.write_entire_file_from_string(avar, "package avar\n"); err != nil {
 		testing.expect(t, false, "could not create avar test file")
+		return
+	}
+	if err := os.write_entire_file_from_string(stable_file, "stable sibling\n"); err != nil {
+		testing.expect(t, false, "could not create stable sibling test file")
 		return
 	}
 
@@ -304,8 +309,11 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	testing.expect(t, test_render_workspace_tree(t, &app, &rt), "initial workspace tree should build")
 
 	runa_id, runa_found := test_workspace_tree_row(&rt, "Runa")
+	stable_id, stable_found := test_workspace_tree_row(&rt, "stable.txt")
+	initial_tree_scroll_owner := app.tree_scroll_owner
 	testing.expect(t, runa_found, "root listing should contain the initially collapsed Runa folder")
-	if !runa_found { return }
+	testing.expect(t, stable_found && initial_tree_scroll_owner != 0, "the root should contain an unaffected sibling and a retained scroll owner")
+	if !runa_found || !stable_found { return }
 
 	// Loading and expanding a never-opened folder must publish a new description
 	// without requiring another user input event.
@@ -317,6 +325,11 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	parse_id, parse_found := test_workspace_tree_row(&rt, "Runa/parse")
 	testing.expect(t, parse_found, "parse should appear immediately after Runa's follow-up description")
 	runa_id, _ = test_workspace_tree_row(&rt, "Runa")
+	stable_id_after_expansion, stable_sibling_still_found := test_workspace_tree_row(&rt, "stable.txt")
+	testing.expect(t, stable_sibling_still_found && stable_id_after_expansion == stable_id,
+		"expanding a directory should retain the Node_ID of an unchanged sibling row")
+	testing.expect(t, app.tree_scroll_owner == initial_tree_scroll_owner,
+		"directory expansion should retain the tree's durable scroll-owner identity")
 	testing.expect(t, rt.nodes[runa_id].selected, "the expanded folder should receive its selected presentation on the follow-up description")
 	if !parse_found { return }
 
