@@ -47,8 +47,11 @@ App :: struct {
 	editor_request_generation: u64,
 	editor_scroll_owner:    alicorn.Node_ID,
 	editor_restore_scroll:  bool,
+	editor_restore_vertical: bool,
+	editor_restore_horizontal: bool,
 	editor_restore_x:       f32,
 	editor_restore_y:       f32,
+	editor_presented_document_id: string,
 	editor_window_error:    string,
 	waker:                  host.Application_Waker,
 	services:               host.Application_Services,
@@ -219,9 +222,15 @@ build_app :: proc(
 
 	alicorn.end_frame(&ui)
 	if app.editor_restore_scroll && app.editor_scroll_owner != 0 {
-		_ = alicorn.scroll_region_set_offset(rt, app.editor_scroll_owner, app.editor_restore_y, "restore per-document vertical view")
-		_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, app.editor_restore_x, "restore per-document horizontal view")
+		if app.editor_restore_vertical {
+			_ = alicorn.scroll_region_set_offset(rt, app.editor_scroll_owner, app.editor_restore_y, "restore per-document vertical view")
+		}
+		if app.editor_restore_horizontal {
+			_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, app.editor_restore_x, "restore per-document horizontal view")
+		}
 		app.editor_restore_scroll = false
+		app.editor_restore_vertical = false
+		app.editor_restore_horizontal = false
 	}
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	return root
@@ -234,8 +243,16 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		return
 	}
 	view := &app.editor_views[view_index]
-	saved_scroll_y := view.scroll_y
-	saved_scroll_x := view.scroll_x
+	if app.editor_presented_document_id != document.id {
+		presented_id, clone_error := strings.clone(document.id, context.allocator)
+		if clone_error != nil {
+			alicorn.text(ui, "Could not retain the active document identity.")
+			return
+		}
+		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
+		app.editor_presented_document_id = presented_id
+		editor_view_mark_active(view)
+	}
 	alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
 	alicorn.text(ui, fmt.tprintf("%s  ·  %s  ·  %d lines  ·  revision %d", document_title(document.path), document.language, document.line_count, document.editor_revision))
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
@@ -244,8 +261,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	window_matches := app.editor_window_ready &&
 	                  app.editor_window.document_id == document.id &&
 	                  app.editor_window.editor_revision == document.editor_revision
+	gutter_width := editor_line_number_gutter_width(document.line_count)
 	content_width: f32 = 0
-	if window_matches { content_width = editor_window_content_width(&app.editor_window, 0) }
+	if window_matches { content_width = editor_window_content_width(&app.editor_window, 0, gutter_width) }
 	line_count := int(document.line_count)
 	if line_count < 1 { line_count = 1 }
 	list := alicorn.virtual_list_begin(
@@ -260,24 +278,21 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		focusable=true,
 	)
 	app.editor_scroll_owner = list.scroll.id
-	restore_y := min(max(saved_scroll_y, 0), list.scroll.max_scroll_y)
-	restore_x := min(max(saved_scroll_x, 0), list.scroll.max_scroll_x)
-	needs_restore_y := restore_y != list.scroll.offset_y
-	needs_restore_x := window_matches && restore_x != list.scroll.offset_x
-	if needs_restore_y || needs_restore_x {
+	restore := editor_view_sync_scroll(
+		view,
+		list.scroll.offset_y,
+		list.scroll.offset_x,
+		list.scroll.max_scroll_y,
+		list.scroll.max_scroll_x,
+		window_matches,
+	)
+	if restore.vertical || restore.horizontal {
 		app.editor_restore_scroll = true
-		app.editor_restore_y = restore_y
-		app.editor_restore_x = saved_scroll_x
-		alicorn.text(
-			ui,
-			"Restoring document view…",
-			style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
-		)
-		alicorn.virtual_list_end(ui, list)
-		return
+		app.editor_restore_vertical = restore.vertical
+		app.editor_restore_horizontal = restore.horizontal
+		app.editor_restore_y = restore.scroll_y
+		app.editor_restore_x = restore.scroll_x
 	}
-	view.scroll_y = list.scroll.offset_y
-	if window_matches { view.scroll_x = list.scroll.offset_x }
 	visible_start := u64(max(list.first, 0))
 	visible_end := u64(max(list.last, 0))
 	window_covers_view := window_matches &&
@@ -286,15 +301,38 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	for position := list.first; position < list.last; position += 1 {
 		line_number := u64(position)
 		if line, found := editor_window_line(&app.editor_window, line_number); window_matches && found {
-			row_text := fmt.tprintf("%6d  %s", line.logical_line+1, line.display)
+			row_key := alicorn.key_string(fmt.tprintf("scratchpad-row:%s:%d", document.id, line.logical_line))
+			alicorn.container_begin(
+				ui,
+				.Container,
+				label="scratchpad-editor-logical-line",
+				key=row_key,
+				style=alicorn.layout_style(.Row, grow=1, height=EDITOR_ROW_HEIGHT, gap=8, align=.Center, clip=true),
+			)
+			alicorn.container_begin(
+				ui,
+				.Container,
+				label="scratchpad-editor-line-number-gutter",
+				style=alicorn.layout_style(.Row, width=gutter_width, height=EDITOR_ROW_HEIGHT, align=.Center),
+			)
+			alicorn.container_begin(ui, .Container, label="scratchpad-editor-line-number-spacer", style=alicorn.layout_style(.Row, grow=1))
+			alicorn.container_end(ui)
 			alicorn.text(
 				ui,
-				row_text,
+				editor_line_number_text(line.logical_line+1),
+				key=alicorn.key_string(fmt.tprintf("scratchpad-line-number:%s:%d", document.id, line.logical_line)),
+				font=.Monospace,
+			)
+			alicorn.container_end(ui)
+			alicorn.text(
+				ui,
+				line.display,
 				key=alicorn.key_string(fmt.tprintf("scratchpad-line:%s:%d", document.id, line.logical_line)),
 				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
 				font=.Monospace,
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Clip},
 			)
+			alicorn.container_end(ui)
 		} else {
 			label := fmt.tprintf("Loading line %d…", line_number+1)
 			alicorn.text(ui, label, style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT))
@@ -1031,6 +1069,8 @@ application_stop :: proc(state: rawptr) {
 	app.tree_scroll_owner = 0
 	editor_window_destroy(&app.editor_window)
 	editor_views_destroy(&app.editor_views)
+	if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
+	app.editor_presented_document_id = ""
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 	app.editor_window_error = ""
 }

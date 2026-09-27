@@ -13,6 +13,43 @@ tree_test_wake :: proc(data: rawptr) {}
 backend_integration_test_mutex: sync.Mutex
 
 @(test)
+test_editor_view_scroll_restores_only_after_document_activation :: proc(t: ^testing.T) {
+	view := Editor_View_State{scroll_y=0, scroll_x=0}
+
+	// Ordinary input/rebuild flow must treat the retained runtime offset as the
+	// current value, never as a reason to restore an older snapshot.
+	live := editor_view_sync_scroll(&view, 100, 40, 900, 500, true)
+	testing.expect(t, !live.vertical && !live.horizontal, "ordinary scroll movement must not schedule a restore")
+	testing.expect(t, view.scroll_y == 100 && view.scroll_x == 40, "ordinary rebuilds should save both live scroll offsets")
+
+	// A document transition is the only event that pushes the saved view back
+	// into Alicorn. Horizontal restore waits for the bounded window/content width.
+	view.scroll_y = 480
+	view.scroll_x = 210
+	editor_view_mark_active(&view)
+	vertical := editor_view_sync_scroll(&view, 0, 0, 900, 100, false)
+	testing.expect(t, vertical.vertical && vertical.scroll_y == 480, "activating a document should restore its saved vertical view once")
+	testing.expect(t, !vertical.horizontal && view.restore_x_pending && view.scroll_x == 210,
+		"horizontal restore should remain pending until content geometry is available")
+
+	horizontal := editor_view_sync_scroll(&view, 480, 0, 900, 120, true)
+	testing.expect(t, !horizontal.vertical && horizontal.horizontal && horizontal.scroll_x == 120,
+		"horizontal restore should happen once and clamp to current content geometry")
+	next := editor_view_sync_scroll(&view, 520, 90, 900, 120, true)
+	testing.expect(t, !next.vertical && !next.horizontal && view.scroll_y == 520 && view.scroll_x == 90,
+		"after restoration, normal scrolling should again update saved view state")
+}
+
+@(test)
+test_editor_line_number_text_has_no_fixed_zero_padding :: proc(t: ^testing.T) {
+	testing.expect(t, editor_line_number_text(1) == "1", "the first line number should not be padded")
+	testing.expect(t, editor_line_number_text(10) == "10", "two-digit line numbers should use their natural width")
+	testing.expect(t, editor_line_number_text(100_000) == "100000", "large line numbers should remain accurate without extra padding")
+	testing.expect(t, editor_line_number_gutter_width(167) == 42, "ordinary documents should use a compact three-digit gutter")
+	testing.expect(t, editor_line_number_gutter_width(100_000) == 72, "the gutter should widen only when the logical line count needs another digit")
+}
+
+@(test)
 test_editor_projection_preserves_source_bytes_and_maps_expansions :: proc(t: ^testing.T) {
 	raw := [?]u8{0xEF, 0xBB, 0xBF, 'A', '\t', 0xFF, '\r', '\n', 'e', 0xCC, 0x81}
 	source_bytes, allocation_error := make([]u8, len(raw), context.temp_allocator)
@@ -136,6 +173,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 		if app.backend.started { _, _ = bridge.backend_stop(&app.backend, context.allocator) }
 		editor_window_destroy(&app.editor_window, context.allocator)
 		editor_views_destroy(&app.editor_views, context.allocator)
+		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		alicorn.destroy_runtime(&rt)
 	}
 	opened := bridge.backend_command(&app.backend, "open_path", path=path, allocator=context.temp_allocator)
@@ -184,6 +222,16 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 		"the editor should emit only the virtualized viewport rows, not all document lines")
 	testing.expect(t, first_row_found && !last_fixture_row_found,
 		"the first viewport should contain real source and omit offscreen logical rows")
+
+	// Simulate wheel movement, then rebuild. The newly observed retained offset
+	// must be saved rather than mistaken for a stale view that needs restoring.
+	vertical_changed := alicorn.scroll_region_set_offset(&rt, app.editor_scroll_owner, 1_000, "test editor wheel scroll")
+	horizontal_changed := alicorn.scroll_region_set_offset_x(&rt, app.editor_scroll_owner, 300, "test editor horizontal scroll")
+	testing.expect(t, vertical_changed && horizontal_changed, "the large editor fixture should have scroll range on both axes")
+	_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
+	view_index := editor_view_find(app.editor_views[:], active.id)
+	view_saved := view_index >= 0 && app.editor_views[view_index].scroll_y == 1_000 && app.editor_views[view_index].scroll_x == 300
+	testing.expect(t, view_saved, "ordinary description rebuilds must preserve live vertical and horizontal offsets")
 }
 
 @(test)

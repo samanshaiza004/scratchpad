@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:strings"
 import bridge "./bridge"
 
@@ -29,9 +30,18 @@ Editor_Window :: struct {
 }
 
 Editor_View_State :: struct {
-	document_id: string,
-	scroll_y:    f32,
-	scroll_x:    f32,
+	document_id:       string,
+	scroll_y:          f32,
+	scroll_x:          f32,
+	restore_y_pending: bool,
+	restore_x_pending: bool,
+}
+
+Editor_View_Restore :: struct {
+	vertical:   bool,
+	horizontal: bool,
+	scroll_y:   f32,
+	scroll_x:   f32,
 }
 
 editor_view_find :: proc(views: []Editor_View_State, document_id: string) -> int {
@@ -48,6 +58,60 @@ editor_view_ensure :: proc(views: ^[dynamic]Editor_View_State, document_id: stri
 	if clone_err != nil { return -1, false }
 	append(views, Editor_View_State{document_id=owned_id})
 	return len(views)-1, true
+}
+
+editor_view_mark_active :: proc(view: ^Editor_View_State) {
+	if view == nil { return }
+	view.restore_y_pending = true
+	view.restore_x_pending = true
+}
+
+// Scroll offsets flow from the retained runtime into the document's saved
+// view during ordinary rebuilds. Saved offsets flow back only once after a
+// document becomes active; horizontal restore waits until its content width is
+// known so it can be clamped to the correct geometry.
+editor_view_sync_scroll :: proc(
+	view: ^Editor_View_State,
+	live_y, live_x: f32,
+	max_y, max_x: f32,
+	horizontal_ready: bool,
+) -> Editor_View_Restore {
+	result := Editor_View_Restore{}
+	if view == nil { return result }
+	if view.restore_y_pending {
+		result.vertical = true
+		result.scroll_y = min(max(view.scroll_y, 0), max(max_y, 0))
+		view.scroll_y = result.scroll_y
+		view.restore_y_pending = false
+	} else {
+		view.scroll_y = live_y
+	}
+	if view.restore_x_pending {
+		if horizontal_ready {
+			result.horizontal = true
+			result.scroll_x = min(max(view.scroll_x, 0), max(max_x, 0))
+			view.scroll_x = result.scroll_x
+			view.restore_x_pending = false
+		}
+	} else {
+		view.scroll_x = live_x
+	}
+	return result
+}
+
+editor_line_number_text :: proc(line_number: u64) -> string {
+	return fmt.tprintf("%d", line_number)
+}
+
+editor_line_number_gutter_width :: proc(line_count: u64) -> f32 {
+	digits := 1
+	remaining := line_count
+	for remaining >= 10 {
+		remaining /= 10
+		digits += 1
+	}
+	digits = max(digits, 3)
+	return f32(digits)*10 + 12
 }
 
 editor_view_remove :: proc(views: ^[dynamic]Editor_View_State, index: int, allocator := context.allocator) {
@@ -229,13 +293,13 @@ editor_window_line :: proc(window: ^Editor_Window, logical_line: u64) -> (line: 
 	return &window.lines[index], true
 }
 
-editor_window_content_width :: proc(window: ^Editor_Window, minimum: f32) -> f32 {
+editor_window_content_width :: proc(window: ^Editor_Window, minimum, gutter_width: f32) -> f32 {
 	width := minimum
 	if window == nil { return width }
 	for line in window.lines {
 		// Deliberately conservative for multi-byte glyphs: the frontier is based
 		// only on the bounded window, never a scan of the full document.
-		width = max(width, f32(len(line.display))*10 + 96)
+		width = max(width, f32(len(line.display))*10 + gutter_width + 8)
 	}
 	return width
 }
