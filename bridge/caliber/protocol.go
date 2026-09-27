@@ -14,17 +14,18 @@ import (
 )
 
 const (
-	ProtocolVersion         uint32 = 1
-	StateSchemaV1           uint32 = 1
-	MaxInputBytes                  = 1 << 20
-	DefaultListLimit               = 200
-	MaxListLimit                   = 1000
-	MaxVisibleLines                = 256
-	MaxVisibleBytes                = 64 * 1024
-	MaxEditBytes                   = 64 * 1024
-	MaxFindMatches                 = 1000
-	VisibleSliceSchemaV1           = 1
-	visibleSliceHeaderBytes        = 48
+	ProtocolVersion          uint32 = 1
+	StateSchemaV1            uint32 = 1
+	MaxInputBytes                   = 1 << 20
+	DefaultListLimit                = 200
+	MaxListLimit                    = 1000
+	MaxVisibleLines                 = 256
+	MaxVisibleBytes                 = 64 * 1024
+	MaxVisibleLineChunkBytes        = 16 * 1024
+	MaxEditBytes                    = 64 * 1024
+	MaxFindMatches                  = 1000
+	VisibleSliceSchemaV1            = 1
+	visibleSliceHeaderBytes         = 48
 )
 
 type StartRequest struct {
@@ -51,6 +52,7 @@ type CommandRequest struct {
 	RelativePath    string `json:"relative_path,omitempty"`
 	Limit           int    `json:"limit,omitempty"`
 	StartLine       uint64 `json:"start_line,omitempty"`
+	AnchorByte      uint64 `json:"anchor_byte,omitempty"`
 	MaxLines        uint64 `json:"max_lines,omitempty"`
 	MaxBytes        uint64 `json:"max_bytes,omitempty"`
 	EditorRevision  uint64 `json:"editor_revision,omitempty"`
@@ -89,6 +91,7 @@ type ResourceDescriptor struct {
 	ByteLen        uint64 `json:"byte_len"`
 	Truncated      bool   `json:"truncated"`
 	StartByte      uint64 `json:"start_byte"`
+	LineByteLength uint64 `json:"line_byte_length,omitempty"`
 }
 
 type EditAck struct {
@@ -157,6 +160,7 @@ type StateDocument struct {
 	Dirty          bool   `json:"dirty"`
 	Preview        bool   `json:"preview,omitempty"`
 	EditorRevision uint64 `json:"editor_revision"`
+	LineCount      uint64 `json:"line_count"`
 	Language       string `json:"language,omitempty"`
 }
 
@@ -287,6 +291,9 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.MaxBytes == 0 || request.MaxBytes > MaxVisibleBytes {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_visible_range", fmt.Sprintf("max_bytes must be between 1 and %d", MaxVisibleBytes), false), false
+		}
+		if request.StartLine > uint64(^uint(0)>>1) || request.AnchorByte > uint64(^uint(0)>>1) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_visible_range", "visible line or byte anchor does not fit the host word size", false), false
 		}
 	case "list_directory":
 		if err := validateOptionalPath(request.RelativePath, "relative_path"); err != nil {
@@ -428,6 +435,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			Dirty:          document.Dirty,
 			Preview:        document.Preview,
 			EditorRevision: document.EditorRevision,
+			LineCount:      document.LineCount,
 			Language:       document.Language,
 		})
 	}

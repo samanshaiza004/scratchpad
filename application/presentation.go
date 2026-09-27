@@ -45,6 +45,7 @@ type PresentationDocument struct {
 	Dirty          bool
 	Preview        bool
 	EditorRevision uint64
+	LineCount      uint64
 	Language       string
 }
 
@@ -104,6 +105,7 @@ func (a *Application) Snapshot() PresentationState {
 			Dirty:          doc.Dirty(),
 			Preview:        a.Preview == id && !doc.Dirty(),
 			EditorRevision: doc.Revision(),
+			LineCount:      uint64(doc.Editor.Buffer.LineCount()),
 			Language:       doc.RootLanguage,
 		})
 	}

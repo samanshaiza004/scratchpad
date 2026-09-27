@@ -40,6 +40,16 @@ Tree_Row :: struct {
 
 App :: struct {
 	backend:                bridge.Backend,
+	visible_window_lane:    bridge.Visible_Window_Lane,
+	editor_views:           [dynamic]Editor_View_State,
+	editor_window:          Editor_Window,
+	editor_window_ready:    bool,
+	editor_request_generation: u64,
+	editor_scroll_owner:    alicorn.Node_ID,
+	editor_restore_scroll:  bool,
+	editor_restore_x:       f32,
+	editor_restore_y:       f32,
+	editor_window_error:    string,
 	waker:                  host.Application_Waker,
 	services:               host.Application_Services,
 	workspace_path:         string,
@@ -96,7 +106,7 @@ build_app :: proc(
 	if app.backend.started {
 		if alicorn.button(&ui, "Stop", key=alicorn.key_string("backend-stop"), style=alicorn.layout_style(.Row, width=76, height=32)) {
 			disable_runtime_actions(app, rt)
-			stopped, message := bridge.backend_stop(&app.backend)
+			stopped, message := stop_backend(app)
 			sync_menu_states(app)
 			if stopped { set_error(app, "") } else { set_error(app, message) }
 			alicorn.invalidate_root(rt, "Scratchpad backend stopped from diagnostic control")
@@ -167,17 +177,12 @@ build_app :: proc(
 		}
 		alicorn.container_end(&ui)
 
-		alicorn.container_begin(&ui, .Container, label="document-placeholder", style=alicorn.layout_style(.Column, grow=1, padding=28, gap=12, align=.Start), color=COLOR_PANEL)
+		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=COLOR_PANEL)
 		if active, found := find_document(state, state.active); found {
-			alicorn.text(&ui, document_title(active.path))
-			alicorn.text(&ui, fmt.tprintf("Language: %s", active.language))
-			alicorn.text(&ui, fmt.tprintf("Status: %s", active.status))
-			alicorn.text(&ui, fmt.tprintf("Dirty: %v", active.dirty))
-			alicorn.text(&ui, fmt.tprintf("Editor revision: %d", active.editor_revision))
-			alicorn.text(&ui, "The document editor is intentionally not part of Phase 2.")
+			build_document_editor(app, &ui, rt, active)
 		} else {
 			alicorn.text(&ui, "Open a file to begin")
-			alicorn.text(&ui, "Scratchpad state and document navigation are live; editing comes later.")
+			alicorn.text(&ui, "Open a document to view its bounded source window.")
 		}
 		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
@@ -213,8 +218,126 @@ build_app :: proc(
 	}
 
 	alicorn.end_frame(&ui)
+	if app.editor_restore_scroll && app.editor_scroll_owner != 0 {
+		_ = alicorn.scroll_region_set_offset(rt, app.editor_scroll_owner, app.editor_restore_y, "restore per-document vertical view")
+		_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, app.editor_restore_x, "restore per-document horizontal view")
+		app.editor_restore_scroll = false
+	}
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	return root
+}
+
+build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok {
+		alicorn.text(ui, "Could not retain this document's view state.")
+		return
+	}
+	view := &app.editor_views[view_index]
+	saved_scroll_y := view.scroll_y
+	saved_scroll_x := view.scroll_x
+	alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
+	alicorn.text(ui, fmt.tprintf("%s  ·  %s  ·  %d lines  ·  revision %d", document_title(document.path), document.language, document.line_count, document.editor_revision))
+	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
+	alicorn.container_end(ui)
+
+	window_matches := app.editor_window_ready &&
+	                  app.editor_window.document_id == document.id &&
+	                  app.editor_window.editor_revision == document.editor_revision
+	content_width: f32 = 0
+	if window_matches { content_width = editor_window_content_width(&app.editor_window, 0) }
+	line_count := int(document.line_count)
+	if line_count < 1 { line_count = 1 }
+	list := alicorn.virtual_list_begin(
+		ui,
+		line_count,
+		EDITOR_ROW_HEIGHT,
+		key=alicorn.key_string(fmt.tprintf("scratchpad-editor:%s", document.id)),
+		style=alicorn.layout_style(grow=1, clip=true),
+		content_width=content_width,
+		label="scratchpad-visible-document-lines",
+		axes=.Both,
+		focusable=true,
+	)
+	app.editor_scroll_owner = list.scroll.id
+	restore_y := min(max(saved_scroll_y, 0), list.scroll.max_scroll_y)
+	restore_x := min(max(saved_scroll_x, 0), list.scroll.max_scroll_x)
+	needs_restore_y := restore_y != list.scroll.offset_y
+	needs_restore_x := window_matches && restore_x != list.scroll.offset_x
+	if needs_restore_y || needs_restore_x {
+		app.editor_restore_scroll = true
+		app.editor_restore_y = restore_y
+		app.editor_restore_x = saved_scroll_x
+		alicorn.text(
+			ui,
+			"Restoring document view…",
+			style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
+		)
+		alicorn.virtual_list_end(ui, list)
+		return
+	}
+	view.scroll_y = list.scroll.offset_y
+	if window_matches { view.scroll_x = list.scroll.offset_x }
+	visible_start := u64(max(list.first, 0))
+	visible_end := u64(max(list.last, 0))
+	window_covers_view := window_matches &&
+	                      app.editor_window.start_line <= visible_start &&
+	                      app.editor_window.end_line >= visible_end
+	for position := list.first; position < list.last; position += 1 {
+		line_number := u64(position)
+		if line, found := editor_window_line(&app.editor_window, line_number); window_matches && found {
+			row_text := fmt.tprintf("%6d  %s", line.logical_line+1, line.display)
+			alicorn.text(
+				ui,
+				row_text,
+				key=alicorn.key_string(fmt.tprintf("scratchpad-line:%s:%d", document.id, line.logical_line)),
+				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
+				font=.Monospace,
+				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Clip},
+			)
+		} else {
+			label := fmt.tprintf("Loading line %d…", line_number+1)
+			alicorn.text(ui, label, style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT))
+		}
+	}
+	alicorn.virtual_list_end(ui, list)
+
+	request_start := visible_start
+	if request_start > 64 { request_start -= 64 } else { request_start = 0 }
+	remaining := document.line_count-request_start
+	request_lines := min(remaining, bridge.MAX_VISIBLE_LINES)
+	if request_lines == 0 { request_lines = 1 }
+	request_anchor, long_line_chunk_needed := editor_long_line_next_anchor(
+		&app.editor_window,
+		visible_start,
+		list.scroll.offset_x,
+		list.scroll.max_scroll_x,
+	)
+	if !window_matches { request_anchor = 0 }
+	if long_line_chunk_needed && window_matches {
+		request_start = app.editor_window.start_line
+		request_lines = 1
+	}
+	if document.line_count > 0 && (!window_covers_view || request_anchor > 0) {
+		generation, accepted, request_error := bridge.visible_window_lane_request(
+			&app.visible_window_lane,
+			document.id,
+			app.backend.state.application_rev,
+			document.editor_revision,
+			request_start,
+			request_lines,
+			bridge.MAX_VISIBLE_BYTES,
+			request_anchor,
+		)
+		if accepted {
+			app.editor_request_generation = generation
+			if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
+			app.editor_window_error = ""
+		} else if request_error != "" {
+			if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
+			app.editor_window_error, _ = strings.clone(request_error, context.allocator)
+		}
+	}
 }
 
 build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
@@ -483,9 +606,28 @@ start_backend :: proc(app: ^App) {
 	if !loaded { set_error(app, load_error); return }
 	started, start_error := bridge.backend_start(&app.backend, app.workspace_path, app.waker.wake, app.waker.data)
 	if !started { set_error(app, start_error) } else {
+		lane_started := bridge.visible_window_lane_start(
+			&app.visible_window_lane,
+			&app.backend,
+			app.waker.wake,
+			app.waker.data,
+		)
+		if !lane_started {
+			_, _ = bridge.backend_stop(&app.backend)
+			set_error(app, "Could not start the bounded document-window worker.")
+			return
+		}
 		set_error(app, "")
 		tree_sync_workspace(app)
 	}
+}
+
+stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
+	if app == nil { return false, "application state is unavailable" }
+	if !bridge.visible_window_lane_stop(&app.visible_window_lane) {
+		return false, "visible-window worker did not join cleanly"
+	}
+	return bridge.backend_stop(&app.backend)
 }
 
 application_start :: proc(state: rawptr, waker: host.Application_Waker) {
@@ -509,7 +651,43 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
 		tree_sync_workspace(app, rt)
+		editor_views_prune(app)
 		alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
+	}
+	window_result, window_found := bridge.visible_window_lane_take(&app.visible_window_lane)
+	if window_found {
+		installed := false
+		active, active_found := find_document(&app.backend.state, app.backend.state.active)
+		if window_result.generation == app.editor_request_generation && window_result.window_owned && active_found &&
+		   window_result.window.document_id == active.id && window_result.window.editor_revision == active.editor_revision {
+			window, converted, conversion_error := editor_window_from_visible(&window_result.window)
+			if converted {
+				advancing_long_line := app.editor_window_ready &&
+				                       app.editor_window.document_id == window.document_id &&
+				                       app.editor_window.editor_revision == window.editor_revision &&
+				                       app.editor_window.start_line == window.start_line &&
+				                       window.start_byte > app.editor_window.start_byte &&
+				                       window.line_byte_length == app.editor_window.line_byte_length
+				editor_window_destroy(&app.editor_window)
+				app.editor_window = window
+				app.editor_window_ready = true
+				if advancing_long_line && app.editor_scroll_owner != 0 {
+					_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
+				}
+				if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+				app.editor_window_error = ""
+				installed = true
+			} else {
+				if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+				app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
+			}
+		} else if window_result.generation == app.editor_request_generation && window_result.error != "" {
+			if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+			app.editor_window_error, _ = strings.clone(window_result.error, context.allocator)
+		}
+		bridge.visible_window_lane_result_destroy(&window_result, app.visible_window_lane.allocator)
+		_ = installed
+		alicorn.invalidate_root(rt, "Scratchpad bounded editor window completed")
 	}
 }
 
@@ -680,6 +858,11 @@ handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.B
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
 		tree_sync_workspace(app, rt)
+		editor_views_prune(app)
+		if app.editor_window_ready && !document_is_open(&app.backend.state, app.editor_window.document_id) {
+			editor_window_destroy(&app.editor_window)
+			app.editor_window_ready = false
+		}
 		alicorn.invalidate_root(rt, "Scratchpad command published new state")
 	}
 	if app.close_document_id != "" && !document_is_open(&app.backend.state, app.close_document_id) {
@@ -770,6 +953,15 @@ document_is_open :: proc(state: ^bridge.State_Envelope, id: string) -> bool {
 	return found
 }
 
+editor_views_prune :: proc(app: ^App) {
+	if app == nil { return }
+	for index := len(app.editor_views)-1; index >= 0; index -= 1 {
+		if !document_is_open(&app.backend.state, app.editor_views[index].document_id) {
+			editor_view_remove(&app.editor_views, index)
+		}
+	}
+}
+
 document_title :: proc(path: string) -> string {
 	start := 0
 	for character, index in path {
@@ -826,8 +1018,8 @@ init_menus :: proc(app: ^App) {
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
 	if app.backend.started {
-		stopped, message := bridge.backend_stop(&app.backend)
-		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0
+		stopped, message := stop_backend(app)
+		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil
 		if !stopped { fmt.eprintln("Scratchpad backend shutdown error:", message) }
 	} else {
 		app.smoke_shutdown = true
@@ -837,11 +1029,16 @@ application_stop :: proc(state: rawptr) {
 	app.tree_root_path = ""
 	tree_clear_focused_path(app)
 	app.tree_scroll_owner = 0
+	editor_window_destroy(&app.editor_window)
+	editor_views_destroy(&app.editor_views)
+	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+	app.editor_window_error = ""
 }
 
 main :: proc() {
 	app: App
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	init_menus(&app)
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }

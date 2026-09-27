@@ -7,6 +7,8 @@ import (
 	"errors"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rivo/uniseg"
 )
 
 type sourceKind uint8
@@ -280,6 +282,106 @@ func (b *Buffer) BoundedLines(startLine, maxLines, maxBytes int) (data []byte, s
 		returnedEndLine = endLine
 	}
 	return data, startByte, returnedEndLine, true, nil
+}
+
+// BoundedLineChunk returns a bounded byte window from one logical line. The
+// anchor is an absolute document byte offset; zero selects the line start.
+// Valid UTF-8 runes are kept whole at both edges, while malformed bytes remain
+// independently addressable. Line terminators are excluded from the chunk.
+func (b *Buffer) BoundedLineChunk(line int, anchorByte, maxBytes int) (data []byte, startByte, lineByteLength int, truncated bool, err error) {
+	if b == nil {
+		return nil, 0, 0, false, errors.New("nil buffer")
+	}
+	if line < 0 || line >= b.LineCount() {
+		return nil, 0, 0, false, errors.New("line outside buffer")
+	}
+	if maxBytes <= 0 {
+		return nil, 0, 0, false, errors.New("max bytes must be positive")
+	}
+	lineStart, lineEnd, ok := b.LineRange(line)
+	if !ok {
+		return nil, 0, 0, false, errors.New("line outside buffer")
+	}
+	if lineEnd > lineStart {
+		if last, exists := b.ByteAt(lineEnd - 1); exists && last == '\r' {
+			lineEnd--
+		}
+	}
+	lineByteLength = lineEnd - lineStart
+	startByte = lineStart
+	if anchorByte != 0 {
+		if anchorByte < lineStart || anchorByte > lineEnd {
+			return nil, 0, lineByteLength, false, errors.New("anchor byte is outside the requested line")
+		}
+		startByte = b.boundary(anchorByte)
+		if startByte < lineStart {
+			startByte = lineStart
+		}
+		startByte = b.snapBoundedGrapheme(startByte, lineStart, lineEnd, false)
+	}
+	if startByte >= lineEnd {
+		return []byte{}, startByte, lineByteLength, false, nil
+	}
+	endByte := min(startByte+maxBytes, lineEnd)
+	if endByte < lineEnd {
+		endByte = b.boundary(endByte)
+		clusterEnd := b.snapBoundedGrapheme(endByte, startByte, lineEnd, true)
+		if clusterEnd > endByte && clusterEnd-startByte <= maxBytes {
+			endByte = clusterEnd
+		} else {
+			endByte = b.snapBoundedGrapheme(endByte, startByte, lineEnd, false)
+		}
+		if endByte <= startByte {
+			return nil, 0, lineByteLength, false, errors.New("max bytes cannot contain one complete grapheme cluster")
+		}
+	}
+	return b.slice(startByte, endByte), startByte, lineByteLength, endByte < lineEnd, nil
+}
+
+// snapBoundedGrapheme adjusts a byte boundary only within a small neighborhood.
+// This keeps chunk edges away from common combining/ZWJ sequences without
+// turning a bounded line read into a scan of a pathological whole-line cluster.
+func (b *Buffer) snapBoundedGrapheme(offset, lineStart, lineEnd int, forward bool) int {
+	if offset <= lineStart || offset >= lineEnd {
+		return offset
+	}
+	for radius := 256; radius <= 4096; radius *= 2 {
+		windowStart := max(lineStart, offset-radius)
+		windowStart = b.boundary(windowStart)
+		windowEnd := min(lineEnd, offset+radius)
+		windowEnd = b.boundary(windowEnd)
+		if windowEnd <= windowStart {
+			return b.boundary(offset)
+		}
+		window := b.slice(windowStart, windowEnd)
+		if !utf8.Valid(window) {
+			return b.boundary(offset)
+		}
+		graphemes := uniseg.NewGraphemes(string(window))
+		expand := false
+		for graphemes.Next() {
+			start, end := graphemes.Positions()
+			absoluteStart := windowStart + start
+			absoluteEnd := windowStart + end
+			if offset > absoluteStart && offset < absoluteEnd {
+				if (absoluteStart == windowStart && windowStart > lineStart) || (absoluteEnd == windowEnd && windowEnd < lineEnd) {
+					expand = true
+					break
+				}
+				if forward {
+					return absoluteEnd
+				}
+				return absoluteStart
+			}
+			if offset == absoluteStart || offset == absoluteEnd {
+				return offset
+			}
+		}
+		if !expand {
+			return offset
+		}
+	}
+	return b.boundary(offset)
 }
 
 func (b *Buffer) ByteAt(at int) (byte, bool) {

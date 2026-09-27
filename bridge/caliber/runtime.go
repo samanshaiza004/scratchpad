@@ -414,16 +414,44 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	if !ok || doc == nil || doc.Editor == nil {
 		return Response{}, errors.New("unknown document")
 	}
-	lineCount := doc.Editor.Buffer.LineCount()
+	buffer := doc.Editor.Buffer
+	lineCount := buffer.LineCount()
 	if request.StartLine >= uint64(lineCount) {
 		return Response{}, fmt.Errorf("start_line %d is outside the document's %d lines", request.StartLine, lineCount)
 	}
 
-	lines, startByte, endLine, truncated, err := doc.Editor.Buffer.BoundedLines(
-		int(request.StartLine),
-		int(request.MaxLines),
-		int(request.MaxBytes),
-	)
+	lineStart, lineEnd, lineOK := buffer.LineRange(int(request.StartLine))
+	if !lineOK {
+		return Response{}, errors.New("requested line is unavailable")
+	}
+	if lineEnd > lineStart {
+		if last, exists := buffer.ByteAt(lineEnd - 1); exists && last == '\r' {
+			lineEnd--
+		}
+	}
+	lineByteLength := lineEnd - lineStart
+	useLineChunk := request.AnchorByte != 0 || lineByteLength > MaxVisibleLineChunkBytes
+	var lines []byte
+	var startByte, endLine int
+	var truncated bool
+	var describedLineByteLength int
+	var err error
+	if useLineChunk {
+		chunkLimit := min(int(request.MaxBytes), MaxVisibleLineChunkBytes)
+		anchorByte := int(request.AnchorByte)
+		lines, startByte, lineByteLength, truncated, err = buffer.BoundedLineChunk(int(request.StartLine), anchorByte, chunkLimit)
+		describedLineByteLength = lineByteLength
+		endLine = int(request.StartLine) + 1
+	} else {
+		lines, startByte, endLine, truncated, err = buffer.BoundedLines(
+			int(request.StartLine),
+			int(request.MaxLines),
+			int(request.MaxBytes),
+		)
+		if truncated && endLine == int(request.StartLine)+1 {
+			describedLineByteLength = lineEnd - lineStart
+		}
+	}
 	if err != nil {
 		return Response{}, err
 	}
@@ -448,6 +476,7 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		ByteLen:        uint64(len(lines)),
 		Truncated:      truncated,
 		StartByte:      uint64(startByte),
+		LineByteLength: uint64(describedLineByteLength),
 	}
 	return response, nil
 }

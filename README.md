@@ -63,6 +63,33 @@ To build or test the experimental GPUI frontend, use the platform wrapper in
 pinned CLI when needed and synchronizes the exact revisions in
 `dependencies.lock.json`; a sibling Caliber checkout is not required.
 
+### Experimental Alicorn frontend
+
+The Alicorn frontend is an experimental workbench shell: workspace tree,
+document tabs, menus, and dialogs are connected to real Scratchpad state, but
+the document area is still a placeholder (there is no text editor yet). Shirei
+remains the default frontend.
+
+From the repository root, build and launch it with:
+
+```powershell
+.\tools\alicorn.ps1 build
+.\tools\alicorn.ps1 run
+```
+
+```sh
+./tools/alicorn.sh build
+./tools/alicorn.sh run
+```
+
+`run` also builds before launching, so it is fine to use it on its own. The
+wrapper syncs the exact Alicorn and Caliber revisions from
+`dependencies.lock.json`; you do not need sibling checkouts. It requires Odin
+and Go on `PATH` (or `ALICORN_ODIN` / `SCRATCHPAD_GO`). On Windows, Go must be
+64-bit with cgo enabled and a 64-bit MinGW-w64 GCC available; Odin also needs
+the MSVC linker and Windows SDK. For checks and platform-specific details, see
+[`frontends/alicorn/README.md`](frontends/alicorn/README.md).
+
 The editor starts at a 16-pixel font size. Use **View → Increase Editor Font
 Size**, **Decrease Editor Font Size**, or **Reset Editor Font Size** to adjust
 it. Keyboard shortcuts are Ctrl+= (or Ctrl+Shift+=), Ctrl+-, and Ctrl+0 on

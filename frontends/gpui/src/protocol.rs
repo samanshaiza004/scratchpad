@@ -371,6 +371,8 @@ pub struct StateDocument {
     pub dirty: bool,
     pub editor_revision: u64,
     #[serde(default)]
+    pub line_count: u64,
+    #[serde(default)]
     pub language: String,
     #[serde(default)]
     pub preview: bool,

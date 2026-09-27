@@ -24,6 +24,11 @@ Caliber_Status :: enum i32 {
 	Stopped = 11,
 }
 
+VISIBLE_SLICE_HEADER_BYTES :: 48
+VISIBLE_SLICE_SCHEMA_V1   :: u32(1)
+MAX_VISIBLE_LINES         :: u64(256)
+MAX_VISIBLE_BYTES         :: u64(64 * 1024)
+
 // Mirrors .deps/caliber/include/caliber.h. That header remains authoritative;
 // these declarations bind only the ABI surface this frontend actually uses.
 Caliber_Context_Config :: struct {
@@ -43,6 +48,14 @@ Caliber_State_Publication :: struct {
 	data:     ^u8,
 	len:      uintptr,
 	lease:    rawptr,
+}
+
+Caliber_Resource_View :: struct {
+	resource_id: u64,
+	generation:  u64,
+	data:        ^u8,
+	len:         uintptr,
+	lease:       rawptr,
 }
 
 Caliber_Api_V1 :: struct {
@@ -76,12 +89,19 @@ Caliber_Api_V1 :: struct {
 #assert(offset_of(Caliber_State_Publication, len) == 24)
 #assert(offset_of(Caliber_State_Publication, lease) == 32)
 #assert(size_of(Caliber_State_Publication) == 40)
+#assert(offset_of(Caliber_Resource_View, data) == 16)
+#assert(offset_of(Caliber_Resource_View, len) == 24)
+#assert(offset_of(Caliber_Resource_View, lease) == 32)
+#assert(size_of(Caliber_Resource_View) == 40)
 #assert(offset_of(Caliber_Api_V1, context_wait_wake) == 128)
 #assert(offset_of(Caliber_Api_V1, context_stop_wake_waiters) == 136)
 #assert(size_of(Caliber_Api_V1) == 144)
 
 Caliber_Read_State_Proc :: #type proc "c" (rawptr, ^Caliber_State_Publication) -> Caliber_Status
 Caliber_Release_State_Proc :: #type proc "c" (^Caliber_State_Publication)
+Caliber_Map_Resource_Proc :: #type proc "c" (rawptr, u64, u64, ^Caliber_Resource_View) -> Caliber_Status
+Caliber_Release_Resource_Proc :: #type proc "c" (^Caliber_Resource_View)
+Caliber_Release_Context_Resource_Proc :: #type proc "c" (rawptr, u64, u64) -> Caliber_Status
 Caliber_Wake_Sequence_Proc :: #type proc "c" (rawptr, ^u64) -> Caliber_Status
 Caliber_Wait_Wake_Proc :: #type proc "c" (rawptr, u64, ^u64) -> Caliber_Status
 Caliber_Stop_Waiters_Proc :: #type proc "c" (rawptr) -> Caliber_Status
@@ -102,7 +122,34 @@ State_Document :: struct {
 	dirty:           bool   `json:"dirty"`,
 	preview:         bool   `json:"preview"`,
 	editor_revision: u64    `json:"editor_revision"`,
+	line_count:      u64    `json:"line_count"`,
 	language:        string `json:"language"`,
+}
+
+Resource_Descriptor :: struct {
+	resource_id:     u64    `json:"resource_id"`,
+	generation:      u64    `json:"generation"`,
+	document_id:     string `json:"document_id"`,
+	application_rev: u64    `json:"application_revision"`,
+	editor_revision: u64    `json:"editor_revision"`,
+	start_line:      u64    `json:"start_line"`,
+	end_line:        u64    `json:"end_line"`,
+	byte_len:        u64    `json:"byte_len"`,
+	truncated:       bool   `json:"truncated"`,
+	start_byte:      u64    `json:"start_byte"`,
+	line_byte_length: u64   `json:"line_byte_length"`,
+}
+
+Visible_Window :: struct {
+	document_id:     string,
+	application_rev: u64,
+	editor_revision: u64,
+	start_line:      u64,
+	end_line:        u64,
+	start_byte:      u64,
+	line_byte_length: u64,
+	truncated:       bool,
+	source:          []u8,
 }
 
 Action_State :: struct {
@@ -140,6 +187,7 @@ Backend_Response :: struct {
 	revision:         u64               `json:"revision"`,
 	directory_listing: Directory_Listing `json:"directory_listing"`,
 	close_decision:   Close_Decision    `json:"close_decision"`,
+	resource:         Resource_Descriptor `json:"resource"`,
 }
 
 Directory_Listing :: struct {
@@ -184,6 +232,10 @@ Backend_Command_Request :: struct {
 	discard:          bool   `json:"discard,omitempty"`,
 	relative_path:    string `json:"relative_path,omitempty"`,
 	limit:            int    `json:"limit,omitempty"`,
+	start_line:       u64    `json:"start_line,omitempty"`,
+	anchor_byte:      u64    `json:"anchor_byte,omitempty"`,
+	max_lines:        u64    `json:"max_lines,omitempty"`,
+	max_bytes:        u64    `json:"max_bytes,omitempty"`,
 	editor_revision:  u64    `json:"editor_revision,omitempty"`,
 	start_byte:       u64    `json:"start_byte,omitempty"`,
 	end_byte:         u64    `json:"end_byte,omitempty"`,
@@ -320,6 +372,8 @@ Backend :: struct {
 	context_fn:        Backend_Get_Pointer_Proc,
 	lease_acquired_fn: Backend_Lease_Proc,
 	lease_released_fn: Backend_Lease_Proc,
+	resource_lease_acquired_fn: Backend_Lease_Proc,
+	resource_lease_released_fn: Backend_Lease_Proc,
 	free_fn:           Backend_Free_Proc,
 	pump_fn:           Backend_Pump_Proc,
 	api:               ^Caliber_Api_V1,
@@ -329,8 +383,10 @@ Backend :: struct {
 	state_allocator:   mem.Allocator,
 	state_revision:    u64,
 	state_leases:      int,
+	resource_leases:   int,
 	started:           bool,
 	request_id:        u64,
+	command_mutex:     sync.Mutex,
 }
 
 backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, message: string) {
@@ -369,9 +425,11 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	ctx := load_proc(library, "scratchpad_backend_caliber_context")
 	lease_acquired := load_proc(library, "scratchpad_backend_state_lease_acquired")
 	lease_released := load_proc(library, "scratchpad_backend_state_lease_released")
+	resource_lease_acquired := load_proc(library, "scratchpad_backend_resource_lease_acquired")
+	resource_lease_released := load_proc(library, "scratchpad_backend_resource_lease_released")
 	free_output := load_proc(library, "scratchpad_backend_free")
 	pump := load_proc(library, "scratchpad_backend_pump")
-	if start == nil || stop == nil || api == nil || ctx == nil || lease_acquired == nil || lease_released == nil || free_output == nil || pump == nil {
+	if start == nil || stop == nil || api == nil || ctx == nil || lease_acquired == nil || lease_released == nil || resource_lease_acquired == nil || resource_lease_released == nil || free_output == nil || pump == nil {
 		backend.library_loaded = true
 		backend.load_error = "backend library is missing one or more scratchpad_backend_* bridge exports"
 		return false, backend.load_error
@@ -382,6 +440,8 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	backend.context_fn = transmute(Backend_Get_Pointer_Proc)(ctx)
 	backend.lease_acquired_fn = transmute(Backend_Lease_Proc)(lease_acquired)
 	backend.lease_released_fn = transmute(Backend_Lease_Proc)(lease_released)
+	backend.resource_lease_acquired_fn = transmute(Backend_Lease_Proc)(resource_lease_acquired)
+	backend.resource_lease_released_fn = transmute(Backend_Lease_Proc)(resource_lease_released)
 	backend.free_fn = transmute(Backend_Free_Proc)(free_output)
 	backend.pump_fn = transmute(Backend_Pump_Proc)(pump)
 	backend.library_loaded = true
@@ -497,6 +557,9 @@ backend_validate_api :: proc(api: ^Caliber_Api_V1) -> bool {
 	if uintptr(api.struct_size) < required_size { return false }
 	return api.context_read_latest_state != nil &&
 	       api.state_publication_release != nil &&
+	       api.context_map_resource != nil &&
+	       api.resource_release != nil &&
+	       api.context_release_resource != nil &&
 	       api.context_wake_sequence != nil &&
 	       api.context_wait_wake != nil &&
 	       api.context_stop_wake_waiters != nil
@@ -565,6 +628,132 @@ backend_release_publication :: proc(backend: ^Backend, publication: ^Caliber_Sta
 	if backend.lease_released_fn() == 0 { backend.state_leases -= 1 }
 }
 
+backend_release_resource_view :: proc(
+	backend: ^Backend,
+	view: ^Caliber_Resource_View,
+	resource_id, generation: u64,
+) {
+	if backend == nil || view == nil { return }
+	if view.lease != nil {
+		release_view := transmute(Caliber_Release_Resource_Proc)(backend.api.resource_release)
+		release_view(view)
+	}
+	release_resource := transmute(Caliber_Release_Context_Resource_Proc)(backend.api.context_release_resource)
+	_ = release_resource(backend.caliber_context, resource_id, generation)
+	if backend.resource_lease_released_fn() == 0 { backend.resource_leases -= 1 }
+	view^ = {}
+}
+
+visible_slice_read_u32 :: proc(data: []u8, offset: int) -> u32 {
+	return u32(data[offset]) |
+	       u32(data[offset+1]) << 8 |
+	       u32(data[offset+2]) << 16 |
+	       u32(data[offset+3]) << 24
+}
+
+visible_slice_read_u64 :: proc(data: []u8, offset: int) -> u64 {
+	low := u64(visible_slice_read_u32(data, offset))
+	high := u64(visible_slice_read_u32(data, offset+4))
+	return low | high << 32
+}
+
+visible_window_decode :: proc(
+	data: []u8,
+	descriptor: Resource_Descriptor,
+	expected_document_id: string,
+	allocator := context.allocator,
+) -> (window: Visible_Window, ok: bool, message: string) {
+	if descriptor.resource_id == 0 || descriptor.generation == 0 || descriptor.document_id != expected_document_id {
+		return {}, false, "visible resource identity does not match the requested document"
+	}
+	if descriptor.byte_len > MAX_VISIBLE_BYTES || descriptor.end_line < descriptor.start_line || descriptor.end_line-descriptor.start_line > MAX_VISIBLE_LINES {
+		return {}, false, "visible resource descriptor exceeds the bounded window limits"
+	}
+	if descriptor.line_byte_length > 0 &&
+	   (descriptor.end_line != descriptor.start_line+1 || descriptor.byte_len > descriptor.line_byte_length) {
+		return {}, false, "visible line-chunk metadata is inconsistent with the bounded resource"
+	}
+	if len(data) < VISIBLE_SLICE_HEADER_BYTES || string(data[:4]) != "SPVS" {
+		return {}, false, "visible resource has a truncated or invalid SPVS header"
+	}
+	if visible_slice_read_u32(data, 4) != VISIBLE_SLICE_SCHEMA_V1 {
+		return {}, false, "visible resource uses an unsupported SPVS schema"
+	}
+	application_revision := visible_slice_read_u64(data, 8)
+	editor_revision := visible_slice_read_u64(data, 16)
+	start_line := visible_slice_read_u64(data, 24)
+	end_line := visible_slice_read_u64(data, 32)
+	flags := visible_slice_read_u32(data, 40)
+	byte_len := visible_slice_read_u32(data, 44)
+	if flags > 1 || ((flags & 1) != 0) != descriptor.truncated {
+		return {}, false, "visible resource flags do not match its descriptor"
+	}
+	if u64(byte_len) != descriptor.byte_len || len(data) != VISIBLE_SLICE_HEADER_BYTES+int(byte_len) {
+		return {}, false, "visible resource payload length does not match its descriptor"
+	}
+	if application_revision != descriptor.application_rev || editor_revision != descriptor.editor_revision ||
+	   start_line != descriptor.start_line || end_line != descriptor.end_line {
+		return {}, false, "SPVS revisions or line bounds do not match the resource descriptor"
+	}
+	document_id, clone_error := strings.clone(descriptor.document_id, allocator)
+	if clone_error != nil { return {}, false, "could not retain visible resource document identity" }
+	source, allocation_error := make([]u8, int(byte_len), allocator)
+	if allocation_error != nil {
+		delete(document_id, allocator)
+		return {}, false, "could not retain bounded visible source bytes"
+	}
+	if byte_len > 0 { mem.copy(rawptr(&source[0]), rawptr(&data[VISIBLE_SLICE_HEADER_BYTES]), int(byte_len)) }
+	return Visible_Window{
+		document_id=document_id,
+		application_rev=application_revision,
+		editor_revision=editor_revision,
+		start_line=start_line,
+		end_line=end_line,
+		start_byte=descriptor.start_byte,
+		line_byte_length=descriptor.line_byte_length,
+		truncated=descriptor.truncated,
+		source=source,
+	}, true, ""
+}
+
+backend_copy_visible_resource :: proc(
+	backend: ^Backend,
+	descriptor: Resource_Descriptor,
+	expected_document_id: string,
+	allocator := context.allocator,
+) -> (window: Visible_Window, ok: bool, message: string) {
+	if backend == nil || backend.api == nil || backend.caliber_context == nil {
+		return {}, false, "Caliber resource context is unavailable"
+	}
+	map_resource := transmute(Caliber_Map_Resource_Proc)(backend.api.context_map_resource)
+	view: Caliber_Resource_View
+	status := map_resource(backend.caliber_context, descriptor.resource_id, descriptor.generation, &view)
+	if status != .OK { return {}, false, fmt.tprintf("Caliber context_map_resource failed with status %d", status) }
+	if backend.resource_lease_acquired_fn() != 0 {
+		if view.lease != nil {
+			release_view := transmute(Caliber_Release_Resource_Proc)(backend.api.resource_release)
+			release_view(&view)
+		}
+		release_resource := transmute(Caliber_Release_Context_Resource_Proc)(backend.api.context_release_resource)
+		_ = release_resource(backend.caliber_context, descriptor.resource_id, descriptor.generation)
+		return {}, false, "backend rejected Caliber resource lease accounting"
+	}
+	backend.resource_leases += 1
+	defer backend_release_resource_view(backend, &view, descriptor.resource_id, descriptor.generation)
+	if view.resource_id != descriptor.resource_id || view.generation != descriptor.generation {
+		return {}, false, "Caliber returned a mismatched resource handle"
+	}
+	if view.len < VISIBLE_SLICE_HEADER_BYTES || view.len > uintptr(VISIBLE_SLICE_HEADER_BYTES)+uintptr(MAX_VISIBLE_BYTES) {
+		return {}, false, "Caliber visible resource exceeds the SPVS byte limit"
+	}
+	if view.data == nil { return {}, false, "Caliber returned a null visible resource payload" }
+	data, allocation_error := make([]u8, int(view.len), allocator)
+	if allocation_error != nil { return {}, false, "could not copy Caliber visible resource" }
+	defer delete(data, allocator)
+	mem.copy(rawptr(&data[0]), rawptr(view.data), int(view.len))
+	return visible_window_decode(data, descriptor, expected_document_id, allocator)
+}
+
 backend_consume_wake :: proc(backend: ^Backend, allocator := context.allocator) -> (changed: bool, ok: bool, message: string) {
 	if backend == nil || !backend.started { return false, false, "backend is not running" }
 	// Clear before reading. A concurrent publication then appears in this read
@@ -580,10 +769,12 @@ Backend_Command_Result :: struct {
 	message:        string,
 	directory_listing: Directory_Listing,
 	close_decision: Close_Decision,
+	visible_window:  Visible_Window,
 	code_owned:     bool,
 	message_owned:  bool,
 	directory_listing_owned: bool,
 	close_id_owned: bool,
+	visible_window_owned: bool,
 }
 
 backend_command :: proc(
@@ -594,6 +785,10 @@ backend_command :: proc(
 	document_id := "",
 	discard := false,
 	relative_path := "",
+	start_line: u64 = 0,
+	anchor_byte: u64 = 0,
+	max_lines: u64 = 0,
+	max_bytes: u64 = 0,
 	editor_revision: u64 = 0,
 	start_byte: u64 = 0,
 	end_byte: u64 = 0,
@@ -602,6 +797,11 @@ backend_command :: proc(
 	allocator := context.allocator,
 ) -> (result: Backend_Command_Result) {
 	if backend == nil || !backend.started || backend.api == nil || backend.caliber_context == nil {
+		return Backend_Command_Result{code="not_running", message="backend is not running"}
+	}
+	sync.mutex_lock(&backend.command_mutex)
+	defer sync.mutex_unlock(&backend.command_mutex)
+	if !backend.started || backend.api == nil || backend.caliber_context == nil {
 		return Backend_Command_Result{code="not_running", message="backend is not running"}
 	}
 	if len(command) == 0 { return Backend_Command_Result{code="invalid_command", message="command is empty"} }
@@ -619,6 +819,10 @@ backend_command :: proc(
 		discard=discard,
 		relative_path=relative_path,
 		limit=200,
+		start_line=start_line,
+		anchor_byte=anchor_byte,
+		max_lines=max_lines,
+		max_bytes=max_bytes,
 		editor_revision=editor_revision,
 		start_byte=start_byte,
 		end_byte=end_byte,
@@ -667,11 +871,22 @@ backend_command :: proc(
 		result.directory_listing = listing
 		result.directory_listing_owned = true
 	}
+	if response.ok && command == "read_visible_lines" {
+		window, window_ok, window_message := backend_copy_visible_resource(backend, response.resource, document_id, allocator)
+		if !window_ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="visible_resource_invalid", message=window_message}
+		}
+		result.visible_window = window
+		result.visible_window_owned = true
+	}
 	backend_response_destroy(&response, allocator)
 	if !result.ok {
 		if result.message == "" { result.message = result.code }
 		return result
 	}
+	if command == "read_visible_lines" { return result }
 	changed, read_ok, read_message := backend_read_latest(backend, allocator)
 	if !read_ok {
 		result.ok = false
@@ -694,7 +909,278 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.message_owned { delete(result.message, allocator) }
 	if result.directory_listing_owned { directory_listing_destroy(&result.directory_listing, allocator) }
 	if result.close_id_owned { delete(result.close_decision.document_id, allocator) }
+	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	result^ = {}
+}
+
+visible_window_destroy :: proc(window: ^Visible_Window, allocator: mem.Allocator) {
+	if window == nil { return }
+	if len(window.document_id) > 0 { delete(window.document_id, allocator) }
+	delete(window.source, allocator)
+	window^ = {}
+}
+
+Visible_Window_Request :: struct {
+	document_id:       string,
+	application_rev:   u64,
+	editor_revision:   u64,
+	start_line:        u64,
+	anchor_byte:       u64,
+	max_lines:         u64,
+	max_bytes:         u64,
+	generation:        u64,
+}
+
+Visible_Window_Lane_Result :: struct {
+	generation: u64,
+	window:     Visible_Window,
+	error:      string,
+	window_owned: bool,
+	error_owned: bool,
+}
+
+Visible_Window_Lane :: struct {
+	backend:            ^Backend,
+	wake:               Application_Wake_Proc,
+	wake_data:          rawptr,
+	allocator:          mem.Allocator,
+	mutex:              sync.Mutex,
+	sema:               sync.Sema,
+	thread:             ^thread.Thread,
+	stopping:           u32,
+	wake_posted:        bool,
+	pending:            bool,
+	pending_request:    Visible_Window_Request,
+	active:             bool,
+	active_request:     Visible_Window_Request,
+	latest_generation:  u64,
+	completed:          Visible_Window_Lane_Result,
+	completed_ready:    bool,
+	submitted:          u64,
+	coalesced:          u64,
+	stale_discarded:    u64,
+}
+
+visible_window_request_equal :: proc(a, b: Visible_Window_Request) -> bool {
+	return a.document_id == b.document_id &&
+	       a.application_rev == b.application_rev &&
+	       a.editor_revision == b.editor_revision &&
+	       a.start_line == b.start_line &&
+	       a.anchor_byte == b.anchor_byte &&
+	       a.max_lines == b.max_lines &&
+	       a.max_bytes == b.max_bytes
+}
+
+visible_window_result_is_current :: proc(stopping: u32, result_generation, latest_generation: u64) -> bool {
+	return stopping == 0 && result_generation != 0 && result_generation == latest_generation
+}
+
+visible_window_lane_worker :: proc(t: ^thread.Thread) {
+	lane := cast(^Visible_Window_Lane)t.data
+	for {
+		sync.sema_wait(&lane.sema)
+		sync.mutex_lock(&lane.mutex)
+		if sync.atomic_load(&lane.stopping) != 0 {
+			sync.mutex_unlock(&lane.mutex)
+			break
+		}
+		if !lane.pending {
+			lane.wake_posted = false
+			sync.mutex_unlock(&lane.mutex)
+			continue
+		}
+		lane.active_request = lane.pending_request
+		lane.pending_request = {}
+		lane.pending = false
+		lane.active = true
+		lane.wake_posted = false
+		request := lane.active_request
+		sync.mutex_unlock(&lane.mutex)
+
+		result := backend_command(
+			lane.backend,
+			"read_visible_lines",
+			document_id=request.document_id,
+			start_line=request.start_line,
+			anchor_byte=request.anchor_byte,
+			max_lines=request.max_lines,
+			max_bytes=request.max_bytes,
+			based_on_revision=request.application_rev,
+			allocator=lane.allocator,
+		)
+
+		sync.mutex_lock(&lane.mutex)
+		is_current := visible_window_result_is_current(sync.atomic_load(&lane.stopping), request.generation, lane.latest_generation)
+		lane.active = false
+		// request is a shallow ownership copy of active_request. Clear the lane's
+		// view here, then release the single owned string through request below.
+		lane.active_request = {}
+		if is_current {
+			visible_window_lane_result_destroy(&lane.completed, lane.allocator)
+			lane.completed.generation = request.generation
+			if result.ok && result.visible_window_owned {
+				lane.completed.window = result.visible_window
+				lane.completed.window_owned = true
+				result.visible_window_owned = false
+			} else {
+				error_text := result.message
+				if error_text == "" { error_text = result.code }
+				lane.completed.error, _ = strings.clone(error_text, lane.allocator)
+				lane.completed.error_owned = len(lane.completed.error) > 0
+			}
+			lane.completed_ready = true
+		} else {
+			lane.stale_discarded += 1
+		}
+		wake := lane.wake
+		wake_data := lane.wake_data
+		sync.mutex_unlock(&lane.mutex)
+
+		backend_command_result_destroy(&result, lane.allocator)
+		delete(request.document_id, lane.allocator)
+		if is_current && wake != nil { wake(wake_data) }
+	}
+}
+
+visible_window_lane_start :: proc(
+	lane: ^Visible_Window_Lane,
+	backend: ^Backend,
+	wake: Application_Wake_Proc,
+	wake_data: rawptr,
+	allocator := context.allocator,
+) -> bool {
+	if lane == nil || backend == nil || !backend.started || lane.thread != nil { return false }
+	lane.backend = backend
+	lane.wake = wake
+	lane.wake_data = wake_data
+	lane.allocator = allocator
+	lane.stopping = 0
+	lane.wake_posted = false
+	lane.pending = false
+	lane.active = false
+	lane.latest_generation = 0
+	lane.completed_ready = false
+	lane.completed = {}
+	lane.submitted = 0
+	lane.coalesced = 0
+	lane.stale_discarded = 0
+	lane.sema = {}
+	lane.thread = thread.create(visible_window_lane_worker, name="Scratchpad visible-window lane")
+	if lane.thread == nil { return false }
+	lane.thread.data = rawptr(lane)
+	thread.start(lane.thread)
+	return true
+}
+
+visible_window_lane_request :: proc(
+	lane: ^Visible_Window_Lane,
+	document_id: string,
+	application_rev, editor_revision, start_line, max_lines, max_bytes: u64,
+	anchor_byte: u64 = 0,
+) -> (generation: u64, accepted: bool, message: string) {
+	if lane == nil || lane.thread == nil || len(document_id) == 0 {
+		return 0, false, "visible-window lane is not running or document identity is empty"
+	}
+	if max_lines == 0 || max_lines > MAX_VISIBLE_LINES || max_bytes == 0 || max_bytes > MAX_VISIBLE_BYTES {
+		return 0, false, "visible-window request exceeds the bounded line or byte limit"
+	}
+	if sync.atomic_load(&lane.stopping) != 0 { return 0, false, "visible-window lane is stopping" }
+	sync.mutex_lock(&lane.mutex)
+	if sync.atomic_load(&lane.stopping) != 0 {
+		sync.mutex_unlock(&lane.mutex)
+		return 0, false, "visible-window lane is stopping"
+	}
+	if lane.pending && visible_window_request_equal(lane.pending_request, Visible_Window_Request{
+		document_id=document_id, application_rev=application_rev, editor_revision=editor_revision,
+		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
+	}) {
+		generation = lane.pending_request.generation
+		sync.mutex_unlock(&lane.mutex)
+		return generation, true, ""
+	}
+	if lane.active && !lane.pending && visible_window_request_equal(lane.active_request, Visible_Window_Request{
+		document_id=document_id, application_rev=application_rev, editor_revision=editor_revision,
+		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
+	}) {
+		generation = lane.active_request.generation
+		sync.mutex_unlock(&lane.mutex)
+		return generation, true, ""
+	}
+	owned_document_id, clone_err := strings.clone(document_id, lane.allocator)
+	if clone_err != nil {
+		sync.mutex_unlock(&lane.mutex)
+		return 0, false, "could not retain visible-window document identity"
+	}
+	lane.latest_generation += 1
+	if lane.latest_generation == 0 { lane.latest_generation = 1 }
+	generation = lane.latest_generation
+	if lane.pending {
+		delete(lane.pending_request.document_id, lane.allocator)
+		lane.coalesced += 1
+	} else if lane.active {
+		lane.coalesced += 1
+	}
+	lane.pending_request = Visible_Window_Request{
+		document_id=owned_document_id,
+		application_rev=application_rev,
+		editor_revision=editor_revision,
+		start_line=start_line,
+		anchor_byte=anchor_byte,
+		max_lines=max_lines,
+		max_bytes=max_bytes,
+		generation=generation,
+	}
+	lane.pending = true
+	lane.submitted += 1
+	if !lane.wake_posted {
+		lane.wake_posted = true
+		sync.sema_post(&lane.sema)
+	}
+	sync.mutex_unlock(&lane.mutex)
+	return generation, true, ""
+}
+
+visible_window_lane_take :: proc(lane: ^Visible_Window_Lane) -> (result: Visible_Window_Lane_Result, found: bool) {
+	if lane == nil { return {}, false }
+	sync.mutex_lock(&lane.mutex)
+	if !lane.completed_ready {
+		sync.mutex_unlock(&lane.mutex)
+		return {}, false
+	}
+	result = lane.completed
+	lane.completed = {}
+	lane.completed_ready = false
+	sync.mutex_unlock(&lane.mutex)
+	return result, true
+}
+
+visible_window_lane_result_destroy :: proc(result: ^Visible_Window_Lane_Result, allocator: mem.Allocator) {
+	if result == nil { return }
+	if result.window_owned { visible_window_destroy(&result.window, allocator) }
+	if result.error_owned { delete(result.error, allocator) }
+	result^ = {}
+}
+
+visible_window_lane_stop :: proc(lane: ^Visible_Window_Lane) -> bool {
+	if lane == nil || lane.thread == nil { return true }
+	sync.mutex_lock(&lane.mutex)
+	sync.atomic_store(&lane.stopping, 1)
+	if lane.pending {
+		delete(lane.pending_request.document_id, lane.allocator)
+		lane.pending_request = {}
+		lane.pending = false
+	}
+	sync.mutex_unlock(&lane.mutex)
+	sync.sema_post(&lane.sema)
+	thread.join(lane.thread)
+	thread.destroy(lane.thread)
+	lane.thread = nil
+	visible_window_lane_result_destroy(&lane.completed, lane.allocator)
+	lane.completed_ready = false
+	lane.backend = nil
+	lane.wake = nil
+	lane.wake_data = nil
+	return !lane.active && !lane.pending
 }
 
 directory_listing_clone :: proc(source: Directory_Listing, allocator: mem.Allocator) -> (copy: Directory_Listing, ok: bool) {
@@ -731,6 +1217,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.outcome.code, allocator)
 	delete(response.outcome.message, allocator)
 	delete(response.close_decision.document_id, allocator)
+	delete(response.resource.document_id, allocator)
 	directory_listing_destroy(&response.directory_listing, allocator)
 	response^ = {}
 }
@@ -770,6 +1257,9 @@ backend_stop :: proc(backend: ^Backend, allocator := context.allocator) -> (ok: 
 	if !joined { return false, "Caliber wake waiter did not exit after stop_wake_waiters" }
 	if backend.state_leases != 0 {
 		return false, fmt.tprintf("refusing backend stop with %d outstanding state lease(s)", backend.state_leases)
+	}
+	if backend.resource_leases != 0 {
+		return false, fmt.tprintf("refusing backend stop with %d outstanding Caliber resource lease(s)", backend.resource_leases)
 	}
 	stopped, stop_message := backend_stop_uninitialized(backend, allocator)
 	if !stopped { return false, stop_message }

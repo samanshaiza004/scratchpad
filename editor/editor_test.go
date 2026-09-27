@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math/rand"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestPieceBufferInsertDeleteAndLines(t *testing.T) {
@@ -72,6 +73,68 @@ func TestBufferBoundedLinesCopiesOneRange(t *testing.T) {
 	}
 	if _, _, _, _, err := b.BoundedLines(0, 0, 10); err == nil {
 		t.Fatal("zero-line BoundedLines succeeded")
+	}
+}
+
+func TestBufferBoundedLineChunksTraverseLongLineWithoutWholeCopy(t *testing.T) {
+	line := bytes.Repeat([]byte("ab😀cd"), 400_000)
+	source := append(append([]byte(nil), line...), '\r', '\n')
+	b := NewBuffer(source)
+	if b.LineCount() != 2 {
+		t.Fatalf("line count = %d, want 2", b.LineCount())
+	}
+
+	const chunkBytes = 16 * 1024
+	first, firstStart, lineLength, firstTruncated, err := b.BoundedLineChunk(0, 0, chunkBytes)
+	if err != nil {
+		t.Fatalf("first BoundedLineChunk = error: %v", err)
+	}
+	if firstStart != 0 || len(first) > chunkBytes || lineLength != len(line) || !firstTruncated {
+		t.Fatalf("first chunk = len %d start %d line length %d truncated %v", len(first), firstStart, lineLength, firstTruncated)
+	}
+	if !bytes.Equal(first, line[:len(first)]) || !utf8.Valid(first) {
+		t.Fatal("first bounded chunk changed source bytes or split a valid UTF-8 rune")
+	}
+
+	anchor := firstStart + len(first) - 3 // deliberately land inside the four-byte rune
+	second, secondStart, secondLineLength, secondTruncated, err := b.BoundedLineChunk(0, anchor, chunkBytes)
+	if err != nil {
+		t.Fatalf("second BoundedLineChunk = error: %v", err)
+	}
+	if secondStart > anchor || anchor-secondStart > 3 || secondLineLength != lineLength || len(second) > chunkBytes || !secondTruncated {
+		t.Fatalf("second chunk = len %d start %d anchor %d line length %d truncated %v", len(second), secondStart, anchor, secondLineLength, secondTruncated)
+	}
+	if !bytes.Equal(second, line[secondStart:secondStart+len(second)]) || !utf8.Valid(second) {
+		t.Fatal("anchored chunk changed source bytes or split a valid UTF-8 rune")
+	}
+
+	lastAnchor := len(line) - chunkBytes/2
+	last, lastStart, lastLineLength, lastTruncated, err := b.BoundedLineChunk(0, lastAnchor, chunkBytes)
+	if err != nil {
+		t.Fatalf("last BoundedLineChunk = error: %v", err)
+	}
+	if lastStart > lastAnchor || lastLineLength != len(line) || lastTruncated || lastStart+len(last) != len(line) {
+		t.Fatalf("last chunk = len %d start %d line length %d truncated %v", len(last), lastStart, lastLineLength, lastTruncated)
+	}
+	if !bytes.Equal(last, line[lastStart:]) || !utf8.Valid(last) {
+		t.Fatal("last bounded chunk changed source bytes or included the CRLF terminator")
+	}
+
+	if _, _, _, _, err := b.BoundedLineChunk(0, len(line)+1, chunkBytes); err == nil {
+		t.Fatal("out-of-line anchor unexpectedly succeeded")
+	}
+
+	combining := NewBuffer([]byte("xe\u0301y"))
+	combiningChunk, combiningStart, _, _, err := combining.BoundedLineChunk(0, 3, 8)
+	if err != nil || combiningStart != 1 || string(combiningChunk) != "e\u0301y" {
+		t.Fatalf("combining-mark chunk = %q start=%d err=%v", combiningChunk, combiningStart, err)
+	}
+
+	zwj := []byte("x👩‍💻y")
+	zwjBuffer := NewBuffer(zwj)
+	zwjChunk, zwjStart, _, _, err := zwjBuffer.BoundedLineChunk(0, 9, 32)
+	if err != nil || zwjStart != 1 || !bytes.Equal(zwjChunk, zwj[1:]) {
+		t.Fatalf("emoji ZWJ chunk = %q start=%d err=%v", zwjChunk, zwjStart, err)
 	}
 }
 

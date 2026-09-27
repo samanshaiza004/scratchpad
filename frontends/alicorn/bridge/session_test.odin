@@ -9,7 +9,7 @@ import "core:time"
 
 @(test)
 test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
- json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"language":"markdown"}]}`
+ json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"line_count":42,"language":"markdown"}]}`
 	data := transmute([]u8)json_text
 	state, ok, message := decode_state_envelope(data, context.temp_allocator)
 	testing.expect(t, ok, message)
@@ -19,6 +19,7 @@ test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
 	if len(state.documents) == 1 {
 		doc := state.documents[0]
 		testing.expect(t, doc.path == "C:/work/readme.md" && doc.language == "markdown", "document identity fields should decode")
+		testing.expect(t, doc.line_count == 42, "logical line count should decode from shared document state")
 		testing.expect(t, doc.preview, "preview tab state should decode from the shared StateEnvelope")
 	}
 }
@@ -41,6 +42,95 @@ test_state_publications_accept_only_newer_revisions :: proc(t: ^testing.T) {
 	testing.expect(t, state_revision_is_newer(4, 5), "new publication should replace old state")
 	testing.expect(t, !state_revision_is_newer(5, 5), "duplicate publication should be ignored")
 	testing.expect(t, !state_revision_is_newer(5, 3), "stale publication should be ignored")
+}
+
+@(test)
+test_visible_window_requests_deduplicate_and_reject_stale_results :: proc(t: ^testing.T) {
+	base := Visible_Window_Request{
+		document_id="doc-1", application_rev=8, editor_revision=4,
+		start_line=120, max_lines=64, max_bytes=16*1024,
+	}
+	duplicate := base
+	duplicate.generation = 99
+	other_line := base
+	other_line.start_line += 1
+	other_chunk := base
+	other_chunk.anchor_byte = 4096
+	testing.expect(t, visible_window_request_equal(base, duplicate), "request identity ignores its assigned generation")
+	testing.expect(t, !visible_window_request_equal(base, other_line), "a different logical window must not deduplicate")
+	testing.expect(t, !visible_window_request_equal(base, other_chunk), "a different long-line byte anchor must not deduplicate")
+	testing.expect(t, visible_window_result_is_current(0, 7, 7), "latest completed request should be installable")
+	testing.expect(t, !visible_window_result_is_current(0, 6, 7), "stale completion must be rejected")
+	testing.expect(t, !visible_window_result_is_current(1, 7, 7), "completion after lane stop must be rejected")
+}
+
+visible_slice_write_u32 :: proc(data: []u8, offset: int, value: u32) {
+	data[offset+0] = u8(value)
+	data[offset+1] = u8(value >> 8)
+	data[offset+2] = u8(value >> 16)
+	data[offset+3] = u8(value >> 24)
+}
+
+visible_slice_write_u64 :: proc(data: []u8, offset: int, value: u64) {
+	visible_slice_write_u32(data, offset, u32(value))
+	visible_slice_write_u32(data, offset+4, u32(value >> 32))
+}
+
+@(test)
+test_visible_window_decode_validates_bounded_raw_spvs :: proc(t: ^testing.T) {
+	payload := [?]u8{'a', 0xFF, '\n'}
+	encoded, alloc_err := make([]u8, VISIBLE_SLICE_HEADER_BYTES+len(payload), context.temp_allocator)
+	testing.expect(t, alloc_err == nil, "SPVS fixture allocation should succeed")
+	if alloc_err != nil { return }
+	defer delete(encoded, context.temp_allocator)
+	encoded[0] = 'S'; encoded[1] = 'P'; encoded[2] = 'V'; encoded[3] = 'S'
+	visible_slice_write_u32(encoded, 4, VISIBLE_SLICE_SCHEMA_V1)
+	visible_slice_write_u64(encoded, 8, 17)
+	visible_slice_write_u64(encoded, 16, 9)
+	visible_slice_write_u64(encoded, 24, 12)
+	visible_slice_write_u64(encoded, 32, 13)
+	visible_slice_write_u32(encoded, 40, 1)
+	visible_slice_write_u32(encoded, 44, u32(len(payload)))
+	for i in 0..<len(payload) { encoded[VISIBLE_SLICE_HEADER_BYTES+i] = payload[i] }
+	descriptor := Resource_Descriptor{
+		resource_id=4, generation=2, document_id="doc-1",
+		application_rev=17, editor_revision=9, start_line=12, end_line=13,
+		byte_len=u64(len(payload)), truncated=true, start_byte=88, line_byte_length=4096,
+	}
+	window, ok, message := visible_window_decode(encoded, descriptor, "doc-1", context.temp_allocator)
+	testing.expect(t, ok, message)
+	if ok {
+		defer visible_window_destroy(&window, context.temp_allocator)
+		testing.expect(t, window.application_rev == 17 && window.editor_revision == 9, "SPVS revisions should be retained")
+		testing.expect(t, window.start_line == 12 && window.end_line == 13 && window.start_byte == 88 && window.truncated,
+			"SPVS range metadata should match the Caliber resource descriptor")
+		testing.expect(t, window.line_byte_length == 4096, "visible byte chunks should retain the full logical line length")
+		source_matches := len(window.source) == len(payload)
+		if source_matches {
+			for i in 0..<len(payload) {
+				if window.source[i] != payload[i] { source_matches = false; break }
+			}
+		}
+		testing.expect(t, source_matches, "SPVS payload must preserve raw source bytes, including invalid UTF-8")
+	}
+
+	bad_schema := encoded[:]
+	visible_slice_write_u32(bad_schema, 4, 99)
+	_, ok, _ = visible_window_decode(bad_schema, descriptor, "doc-1", context.temp_allocator)
+	testing.expect(t, !ok, "unknown SPVS schema must be rejected")
+	visible_slice_write_u32(encoded, 4, VISIBLE_SLICE_SCHEMA_V1)
+	wrong_revision := descriptor
+	wrong_revision.editor_revision += 1
+	_, ok, _ = visible_window_decode(encoded, wrong_revision, "doc-1", context.temp_allocator)
+	testing.expect(t, !ok, "SPVS revision mismatch must be rejected")
+	wrong_length := descriptor
+	wrong_length.byte_len += 1
+	_, ok, _ = visible_window_decode(encoded, wrong_length, "doc-1", context.temp_allocator)
+	testing.expect(t, !ok, "descriptor/payload length mismatch must be rejected")
+	_, ok, _ = visible_window_decode(encoded, descriptor, "other-doc", context.temp_allocator)
+	testing.expect(t, !ok, "resource for another document must be rejected")
+	_, ok, _ = visible_window_decode(encoded[:VISIBLE_SLICE_HEADER_BYTES-1], descriptor, "doc-1", context.temp_allocator)
+	testing.expect(t, !ok, "truncated SPVS header must be rejected")
 }
 
 @(test)
@@ -125,7 +215,7 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 		testing.expect(t, false, "could not create a nested test directory")
 		return
 	}
-	if write_err := os.write_entire_file_from_string(first_path, "# First\n"); write_err != nil {
+	if write_err := os.write_entire_file_from_string(first_path, "# First\nSecond\nThird"); write_err != nil {
 		testing.expect(t, false, "could not create first test document")
 		return
 	}
@@ -180,6 +270,98 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 		}
 	}
 	testing.expect(t, first_document_found, "opened first document should have a state record")
+	visible := backend_command(
+		backend,
+		"read_visible_lines",
+		document_id=first_id,
+		start_line=0,
+		max_lines=MAX_VISIBLE_LINES,
+		max_bytes=MAX_VISIBLE_BYTES,
+		allocator=context.temp_allocator,
+	)
+	testing.expect(t, visible.ok && visible.visible_window_owned, "generic read_visible_lines should return an owned bounded SPVS window")
+	if visible.visible_window_owned {
+		testing.expect(t, visible.visible_window.start_line == 0 && visible.visible_window.end_line == 3,
+			"visible window should report the requested logical line range")
+		testing.expect(t, string(visible.visible_window.source) == "# First\nSecond\nThird", "visible window should preserve the document's exact source bytes")
+	}
+	backend_command_result_destroy(&visible, context.temp_allocator)
+	testing.expect(t, backend.resource_leases == 0 && backend.state_leases == 0,
+		"visible resource and state leases must be released before the command returns")
+	lane_signal: Test_Wake_Signal
+	lane: Visible_Window_Lane
+	lane_started := visible_window_lane_start(&lane, backend, test_wake_callback, rawptr(&lane_signal), context.temp_allocator)
+	testing.expect(t, lane_started, "visible-window lane should start one frontend-owned worker")
+	if lane_started {
+		idle_wake := sync.sema_wait_with_timeout(&lane_signal.sema, time.Duration(10_000_000))
+		testing.expect(t, !idle_wake && lane.submitted == 0 && !lane.active,
+			"an idle window lane must sleep without manufacturing requests or wakes")
+		first_generation, first_accepted, first_request_error := visible_window_lane_request(
+			&lane, first_id, backend.state.application_rev, first_editor_revision,
+			0, 256, MAX_VISIBLE_BYTES,
+		)
+		testing.expect(t, first_accepted, first_request_error)
+		latest_generation, latest_accepted, latest_request_error := visible_window_lane_request(
+			&lane, first_id, backend.state.application_rev, first_editor_revision,
+			1, 256, MAX_VISIBLE_BYTES,
+		)
+		testing.expect(t, latest_accepted && latest_generation > first_generation, "new viewport request should supersede the earlier window")
+		latest_seen := false
+		for attempt in 0..<20 {
+			completed, found := visible_window_lane_take(&lane)
+			if found {
+				if completed.generation == latest_generation {
+					latest_seen = true
+					testing.expect(t, completed.window_owned && completed.window.start_line == 1,
+						"only the newest requested logical window should be published")
+					if completed.window_owned {
+						testing.expect(t, string(completed.window.source) == "Second\nThird",
+							"latest window result should carry the exact requested raw bytes")
+					}
+				} else {
+					testing.expect(t, completed.generation < latest_generation,
+						"a lane completion must not claim a future generation")
+				}
+				visible_window_lane_result_destroy(&completed, context.temp_allocator)
+				if latest_seen { break }
+			}
+			if !latest_seen { _ = sync.sema_wait_with_timeout(&lane_signal.sema, time.Duration(100_000_000)) }
+		}
+		testing.expect(t, latest_seen, "worker should wake the UI after installing the latest window")
+		// Repeatedly complete real resource reads. Each completion owns one
+		// request ID string and must release it exactly once; this stresses the
+		// ownership path that is exercised when a document is opened natively.
+		for iteration in 0..<32 {
+			start_line := u64(iteration % 3)
+			generation, accepted, request_error := visible_window_lane_request(
+				&lane, first_id, backend.state.application_rev, first_editor_revision,
+				start_line, 256, MAX_VISIBLE_BYTES,
+			)
+			testing.expect(t, accepted, request_error)
+			if !accepted { break }
+			completed_for_request := false
+			for attempt in 0..<20 {
+				completed, found := visible_window_lane_take(&lane)
+				if found {
+					completed_for_request = completed.generation == generation && completed.window_owned
+					visible_window_lane_result_destroy(&completed, context.temp_allocator)
+					if completed_for_request { break }
+				}
+				if !completed_for_request { _ = sync.sema_wait_with_timeout(&lane_signal.sema, time.Duration(100_000_000)) }
+			}
+			testing.expect(t, completed_for_request, "repeated bounded reads should complete without losing ownership or corrupting the heap")
+			if !completed_for_request { break }
+		}
+		lane_stopped := visible_window_lane_stop(&lane)
+		testing.expect(t, lane_stopped && lane.thread == nil, "visible-window lane stop must join its worker")
+		testing.expect(t, backend.resource_leases == 0, "worker must release its Caliber resource lease before shutdown")
+		lane_restarted := visible_window_lane_start(&lane, backend, test_wake_callback, rawptr(&lane_signal), context.temp_allocator)
+		testing.expect(t, lane_restarted, "joined visible-window lane should support a clean restart")
+		if lane_restarted {
+			lane_stopped_again := visible_window_lane_stop(&lane)
+			testing.expect(t, lane_stopped_again && lane.thread == nil, "restarted lane should also stop and join cleanly")
+		}
+	}
 	replacement := [?]int{'x'}
 	edit_first := backend_command(
 		backend,
@@ -214,7 +396,59 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 	close_first := backend_command(backend, "close_document", document_id=first_id, allocator=context.temp_allocator)
 	testing.expect(t, close_first.ok && len(backend.state.documents) == 1, "generic close_document should remove the requested clean document")
 	backend_command_result_destroy(&close_first, context.temp_allocator)
+	long_line_path := fmt.tprintf("%s/long-line.txt", workspace)
+	long_line_bytes, long_line_allocation_error := make([]u8, 2*1024*1024, context.temp_allocator)
+	testing.expect(t, long_line_allocation_error == nil, "long-line fixture should allocate")
+	if long_line_allocation_error == nil {
+		defer delete(long_line_bytes, context.temp_allocator)
+		for i in 0..<len(long_line_bytes) { long_line_bytes[i] = 'L' }
+		if write_error := os.write_entire_file_from_string(long_line_path, string(long_line_bytes)); write_error != nil {
+			testing.expect(t, false, "long-line fixture should be written")
+		} else {
+			open_long_line := backend_command(backend, "open_path", path=long_line_path, allocator=context.temp_allocator)
+			testing.expect(t, open_long_line.ok, "shared backend should open the 2 MiB logical line")
+			long_document_id, long_id_error := strings.clone(backend.state.active, context.temp_allocator)
+			testing.expect(t, long_id_error == nil && len(long_document_id) > 0, "long-line document should publish a stable ID")
+			backend_command_result_destroy(&open_long_line, context.temp_allocator)
+			if len(long_document_id) > 0 {
+				defer delete(long_document_id, context.temp_allocator)
+				first_chunk := backend_command(
+					backend, "read_visible_lines", document_id=long_document_id,
+					start_line=0, max_lines=1, max_bytes=MAX_VISIBLE_BYTES,
+					allocator=context.temp_allocator,
+				)
+				testing.expect(t, first_chunk.ok && first_chunk.visible_window_owned, "shared bridge should return the first bounded long-line chunk")
+				if first_chunk.visible_window_owned {
+					first_window := first_chunk.visible_window
+					testing.expect(t, first_window.line_byte_length == u64(len(long_line_bytes)) && len(first_window.source) == 16*1024 && first_window.truncated,
+						"first chunk should be capped at 16 KiB and report the complete logical-line extent")
+					anchor := first_window.start_byte+u64(len(first_window.source))-64
+				first_prefix_matches := len(first_window.source) >= 3 && first_window.source[0] == 'L' && first_window.source[len(first_window.source)-1] == 'L'
+				testing.expect(t, first_prefix_matches, "first long-line resource should preserve raw source bytes")
+					backend_command_result_destroy(&first_chunk, context.temp_allocator)
+					second_chunk := backend_command(
+						backend, "read_visible_lines", document_id=long_document_id,
+						start_line=0, anchor_byte=anchor, max_lines=1, max_bytes=MAX_VISIBLE_BYTES,
+						allocator=context.temp_allocator,
+					)
+					testing.expect(t, second_chunk.ok && second_chunk.visible_window_owned, "shared bridge should continue from an absolute byte anchor")
+					if second_chunk.visible_window_owned {
+						testing.expect(t, second_chunk.visible_window.start_byte == anchor && len(second_chunk.visible_window.source) == 16*1024 && second_chunk.visible_window.truncated,
+							"anchored response should advance the bounded chunk without materializing the document")
+					if len(second_chunk.visible_window.source) > 0 {
+						testing.expect(t, second_chunk.visible_window.source[0] == 'L' && second_chunk.visible_window.source[len(second_chunk.visible_window.source)-1] == 'L',
+							"anchored response should retain exact original bytes")
+					}
+					}
+					backend_command_result_destroy(&second_chunk, context.temp_allocator)
+				} else {
+					backend_command_result_destroy(&first_chunk, context.temp_allocator)
+				}
+			}
+		}
+	}
 	testing.expect(t, backend.state_leases == 0, "shell commands must release every Caliber state lease")
+	testing.expect(t, backend.resource_leases == 0, "long-line Caliber windows must release every resource lease")
 	stopped, stop_message := backend_stop(backend, context.temp_allocator)
 	testing.expect(t, stopped, stop_message)
 }

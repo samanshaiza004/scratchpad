@@ -242,6 +242,7 @@ mod tests {
                 dirty: false,
                 preview: false,
                 editor_revision,
+                line_count: 1,
                 language: "text".to_string(),
             }],
             actions: Vec::new(),

@@ -231,8 +231,11 @@ func TestMalformedOversizedAndPathValidation(t *testing.T) {
 func TestVisibleLinesAreBoundedImmutableResource(t *testing.T) {
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "large.txt")
-	content := strings.Repeat(strings.Repeat("x", 400)+"\n", 400)
+	content := strings.Repeat(strings.Repeat("x", 400)+"\n", 26_150)
 	writeFile(t, path, content)
+	if len(content) < 10*1024*1024 {
+		t.Fatalf("large-window fixture is only %d bytes", len(content))
+	}
 
 	runtime := newStartedRuntime(t, workspace)
 	defer stopRuntime(t, runtime)
@@ -250,6 +253,13 @@ func TestVisibleLinesAreBoundedImmutableResource(t *testing.T) {
 		t.Fatalf("open response = %+v, state = %+v", opened, state)
 	}
 	documentID := state.Documents[0].ID
+	document := runtime.app.Documents[application.DocumentID(documentID)]
+	if document == nil {
+		t.Fatal("opened document is missing from the application")
+	}
+	if state.Documents[0].LineCount != uint64(document.Editor.Buffer.LineCount()) {
+		t.Fatalf("published line count = %d, document buffer line count = %d", state.Documents[0].LineCount, document.Editor.Buffer.LineCount())
+	}
 	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
 		Version:         ProtocolVersion,
 		RequestID:       19,
@@ -324,6 +334,79 @@ func TestVisibleLineRequestsRejectInvalidBounds(t *testing.T) {
 		if response.OK || response.Outcome.Code != "invalid_visible_range" {
 			t.Fatalf("invalid visible request %+v response = %+v", request, response)
 		}
+	}
+}
+
+func TestReadVisibleLongLineAsAnchoredBoundedChunks(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "long-line.txt")
+	content := bytes.Repeat([]byte("a"), 2*1024*1024)
+	writeFile(t, path, string(content))
+
+	runtime := newStartedRuntime(t, workspace)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 40, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	state = latestStateForTest(t, runtime)
+	if !opened.OK || len(state.Documents) != 1 || state.Documents[0].LineCount != 1 {
+		t.Fatalf("open long-line response = %+v, state = %+v", opened, state)
+	}
+	documentID := state.Documents[0].ID
+
+	read := func(requestID, anchor uint64) ResourceDescriptor {
+		t.Helper()
+		dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+			Version: ProtocolVersion, RequestID: requestID, BasedOnRevision: state.ApplicationRev,
+			Command: "read_visible_lines", DocumentID: documentID,
+			StartLine: 0, AnchorByte: anchor, MaxLines: 1, MaxBytes: MaxVisibleBytes,
+		}))
+		response := decodeResponse(t, runtime.Pump())
+		if !response.OK || response.Resource == nil {
+			t.Fatalf("read long-line window at byte %d = %+v", anchor, response)
+		}
+		return *response.Resource
+	}
+	check := func(descriptor ResourceDescriptor, wantStart int, wantTruncated bool) []byte {
+		t.Helper()
+		if descriptor.StartByte != uint64(wantStart) || descriptor.LineByteLength != uint64(len(content)) || descriptor.EndLine != 1 || descriptor.ByteLen > MaxVisibleLineChunkBytes || descriptor.Truncated != wantTruncated {
+			t.Fatalf("long-line resource descriptor = %+v", descriptor)
+		}
+		resource, err := runtime.caliber.readResourceCopy(descriptor.ResourceID, descriptor.Generation)
+		if err != nil {
+			t.Fatalf("map long-line resource: %v", err)
+		}
+		if len(resource) != visibleSliceHeaderBytes+int(descriptor.ByteLen) || string(resource[:4]) != "SPVS" {
+			t.Fatalf("invalid SPVS resource length/header: %d, %+v", len(resource), descriptor)
+		}
+		if !bytes.Equal(resource[visibleSliceHeaderBytes:], content[wantStart:wantStart+int(descriptor.ByteLen)]) {
+			t.Fatal("long-line chunk did not preserve exact source bytes")
+		}
+		if err := runtime.caliber.releaseResourceOwner(descriptor.ResourceID, descriptor.Generation); err != nil {
+			t.Fatalf("release long-line resource owner: %v", err)
+		}
+		return resource[visibleSliceHeaderBytes:]
+	}
+
+	first := read(41, 0)
+	firstBytes := check(first, 0, true)
+	if len(firstBytes) != MaxVisibleLineChunkBytes {
+		t.Fatalf("first long-line chunk length = %d", len(firstBytes))
+	}
+	secondStart := int(first.ByteLen) - 64
+	second := read(42, uint64(secondStart))
+	secondBytes := check(second, secondStart, true)
+	if len(secondBytes) != MaxVisibleLineChunkBytes {
+		t.Fatalf("second long-line chunk length = %d", len(secondBytes))
+	}
+	lastStart := len(content) - 128
+	last := read(43, uint64(lastStart))
+	lastBytes := check(last, lastStart, false)
+	if len(lastBytes) != 128 {
+		t.Fatalf("last long-line chunk length = %d, want 128", len(lastBytes))
 	}
 }
 

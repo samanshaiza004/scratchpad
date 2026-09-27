@@ -3,14 +3,193 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 tree_test_wake :: proc(data: rawptr) {}
 
+backend_integration_test_mutex: sync.Mutex
+
+@(test)
+test_editor_projection_preserves_source_bytes_and_maps_expansions :: proc(t: ^testing.T) {
+	raw := [?]u8{0xEF, 0xBB, 0xBF, 'A', '\t', 0xFF, '\r', '\n', 'e', 0xCC, 0x81}
+	source_bytes, allocation_error := make([]u8, len(raw), context.temp_allocator)
+	testing.expect(t, allocation_error == nil, "projection fixture should allocate")
+	if allocation_error != nil { return }
+	defer delete(source_bytes, context.temp_allocator)
+	for index in 0..<len(raw) { source_bytes[index] = raw[index] }
+	source := bridge.Visible_Window{
+		document_id="projection-doc",
+		application_rev=4,
+		editor_revision=9,
+		start_line=0,
+		end_line=2,
+		start_byte=0,
+		source=source_bytes,
+	}
+	window, ok, message := editor_window_from_visible(&source, context.temp_allocator)
+	testing.expect(t, ok, message)
+	if !ok { return }
+	source_bytes = {}
+	defer editor_window_destroy(&window, context.temp_allocator)
+	testing.expect(t, len(window.lines) == 2, "SPVS source should project only its declared logical rows")
+	if len(window.lines) == 2 {
+		line := window.lines[0]
+		testing.expect(t, line.display == "A   \\xFF", "BOM should be hidden, tabs expanded, and invalid bytes escaped deterministically")
+		expected_offsets := [?]u64{3, 4, 4, 4, 5, 5, 5, 5, 6}
+		offsets_match := len(line.display_bytes) == len(expected_offsets)
+		if offsets_match {
+			for index in 0..<len(expected_offsets) {
+				if line.display_bytes[index] != expected_offsets[index] { offsets_match = false; break }
+			}
+		}
+		testing.expect(t, offsets_match, "display boundaries should map back to exact source byte boundaries")
+		testing.expect(t, window.lines[1].display == "e\xCC\x81", "valid combining Unicode bytes should be preserved")
+	}
+}
+
+@(test)
+test_editor_projection_accepts_multilingual_utf8_and_rejects_invalid_sequences :: proc(t: ^testing.T) {
+	multilingual := [?]u8{0xC3, 0xA9, 0xE0, 0xA4, 0x95, 0xD8, 0xA7, 0xD7, 0x90, 0xF0, 0x9F, 0x91, 0xA9, 0xE2, 0x80, 0x8D, 0xF0, 0x9F, 0x92, 0xBB}
+	line, ok := editor_project_line(multilingual[:], 0, 0, context.temp_allocator)
+	testing.expect(t, ok && line.display == string(multilingual[:]), "multilingual UTF-8 and emoji ZWJ bytes should pass through without normalization")
+	if ok { delete(line.display, context.temp_allocator); delete(line.display_bytes, context.temp_allocator) }
+	invalid := [?]u8{0xE0, 0x80, 0x80}
+	line, ok = editor_project_line(invalid[:], 0, 0, context.temp_allocator)
+	testing.expect(t, ok && line.display == "\\xE0\\x80\\x80", "overlong UTF-8 sequences should escape each invalid source byte")
+	if ok { delete(line.display, context.temp_allocator); delete(line.display_bytes, context.temp_allocator) }
+}
+
+@(test)
+test_editor_long_line_chunks_preserve_source_anchor_and_request_only_at_frontier :: proc(t: ^testing.T) {
+	source_bytes, allocation_error := make([]u8, 16*1024, context.temp_allocator)
+	testing.expect(t, allocation_error == nil, "long-line projection fixture should allocate")
+	if allocation_error != nil { return }
+	defer delete(source_bytes, context.temp_allocator)
+	for i in 0..<len(source_bytes) { source_bytes[i] = 'x' }
+	visible := bridge.Visible_Window{
+		document_id="long-line",
+		application_rev=2,
+		editor_revision=3,
+		start_line=7,
+		end_line=8,
+		start_byte=16*1024-32,
+		line_byte_length=2*1024*1024,
+		truncated=true,
+		source=source_bytes,
+	}
+	window, ok, message := editor_window_from_visible(&visible, context.temp_allocator)
+	testing.expect(t, ok, message)
+	if !ok { return }
+	visible.source = {}
+	defer editor_window_destroy(&window, context.temp_allocator)
+	testing.expect(t, editor_window_is_long_line_chunk(&window), "truncated one-line resources should be recognized as byte chunks")
+	if len(window.lines) == 1 && len(window.lines[0].display_bytes) > 0 {
+		testing.expect(t, window.lines[0].display_bytes[0] == window.start_byte, "display mapping should retain the absolute byte anchor")
+	}
+	anchor, needed := editor_long_line_next_anchor(&window, 7, 100, 200)
+	testing.expect(t, !needed && anchor == 0, "a chunk request should not run before the horizontal frontier")
+	anchor, needed = editor_long_line_next_anchor(&window, 7, 160, 200)
+	want_anchor := window.start_byte+u64(len(window.source))-64
+	testing.expect(t, needed && anchor == want_anchor && anchor > window.start_byte, "reaching the horizontal frontier should request a forward byte window with a small overlap")
+	anchor, needed = editor_long_line_next_anchor(&window, 8, 200, 200)
+	testing.expect(t, !needed && anchor == 0, "a neighboring logical row must not advance this line's byte window")
+}
+
+@(test)
+test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) {
+	sync.mutex_lock(&backend_integration_test_mutex)
+	defer sync.mutex_unlock(&backend_integration_test_mutex)
+	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-editor-*", context.temp_allocator)
+	if workspace_error != nil { testing.expect(t, false, "could not create editor-surface workspace"); return }
+	defer _ = os.remove_all(workspace)
+	path := fmt.tprintf("%s/large-source.txt", workspace)
+	content := make([dynamic]u8, 0, allocator=context.temp_allocator)
+	defer delete(content)
+	for index in 0..<26_150 {
+		line := fmt.tprintf("line-%05d:", index)
+		for byte in transmute([]u8)line { append(&content, byte) }
+		for _ in 0..<(400-len(line)) { append(&content, 'x') }
+		append(&content, '\n')
+	}
+	if err := os.write_entire_file_from_string(path, string(content[:])) ; err != nil {
+		testing.expect(t, false, "could not write virtualized editor fixture")
+		return
+	}
+	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
+	if !found_library { testing.expect(t, false, "editor-surface test requires the staged shared backend"); return }
+	defer delete(backend_library, context.temp_allocator)
+
+	app: App
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
+	testing.expect(t, loaded, fmt.tprintf("shared backend should load for editor-surface test: %s", load_message))
+	if !loaded { return }
+	started, start_message := bridge.backend_start(&app.backend, workspace, tree_test_wake, nil, context.allocator)
+	testing.expect(t, started, fmt.tprintf("shared backend should start for editor-surface test: %s", start_message))
+	if !started { return }
+	rt: alicorn.Runtime
+	defer {
+		if app.backend.started { _, _ = bridge.backend_stop(&app.backend, context.allocator) }
+		editor_window_destroy(&app.editor_window, context.allocator)
+		editor_views_destroy(&app.editor_views, context.allocator)
+		alicorn.destroy_runtime(&rt)
+	}
+	opened := bridge.backend_command(&app.backend, "open_path", path=path, allocator=context.temp_allocator)
+	testing.expect(t, opened.ok && len(app.backend.state.documents) == 1, "Go should publish the real source document")
+	bridge.backend_command_result_destroy(&opened, context.temp_allocator)
+	active, active_found := find_document(&app.backend.state, app.backend.state.active)
+	testing.expect(t, active_found && active.line_count > 26_000 && len(content) > 10*1024*1024,
+		"10 MiB fixture should expose real logical-line metadata without a whole-document frontend copy")
+	if !active_found { return }
+	visible := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=active.id,
+		start_line=0,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		allocator=context.allocator,
+	)
+	testing.expect(t, visible.ok && visible.visible_window_owned, "generic Caliber resource should supply a bounded source window")
+	if !visible.visible_window_owned { bridge.backend_command_result_destroy(&visible, context.allocator); return }
+	window, window_ok, window_message := editor_window_from_visible(&visible.visible_window, context.allocator)
+	testing.expect(t, window_ok, window_message)
+	if window_ok {
+		app.editor_window = window
+		app.editor_window_ready = true
+		testing.expect(t, len(app.editor_window.source) <= int(bridge.MAX_VISIBLE_BYTES),
+			"the frontend must retain only the bounded Caliber source window, never the full document")
+	}
+	bridge.backend_command_result_destroy(&visible, context.allocator)
+	if !window_ok { return }
+
+	rt = alicorn.new_runtime(alicorn.Rect{0, 0, 1100, 720})
+	_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
+	realized_rows := 0
+	first_row_found := false
+	last_fixture_row_found := false
+	for node_id in rt.order {
+		node, node_found := rt.nodes[node_id]
+		if !node_found || !strings.has_prefix(node.key, "scratchpad-line:") { continue }
+		realized_rows += 1
+		if node.font != .Monospace { testing.expect(t, false, "source lines should use Alicorn's monospace/Runa role") }
+	if strings.contains(node.text, "line-00000") { first_row_found = true }
+	if strings.contains(node.text, "line-26149") { last_fixture_row_found = true }
+	}
+	testing.expect(t, realized_rows > 0 && realized_rows < len(app.editor_window.lines),
+		"the editor should emit only the virtualized viewport rows, not all document lines")
+	testing.expect(t, first_row_found && !last_fixture_row_found,
+		"the first viewport should contain real source and omit offscreen logical rows")
+}
+
 @(test)
 test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc(t: ^testing.T) {
+	sync.mutex_lock(&backend_integration_test_mutex)
+	defer sync.mutex_unlock(&backend_integration_test_mutex)
 	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-tree-*", context.temp_allocator)
 	if workspace_error != nil {
 		testing.expect(t, false, "could not create a temporary workspace for the Alicorn tree test")

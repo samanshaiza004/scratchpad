@@ -30,6 +30,9 @@ func TestPresentationContractKeepsLifecycleSemantic(t *testing.T) {
 	if state.Documents[0].Path != first || state.Documents[0].Status != StatusSynced || state.Documents[0].Language != "markdown" {
 		t.Fatalf("initial document state = %+v", state.Documents[0])
 	}
+	if state.Documents[0].LineCount != 1 {
+		t.Fatalf("initial document line count = %d, want 1", state.Documents[0].LineCount)
+	}
 
 	firstID := state.Documents[0].ID
 	if err := client.Dispatch(PresentationCommand{Kind: PresentationOpenPath, Path: second}); err != nil {
