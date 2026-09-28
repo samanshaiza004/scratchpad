@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:mem"
 import "core:strings"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
@@ -8,6 +9,7 @@ import bridge "./bridge"
 EDITOR_ROW_HEIGHT :: f32(22)
 EDITOR_TAB_WIDTH :: 4
 EDITOR_LONG_LINE_CHUNK_BYTES :: u64(16 * 1024)
+EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES :: int(bridge.MAX_VISIBLE_BYTES * 2)
 
 editor_logical_row_style :: proc() -> alicorn.Layout_Style {
 	return alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT, gap=8, align=.Center, clip=true)
@@ -49,6 +51,18 @@ Editor_View_State :: struct {
 	preferred_x:       f32,
 	preferred_x_set:   bool,
 	dragging_selection: bool,
+	authoritative_revision: u64,
+	optimistic_window: Editor_Window,
+	optimistic_window_ready: bool,
+	optimistic_pending_edits: u64,
+}
+
+Editor_Edit_Intent :: struct {
+	sequence:    u64,
+	document_id: string,
+	start_byte:  u64,
+	end_byte:    u64,
+	replacement: []u8,
 }
 
 Editor_Row_Target :: struct {
@@ -232,15 +246,28 @@ editor_line_number_gutter_width :: proc(line_count: u64) -> f32 {
 
 editor_view_remove :: proc(views: ^[dynamic]Editor_View_State, index: int, allocator := context.allocator) {
 	if views == nil || index < 0 || index >= len(views) { return }
+	if views[index].optimistic_window_ready {
+		editor_window_destroy(&views[index].optimistic_window, allocator)
+	}
 	delete(views[index].document_id, allocator)
 	ordered_remove(views, index)
 }
 
 editor_views_destroy :: proc(views: ^[dynamic]Editor_View_State, allocator := context.allocator) {
 	if views == nil { return }
-	for &view in views { if len(view.document_id) > 0 { delete(view.document_id, allocator) } }
+	for &view in views {
+		if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window, allocator) }
+		if len(view.document_id) > 0 { delete(view.document_id, allocator) }
+	}
 	delete(views^)
 	views^ = {}
+}
+
+editor_edit_intent_destroy :: proc(intent: ^Editor_Edit_Intent, allocator := context.allocator) {
+	if intent == nil { return }
+	if len(intent.document_id) > 0 { delete(intent.document_id, allocator) }
+	delete(intent.replacement, allocator)
+	intent^ = {}
 }
 
 editor_hex_digit :: proc(value: u8) -> u8 {
@@ -429,6 +456,115 @@ editor_window_destroy :: proc(window: ^Editor_Window, allocator := context.alloc
 	}
 	delete(window.lines)
 	window^ = {}
+}
+
+editor_window_clone :: proc(source: ^Editor_Window, allocator := context.allocator) -> (window: Editor_Window, ok: bool, message: string) {
+	if source == nil || source.document_id == "" {
+		return {}, false, "editor window is unavailable for optimistic editing"
+	}
+	bytes, allocation_error := make([]u8, len(source.source), allocator=allocator)
+	if allocation_error != nil { return {}, false, "could not retain the bounded optimistic source window" }
+	if len(bytes) > 0 { mem.copy(rawptr(&bytes[0]), rawptr(&source.source[0]), len(bytes)) }
+	visible := bridge.Visible_Window{
+		document_id=source.document_id,
+		application_rev=source.application_rev,
+		editor_revision=source.editor_revision,
+		start_line=source.start_line,
+		end_line=source.end_line,
+		start_byte=source.start_byte,
+		line_byte_length=source.line_byte_length,
+		truncated=source.truncated,
+		source=bytes,
+	}
+	return editor_window_from_visible(&visible, allocator)
+}
+
+editor_view_window :: proc(
+	view: ^Editor_View_State,
+	base: ^Editor_Window,
+	base_ready: bool,
+	document_id: string,
+	editor_revision: u64,
+	allocator := context.allocator,
+) -> (window: ^Editor_Window, matches: bool) {
+	if view != nil && view.optimistic_window_ready {
+		if view.optimistic_window.document_id == document_id &&
+		   (view.optimistic_pending_edits > 0 || view.optimistic_window.editor_revision == editor_revision) {
+			return &view.optimistic_window, true
+		}
+		editor_window_destroy(&view.optimistic_window, allocator)
+		view.optimistic_window_ready = false
+		view.optimistic_pending_edits = 0
+		view.authoritative_revision = editor_revision
+	}
+	if base_ready && base != nil && base.document_id == document_id && base.editor_revision == editor_revision {
+		if view != nil { view.authoritative_revision = editor_revision }
+		return base, true
+	}
+	return nil, false
+}
+
+// editor_window_replace_bytes updates only the already-bounded source window.
+// The first optimistic-edit slice intentionally stays on one logical line;
+// newline policy and multi-line selection replacement are later edit work.
+editor_window_replace_bytes :: proc(
+	source: ^Editor_Window,
+	start_byte, end_byte: u64,
+	replacement: []u8,
+	allocator := context.allocator,
+) -> (window: Editor_Window, ok: bool, message: string) {
+	if source == nil || end_byte < start_byte || start_byte < source.start_byte {
+		return {}, false, "edit range is outside the bounded source window"
+	}
+	window_end := source.start_byte + u64(len(source.source))
+	if end_byte > window_end {
+		return {}, false, "edit range crosses the loaded source-window boundary"
+	}
+	for value in replacement {
+		if value == '\n' || value == '\r' {
+			return {}, false, "committed line breaks are not part of the initial text-input slice"
+		}
+	}
+	new_length := len(source.source)-int(end_byte-start_byte)+len(replacement)
+	if new_length > EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES {
+		return {}, false, "optimistic source window exceeded its bounded capacity"
+	}
+	bytes, allocation_error := make([]u8, new_length, allocator=allocator)
+	if allocation_error != nil { return {}, false, "could not allocate the optimistic source projection" }
+	local_start := int(start_byte-source.start_byte)
+	local_end := int(end_byte-source.start_byte)
+	if local_start > 0 { mem.copy(rawptr(&bytes[0]), rawptr(&source.source[0]), local_start) }
+	if len(replacement) > 0 {
+		mem.copy(rawptr(&bytes[local_start]), rawptr(&replacement[0]), len(replacement))
+	}
+	suffix_length := len(source.source)-local_end
+	if suffix_length > 0 {
+		suffix_start := local_start+len(replacement)
+		mem.copy(rawptr(&bytes[suffix_start]), rawptr(&source.source[local_end]), suffix_length)
+	}
+	line_byte_length := source.line_byte_length
+	if source.truncated && source.end_line == source.start_line+1 {
+		removed := end_byte-start_byte
+		if u64(len(replacement)) >= removed {
+			line_byte_length += u64(len(replacement))-removed
+		} else {
+			line_byte_length -= removed-u64(len(replacement))
+		}
+	}
+	visible := bridge.Visible_Window{
+		document_id=source.document_id,
+		application_rev=source.application_rev,
+		editor_revision=source.editor_revision,
+		start_line=source.start_line,
+		end_line=source.end_line,
+		start_byte=source.start_byte,
+		line_byte_length=line_byte_length,
+		truncated=source.truncated,
+		source=bytes,
+	}
+	window, ok, message = editor_window_from_visible(&visible, allocator)
+	if !ok && len(visible.source) > 0 { delete(visible.source, allocator) }
+	return
 }
 
 editor_window_from_visible :: proc(source: ^bridge.Visible_Window, allocator := context.allocator) -> (window: Editor_Window, ok: bool, message: string) {

@@ -188,6 +188,15 @@ Backend_Response :: struct {
 	directory_listing: Directory_Listing `json:"directory_listing"`,
 	close_decision:   Close_Decision    `json:"close_decision"`,
 	resource:         Resource_Descriptor `json:"resource"`,
+	edit:             Edit_Ack           `json:"edit"`,
+}
+
+Edit_Ack :: struct {
+	document_id:     string `json:"document_id"`,
+	editor_revision: u64    `json:"editor_revision"`,
+	start_byte:      u64    `json:"start_byte"`,
+	old_end_byte:    u64    `json:"old_end_byte"`,
+	new_end_byte:    u64    `json:"new_end_byte"`,
 }
 
 Directory_Listing :: struct {
@@ -756,6 +765,9 @@ backend_copy_visible_resource :: proc(
 
 backend_consume_wake :: proc(backend: ^Backend, allocator := context.allocator) -> (changed: bool, ok: bool, message: string) {
 	if backend == nil || !backend.started { return false, false, "backend is not running" }
+	sync.mutex_lock(&backend.command_mutex)
+	defer sync.mutex_unlock(&backend.command_mutex)
+	if !backend.started { return false, false, "backend is not running" }
 	// Clear before reading. A concurrent publication then appears in this read
 	// or queues another wake, so no latest-value update can be lost.
 	wake_coalescer_consume(&backend.waiter.pending)
@@ -765,6 +777,8 @@ backend_consume_wake :: proc(backend: ^Backend, allocator := context.allocator) 
 Backend_Command_Result :: struct {
 	ok:             bool,
 	state_changed:  bool,
+	revision:       u64,
+	edit:           Edit_Ack,
 	code:           string,
 	message:        string,
 	directory_listing: Directory_Listing,
@@ -774,6 +788,7 @@ Backend_Command_Result :: struct {
 	message_owned:  bool,
 	directory_listing_owned: bool,
 	close_id_owned: bool,
+	edit_document_id_owned: bool,
 	visible_window_owned: bool,
 }
 
@@ -794,6 +809,7 @@ backend_command :: proc(
 	end_byte: u64 = 0,
 	replacement: []int = {},
 	based_on_revision: u64 = 0,
+	read_latest_after := true,
 	allocator := context.allocator,
 ) -> (result: Backend_Command_Result) {
 	if backend == nil || !backend.started || backend.api == nil || backend.caliber_context == nil {
@@ -849,6 +865,16 @@ backend_command :: proc(
 		return Backend_Command_Result{code="response_mismatch", message="Scratchpad command response had a mismatched request ID"}
 	}
 	result.ok = response.ok
+	result.revision = response.revision
+	if response.ok && command == "replace_document" {
+		if response.edit.document_id == "" || response.edit.editor_revision == 0 {
+			backend_response_destroy(&response, allocator)
+			return Backend_Command_Result{code="malformed_edit_ack", message="Scratchpad returned a successful edit without a valid revision acknowledgement"}
+		}
+		result.edit = response.edit
+		result.edit.document_id, _ = strings.clone(response.edit.document_id, allocator)
+		result.edit_document_id_owned = len(result.edit.document_id) > 0
+	}
 	code_copy, code_clone_err := strings.clone(response.outcome.code, allocator)
 	result.code = code_copy
 	result.code_owned = code_clone_err == nil && len(result.code) > 0
@@ -887,6 +913,7 @@ backend_command :: proc(
 		return result
 	}
 	if command == "read_visible_lines" { return result }
+	if !read_latest_after { return result }
 	changed, read_ok, read_message := backend_read_latest(backend, allocator)
 	if !read_ok {
 		result.ok = false
@@ -909,6 +936,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.message_owned { delete(result.message, allocator) }
 	if result.directory_listing_owned { directory_listing_destroy(&result.directory_listing, allocator) }
 	if result.close_id_owned { delete(result.close_decision.document_id, allocator) }
+	if result.edit_document_id_owned { delete(result.edit.document_id, allocator) }
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	result^ = {}
 }
@@ -1183,6 +1211,247 @@ visible_window_lane_stop :: proc(lane: ^Visible_Window_Lane) -> bool {
 	return !lane.active && !lane.pending
 }
 
+Editor_Edit_Request :: struct {
+	sequence:          u64,
+	document_id:       string,
+	based_on_revision: u64,
+	editor_revision:   u64,
+	start_byte:        u64,
+	end_byte:          u64,
+	replacement:       []u8,
+}
+
+Editor_Edit_Lane_Result :: struct {
+	sequence:    u64,
+	document_id: string,
+	command:     Backend_Command_Result,
+}
+
+// One request is submitted at a time. Scratchpad's Alicorn app retains the
+// local keystroke queue and submits its head only after this lane's ack arrives.
+Editor_Edit_Lane :: struct {
+	backend:             ^Backend,
+	wake:                Application_Wake_Proc,
+	wake_data:           rawptr,
+	allocator:           mem.Allocator,
+	mutex:               sync.Mutex,
+	sema:                sync.Sema,
+	completion_sema:     sync.Sema,
+	thread:              ^thread.Thread,
+	stopping:            u32,
+	pending:             bool,
+	pending_request:     Editor_Edit_Request,
+	active:              bool,
+	completed:           Editor_Edit_Lane_Result,
+	completed_ready:     bool,
+	test_dispatch_gate:  ^sync.Sema,
+}
+
+editor_edit_request_destroy :: proc(request: ^Editor_Edit_Request, allocator: mem.Allocator) {
+	if request == nil { return }
+	if len(request.document_id) > 0 { delete(request.document_id, allocator) }
+	delete(request.replacement, allocator)
+	request^ = {}
+}
+
+editor_edit_lane_result_destroy :: proc(result: ^Editor_Edit_Lane_Result, allocator: mem.Allocator) {
+	if result == nil { return }
+	if len(result.document_id) > 0 { delete(result.document_id, allocator) }
+	backend_command_result_destroy(&result.command, allocator)
+	result^ = {}
+}
+
+editor_edit_lane_worker :: proc(t: ^thread.Thread) {
+	lane := cast(^Editor_Edit_Lane)t.data
+	for {
+		sync.sema_wait(&lane.sema)
+		sync.mutex_lock(&lane.mutex)
+		if sync.atomic_load(&lane.stopping) != 0 && !lane.pending {
+			sync.mutex_unlock(&lane.mutex)
+			break
+		}
+		if !lane.pending {
+			sync.mutex_unlock(&lane.mutex)
+			continue
+		}
+		request := lane.pending_request
+		lane.pending_request = {}
+		lane.pending = false
+		lane.active = true
+		sync.mutex_unlock(&lane.mutex)
+
+		if lane.test_dispatch_gate != nil { sync.sema_wait(lane.test_dispatch_gate) }
+		replacement, allocation_error := make([]int, len(request.replacement), allocator=lane.allocator)
+		result: Backend_Command_Result
+		if allocation_error != nil {
+			result = Backend_Command_Result{code="allocation_failed", message="could not encode the bounded optimistic edit"}
+		} else {
+			for value, index in request.replacement { replacement[index] = int(value) }
+			result = backend_command(
+				lane.backend,
+				"replace_document",
+				document_id=request.document_id,
+				editor_revision=request.editor_revision,
+				start_byte=request.start_byte,
+				end_byte=request.end_byte,
+				replacement=replacement,
+				based_on_revision=request.based_on_revision,
+				read_latest_after=false,
+				allocator=lane.allocator,
+			)
+			delete(replacement, lane.allocator)
+		}
+
+		sync.mutex_lock(&lane.mutex)
+		lane.completed = Editor_Edit_Lane_Result{
+			sequence=request.sequence,
+			document_id=request.document_id,
+			command=result,
+		}
+		request.document_id = ""
+		delete(request.replacement, lane.allocator)
+		lane.completed_ready = true
+		lane.active = false
+		wake := lane.wake
+		wake_data := lane.wake_data
+		sync.mutex_unlock(&lane.mutex)
+		sync.sema_post(&lane.completion_sema)
+		if wake != nil { wake(wake_data) }
+		sync.mutex_lock(&lane.mutex)
+		should_stop := sync.atomic_load(&lane.stopping) != 0 && !lane.pending
+		sync.mutex_unlock(&lane.mutex)
+		if should_stop { break }
+	}
+}
+
+editor_edit_lane_start :: proc(
+	lane: ^Editor_Edit_Lane,
+	backend: ^Backend,
+	wake: Application_Wake_Proc,
+	wake_data: rawptr,
+	allocator := context.allocator,
+	test_dispatch_gate: ^sync.Sema = nil,
+) -> bool {
+	if lane == nil || backend == nil || !backend.started || lane.thread != nil { return false }
+	lane.backend = backend
+	lane.wake = wake
+	lane.wake_data = wake_data
+	lane.allocator = allocator
+	lane.stopping = 0
+	lane.pending = false
+	lane.pending_request = {}
+	lane.active = false
+	lane.completed_ready = false
+	lane.completed = {}
+	lane.test_dispatch_gate = test_dispatch_gate
+	lane.sema = {}
+	lane.completion_sema = {}
+	lane.thread = thread.create(editor_edit_lane_worker, name="Scratchpad optimistic editor edit lane")
+	if lane.thread == nil { return false }
+	lane.thread.data = rawptr(lane)
+	thread.start(lane.thread)
+	return true
+}
+
+editor_edit_lane_submit :: proc(
+	lane: ^Editor_Edit_Lane,
+	sequence: u64,
+	document_id: string,
+	based_on_revision, editor_revision, start_byte, end_byte: u64,
+	replacement: []u8,
+) -> (accepted: bool, message: string) {
+	if lane == nil || lane.thread == nil || len(document_id) == 0 || sequence == 0 {
+		return false, "editor edit lane is not running or request identity is invalid"
+	}
+	if end_byte < start_byte || len(replacement) > 64*1024 {
+		return false, "editor edit request is invalid or exceeds the bounded payload limit"
+	}
+	if sync.atomic_load(&lane.stopping) != 0 { return false, "editor edit lane is stopping" }
+	sync.mutex_lock(&lane.mutex)
+	defer sync.mutex_unlock(&lane.mutex)
+	if sync.atomic_load(&lane.stopping) != 0 || lane.pending || lane.active || lane.completed_ready {
+		return false, "editor edit lane is not ready for another in-flight request"
+	}
+	owned_id, id_error := strings.clone(document_id, lane.allocator)
+	if id_error != nil { return false, "could not retain editor edit document identity" }
+	owned_bytes, bytes_error := make([]u8, len(replacement), allocator=lane.allocator)
+	if bytes_error != nil {
+		delete(owned_id, lane.allocator)
+		return false, "could not retain editor edit bytes"
+	}
+	if len(replacement) > 0 { copy(owned_bytes, replacement) }
+	lane.pending_request = Editor_Edit_Request{
+		sequence=sequence,
+		document_id=owned_id,
+		based_on_revision=based_on_revision,
+		editor_revision=editor_revision,
+		start_byte=start_byte,
+		end_byte=end_byte,
+		replacement=owned_bytes,
+	}
+	lane.pending = true
+	sync.sema_post(&lane.sema)
+	return true, ""
+}
+
+editor_edit_lane_is_active :: proc(lane: ^Editor_Edit_Lane) -> bool {
+	if lane == nil || lane.thread == nil { return false }
+	sync.mutex_lock(&lane.mutex)
+	active := lane.active || lane.pending
+	sync.mutex_unlock(&lane.mutex)
+	return active
+}
+
+editor_edit_lane_can_submit :: proc(lane: ^Editor_Edit_Lane) -> bool {
+	if lane == nil || lane.thread == nil || sync.atomic_load(&lane.stopping) != 0 { return false }
+	sync.mutex_lock(&lane.mutex)
+	ready := !lane.active && !lane.pending && !lane.completed_ready
+	sync.mutex_unlock(&lane.mutex)
+	return ready
+}
+
+editor_edit_lane_take :: proc(lane: ^Editor_Edit_Lane) -> (result: Editor_Edit_Lane_Result, found: bool) {
+	if lane == nil { return {}, false }
+	sync.mutex_lock(&lane.mutex)
+	if !lane.completed_ready {
+		sync.mutex_unlock(&lane.mutex)
+		return {}, false
+	}
+	result = lane.completed
+	lane.completed = {}
+	lane.completed_ready = false
+	sync.mutex_unlock(&lane.mutex)
+	return result, true
+}
+
+editor_edit_lane_wait_take :: proc(lane: ^Editor_Edit_Lane) -> (result: Editor_Edit_Lane_Result, found: bool) {
+	for {
+		result, found = editor_edit_lane_take(lane)
+		if found || lane == nil || lane.thread == nil { return }
+		sync.sema_wait(&lane.completion_sema)
+	}
+}
+
+editor_edit_lane_stop :: proc(lane: ^Editor_Edit_Lane) -> bool {
+	if lane == nil || lane.thread == nil { return true }
+	sync.mutex_lock(&lane.mutex)
+	sync.atomic_store(&lane.stopping, 1)
+	sync.mutex_unlock(&lane.mutex)
+	sync.sema_post(&lane.sema)
+	thread.join(lane.thread)
+	thread.destroy(lane.thread)
+	lane.thread = nil
+	editor_edit_lane_result_destroy(&lane.completed, lane.allocator)
+	lane.completed_ready = false
+	if lane.pending { editor_edit_request_destroy(&lane.pending_request, lane.allocator) }
+	lane.pending = false
+	lane.backend = nil
+	lane.wake = nil
+	lane.wake_data = nil
+	lane.test_dispatch_gate = nil
+	return !lane.active && !lane.pending
+}
+
 directory_listing_clone :: proc(source: Directory_Listing, allocator: mem.Allocator) -> (copy: Directory_Listing, ok: bool) {
 	copy.limit = source.limit
 	copy.truncated = source.truncated
@@ -1218,6 +1487,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.outcome.message, allocator)
 	delete(response.close_decision.document_id, allocator)
 	delete(response.resource.document_id, allocator)
+	delete(response.edit.document_id, allocator)
 	directory_listing_destroy(&response.directory_listing, allocator)
 	response^ = {}
 }

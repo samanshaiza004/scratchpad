@@ -41,6 +41,9 @@ Tree_Row :: struct {
 App :: struct {
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
+	editor_edit_lane:       bridge.Editor_Edit_Lane,
+	editor_edits:           [dynamic]Editor_Edit_Intent,
+	editor_edit_sequence:   u64,
 	editor_views:           [dynamic]Editor_View_State,
 	editor_row_targets:     [dynamic]Editor_Row_Target,
 	editor_window:          Editor_Window,
@@ -126,25 +129,25 @@ build_app :: proc(
 
 	if app.error_message != "" {
 		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.Color{0.28, 0.11, 0.12, 1})
-		alicorn.text(&ui, "Scratchpad backend could not be loaded.")
-		alicorn.text(&ui, "Place the backend library beside scratchpad-alicorn, or set SCRATCHPAD_BACKEND_LIBRARY.")
+		alicorn.text(&ui, "Scratchpad needs attention.")
 		alicorn.text(&ui, app.error_message)
 		alicorn.container_end(&ui)
 	}
 
 	if app.backend.started {
 		state := &app.backend.state
+		edits_pending := len(app.editor_edits) > 0
 		alicorn.container_begin(&ui, .Container, label="workbench-toolbar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-		if alicorn.button(&ui, "Open File…", key=alicorn.key_string("action-file-open"), style=alicorn.layout_style(.Row, width=130, height=34)) {
+		if alicorn.button(&ui, "Open File…", key=alicorn.key_string("action-file-open"), style=alicorn.layout_style(.Row, width=130, height=34), state=alicorn.Button_State{disabled=edits_pending}) {
 			dispatch_action(app, rt, ACTION_FILE_OPEN)
 		}
-		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("action-workspace-open"), style=alicorn.layout_style(.Row, width=140, height=34)) {
+		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("action-workspace-open"), style=alicorn.layout_style(.Row, width=140, height=34), state=alicorn.Button_State{disabled=edits_pending}) {
 			dispatch_action(app, rt, ACTION_WORKSPACE_OPEN)
 		}
-		if save_enabled := action_enabled(state, ACTION_FILE_SAVE); alicorn.button(&ui, "Save", key=alicorn.key_string("action-file-save"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!save_enabled}) {
+		if save_enabled := action_enabled(state, ACTION_FILE_SAVE); alicorn.button(&ui, "Save", key=alicorn.key_string("action-file-save"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!save_enabled || edits_pending}) {
 			dispatch_action(app, rt, ACTION_FILE_SAVE)
 		}
-		if close_enabled := action_enabled(state, ACTION_DOCUMENT_CLOSE); alicorn.button(&ui, "Close", key=alicorn.key_string("action-document-close"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!close_enabled}) {
+		if close_enabled := action_enabled(state, ACTION_DOCUMENT_CLOSE); alicorn.button(&ui, "Close", key=alicorn.key_string("action-document-close"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!close_enabled || edits_pending}) {
 			dispatch_action(app, rt, ACTION_DOCUMENT_CLOSE)
 		}
 		alicorn.container_end(&ui)
@@ -154,10 +157,10 @@ build_app :: proc(
 		alicorn.text(&ui, "FILES")
 		alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
 		alicorn.text(&ui, fmt.tprintf("%d open documents", len(state.documents)))
-		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("sidebar-open-folder"), style=alicorn.layout_style(.Row, height=34)) {
+		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("sidebar-open-folder"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=edits_pending}) {
 			dispatch_action(app, rt, ACTION_WORKSPACE_OPEN)
 		}
-		if alicorn.button(&ui, "Refresh Workspace", key=alicorn.key_string("sidebar-refresh"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=!action_enabled(state, ACTION_WORKSPACE_REFRESH)}) {
+		if alicorn.button(&ui, "Refresh Workspace", key=alicorn.key_string("sidebar-refresh"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=!action_enabled(state, ACTION_WORKSPACE_REFRESH) || edits_pending}) {
 			dispatch_action(app, rt, ACTION_WORKSPACE_REFRESH)
 		}
 		build_workspace_tree(app, &ui, rt)
@@ -170,10 +173,10 @@ build_app :: proc(
 			if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
 			if document.dirty { title = fmt.tprintf("%s •", title) }
 			selected := state.active == document.id
-			if alicorn.button(&ui, title, key=alicorn.key_string(fmt.tprintf("tab:%s", document.id)), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
+			if alicorn.button(&ui, title, key=alicorn.key_string(fmt.tprintf("tab:%s", document.id)), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected, disabled=edits_pending}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
 				select_document(app, rt, document.id)
 			}
-			if alicorn.button(&ui, "×", key=alicorn.key_string(fmt.tprintf("tab-close:%s", document.id)), style=alicorn.layout_style(.Row, width=30, height=32)) {
+			if alicorn.button(&ui, "×", key=alicorn.key_string(fmt.tprintf("tab-close:%s", document.id)), style=alicorn.layout_style(.Row, width=30, height=32), state=alicorn.Button_State{disabled=edits_pending}) {
 				request_close_document(app, rt, document.id)
 			}
 		}
@@ -256,27 +259,33 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		editor_view_mark_active(view)
 	}
 	alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
-	alicorn.text(ui, fmt.tprintf("%s  ·  %s  ·  %d lines  ·  revision %d", document_title(document.path), document.language, document.line_count, document.editor_revision))
+	heading := fmt.tprintf("%s  ·  %s  ·  %d lines  ·  revision %d", document_title(document.path), document.language, document.line_count, document.editor_revision)
+	if view.optimistic_pending_edits > 0 { heading = fmt.tprintf("%s  ·  %d edits pending", heading, view.optimistic_pending_edits) }
+	alicorn.text(ui, heading)
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
 
-	window_matches := app.editor_window_ready &&
-	                  app.editor_window.document_id == document.id &&
-	                  app.editor_window.editor_revision == document.editor_revision
+	window, window_matches := editor_view_window(
+		view,
+		&app.editor_window,
+		app.editor_window_ready,
+		document.id,
+		document.editor_revision,
+	)
 	if window_matches {
-		if line, found := editor_line_for_source(&app.editor_window, view.caret_byte); found {
+		if line, found := editor_line_for_source(window, view.caret_byte); found {
 			previous_caret := view.caret_byte
 			view.caret_byte = editor_normalize_source_position(line, view.caret_byte)
 			if view.selection_anchor == previous_caret { view.selection_anchor = view.caret_byte }
 		}
-		if line, found := editor_line_for_source(&app.editor_window, view.selection_anchor); found {
+		if line, found := editor_line_for_source(window, view.selection_anchor); found {
 			view.selection_anchor = editor_normalize_source_position(line, view.selection_anchor)
 		}
 	}
 	gutter_width := editor_line_number_gutter_width(document.line_count)
 	content_width := view.horizontal_extent
 	if window_matches {
-		measured_width := editor_window_content_width(&app.editor_window, 0, gutter_width)
+		measured_width := editor_window_content_width(window, 0, gutter_width)
 		content_width = editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
 	}
 	line_count := int(document.line_count)
@@ -312,11 +321,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	visible_start := u64(max(list.first, 0))
 	visible_end := u64(max(list.last, 0))
 	window_covers_view := window_matches &&
-	                      app.editor_window.start_line <= visible_start &&
-	                      app.editor_window.end_line >= visible_end
+	                      window.start_line <= visible_start &&
+	                      window.end_line >= visible_end
 	for position := list.first; position < list.last; position += 1 {
 		line_number := u64(position)
-		if line, found := editor_window_line(&app.editor_window, line_number); window_matches && found {
+		if line, found := editor_window_line(window, line_number); window_matches && found {
 			row_key := alicorn.key_string(fmt.tprintf("scratchpad-row:%s:%d", document.id, line.logical_line))
 			alicorn.container_begin(
 				ui,
@@ -375,17 +384,17 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	request_lines := min(remaining, bridge.MAX_VISIBLE_LINES)
 	if request_lines == 0 { request_lines = 1 }
 	request_anchor, long_line_chunk_needed := editor_long_line_next_anchor(
-		&app.editor_window,
+		window,
 		visible_start,
 		list.scroll.offset_x,
 		list.scroll.max_scroll_x,
 	)
 	if !window_matches { request_anchor = 0 }
 	if long_line_chunk_needed && window_matches {
-		request_start = app.editor_window.start_line
+		request_start = window.start_line
 		request_lines = 1
 	}
-	if document.line_count > 0 && (!window_covers_view || request_anchor > 0) {
+	if document.line_count > 0 && view.optimistic_pending_edits == 0 && (!window_covers_view || request_anchor > 0) {
 		generation, accepted, request_error := bridge.visible_window_lane_request(
 			&app.visible_window_lane,
 			document.id,
@@ -404,6 +413,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
 			app.editor_window_error, _ = strings.clone(request_error, context.allocator)
 		}
+	}
+	if len(app.editor_edits) > 0 && bridge.editor_edit_lane_can_submit(&app.editor_edit_lane) {
+		_, _ = editor_dispatch_next_edit(app)
 	}
 }
 
@@ -594,6 +606,11 @@ tree_set_focused_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row, ind
 
 tree_activate_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row) {
 	if app == nil || rt == nil { return }
+	if len(app.editor_edits) > 0 {
+		set_error(app, "Wait for committed text to be acknowledged before opening another document or folder.")
+		alicorn.invalidate_root(rt, "workspace navigation waits for pending editor edits")
+		return
+	}
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)
@@ -684,6 +701,18 @@ start_backend :: proc(app: ^App) {
 			set_error(app, "Could not start the bounded document-window worker.")
 			return
 		}
+		edit_lane_started := bridge.editor_edit_lane_start(
+			&app.editor_edit_lane,
+			&app.backend,
+			app.waker.wake,
+			app.waker.data,
+		)
+		if !edit_lane_started {
+			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
+			_, _ = bridge.backend_stop(&app.backend)
+			set_error(app, "Could not start the serial editor edit worker.")
+			return
+		}
 		set_error(app, "")
 		tree_sync_workspace(app)
 	}
@@ -694,6 +723,13 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	if !bridge.visible_window_lane_stop(&app.visible_window_lane) {
 		return false, "visible-window worker did not join cleanly"
 	}
+	if !editor_flush_pending_edits(app) {
+		return false, "pending editor edits did not drain cleanly"
+	}
+	if !bridge.editor_edit_lane_stop(&app.editor_edit_lane) {
+		return false, "editor edit worker did not join cleanly"
+	}
+	_, _, _ = bridge.backend_consume_wake(&app.backend)
 	return bridge.backend_stop(&app.backend)
 }
 
@@ -712,14 +748,16 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^App)state
 	if !app.backend.started { return }
 	app.smoke_wake_observed = true
-	changed, ok, message := bridge.backend_consume_wake(&app.backend)
-	if !ok { set_error(app, message); alicorn.invalidate_root(rt, "Scratchpad backend state read failed"); return }
-	if changed {
-		sync_runtime_actions(app, rt)
-		sync_menu_states(app)
-		tree_sync_workspace(app, rt)
-		editor_views_prune(app)
-		alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
+	if !bridge.editor_edit_lane_is_active(&app.editor_edit_lane) {
+		changed, ok, message := bridge.backend_consume_wake(&app.backend)
+		if !ok { set_error(app, message); alicorn.invalidate_root(rt, "Scratchpad backend state read failed"); return }
+		if changed {
+			sync_runtime_actions(app, rt)
+			sync_menu_states(app)
+			tree_sync_workspace(app, rt)
+			editor_views_prune(app)
+			alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
+		}
 	}
 	window_result, window_found := bridge.visible_window_lane_take(&app.visible_window_lane)
 	if window_found {
@@ -727,26 +765,33 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		active, active_found := find_document(&app.backend.state, app.backend.state.active)
 		if window_result.generation == app.editor_request_generation && window_result.window_owned && active_found &&
 		   window_result.window.document_id == active.id && window_result.window.editor_revision == active.editor_revision {
-			window, converted, conversion_error := editor_window_from_visible(&window_result.window)
-			if converted {
-				advancing_long_line := app.editor_window_ready &&
-				                       app.editor_window.document_id == window.document_id &&
-				                       app.editor_window.editor_revision == window.editor_revision &&
-				                       app.editor_window.start_line == window.start_line &&
-				                       window.start_byte > app.editor_window.start_byte &&
-				                       window.line_byte_length == app.editor_window.line_byte_length
-				editor_window_destroy(&app.editor_window)
-				app.editor_window = window
-				app.editor_window_ready = true
-				if advancing_long_line && app.editor_scroll_owner != 0 {
-					_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
+			view_index := editor_view_find(app.editor_views[:], active.id)
+			if view_index < 0 || app.editor_views[view_index].optimistic_pending_edits == 0 {
+				window, converted, conversion_error := editor_window_from_visible(&window_result.window)
+				if converted {
+					if view_index >= 0 && app.editor_views[view_index].optimistic_window_ready {
+						editor_window_destroy(&app.editor_views[view_index].optimistic_window)
+						app.editor_views[view_index].optimistic_window_ready = false
+					}
+					advancing_long_line := app.editor_window_ready &&
+					                       app.editor_window.document_id == window.document_id &&
+					                       app.editor_window.editor_revision == window.editor_revision &&
+					                       app.editor_window.start_line == window.start_line &&
+					                       window.start_byte > app.editor_window.start_byte &&
+					                       window.line_byte_length == app.editor_window.line_byte_length
+					editor_window_destroy(&app.editor_window)
+					app.editor_window = window
+					app.editor_window_ready = true
+					if advancing_long_line && app.editor_scroll_owner != 0 {
+						_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
+					}
+					if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+					app.editor_window_error = ""
+					installed = true
+				} else {
+					if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+					app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
 				}
-				if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
-				app.editor_window_error = ""
-				installed = true
-			} else {
-				if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
-				app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
 			}
 		} else if window_result.generation == app.editor_request_generation && window_result.error != "" {
 			if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
@@ -756,11 +801,23 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		_ = installed
 		alicorn.invalidate_root(rt, "Scratchpad bounded editor window completed")
 	}
+	edit_result, edit_found := bridge.editor_edit_lane_take(&app.editor_edit_lane)
+	if edit_found {
+		editor_handle_edit_result(app, rt, &edit_result)
+		bridge.editor_edit_lane_result_destroy(&edit_result, app.editor_edit_lane.allocator)
+		alicorn.invalidate_root(rt, "Scratchpad optimistic editor edit acknowledged")
+	}
 }
 
 application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.File_Dialog_Result) {
 	app := cast(^App)state
 	if result == nil { return }
+	if len(app.editor_edits) > 0 {
+		app.dialog_action = ""
+		set_error(app, "Wait for committed text to be acknowledged before opening another document.")
+		alicorn.invalidate_root(rt, "native dialog result deferred by pending editor edits")
+		return
+	}
 	if result.status == .Error {
 		app.dialog_action = ""
 		set_error(app, result.error)
@@ -795,6 +852,11 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || !app.backend.started { return }
+	if len(app.editor_edits) > 0 {
+		set_error(app, "Wait for committed text to be acknowledged before running another document command.")
+		alicorn.invalidate_root(rt, "Scratchpad command deferred by pending editor edits")
+		return
+	}
 	if !action_enabled(&app.backend.state, action_id) { return }
 	entry, found := find_action(&app.backend.state, action_id)
 	if !found { return }
@@ -895,7 +957,12 @@ editor_source_at_pointer :: proc(
 		return
 	}
 	document, found := find_document(&app.backend.state, app.backend.state.active)
-	if !found || !app.editor_window_ready || app.editor_window.document_id != document.id || app.editor_window.editor_revision != document.editor_revision { return }
+	if !found { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { return }
+	view := &app.editor_views[view_index]
+	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches { return }
 	// Choose the realized row containing Y. During a captured drag, clamp into
 	// the nearest realized row so leaving the viewport selects its visible edge
 	// rather than dropping the interaction; autoscroll is a later slice.
@@ -918,7 +985,7 @@ editor_source_at_pointer :: proc(
 		}
 	}
 	if best_distance == 1e30 || (!clamp_to_viewport && best_distance > EDITOR_ROW_HEIGHT) { return }
-	line, line_found := editor_window_line(&app.editor_window, best_target.logical_line)
+	line, line_found := editor_window_line(window, best_target.logical_line)
 	if !line_found { return }
 	position, hit := alicorn.text_node_hit_test(rt, best_target.node, hit_x, best_y)
 	if !hit { return }
@@ -991,10 +1058,12 @@ editor_text_key :: proc(
 	if app == nil || owner == 0 || owner != app.editor_scroll_owner || !app.backend.started { return false }
 	if event.control || event.alt || event.super { return false }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
-	if !found || !app.editor_window_ready || app.editor_window.document_id != document.id || app.editor_window.editor_revision != document.editor_revision { return false }
+	if !found { return false }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
+	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches { return false }
 	old_caret := view.caret_byte
 	old_affinity := view.caret_affinity
 	next_caret := old_caret
@@ -1017,14 +1086,14 @@ editor_text_key :: proc(
 			}
 		}
 	} else {
-		line, line_found := editor_line_for_source(&app.editor_window, old_caret)
+		line, line_found := editor_line_for_source(window, old_caret)
 		if !line_found { return false }
 		switch event.key {
 		case .Left, .Right:
 			direction := -1 if event.key == .Left else 1
 			if direction < 0 && old_caret == line.source_start {
-				for index := len(app.editor_window.lines)-1; index >= 0; index -= 1 {
-					candidate := &app.editor_window.lines[index]
+				for index := len(window.lines)-1; index >= 0; index -= 1 {
+					candidate := &window.lines[index]
 					if candidate.logical_line+1 == line.logical_line {
 						next_caret = candidate.source_end
 						next_affinity = .Trailing
@@ -1032,7 +1101,7 @@ editor_text_key :: proc(
 					}
 				}
 			} else if direction > 0 && old_caret == line.source_end {
-				for candidate in app.editor_window.lines {
+				for candidate in window.lines {
 					if candidate.logical_line == line.logical_line+1 {
 						next_caret = candidate.source_start
 						next_affinity = .Leading
@@ -1074,7 +1143,7 @@ editor_text_key :: proc(
 				last_line := document.line_count-1 if document.line_count > 0 else 0
 				target_line = min(current_line+step, last_line)
 			}
-			target, target_found := editor_window_line(&app.editor_window, target_line)
+			target, target_found := editor_window_line(window, target_line)
 			if !target_found { return true }
 			target_node := editor_row_node_for_line(app.editor_row_targets[:], target_line)
 			mapped_caret, mapped_affinity, moved := editor_source_at_visual_x(rt, target, target_node, view.preferred_x)
@@ -1094,7 +1163,7 @@ editor_text_key :: proc(
 	}
 	view.caret_byte = next_caret
 	view.caret_affinity = next_affinity
-	if target_line, target_found := editor_line_for_source(&app.editor_window, next_caret); target_found {
+	if target_line, target_found := editor_line_for_source(window, next_caret); target_found {
 		_ = alicorn.virtual_list_ensure_visible(rt, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
 		if text_node := editor_row_node_for_line(app.editor_row_targets[:], target_line.logical_line); text_node != 0 {
 			if geometry := alicorn.text_node_caret_geometry(rt, text_node, alicorn.Text_Position{byte=editor_source_to_display(target_line, next_caret), affinity=next_affinity}); geometry.valid {
@@ -1112,14 +1181,229 @@ editor_text_key :: proc(
 	return true
 }
 
+editor_pending_replacement_bytes :: proc(app: ^App) -> int {
+	if app == nil { return 0 }
+	count := 0
+	for edit in app.editor_edits { count += len(edit.replacement) }
+	return count
+}
+
+editor_remove_edit :: proc(app: ^App, index: int) {
+	if app == nil || index < 0 || index >= len(app.editor_edits) { return }
+	editor_edit_intent_destroy(&app.editor_edits[index])
+	ordered_remove(&app.editor_edits, index)
+}
+
+editor_discard_document_edits :: proc(app: ^App, document_id: string) {
+	if app == nil { return }
+	for index := len(app.editor_edits)-1; index >= 0; index -= 1 {
+		if app.editor_edits[index].document_id == document_id { editor_remove_edit(app, index) }
+	}
+	if view_index := editor_view_find(app.editor_views[:], document_id); view_index >= 0 {
+		view := &app.editor_views[view_index]
+		view.optimistic_pending_edits = 0
+		if view.optimistic_window_ready {
+			editor_window_destroy(&view.optimistic_window)
+			view.optimistic_window_ready = false
+		}
+		if document, found := find_document(&app.backend.state, document_id); found {
+			view.authoritative_revision = document.editor_revision
+		}
+	}
+	if app.editor_window_ready && app.editor_window.document_id == document_id {
+		if document, found := find_document(&app.backend.state, document_id); !found || document.editor_revision != app.editor_window.editor_revision {
+			editor_window_destroy(&app.editor_window)
+			app.editor_window_ready = false
+		}
+	}
+}
+
+editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string) {
+	if app == nil || len(app.editor_edits) == 0 { return true, "" }
+	if !app.backend.started || app.editor_edit_lane.thread == nil { return false, "serial editor edit worker is not running" }
+	if !bridge.editor_edit_lane_can_submit(&app.editor_edit_lane) { return true, "" }
+	edit := &app.editor_edits[0]
+	document, found := find_document(&app.backend.state, edit.document_id)
+	if !found {
+		missing_id, _ := strings.clone(edit.document_id, context.allocator)
+		editor_discard_document_edits(app, missing_id)
+		delete(missing_id, context.allocator)
+		return false, "the edited document is no longer open"
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, edit.document_id)
+	if !view_ok { return false, "could not retain the document's authoritative editor revision" }
+	view := &app.editor_views[view_index]
+	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
+	return bridge.editor_edit_lane_submit(
+		&app.editor_edit_lane,
+		edit.sequence,
+		edit.document_id,
+		app.backend.state.application_rev,
+		view.authoritative_revision,
+		edit.start_byte,
+		edit.end_byte,
+		edit.replacement,
+	)
+}
+
+editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Editor_Edit_Lane_Result) {
+	if app == nil || result == nil { return }
+	if len(app.editor_edits) == 0 {
+		set_error(app, "Scratchpad returned an editor acknowledgement that did not match the queued edit.")
+		return
+	}
+	if app.editor_edits[0].sequence != result.sequence {
+		failed_document, _ := strings.clone(app.editor_edits[0].document_id, context.allocator)
+		set_error(app, "Scratchpad returned an out-of-order editor acknowledgement; reloading authoritative text.")
+		editor_discard_document_edits(app, failed_document)
+		delete(failed_document, context.allocator)
+		editor_views_prune(app)
+		sync_menu_states(app)
+		_, _ = editor_dispatch_next_edit(app)
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad discarded edits after an out-of-order acknowledgement") }
+		return
+	}
+	intent := app.editor_edits[0]
+	if result.command.ok && result.command.edit.document_id == intent.document_id {
+		if view_index := editor_view_find(app.editor_views[:], intent.document_id); view_index >= 0 {
+			view := &app.editor_views[view_index]
+			if view.optimistic_pending_edits > 0 { view.optimistic_pending_edits -= 1 }
+			view.authoritative_revision = result.command.edit.editor_revision
+			if view.optimistic_pending_edits == 0 && view.optimistic_window_ready {
+				view.optimistic_window.editor_revision = result.command.edit.editor_revision
+				view.optimistic_window.application_rev = app.backend.state.application_rev
+			}
+		}
+		editor_remove_edit(app, 0)
+		sync_menu_states(app)
+		_, _ = editor_dispatch_next_edit(app)
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad accepted an optimistic document edit") }
+		return
+	}
+	failed_document, _ := strings.clone(intent.document_id, context.allocator)
+	message := result.command.message
+	if message == "" { message = result.command.code }
+	set_error(app, fmt.tprintf("Edit was not accepted; reloading authoritative text: %s", message))
+	editor_discard_document_edits(app, failed_document)
+	delete(failed_document, context.allocator)
+	editor_views_prune(app)
+	sync_menu_states(app)
+	_, _ = editor_dispatch_next_edit(app)
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad rejected an optimistic document edit") }
+}
+
+editor_flush_pending_edits :: proc(app: ^App) -> bool {
+	if app == nil { return false }
+	for len(app.editor_edits) > 0 {
+		result, found := bridge.editor_edit_lane_take(&app.editor_edit_lane)
+		if !found {
+			if !bridge.editor_edit_lane_is_active(&app.editor_edit_lane) {
+				accepted, _ := editor_dispatch_next_edit(app)
+				if !accepted && len(app.editor_edits) > 0 { return false }
+			}
+			result, found = bridge.editor_edit_lane_wait_take(&app.editor_edit_lane)
+		}
+		if !found { return false }
+		_, _, _ = bridge.backend_consume_wake(&app.backend)
+		editor_handle_edit_result(app, nil, &result)
+		bridge.editor_edit_lane_result_destroy(&result, app.editor_edit_lane.allocator)
+	}
+	return true
+}
+
+editor_text_input :: proc(
+	state: rawptr,
+	rt: ^alicorn.Runtime,
+	owner: alicorn.Node_ID,
+	event: host.Application_Text_Input_Event,
+) {
+	app := cast(^App)state
+	if app == nil || !app.backend.started || owner == 0 || owner != app.editor_scroll_owner || event.kind != .Commit || len(event.text) == 0 { return }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { set_error(app, "Could not retain the active document's optimistic editor view."); return }
+	view := &app.editor_views[view_index]
+	if view.selection_anchor != view.caret_byte {
+		set_error(app, "Selection replacement is not part of this initial committed-text slice.")
+		alicorn.invalidate_root(rt, "Scratchpad committed text requires a collapsed selection")
+		return
+	}
+	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches {
+		set_error(app, "The bounded source window is not ready for local text input.")
+		alicorn.invalidate_root(rt, "Scratchpad text input waited for a source window")
+		return
+	}
+	if editor_pending_replacement_bytes(app)+len(event.text) > int(bridge.MAX_VISIBLE_BYTES) {
+		set_error(app, "Pending local text input reached the bounded 64 KiB queue limit.")
+		alicorn.invalidate_root(rt, "Scratchpad optimistic edit queue is full")
+		return
+	}
+	replacement := transmute([]u8)event.text
+	new_window, replaced, replace_error := editor_window_replace_bytes(window, view.caret_byte, view.caret_byte, replacement)
+	if !replaced {
+		set_error(app, replace_error)
+		alicorn.invalidate_root(rt, "Scratchpad could not extend its bounded optimistic source window")
+		return
+	}
+	document_id, id_error := strings.clone(document.id, context.allocator)
+	if id_error != nil {
+		editor_window_destroy(&new_window)
+		set_error(app, "Could not retain the edit's document identity.")
+		return
+	}
+	replacement_copy, replacement_error := make([]u8, len(replacement), allocator=context.allocator)
+	if replacement_error != nil {
+		delete(document_id, context.allocator)
+		editor_window_destroy(&new_window)
+		set_error(app, "Could not retain committed text for the serial edit queue.")
+		return
+	}
+	if len(replacement) > 0 { mem.copy(rawptr(&replacement_copy[0]), rawptr(&replacement[0]), len(replacement)) }
+	app.editor_edit_sequence += 1
+	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
+	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
+	view.optimistic_window = new_window
+	view.optimistic_window_ready = true
+	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
+	view.optimistic_pending_edits += 1
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=app.editor_edit_sequence,
+		document_id=document_id,
+		start_byte=view.caret_byte,
+		end_byte=view.caret_byte,
+		replacement=replacement_copy,
+	})
+	view.caret_byte += u64(len(replacement))
+	view.selection_anchor = view.caret_byte
+	view.anchor_affinity = .Trailing
+	view.caret_affinity = .Trailing
+	view.preferred_x_set = false
+	sync_menu_states(app)
+	accepted, dispatch_error := editor_dispatch_next_edit(app)
+	if !accepted { set_error(app, dispatch_error) } else { set_error(app, "") }
+	alicorn.invalidate_root(rt, "Scratchpad committed text appeared optimistically")
+}
+
 request_close_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 	if document_id == "" { return }
+	if len(app.editor_edits) > 0 {
+		set_error(app, "Wait for committed text to be acknowledged before closing a document.")
+		alicorn.invalidate_root(rt, "document close waits for pending editor edits")
+		return
+	}
 	response := bridge.backend_command(&app.backend, "close_document", document_id=document_id)
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
 }
 
 close_after_save :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if len(app.editor_edits) > 0 {
+		set_error(app, "Wait for committed text to be acknowledged before saving and closing.")
+		alicorn.invalidate_root(rt, "dirty close waits for pending editor edits")
+		return
+	}
 	document_id, clone_err := strings.clone(app.close_document_id, context.allocator)
 	if clone_err != nil { set_error(app, "Could not retain the pending document identity."); return }
 	saved := bridge.backend_command(&app.backend, "save_document", document_id=document_id)
@@ -1137,6 +1421,11 @@ close_after_save :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 close_with_discard :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if len(app.editor_edits) > 0 {
+		set_error(app, "Wait for committed text to be acknowledged before closing a document.")
+		alicorn.invalidate_root(rt, "discard close waits for pending editor edits")
+		return
+	}
 	response := bridge.backend_command(&app.backend, "close_document", document_id=app.close_document_id, discard=true)
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
@@ -1175,6 +1464,11 @@ handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.B
 }
 
 select_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
+	if len(app.editor_edits) > 0 {
+		set_error(app, "Wait for committed text to be acknowledged before switching documents.")
+		alicorn.invalidate_root(rt, "document selection waits for pending editor edits")
+		return
+	}
 	response := bridge.backend_command(&app.backend, "select_document", document_id=document_id)
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
@@ -1213,17 +1507,21 @@ disable_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 sync_menu_states :: proc(app: ^App) {
+	edits_pending := len(app.editor_edits) > 0
 	for &item in app.file_items {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
+		if edits_pending { item.state.enabled = false }
 	}
 	for &item in app.workspace_items {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
+		if edits_pending { item.state.enabled = false }
 	}
 	for &item in app.document_items {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
+		if edits_pending { item.state.enabled = false }
 	}
 }
 
@@ -1259,7 +1557,8 @@ document_is_open :: proc(state: ^bridge.State_Envelope, id: string) -> bool {
 editor_views_prune :: proc(app: ^App) {
 	if app == nil { return }
 	for index := len(app.editor_views)-1; index >= 0; index -= 1 {
-		if !document_is_open(&app.backend.state, app.editor_views[index].document_id) {
+		if !document_is_open(&app.backend.state, app.editor_views[index].document_id) &&
+		   app.editor_views[index].optimistic_pending_edits == 0 {
 			editor_view_remove(&app.editor_views, index)
 		}
 	}
@@ -1322,7 +1621,7 @@ application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
 	if app.backend.started {
 		stopped, message := stop_backend(app)
-		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil
+		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil
 		if !stopped { fmt.eprintln("Scratchpad backend shutdown error:", message) }
 	} else {
 		app.smoke_shutdown = true
@@ -1336,6 +1635,9 @@ application_stop :: proc(state: rawptr) {
 	editor_views_destroy(&app.editor_views)
 	delete(app.editor_row_targets)
 	app.editor_row_targets = {}
+	for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(app, index) }
+	delete(app.editor_edits)
+	app.editor_edits = {}
 	if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 	app.editor_presented_document_id = ""
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
@@ -1347,6 +1649,7 @@ main :: proc() {
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
 	init_menus(&app)
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
@@ -1361,6 +1664,7 @@ main :: proc() {
 		on_key=application_key,
 		on_pointer=editor_pointer,
 		on_text_key=editor_text_key,
+		on_text_input=editor_text_input,
 		on_services=application_services,
 		on_start=application_start,
 		on_dialog=application_dialog,

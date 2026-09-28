@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:time"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
@@ -729,4 +730,179 @@ tree_test_cleanup :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) {
 	tree_clear_focused_path(app)
 	if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
 	alicorn.destroy_runtime(rt)
+}
+
+Editor_Edit_Test_Signal :: struct {
+	sema: sync.Sema,
+}
+
+editor_edit_test_wake :: proc(data: rawptr) {
+	if data == nil { return }
+	signal := cast(^Editor_Edit_Test_Signal)data
+	sync.sema_post(&signal.sema)
+}
+
+@(test)
+test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc(t: ^testing.T) {
+	sync.mutex_lock(&backend_integration_test_mutex)
+	defer sync.mutex_unlock(&backend_integration_test_mutex)
+	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-edit-*", context.temp_allocator)
+	if workspace_error != nil {
+		testing.expect(t, false, "could not create a temporary workspace for the optimistic edit test")
+		return
+	}
+	defer _ = os.remove_all(workspace)
+	path := fmt.tprintf("%s/typing.txt", workspace)
+	if write_error := os.write_entire_file_from_string(path, "hello world"); write_error != nil {
+		testing.expect(t, false, "could not create the committed-text source fixture")
+		return
+	}
+	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
+	if !found_library { testing.expect(t, false, "optimistic editor test requires the staged shared backend"); return }
+	defer delete(backend_library, context.temp_allocator)
+
+	app: App
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
+	testing.expect(t, loaded, fmt.tprintf("shared backend should load for optimistic editor test: %s", load_message))
+	if !loaded { return }
+	signal: Editor_Edit_Test_Signal
+	started, start_message := bridge.backend_start(&app.backend, workspace, editor_edit_test_wake, rawptr(&signal), context.allocator)
+	testing.expect(t, started, fmt.tprintf("shared backend should start for optimistic editor test: %s", start_message))
+	if !started { return }
+	gate: sync.Sema
+	lane_started := bridge.editor_edit_lane_start(
+		&app.editor_edit_lane,
+		&app.backend,
+		editor_edit_test_wake,
+		rawptr(&signal),
+		context.allocator,
+		&gate,
+	)
+	testing.expect(t, lane_started, "one serial editor edit worker should start")
+	if !lane_started { _, _ = bridge.backend_stop(&app.backend, context.allocator); return }
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
+	defer {
+		if app.backend.started {
+			_ = editor_flush_pending_edits(&app)
+			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
+			_, _ = bridge.backend_stop(&app.backend, context.allocator)
+		}
+		editor_window_destroy(&app.editor_window, context.allocator)
+		editor_views_destroy(&app.editor_views, context.allocator)
+		tree_clear_directories(&app)
+		tree_clear_focused_path(&app)
+		if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		delete(app.editor_row_targets)
+		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
+		if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	opened := bridge.backend_command(&app.backend, "open_path", path=path, allocator=context.temp_allocator)
+	testing.expect(t, opened.ok && len(app.backend.state.documents) == 1, "Go should open the real source document before editing")
+	bridge.backend_command_result_destroy(&opened, context.temp_allocator)
+	document, document_found := find_document(&app.backend.state, app.backend.state.active)
+	if !document_found { testing.expect(t, false, "opened source document should have authoritative state"); return }
+	base_editor_revision := document.editor_revision
+	base_application_revision := app.backend.state.application_rev
+	visible := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=document.id,
+		start_line=0,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		allocator=context.allocator,
+	)
+	testing.expect(t, visible.ok && visible.visible_window_owned, "the initial source should arrive through the existing bounded window resource")
+	if !visible.visible_window_owned { bridge.backend_command_result_destroy(&visible, context.allocator); return }
+	window, window_ok, window_error := editor_window_from_visible(&visible.visible_window, context.allocator)
+	app.editor_window = window
+	app.editor_window_ready = window_ok
+	bridge.backend_command_result_destroy(&visible, context.allocator)
+	testing.expect(t, window_ok, window_error)
+	if !window_ok { return }
+	if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) ||
+	   !alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA) {
+		testing.expect(t, false, "optimistic editor test should load the bundled UI and monospace fonts")
+		return
+	}
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	testing.expect(t, view_ok && app.editor_scroll_owner != 0, "the real document build should create a durable editor owner")
+	if !view_ok { return }
+	view := &app.editor_views[view_index]
+	view.caret_byte = 9 // hello wor|ld
+	view.selection_anchor = view.caret_byte
+	_ = alicorn.focus(&rt, app.editor_scroll_owner)
+	commits := [7]string{"x", "a", "b", "c", "d", "e", "f"}
+	for text in commits {
+		editor_text_input(
+			rawptr(&app),
+			&rt,
+			app.editor_scroll_owner,
+			host.Application_Text_Input_Event{kind=.Commit, text=text},
+		)
+	}
+	testing.expect(t, bridge.editor_edit_lane_is_active(&app.editor_edit_lane) && len(app.editor_edits) == 7,
+		"the first request should be held in flight while later committed characters accumulate locally")
+	testing.expect(t, view.optimistic_window_ready && string(view.optimistic_window.source) == "hello worxabcdefld",
+		"committed text should update the bounded local source projection and caret before the backend can acknowledge it")
+	testing.expect(t, view.caret_byte == 16 && view.optimistic_pending_edits == 7,
+		"each committed character should advance the local caret and enter the serial queue")
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	optimistic_text_rendered := false
+	for node_id in rt.order {
+		if node, found := rt.nodes[node_id]; found && node.key == fmt.tprintf("scratchpad-line:%s:0", document.id) {
+			optimistic_text_rendered = node.text == "hello worxabcdefld"
+		}
+	}
+	testing.expect(t, optimistic_text_rendered,
+		"the rebuilt Alicorn description should visibly contain all committed characters before the backend lane is released")
+	state_while_held, state_held_ok, state_held_error := bridge.backend_read_latest(&app.backend, context.temp_allocator)
+	testing.expect(t, state_held_ok && !state_while_held && app.backend.state.application_rev == base_application_revision,
+		fmt.tprintf("the held worker must not mutate or publish backend state before its dispatch gate opens: %s", state_held_error))
+	canonical_before_ack := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=document.id,
+		start_line=0,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		allocator=context.temp_allocator,
+	)
+	testing.expect(t, canonical_before_ack.ok && string(canonical_before_ack.visible_window.source) == "hello world",
+		"the authoritative document should remain unchanged while only the first local edit is queued")
+	bridge.backend_command_result_destroy(&canonical_before_ack, context.temp_allocator)
+	for _ in 0..<7 { sync.sema_post(&gate) }
+	for _ in 0..<120 {
+		if len(app.editor_edits) == 0 { break }
+		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
+		application_wake(rawptr(&app), &rt)
+	}
+	testing.expect(t, len(app.editor_edits) == 0 && view.optimistic_pending_edits == 0,
+		"all delayed edits should be acknowledged serially without dropping queued characters")
+	document_after, found_after := find_document(&app.backend.state, document.id)
+	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+7,
+		"each committed character should converge through its own ordered authoritative revision")
+	canonical_after := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=document.id,
+		start_line=0,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		allocator=context.temp_allocator,
+	)
+	testing.expect(t, canonical_after.ok && canonical_after.visible_window_owned && string(canonical_after.visible_window.source) == "hello worxabcdefld",
+		"the final Caliber visible window should match the complete local optimistic projection")
+	bridge.backend_command_result_destroy(&canonical_after, context.temp_allocator)
+	testing.expect(t, app.backend.state_leases == 0 && app.backend.resource_leases == 0,
+		"the edit acknowledgement path should leave no Caliber publication or resource leases outstanding")
 }
