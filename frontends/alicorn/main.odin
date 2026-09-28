@@ -259,8 +259,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		editor_view_mark_active(view)
 	}
 	alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
-	heading := fmt.tprintf("%s  ·  %s  ·  %d lines  ·  revision %d", document_title(document.path), document.language, document.line_count, document.editor_revision)
-	if view.optimistic_pending_edits > 0 { heading = fmt.tprintf("%s  ·  %d edits pending", heading, view.optimistic_pending_edits) }
+	heading := fmt.tprintf("%s  ·  %s  ·  %d lines", document_title(document.path), document.language, document.line_count)
 	alicorn.text(ui, heading)
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
