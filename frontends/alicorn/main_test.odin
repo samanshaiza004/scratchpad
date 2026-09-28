@@ -472,6 +472,19 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 				shift_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right, shift=true})
 				testing.expect(t, shift_handled && view.selection_anchor == anchor_before_extend && view.caret_byte > view.selection_anchor,
 					"Shift+Right should extend a directional frontend-local selection")
+				view.caret_byte = line.source_start
+				view.selection_anchor = line.source_start
+				view.caret_affinity = .Leading
+				view.anchor_affinity = .Leading
+				word_right_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Word_Right})
+				word_right_caret := view.caret_byte
+				testing.expect(t, word_right_handled, "the editor should consume a platform-normalized word-right key")
+				testing.expect(t, word_right_caret > line.source_start, "word-right should move to a later Runa word boundary")
+				view.caret_byte = line.source_start
+				view.selection_anchor = line.source_start
+				word_extend_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Word_Right, shift=true})
+				testing.expect(t, word_extend_handled && view.selection_anchor == line.source_start && view.caret_byte > line.source_start,
+					"Shift+word-right should extend a frontend-local directional selection through Runa boundaries")
 				// Start at a nonzero column on a long row, then move through a one-character row and
 				// back. preferred_x must survive the short row and restore the same
 				// visual column on the following long row.
@@ -972,6 +985,12 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 		second_enter_handled := application_key(rawptr(&app), &rt, .Return)
 		testing.expect(t, first_enter_handled && second_enter_handled,
 			"the focused editor viewport should consume both Enter keys")
+		tab_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Tab})
+		testing.expect(t, tab_handled && strings.has_suffix(string(view.optimistic_window.source), "      fourth"),
+			"Tab should insert one four-space indentation unit immediately without yielding editor focus")
+		shift_tab_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Tab, shift=true})
+		testing.expect(t, shift_tab_handled && strings.has_suffix(string(view.optimistic_window.source), "  fourth"),
+			"Shift+Tab should remove one indentation unit from the current line through the same replacement lane")
 		editor_text_input(
 			rawptr(&app),
 			&rt,
@@ -980,12 +999,12 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 		)
 	}
 	expected_optimistic := "hello worXldsecondthird\r\n  \r\n  \r\n  Xfourth"
-	testing.expect(t, bridge.editor_edit_lane_is_active(&app.editor_edit_lane) && len(app.editor_edits) == 13,
-		"the first request should be held in flight while replacements and two Enter operations accumulate locally")
+	testing.expect(t, bridge.editor_edit_lane_is_active(&app.editor_edit_lane) && len(app.editor_edits) == 15,
+		"the first request should be held in flight while replacements, Enter, and Tab indentation accumulate locally")
 	testing.expect(t, view.optimistic_window_ready && string(view.optimistic_window.source) == expected_optimistic,
 		"typing, selection replacement, cross-line deletion, and Scratchpad-indented Enter should update the bounded projection before backend acknowledgement")
 	testing.expect(t, view.caret_byte == u64(len("hello worXldsecondthird\r\n  \r\n  \r\n  X")) &&
-		view.optimistic_pending_edits == 13 && view.optimistic_window.end_line == 4 &&
+		view.optimistic_pending_edits == 15 && view.optimistic_window.end_line == 4 &&
 		view.optimistic_line_delta == 0,
 		"the replacement queue should preserve the caret and reflect both deleted and inserted logical lines immediately")
 	other_document_id := ""
@@ -1034,7 +1053,7 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	testing.expect(t, canonical_before_ack.ok && string(canonical_before_ack.visible_window.source) == "hello world\r\nsecond\r\nthird\r\n  fourth",
 		"the authoritative document should remain unchanged while only the first local edit is queued")
 	bridge.backend_command_result_destroy(&canonical_before_ack, context.temp_allocator)
-	for _ in 0..<13 { sync.sema_post(&gate) }
+	for _ in 0..<15 { sync.sema_post(&gate) }
 	for _ in 0..<120 {
 		if len(app.editor_edits) == 0 { break }
 		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
@@ -1045,7 +1064,7 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	testing.expect(t, app.backend.state.active == other_document_id_copy,
 		"the queued tab switch should execute after the final authoritative edit acknowledgement")
 	document_after, found_after := find_document(&app.backend.state, document.id)
-	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+13 && document_after.line_count == 4,
+	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+15 && document_after.line_count == 4,
 		"every replacement and Enter should converge through its own ordered revision and update authoritative line topology")
 	canonical_after := bridge.backend_command(
 		&app.backend,

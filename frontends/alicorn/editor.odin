@@ -8,6 +8,7 @@ import bridge "./bridge"
 
 EDITOR_ROW_HEIGHT :: f32(22)
 EDITOR_TAB_WIDTH :: 4
+EDITOR_TAB_INSERT :: [4]u8{' ', ' ', ' ', ' '}
 EDITOR_LONG_LINE_CHUNK_BYTES :: u64(16 * 1024)
 EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES :: int(bridge.MAX_VISIBLE_BYTES * 2)
 
@@ -50,6 +51,8 @@ Editor_View_State :: struct {
 	caret_affinity:    alicorn.Text_Affinity,
 	preferred_x:       f32,
 	preferred_x_set:   bool,
+	pending_document_edge: Editor_Document_Edge,
+	pending_document_edge_shift: bool,
 	dragging_selection: bool,
 	authoritative_revision: u64,
 	optimistic_window: Editor_Window,
@@ -58,6 +61,8 @@ Editor_View_State :: struct {
 	optimistic_line_delta: i64,
 	position_reconcile_pending: bool,
 }
+
+Editor_Document_Edge :: enum { None, Start, End }
 
 Editor_Edit_Intent :: struct {
 	sequence:          u64,
@@ -464,6 +469,42 @@ editor_view_reconcile_positions :: proc(view: ^Editor_View_State, window: ^Edito
 	return true
 }
 
+// A document-edge key may target a line outside the bounded source window.
+// Keep the intent frontend-local until the corresponding window is installed.
+editor_view_resolve_document_edge :: proc(
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	line_count: u64,
+) -> bool {
+	if view == nil || window == nil || view.pending_document_edge == .None || line_count == 0 { return false }
+	target_line := u64(0) if view.pending_document_edge == .Start else line_count-1
+	line, found := editor_window_line(window, target_line)
+	if !found { return false }
+	position := line.source_start
+	affinity: alicorn.Text_Affinity = .Leading
+	if view.pending_document_edge == .End {
+		position = line.source_end
+		affinity = .Trailing
+	}
+	position = editor_normalize_source_position(line, position)
+	view.caret_byte = position
+	view.caret_affinity = affinity
+	if !view.pending_document_edge_shift {
+		view.selection_anchor = position
+		view.anchor_affinity = affinity
+	}
+	view.pending_document_edge = .None
+	view.pending_document_edge_shift = false
+	view.preferred_x_set = false
+	return true
+}
+
+editor_position_after_delete :: proc(position, start_byte, end_byte: u64) -> u64 {
+	if position <= start_byte { return position }
+	if position >= end_byte { return position-(end_byte-start_byte) }
+	return start_byte
+}
+
 // editor_move_horizontal moves by Runa grapheme boundaries in the projected
 // row, then maps back to source. Synthetic display spans can expose several
 // visual boundaries for one source byte; those are skipped atomically.
@@ -484,6 +525,47 @@ editor_move_horizontal :: proc(
 			return mapped, next.affinity, true
 		}
 		position = next
+	}
+	return source_byte, affinity, false
+}
+
+// editor_move_word_source applies Alicorn/Runa's Unicode word segmentation to
+// the projected row, then maps the result back to a legal Scratchpad source
+// boundary. At a row edge it crosses one logical line boundary as a unit.
+editor_move_word_source :: proc(
+	window: ^Editor_Window,
+	source_byte: u64,
+	affinity: alicorn.Text_Affinity,
+	direction: int,
+) -> (next_source: u64, next_affinity: alicorn.Text_Affinity, moved: bool) {
+	if window == nil || direction == 0 { return source_byte, affinity, false }
+	line, found := editor_line_for_source(window, source_byte)
+	if !found { return source_byte, affinity, false }
+	position := alicorn.Text_Position{
+		byte=editor_source_to_display(line, source_byte),
+		affinity=affinity,
+	}
+	next := alicorn.text_move_word(line.display, position, direction, context.temp_allocator)
+	mapped := editor_normalize_source_position(line, editor_display_to_source(line, next.byte))
+	if mapped != source_byte { return mapped, next.affinity, true }
+
+	if direction < 0 && source_byte == line.source_start && line.logical_line > window.start_line {
+		previous, previous_found := editor_window_line(window, line.logical_line-1)
+		if previous_found {
+			end_position := alicorn.Text_Position{byte=len(previous.display), affinity=.Trailing}
+			word_start := alicorn.text_move_word(previous.display, end_position, -1, context.temp_allocator)
+			mapped = editor_normalize_source_position(previous, editor_display_to_source(previous, word_start.byte))
+			return mapped, .Trailing, mapped != source_byte
+		}
+	}
+	if direction > 0 && source_byte == line.source_end {
+		following, following_found := editor_window_line(window, line.logical_line+1)
+		if following_found {
+			start_position := alicorn.Text_Position{byte=0, affinity=.Leading}
+			word_end := alicorn.text_move_word(following.display, start_position, 1, context.temp_allocator)
+			mapped = editor_normalize_source_position(following, editor_display_to_source(following, word_end.byte))
+			return mapped, .Leading, mapped != source_byte
+		}
 	}
 	return source_byte, affinity, false
 }

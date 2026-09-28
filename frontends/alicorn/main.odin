@@ -300,6 +300,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		document.editor_revision,
 	)
 	if window_matches {
+		_ = editor_view_resolve_document_edge(view, window, display_line_count)
 		if line, found := editor_line_for_source(window, view.caret_byte); found {
 			previous_caret := view.caret_byte
 			view.caret_byte = editor_normalize_source_position(line, view.caret_byte)
@@ -1170,6 +1171,8 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
 	if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y); ok {
+		view.pending_document_edge = .None
+		view.pending_document_edge_shift = false
 		view.selection_anchor = source_byte
 		view.caret_byte = source_byte
 		view.anchor_affinity = affinity
@@ -1192,7 +1195,6 @@ editor_text_key :: proc(
 ) -> bool {
 	app := cast(^App)state
 	if app == nil || owner == 0 || owner != app.editor_scroll_owner || !app.backend.started { return false }
-	if event.control || event.alt || event.super { return false }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return false }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
@@ -1200,7 +1202,61 @@ editor_text_key :: proc(
 	view := &app.editor_views[view_index]
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches { return false }
-	if event.key == .Backspace || event.key == .Delete {
+	if view.pending_document_edge != .None && event.key != .Document_Start && event.key != .Document_End {
+		view.pending_document_edge = .None
+		view.pending_document_edge_shift = false
+	}
+	if event.key == .Tab {
+		// A plain Tab inserts one configured indentation unit. Shift+Tab removes
+		// one indentation unit from the caret's current line; selection-wide
+		// indentation is deliberately a later editor behavior.
+		if event.control || event.alt || event.super { return false }
+		if !event.shift {
+			start_byte := min(view.selection_anchor, view.caret_byte)
+			end_byte := max(view.selection_anchor, view.caret_byte)
+			caret := start_byte+u64(len(EDITOR_TAB_INSERT))
+		tab_insert := EDITOR_TAB_INSERT
+			return editor_apply_local_replace(app, rt, start_byte, end_byte, tab_insert[:], caret, caret)
+		}
+		line, line_found := editor_line_for_source(window, view.caret_byte)
+		if !line_found { return true }
+		indent_start := int(line.source_start-window.start_byte)
+		line_end := int(line.source_end-window.start_byte)
+		if indent_start < 0 || line_end > len(window.source) || line_end < indent_start { return true }
+		// Keep a UTF-8 BOM as the file prefix rather than treating it as
+		// indentation on the first logical row.
+		if line.logical_line == 0 && window.start_byte == 0 && line_end >= indent_start+3 &&
+		   window.source[indent_start] == 0xEF && window.source[indent_start+1] == 0xBB && window.source[indent_start+2] == 0xBF {
+			indent_start += 3
+		}
+		remove_end := indent_start
+		if remove_end < line_end && window.source[remove_end] == '\t' {
+			remove_end += 1
+		} else {
+			for remove_end < line_end && remove_end-indent_start < EDITOR_TAB_WIDTH && window.source[remove_end] == ' ' {
+				remove_end += 1
+			}
+		}
+		if remove_end > indent_start {
+			start_byte := window.start_byte+u64(indent_start)
+			end_byte := window.start_byte+u64(remove_end)
+			anchor := editor_position_after_delete(view.selection_anchor, start_byte, end_byte)
+			caret := editor_position_after_delete(view.caret_byte, start_byte, end_byte)
+			_ = editor_apply_local_replace(app, rt, start_byte, end_byte, {}, anchor, caret)
+		}
+		return true
+	}
+	if event.control || event.alt || event.super {
+		#partial switch event.key {
+		case .Word_Left, .Word_Right, .Line_Start, .Line_End, .Document_Start, .Document_End,
+			.Delete_Word_Backward, .Delete_Word_Forward, .Delete_Line_Backward, .Delete_Line_Forward:
+		case:
+			return false
+		}
+	}
+	if event.key == .Backspace || event.key == .Delete ||
+	   event.key == .Delete_Word_Backward || event.key == .Delete_Word_Forward ||
+	   event.key == .Delete_Line_Backward || event.key == .Delete_Line_Forward {
 		start_byte := view.caret_byte
 		end_byte := view.caret_byte
 		if view.selection_anchor != view.caret_byte {
@@ -1209,7 +1265,8 @@ editor_text_key :: proc(
 		} else {
 			line, line_found := editor_line_for_source(window, view.caret_byte)
 			if !line_found { return true }
-			if event.key == .Backspace {
+			#partial switch event.key {
+			case .Backspace:
 				if view.caret_byte > line.source_start {
 					previous, _, moved := editor_move_horizontal(line, view.caret_byte, view.caret_affinity, -1)
 					if !moved { return true }
@@ -1221,7 +1278,7 @@ editor_text_key :: proc(
 				} else {
 					return true
 				}
-			} else {
+			case .Delete:
 				if view.caret_byte < line.source_end {
 					next, _, moved := editor_move_horizontal(line, view.caret_byte, view.caret_affinity, 1)
 					if !moved { return true }
@@ -1231,6 +1288,25 @@ editor_text_key :: proc(
 				} else {
 					return true
 				}
+			case .Delete_Word_Backward:
+				previous, _, moved := editor_move_word_source(window, view.caret_byte, view.caret_affinity, -1)
+				if !moved { return true }
+				start_byte = previous
+			case .Delete_Word_Forward:
+				next, _, moved := editor_move_word_source(window, view.caret_byte, view.caret_affinity, 1)
+				if !moved { return true }
+				end_byte = next
+			case .Delete_Line_Backward:
+				start_byte = line.source_start
+			case .Delete_Line_Forward:
+				end_byte = line.source_end
+				if end_byte == view.caret_byte {
+					if next, next_found := editor_window_line(window, line.logical_line+1); next_found {
+						end_byte = next.source_start
+					}
+				}
+			case:
+				return false
 			}
 		}
 		if start_byte < end_byte {
@@ -1244,28 +1320,32 @@ editor_text_key :: proc(
 	next_affinity := old_affinity
 	shift := event.shift
 	selection_exists := view.selection_anchor != view.caret_byte
-
-	if !shift && selection_exists && (event.key == .Left || event.key == .Right) {
-		if event.key == .Left {
-			if view.selection_anchor < view.caret_byte {
-				next_caret, next_affinity = view.selection_anchor, view.anchor_affinity
-			} else {
-				next_caret, next_affinity = view.caret_byte, view.caret_affinity
-			}
+	leftward := event.key == .Left || event.key == .Word_Left
+	rightward := event.key == .Right || event.key == .Word_Right
+	if !shift && selection_exists && (leftward || rightward) {
+		boundary := view.selection_anchor
+		boundary_affinity := view.anchor_affinity
+		if (leftward && view.caret_byte < view.selection_anchor) || (rightward && view.caret_byte > view.selection_anchor) {
+			boundary, boundary_affinity = view.caret_byte, view.caret_affinity
+		}
+		if event.key == .Word_Left || event.key == .Word_Right {
+			direction := -1 if leftward else 1
+			moved_caret, moved_affinity, moved := editor_move_word_source(window, boundary, boundary_affinity, direction)
+			if moved { next_caret, next_affinity = moved_caret, moved_affinity }
 		} else {
-			if view.selection_anchor > view.caret_byte {
-				next_caret, next_affinity = view.selection_anchor, view.anchor_affinity
-			} else {
-				next_caret, next_affinity = view.caret_byte, view.caret_affinity
-			}
+			next_caret, next_affinity = boundary, boundary_affinity
 		}
 	} else {
 		line, line_found := editor_line_for_source(window, old_caret)
 		if !line_found { return false }
-		switch event.key {
-		case .Left, .Right:
-			direction := -1 if event.key == .Left else 1
-			if direction < 0 && old_caret == line.source_start {
+		#partial switch event.key {
+		case .Left, .Right, .Word_Left, .Word_Right:
+			direction := -1 if leftward else 1
+			if event.key == .Word_Left || event.key == .Word_Right {
+				moved_caret, moved_affinity, moved := editor_move_word_source(window, old_caret, old_affinity, direction)
+				if !moved { return true }
+				next_caret, next_affinity = moved_caret, moved_affinity
+			} else if direction < 0 && old_caret == line.source_start {
 				for index := len(window.lines)-1; index >= 0; index -= 1 {
 					candidate := &window.lines[index]
 					if candidate.logical_line+1 == line.logical_line {
@@ -1287,12 +1367,39 @@ editor_text_key :: proc(
 				if !moved { return false }
 				next_caret, next_affinity = moved_caret, moved_affinity
 			}
-		case .Home:
+		case .Home, .Line_Start:
 			next_caret = editor_normalize_source_position(line, line.source_start)
 			next_affinity = .Leading
-		case .End:
+		case .End, .Line_End:
 			next_caret = editor_normalize_source_position(line, line.source_end)
 			next_affinity = .Trailing
+		case .Document_Start, .Document_End:
+			line_count := document.line_count
+			if view.optimistic_pending_edits > 0 {
+				if view.optimistic_line_delta < 0 {
+					removed := u64(-view.optimistic_line_delta)
+					line_count = line_count-removed if removed < line_count else 1
+				} else {
+					line_count += u64(view.optimistic_line_delta)
+				}
+			}
+			target_line := u64(0) if event.key == .Document_Start else (line_count-1 if line_count > 0 else 0)
+			target, target_found := editor_window_line(window, target_line)
+			if !target_found {
+				view.pending_document_edge = .Start if event.key == .Document_Start else .End
+				view.pending_document_edge_shift = shift
+				_ = alicorn.virtual_list_ensure_visible(rt, owner, int(target_line), "Scratchpad editor moved to document edge")
+				view.preferred_x_set = false
+				alicorn.invalidate_root(rt, "Scratchpad editor requested a bounded document-edge window")
+				return true
+			}
+			if event.key == .Document_Start {
+				next_caret = editor_normalize_source_position(target, target.source_start)
+				next_affinity = .Leading
+			} else {
+				next_caret = editor_normalize_source_position(target, target.source_end)
+				next_affinity = .Trailing
+			}
 		case .Up, .Down, .Page_Up, .Page_Down:
 			current_line := line.logical_line
 			owner_node, owner_found := rt.nodes[owner]
@@ -1314,7 +1421,16 @@ editor_text_key :: proc(
 			if event.key == .Up || event.key == .Page_Up {
 				target_line = current_line-step if current_line > step else 0
 			} else {
-				last_line := document.line_count-1 if document.line_count > 0 else 0
+				line_count := document.line_count
+				if view.optimistic_pending_edits > 0 {
+					if view.optimistic_line_delta < 0 {
+						removed := u64(-view.optimistic_line_delta)
+						line_count = line_count-removed if removed < line_count else 1
+					} else {
+						line_count += u64(view.optimistic_line_delta)
+					}
+				}
+				last_line := line_count-1 if line_count > 0 else 0
 				target_line = min(current_line+step, last_line)
 			}
 			target, target_found := editor_window_line(window, target_line)
@@ -1323,7 +1439,8 @@ editor_text_key :: proc(
 			mapped_caret, mapped_affinity, moved := editor_source_at_visual_x(rt, target, target_node, view.preferred_x)
 			if !moved { return true }
 			next_caret, next_affinity = mapped_caret, mapped_affinity
-		case .Backspace, .Delete:
+		case .Backspace, .Delete, .Delete_Word_Backward, .Delete_Word_Forward,
+			.Delete_Line_Backward, .Delete_Line_Forward, .Tab:
 			// Handled by the replacement path above; keep the navigation switch
 			// exhaustive as the generic text-input key set grows.
 			return true
@@ -1331,7 +1448,9 @@ editor_text_key :: proc(
 			return false
 		}
 	}
-	if event.key == .Left || event.key == .Right || event.key == .Home || event.key == .End {
+	if event.key == .Left || event.key == .Right || event.key == .Word_Left || event.key == .Word_Right ||
+	   event.key == .Home || event.key == .End || event.key == .Line_Start || event.key == .Line_End ||
+	   event.key == .Document_Start || event.key == .Document_End {
 		view.preferred_x_set = false
 	}
 	if next_caret == old_caret && next_affinity == old_affinity { return true }
@@ -1735,6 +1854,8 @@ editor_text_input :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { set_error(app, "Could not retain the active document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
+	view.pending_document_edge = .None
+	view.pending_document_edge_shift = false
 	replacement := transmute([]u8)event.text
 	start_byte := min(view.selection_anchor, view.caret_byte)
 	end_byte := max(view.selection_anchor, view.caret_byte)

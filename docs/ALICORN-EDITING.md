@@ -1,6 +1,6 @@
 # Alicorn editing ownership contract
 
-Status: Phase 4C.1–4C.4 implemented: optimistic insertion/replacement, deletion, stale recovery, and Scratchpad-owned Enter semantics. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not a complete editor specification. Clipboard, undo/redo, editor IME, and full editor parity are not claimed.
+Status: Phase 4C.1–4C.5 implemented: optimistic insertion/replacement, deletion, stale recovery, Scratchpad-owned Enter semantics, and platform-normalized keyboard editing. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not a complete editor specification. Clipboard, undo/redo, editor IME, and full editor parity are not claimed.
 
 ## Ownership
 
@@ -40,3 +40,7 @@ This slice accepts insertion within the loaded bounded window. Save, close, and 
 ## Phase 4C.2–4C.4 — replacement, recovery, and Enter
 
 Selection replacement and Backspace/Delete use the same local range-replacement path, including cross-line joins. Stale acknowledgements discard the dependent optimistic chain, reload a fresh authoritative bounded window, normalize the caret, and allow editing to resume. Enter is projected locally using the visible line ending/indentation, while Scratchpad remains authoritative for the actual line ending and indentation rule. If its effective replacement differs, the acknowledgement patches the optimistic source and rebases queued edit ranges and local positions. The regression holds the serial lane across two Enter operations and a subsequent character, verifies immediate multi-line/line-count presentation, then checks authoritative revision and bytes converge. Clipboard, undo/redo, and editor IME remain subsequent slices.
+
+## Phase 4C.5 — keyboard ownership and word editing
+
+The native host checks menu/global shortcuts before routing normalized text-key intents to the focused generic text-input owner. That owner gets first refusal on Tab; if it declines, forward/backward focus traversal remains the fallback. Scratchpad inserts four spaces for Tab and removes one indentation unit from the caret's current line for Shift+Tab. The host translates platform-specific Ctrl/Option word keys, line-edge keys, and document-edge keys into semantic intents; Scratchpad applies Runa word boundaries to the bounded display projection and maps them back to source byte offsets. Word deletion and movement stay frontend-local except that deletion uses the existing serial source-replacement lane. Multi-line selection indentation and unsupported paragraph-navigation chords remain deferred.
