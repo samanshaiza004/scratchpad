@@ -743,7 +743,7 @@ editor_edit_test_wake :: proc(data: rawptr) {
 }
 
 @(test)
-test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc(t: ^testing.T) {
+test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testing.T) {
 	sync.mutex_lock(&backend_integration_test_mutex)
 	defer sync.mutex_unlock(&backend_integration_test_mutex)
 	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-edit-*", context.temp_allocator)
@@ -780,6 +780,15 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	started, start_message := bridge.backend_start(&app.backend, workspace, editor_edit_test_wake, rawptr(&signal), context.allocator)
 	testing.expect(t, started, fmt.tprintf("shared backend should start for optimistic editor test: %s", start_message))
 	if !started { return }
+	window_lane_started := bridge.visible_window_lane_start(
+		&app.visible_window_lane,
+		&app.backend,
+		editor_edit_test_wake,
+		rawptr(&signal),
+		context.allocator,
+	)
+	testing.expect(t, window_lane_started, "the authoritative recovery test should start the bounded visible-window lane")
+	if !window_lane_started { _, _ = bridge.backend_stop(&app.backend, context.allocator); return }
 	gate: sync.Sema
 	lane_started := bridge.editor_edit_lane_start(
 		&app.editor_edit_lane,
@@ -790,10 +799,16 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 		&gate,
 	)
 	testing.expect(t, lane_started, "one serial editor edit worker should start")
-	if !lane_started { _, _ = bridge.backend_stop(&app.backend, context.allocator); return }
+	if !lane_started {
+		_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
+		_, _ = bridge.backend_stop(&app.backend, context.allocator)
+		return
+	}
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
 	defer {
 		if app.backend.started {
+			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
+			for _ in 0..<128 { sync.sema_post(&gate) }
 			_ = editor_flush_pending_edits(&app)
 			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
 			_, _ = bridge.backend_stop(&app.backend, context.allocator)
@@ -972,6 +987,145 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	testing.expect(t, canonical_after.ok && canonical_after.visible_window_owned && string(canonical_after.visible_window.source) == expected_optimistic,
 		"the final Caliber visible window should match the complete local replacement projection")
 	bridge.backend_command_result_destroy(&canonical_after, context.temp_allocator)
+
+	// Start a second chain, accept its first replacement, then mutate the
+	// authoritative document before the next serialized request is dispatched.
+	// The stale edit and all dependent local edits must be discarded together.
+	select_document(&app, &rt, typing_document_id)
+	document_before_stale, found_before_stale := find_document(&app.backend.state, typing_document_id)
+	testing.expect(t, found_before_stale, "the source document should be active for stale-chain recovery")
+	if !found_before_stale { return }
+	stale_base_revision := document_before_stale.editor_revision
+	view_index, view_ok = editor_view_ensure(&app.editor_views, typing_document_id)
+	testing.expect(t, view_ok, "the source document should retain its local editor view across tab changes")
+	if !view_ok { return }
+	view = &app.editor_views[view_index]
+	view.caret_byte = view.optimistic_window.start_byte+u64(len(view.optimistic_window.source))
+	view.selection_anchor = view.caret_byte
+	stale_chain_commits := [4]string{"a", "b", "c", "d"}
+	for text in stale_chain_commits {
+		editor_text_input(
+			rawptr(&app),
+			&rt,
+			app.editor_scroll_owner,
+			host.Application_Text_Input_Event{kind=.Commit, text=text},
+		)
+	}
+	testing.expect(t, len(app.editor_edits) == 4 &&
+		string(view.optimistic_window.source) == fmt.tprintf("%sabcd", expected_optimistic),
+		"four rapid local edits should be visible while only the first request is in flight")
+	sync.sema_post(&gate)
+	for _ in 0..<120 {
+		if len(app.editor_edits) == 3 && view.authoritative_revision == stale_base_revision+1 { break }
+		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
+		application_wake(rawptr(&app), &rt)
+	}
+	testing.expect(t, len(app.editor_edits) == 3 && view.authoritative_revision == stale_base_revision+1,
+		"the first edit should be accepted and the dependent second edit should be the sole in-flight request")
+	canonical_after_first := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=typing_document_id,
+		start_line=0,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		allocator=context.temp_allocator,
+	)
+	testing.expect(t, canonical_after_first.ok && canonical_after_first.visible_window_owned &&
+		string(canonical_after_first.visible_window.source) == fmt.tprintf("%sa", expected_optimistic),
+		"the first replacement should be authoritative before the dependent request is challenged")
+	concurrent_change_byte := canonical_after_first.visible_window.start_byte+u64(len(canonical_after_first.visible_window.source))
+	bridge.backend_command_result_destroy(&canonical_after_first, context.temp_allocator)
+	concurrent_change := bridge.backend_command(
+		&app.backend,
+		"replace_document",
+		document_id=typing_document_id,
+		editor_revision=view.authoritative_revision,
+		start_byte=concurrent_change_byte,
+		end_byte=concurrent_change_byte,
+		replacement=[]int{'!'},
+		allocator=context.temp_allocator,
+	)
+	testing.expect(t, concurrent_change.ok,
+		"an external authoritative edit should advance the revision while the next serial request remains gated")
+	bridge.backend_command_result_destroy(&concurrent_change, context.temp_allocator)
+	testing.expect(t, view.optimistic_pending_edits == 3 && len(app.editor_edits) == 3,
+		"the optimistic dependent chain should remain local until the stale response is handled")
+	sync.sema_post(&gate)
+	for _ in 0..<120 {
+		if len(app.editor_edits) == 0 { break }
+		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
+		application_wake(rawptr(&app), &rt)
+	}
+	testing.expect(t, len(app.editor_edits) == 0 && view.optimistic_pending_edits == 0 &&
+		!view.optimistic_window_ready && view.position_reconcile_pending,
+		"a stale request must discard itself and every dependent optimistic edit, then invalidate the old bounded window")
+	testing.expect(t, strings.contains(app.error_message, "reloading authoritative text"),
+		"stale rejection should report the controlled recovery instead of silently diverging")
+
+	// Rebuild asks the existing visible-window lane for the canonical revision.
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	for _ in 0..<120 {
+		current_document, current_found := find_document(&app.backend.state, typing_document_id)
+		if current_found && app.editor_window_ready &&
+		   app.editor_window.document_id == typing_document_id &&
+		   app.editor_window.editor_revision == current_document.editor_revision { break }
+		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
+		application_wake(rawptr(&app), &rt)
+	}
+	recovered_document, recovered_found := find_document(&app.backend.state, typing_document_id)
+	testing.expect(t, recovered_found, "the authoritative source document should survive stale recovery")
+	if !recovered_found { return }
+	recovered_revision := recovered_document.editor_revision
+	recovered_expected := fmt.tprintf("%sa!", expected_optimistic)
+	_, caret_is_legal := editor_line_for_source(&app.editor_window, view.caret_byte)
+	testing.expect(t, recovered_found && app.editor_window_ready &&
+		app.editor_window.editor_revision == recovered_document.editor_revision &&
+		string(app.editor_window.source) == recovered_expected,
+		"the bounded window should reload the exact authoritative bytes, including the concurrent edit but excluding rejected dependents")
+	testing.expect(t, !view.position_reconcile_pending &&
+		view.authoritative_revision == recovered_revision &&
+		view.caret_byte >= app.editor_window.start_byte &&
+		view.caret_byte <= app.editor_window.start_byte+u64(len(app.editor_window.source)) &&
+		caret_is_legal,
+		"recovery should clamp and normalize the caret to a legal source boundary in the reloaded window")
+
+	// The recovered editor remains usable: a new local edit should be accepted
+	// against the new authoritative revision and converge normally.
+	editor_text_input(
+		rawptr(&app),
+		&rt,
+		app.editor_scroll_owner,
+		host.Application_Text_Input_Event{kind=.Commit, text="z"},
+	)
+	testing.expect(t, len(app.editor_edits) == 1 &&
+		string(view.optimistic_window.source) == fmt.tprintf("%sz", recovered_expected),
+		"typing should resume immediately on the recovered authoritative projection")
+	sync.sema_post(&gate)
+	for _ in 0..<120 {
+		if len(app.editor_edits) == 0 { break }
+		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
+		application_wake(rawptr(&app), &rt)
+	}
+	final_document, final_found := find_document(&app.backend.state, typing_document_id)
+	canonical_final := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=typing_document_id,
+		start_line=0,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		allocator=context.temp_allocator,
+	)
+	final_expected := fmt.tprintf("%sz", recovered_expected)
+	testing.expect(t, len(app.editor_edits) == 0 && view.optimistic_pending_edits == 0 &&
+		final_found && final_document.editor_revision == recovered_revision+1 &&
+		view.authoritative_revision == final_document.editor_revision &&
+		canonical_final.ok && canonical_final.visible_window_owned &&
+		string(canonical_final.visible_window.source) == final_expected &&
+		string(view.optimistic_window.source) == string(canonical_final.visible_window.source),
+		"post-recovery editing should converge with no pending edits and identical optimistic/canonical bytes")
+	bridge.backend_command_result_destroy(&canonical_final, context.temp_allocator)
 	testing.expect(t, app.backend.state_leases == 0 && app.backend.resource_leases == 0,
-		"the edit acknowledgement path should leave no Caliber publication or resource leases outstanding")
+		"the success and stale-recovery paths should leave no Caliber publication or resource leases outstanding")
 }

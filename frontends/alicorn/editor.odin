@@ -56,6 +56,7 @@ Editor_View_State :: struct {
 	optimistic_window_ready: bool,
 	optimistic_pending_edits: u64,
 	optimistic_line_delta: i64,
+	position_reconcile_pending: bool,
 }
 
 Editor_Edit_Intent :: struct {
@@ -421,6 +422,44 @@ editor_line_for_source :: proc(window: ^Editor_Window, source_byte: u64) -> (lin
 		}
 	}
 	return nil, false
+}
+
+// editor_reconcile_source_position keeps a frontend-local position legal after
+// an optimistic chain is rejected and a newer authoritative window arrives.
+editor_reconcile_source_position :: proc(
+	window: ^Editor_Window,
+	source_byte: u64,
+) -> (position: u64, affinity: alicorn.Text_Affinity) {
+	if window == nil || len(window.lines) == 0 { return source_byte, .Trailing }
+	window_end := window.start_byte+u64(len(window.source))
+	target := min(max(source_byte, window.start_byte), window_end)
+	position = target
+	if line, found := editor_line_for_source(window, position); found {
+		position = editor_normalize_source_position(line, position)
+		if position == line.source_start { affinity = .Leading } else { affinity = .Trailing }
+		return
+	}
+	best_distance := window_end-window.start_byte+1
+	for line in window.lines {
+		for boundary_index in 0..<2 {
+			boundary := line.source_start if boundary_index == 0 else line.source_end
+			distance := boundary-target if boundary >= target else target-boundary
+			if distance < best_distance {
+				best_distance = distance
+				position = boundary
+				affinity = .Trailing if boundary == line.source_end else .Leading
+			}
+		}
+	}
+	return
+}
+
+editor_view_reconcile_positions :: proc(view: ^Editor_View_State, window: ^Editor_Window) -> bool {
+	if view == nil || window == nil || !view.position_reconcile_pending { return false }
+	view.caret_byte, view.caret_affinity = editor_reconcile_source_position(window, view.caret_byte)
+	view.selection_anchor, view.anchor_affinity = editor_reconcile_source_position(window, view.selection_anchor)
+	view.position_reconcile_pending = false
+	return true
 }
 
 // editor_move_horizontal moves by Runa grapheme boundaries in the projected

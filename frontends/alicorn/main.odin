@@ -811,6 +811,9 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 					editor_window_destroy(&app.editor_window)
 					app.editor_window = window
 					app.editor_window_ready = true
+					if view_index >= 0 && app.editor_views[view_index].position_reconcile_pending {
+						_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
+					}
 					if advancing_long_line && app.editor_scroll_owner != 0 {
 						_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
 					}
@@ -1456,10 +1459,12 @@ editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 	for index := len(app.editor_edits)-1; index >= 0; index -= 1 {
 		if app.editor_edits[index].document_id == document_id { editor_remove_edit(app, index) }
 	}
-	if view_index := editor_view_find(app.editor_views[:], document_id); view_index >= 0 {
+	view_index := editor_view_find(app.editor_views[:], document_id)
+	if view_index >= 0 {
 		view := &app.editor_views[view_index]
 		view.optimistic_pending_edits = 0
 		view.optimistic_line_delta = 0
+		view.position_reconcile_pending = true
 		if view.optimistic_window_ready {
 			editor_window_destroy(&view.optimistic_window)
 			view.optimistic_window_ready = false
@@ -1472,6 +1477,8 @@ editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 		if document, found := find_document(&app.backend.state, document_id); !found || document.editor_revision != app.editor_window.editor_revision {
 			editor_window_destroy(&app.editor_window)
 			app.editor_window_ready = false
+		} else if view_index >= 0 {
+			_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
 		}
 	}
 }
