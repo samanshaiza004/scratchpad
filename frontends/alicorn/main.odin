@@ -38,11 +38,30 @@ Tree_Row :: struct {
 	expanded:  bool,
 }
 
+Deferred_Action_Kind :: enum {
+	Action,
+	Select_Document,
+	Close_Document,
+	Open_Path,
+	Close_After_Save,
+	Close_With_Discard,
+}
+
+Deferred_Action :: struct {
+	kind:        Deferred_Action_Kind,
+	value:       string,
+	path:        string,
+	disposition: string,
+}
+
+MAX_DEFERRED_ACTIONS :: 64
+
 App :: struct {
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	editor_edit_lane:       bridge.Editor_Edit_Lane,
 	editor_edits:           [dynamic]Editor_Edit_Intent,
+	deferred_actions:       [dynamic]Deferred_Action,
 	editor_edit_sequence:   u64,
 	editor_views:           [dynamic]Editor_View_State,
 	editor_row_targets:     [dynamic]Editor_Row_Target,
@@ -136,18 +155,17 @@ build_app :: proc(
 
 	if app.backend.started {
 		state := &app.backend.state
-		edits_pending := len(app.editor_edits) > 0
 		alicorn.container_begin(&ui, .Container, label="workbench-toolbar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-		if alicorn.button(&ui, "Open File…", key=alicorn.key_string("action-file-open"), style=alicorn.layout_style(.Row, width=130, height=34), state=alicorn.Button_State{disabled=edits_pending}) {
+		if alicorn.button(&ui, "Open File…", key=alicorn.key_string("action-file-open"), style=alicorn.layout_style(.Row, width=130, height=34)) {
 			dispatch_action(app, rt, ACTION_FILE_OPEN)
 		}
-		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("action-workspace-open"), style=alicorn.layout_style(.Row, width=140, height=34), state=alicorn.Button_State{disabled=edits_pending}) {
+		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("action-workspace-open"), style=alicorn.layout_style(.Row, width=140, height=34)) {
 			dispatch_action(app, rt, ACTION_WORKSPACE_OPEN)
 		}
-		if save_enabled := action_enabled(state, ACTION_FILE_SAVE); alicorn.button(&ui, "Save", key=alicorn.key_string("action-file-save"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!save_enabled || edits_pending}) {
+		if save_enabled := action_enabled(state, ACTION_FILE_SAVE); alicorn.button(&ui, "Save", key=alicorn.key_string("action-file-save"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!save_enabled}) {
 			dispatch_action(app, rt, ACTION_FILE_SAVE)
 		}
-		if close_enabled := action_enabled(state, ACTION_DOCUMENT_CLOSE); alicorn.button(&ui, "Close", key=alicorn.key_string("action-document-close"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!close_enabled || edits_pending}) {
+		if close_enabled := action_enabled(state, ACTION_DOCUMENT_CLOSE); alicorn.button(&ui, "Close", key=alicorn.key_string("action-document-close"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!close_enabled}) {
 			dispatch_action(app, rt, ACTION_DOCUMENT_CLOSE)
 		}
 		alicorn.container_end(&ui)
@@ -157,10 +175,10 @@ build_app :: proc(
 		alicorn.text(&ui, "FILES")
 		alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
 		alicorn.text(&ui, fmt.tprintf("%d open documents", len(state.documents)))
-		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("sidebar-open-folder"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=edits_pending}) {
+		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("sidebar-open-folder"), style=alicorn.layout_style(.Row, height=34)) {
 			dispatch_action(app, rt, ACTION_WORKSPACE_OPEN)
 		}
-		if alicorn.button(&ui, "Refresh Workspace", key=alicorn.key_string("sidebar-refresh"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=!action_enabled(state, ACTION_WORKSPACE_REFRESH) || edits_pending}) {
+		if alicorn.button(&ui, "Refresh Workspace", key=alicorn.key_string("sidebar-refresh"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=!action_enabled(state, ACTION_WORKSPACE_REFRESH)}) {
 			dispatch_action(app, rt, ACTION_WORKSPACE_REFRESH)
 		}
 		build_workspace_tree(app, &ui, rt)
@@ -173,10 +191,10 @@ build_app :: proc(
 			if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
 			if document.dirty { title = fmt.tprintf("%s •", title) }
 			selected := state.active == document.id
-			if alicorn.button(&ui, title, key=alicorn.key_string(fmt.tprintf("tab:%s", document.id)), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected, disabled=edits_pending}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
+			if alicorn.button(&ui, title, key=alicorn.key_string(fmt.tprintf("tab:%s", document.id)), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
 				select_document(app, rt, document.id)
 			}
-			if alicorn.button(&ui, "×", key=alicorn.key_string(fmt.tprintf("tab-close:%s", document.id)), style=alicorn.layout_style(.Row, width=30, height=32), state=alicorn.Button_State{disabled=edits_pending}) {
+			if alicorn.button(&ui, "×", key=alicorn.key_string(fmt.tprintf("tab-close:%s", document.id)), style=alicorn.layout_style(.Row, width=30, height=32)) {
 				request_close_document(app, rt, document.id)
 			}
 		}
@@ -218,6 +236,7 @@ build_app :: proc(
 		}
 		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("dirty-close-cancel"), style=alicorn.layout_style(.Row, width=90, height=34)) {
 			clear_close_prompt(app)
+			deferred_actions_run(app, rt)
 			alicorn.invalidate_root(rt, "dirty close cancelled")
 		}
 		alicorn.container_end(&ui)
@@ -605,11 +624,6 @@ tree_set_focused_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row, ind
 
 tree_activate_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row) {
 	if app == nil || rt == nil { return }
-	if len(app.editor_edits) > 0 {
-		set_error(app, "Wait for committed text to be acknowledged before opening another document or folder.")
-		alicorn.invalidate_root(rt, "workspace navigation waits for pending editor edits")
-		return
-	}
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)
@@ -631,6 +645,13 @@ tree_activate_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row) {
 	if path_error != nil {
 		set_error(app, "Could not resolve the workspace file path.")
 		alicorn.invalidate_root(rt, "Scratchpad workspace path resolution failed")
+		return
+	}
+	if len(app.editor_edits) > 0 {
+		queued := deferred_action_enqueue(app, .Open_Path, path=absolute_path, disposition="preview")
+		delete(absolute_path, context.allocator)
+		if !queued { set_error(app, "Could not queue the file open behind pending edits.") }
+		alicorn.invalidate_root(rt, "workspace file open queued behind editor edits")
 		return
 	}
 	response := bridge.backend_command(&app.backend, "open_path", path=absolute_path, disposition="preview")
@@ -811,20 +832,38 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.File_Dialog_Result) {
 	app := cast(^App)state
 	if result == nil { return }
-	if len(app.editor_edits) > 0 {
-		app.dialog_action = ""
-		set_error(app, "Wait for committed text to be acknowledged before opening another document.")
-		alicorn.invalidate_root(rt, "native dialog result deferred by pending editor edits")
-		return
-	}
 	if result.status == .Error {
 		app.dialog_action = ""
 		set_error(app, result.error)
 		alicorn.invalidate_root(rt, "Scratchpad native dialog failed")
+		deferred_actions_run(app, rt)
 		return
 	}
-	if result.status != .Accepted || len(result.paths) == 0 { app.dialog_action = ""; return }
+	if result.status != .Accepted || len(result.paths) == 0 {
+		app.dialog_action = ""
+		deferred_actions_run(app, rt)
+		return
+	}
 	path := result.paths[0]
+	if len(app.editor_edits) > 0 {
+		if !deferred_action_enqueue(app, .Open_Path, path=path) {
+			set_error(app, "Could not queue the selected file behind pending edits.")
+		}
+	} else {
+		open_path, clone_error := strings.clone(path, context.allocator)
+		if clone_error != nil {
+			set_error(app, "Could not retain the selected file path.")
+			alicorn.invalidate_root(rt, "Scratchpad could not retain selected dialog path")
+		} else {
+			open_path_from_dialog(app, rt, open_path)
+		}
+	}
+	app.dialog_action = ""
+	deferred_actions_run(app, rt)
+}
+
+open_path_from_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
+	defer delete(path, context.allocator)
 	if action, found := find_action(&app.backend.state, app.dialog_action); found {
 		cause := alicorn.cause_begin(rt, .Application, "native file dialog selection", action_id_for(action.id))
 		alicorn.trace_action(rt, action_id_for(action.id), action.title)
@@ -836,7 +875,6 @@ application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.Fi
 		set_error(app, "The file dialog completed without a matching Scratchpad action.")
 		alicorn.invalidate_root(rt, "Scratchpad dialog action was unavailable")
 	}
-	app.dialog_action = ""
 }
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
@@ -851,14 +889,16 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || !app.backend.started { return }
-	if len(app.editor_edits) > 0 {
-		set_error(app, "Wait for committed text to be acknowledged before running another document command.")
-		alicorn.invalidate_root(rt, "Scratchpad command deferred by pending editor edits")
-		return
-	}
 	if !action_enabled(&app.backend.state, action_id) { return }
 	entry, found := find_action(&app.backend.state, action_id)
 	if !found { return }
+	if len(app.editor_edits) > 0 {
+		if !deferred_action_enqueue(app, .Action, value=action_id) {
+			set_error(app, "Could not queue the command behind pending editor edits.")
+		}
+		alicorn.invalidate_root(rt, "Scratchpad command queued behind editor edits")
+		return
+	}
 	command_token := action_id_for(action_id)
 	cause := alicorn.cause_begin(rt, .Application, "Scratchpad semantic action", command_token)
 	alicorn.trace_action(rt, command_token, entry.title)
@@ -902,6 +942,85 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	alicorn.cause_end(rt, cause)
 }
 
+deferred_action_enqueue :: proc(
+	app: ^App,
+	kind: Deferred_Action_Kind,
+	value: string = "",
+	path: string = "",
+	disposition: string = "",
+) -> bool {
+	if app == nil || len(app.deferred_actions) >= MAX_DEFERRED_ACTIONS { return false }
+	action := Deferred_Action{kind=kind}
+	if len(value) > 0 {
+		value_copy, err := strings.clone(value, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.value = value_copy
+	}
+	if len(path) > 0 {
+		path_copy, err := strings.clone(path, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.path = path_copy
+	}
+	if len(disposition) > 0 {
+		disposition_copy, err := strings.clone(disposition, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.disposition = disposition_copy
+	}
+	append(&app.deferred_actions, action)
+	return true
+}
+
+deferred_action_destroy :: proc(action: ^Deferred_Action) {
+	if action == nil { return }
+	if len(action.value) > 0 { delete(action.value, context.allocator) }
+	if len(action.path) > 0 { delete(action.path, context.allocator) }
+	if len(action.disposition) > 0 { delete(action.disposition, context.allocator) }
+	action^ = Deferred_Action{}
+}
+
+deferred_actions_clear :: proc(app: ^App) {
+	if app == nil { return }
+	for index := len(app.deferred_actions)-1; index >= 0; index -= 1 {
+		deferred_action_destroy(&app.deferred_actions[index])
+	}
+	clear(&app.deferred_actions)
+}
+
+deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.backend.started || len(app.editor_edits) > 0 ||
+	   app.dialog_action != "" || app.close_document_id != "" {
+		return
+	}
+	for len(app.deferred_actions) > 0 {
+		action := app.deferred_actions[0]
+		ordered_remove(&app.deferred_actions, 0)
+		switch action.kind {
+		case .Action:
+			dispatch_action(app, rt, action.value)
+		case .Select_Document:
+			select_document(app, rt, action.value)
+		case .Close_Document:
+			request_close_document(app, rt, action.value)
+		case .Open_Path:
+			if action.disposition != "" {
+				response := bridge.backend_command(&app.backend, "open_path", path=action.path, disposition=action.disposition)
+				handle_command_result(app, rt, &response)
+				bridge.backend_command_result_destroy(&response, context.allocator)
+			} else {
+				response := bridge.backend_command(&app.backend, "open_path", path=action.path)
+				handle_command_result(app, rt, &response)
+				bridge.backend_command_result_destroy(&response, context.allocator)
+			}
+		case .Close_After_Save:
+			close_after_save(app, rt)
+		case .Close_With_Discard:
+			close_with_discard(app, rt)
+		}
+		deferred_action_destroy(&action)
+		if app.dialog_action != "" || app.close_document_id != "" { break }
+	}
+}
+
 request_file_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, kind: host.File_Dialog_Kind, title: string) {
 	app.dialog_sequence += 1
 	app.dialog_action = ACTION_FILE_OPEN if kind == .Open_File else ACTION_WORKSPACE_OPEN
@@ -913,8 +1032,10 @@ request_file_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, kind: host.File_Dia
 		allow_many=false,
 	}
 	if !host.ShowFileDialog(app.services.dialogs, request) {
+		app.dialog_action = ""
 		set_error(app, "The native file dialog could not be opened.")
 		alicorn.invalidate_root(rt, "Scratchpad native dialog request failed")
+		deferred_actions_run(app, rt)
 	}
 }
 
@@ -922,6 +1043,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	app := cast(^App)state
 	if key == .Escape && app.close_document_id != "" {
 		clear_close_prompt(app)
+		deferred_actions_run(app, rt)
 		alicorn.invalidate_root(rt, "dirty close cancelled by Escape")
 		return true
 	}
@@ -1259,6 +1381,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		editor_views_prune(app)
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
+		if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad discarded edits after an out-of-order acknowledgement") }
 		return
 	}
@@ -1276,6 +1399,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		editor_remove_edit(app, 0)
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
+		if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad accepted an optimistic document edit") }
 		return
 	}
@@ -1288,6 +1412,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 	editor_views_prune(app)
 	sync_menu_states(app)
 	_, _ = editor_dispatch_next_edit(app)
+	if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad rejected an optimistic document edit") }
 }
 
@@ -1388,8 +1513,10 @@ editor_text_input :: proc(
 request_close_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 	if document_id == "" { return }
 	if len(app.editor_edits) > 0 {
-		set_error(app, "Wait for committed text to be acknowledged before closing a document.")
-		alicorn.invalidate_root(rt, "document close waits for pending editor edits")
+		if !deferred_action_enqueue(app, .Close_Document, value=document_id) {
+			set_error(app, "Could not queue the document close behind pending edits.")
+			alicorn.invalidate_root(rt, "Scratchpad document close queue is full")
+		}
 		return
 	}
 	response := bridge.backend_command(&app.backend, "close_document", document_id=document_id)
@@ -1399,8 +1526,10 @@ request_close_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: str
 
 close_after_save :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if len(app.editor_edits) > 0 {
-		set_error(app, "Wait for committed text to be acknowledged before saving and closing.")
-		alicorn.invalidate_root(rt, "dirty close waits for pending editor edits")
+		if !deferred_action_enqueue(app, .Close_After_Save) {
+			set_error(app, "Could not queue save-and-close behind pending edits.")
+			alicorn.invalidate_root(rt, "Scratchpad save-and-close queue is full")
+		}
 		return
 	}
 	document_id, clone_err := strings.clone(app.close_document_id, context.allocator)
@@ -1417,17 +1546,21 @@ close_after_save :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	handle_command_result(app, rt, &closed)
 	bridge.backend_command_result_destroy(&closed, context.allocator)
 	delete(document_id, context.allocator)
+	deferred_actions_run(app, rt)
 }
 
 close_with_discard :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if len(app.editor_edits) > 0 {
-		set_error(app, "Wait for committed text to be acknowledged before closing a document.")
-		alicorn.invalidate_root(rt, "discard close waits for pending editor edits")
+		if !deferred_action_enqueue(app, .Close_With_Discard) {
+			set_error(app, "Could not queue discard-and-close behind pending edits.")
+			alicorn.invalidate_root(rt, "Scratchpad discard-and-close queue is full")
+		}
 		return
 	}
 	response := bridge.backend_command(&app.backend, "close_document", document_id=app.close_document_id, discard=true)
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
+	deferred_actions_run(app, rt)
 }
 
 handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Backend_Command_Result) {
@@ -1464,8 +1597,10 @@ handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.B
 
 select_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 	if len(app.editor_edits) > 0 {
-		set_error(app, "Wait for committed text to be acknowledged before switching documents.")
-		alicorn.invalidate_root(rt, "document selection waits for pending editor edits")
+		if !deferred_action_enqueue(app, .Select_Document, value=document_id) {
+			set_error(app, "Could not queue document selection behind pending edits.")
+			alicorn.invalidate_root(rt, "Scratchpad document selection queue is full")
+		}
 		return
 	}
 	response := bridge.backend_command(&app.backend, "select_document", document_id=document_id)
@@ -1506,21 +1641,17 @@ disable_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 sync_menu_states :: proc(app: ^App) {
-	edits_pending := len(app.editor_edits) > 0
 	for &item in app.file_items {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
-		if edits_pending { item.state.enabled = false }
 	}
 	for &item in app.workspace_items {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
-		if edits_pending { item.state.enabled = false }
 	}
 	for &item in app.document_items {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
-		if edits_pending { item.state.enabled = false }
 	}
 }
 
@@ -1637,6 +1768,9 @@ application_stop :: proc(state: rawptr) {
 	for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(app, index) }
 	delete(app.editor_edits)
 	app.editor_edits = {}
+	deferred_actions_clear(app)
+	delete(app.deferred_actions)
+	app.deferred_actions = {}
 	if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 	app.editor_presented_document_id = ""
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
@@ -1649,6 +1783,7 @@ main :: proc() {
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
 	init_menus(&app)
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }

@@ -753,8 +753,13 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	}
 	defer _ = os.remove_all(workspace)
 	path := fmt.tprintf("%s/typing.txt", workspace)
+	other_path := fmt.tprintf("%s/other.txt", workspace)
 	if write_error := os.write_entire_file_from_string(path, "hello world"); write_error != nil {
 		testing.expect(t, false, "could not create the committed-text source fixture")
+		return
+	}
+	if write_error := os.write_entire_file_from_string(other_path, "another document"); write_error != nil {
+		testing.expect(t, false, "could not create the deferred-tab fixture")
 		return
 	}
 	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
@@ -766,6 +771,8 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
+	init_menus(&app)
 	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
 	testing.expect(t, loaded, fmt.tprintf("shared backend should load for optimistic editor test: %s", load_message))
 	if !loaded { return }
@@ -798,6 +805,8 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 		if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
 		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
 		delete(app.editor_edits)
+		deferred_actions_clear(&app)
+		delete(app.deferred_actions)
 		delete(app.editor_row_targets)
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
@@ -807,6 +816,15 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	opened := bridge.backend_command(&app.backend, "open_path", path=path, allocator=context.temp_allocator)
 	testing.expect(t, opened.ok && len(app.backend.state.documents) == 1, "Go should open the real source document before editing")
 	bridge.backend_command_result_destroy(&opened, context.temp_allocator)
+	typing_document_id, id_error := strings.clone(app.backend.state.active, context.allocator)
+	testing.expect(t, id_error == nil && typing_document_id != "", "the typing document identity should be retained for deferred command assertions")
+	defer delete(typing_document_id, context.allocator)
+	opened_other := bridge.backend_command(&app.backend, "open_path", path=other_path, allocator=context.temp_allocator)
+	testing.expect(t, opened_other.ok && len(app.backend.state.documents) == 2, "the second document should open for tab-switch ordering coverage")
+	bridge.backend_command_result_destroy(&opened_other, context.temp_allocator)
+	selected_typing := bridge.backend_command(&app.backend, "select_document", document_id=typing_document_id, allocator=context.temp_allocator)
+	testing.expect(t, selected_typing.ok, "the typing document should be active before committed input begins")
+	bridge.backend_command_result_destroy(&selected_typing, context.temp_allocator)
 	document, document_found := find_document(&app.backend.state, app.backend.state.active)
 	if !document_found { testing.expect(t, false, "opened source document should have authoritative state"); return }
 	base_editor_revision := document.editor_revision
@@ -856,15 +874,37 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 		"committed text should update the bounded local source projection and caret before the backend can acknowledge it")
 	testing.expect(t, view.caret_byte == 16 && view.optimistic_pending_edits == 7,
 		"each committed character should advance the local caret and enter the serial queue")
+	other_document_id := ""
+	for candidate in app.backend.state.documents {
+		if candidate.id != typing_document_id { other_document_id = candidate.id; break }
+	}
+	other_document_id_copy, other_id_error := strings.clone(other_document_id, context.allocator)
+	testing.expect(t, other_id_error == nil && other_document_id_copy != "", "the second document identity should be available for a queued tab switch")
+	defer delete(other_document_id_copy, context.allocator)
+	select_document(&app, &rt, other_document_id_copy)
+	testing.expect(t, len(app.deferred_actions) == 1 && app.backend.state.active == typing_document_id && app.error_message == "",
+		"tab selection should queue invisibly behind the edits without changing the active document or showing a wait error")
 	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
 	optimistic_text_rendered := false
+	chrome_became_disabled := false
 	for node_id in rt.order {
-		if node, found := rt.nodes[node_id]; found && node.key == fmt.tprintf("scratchpad-line:%s:0", document.id) {
-			optimistic_text_rendered = node.text == "hello worxabcdefld"
+		if node, found := rt.nodes[node_id]; found {
+			if node.key == fmt.tprintf("scratchpad-line:%s:0", document.id) {
+				optimistic_text_rendered = node.text == "hello worxabcdefld"
+			}
+			if node.key == "action-file-open" || node.key == "action-workspace-open" ||
+			   node.key == "action-document-close" || node.key == fmt.tprintf("tab:%s", typing_document_id) ||
+			   node.key == fmt.tprintf("tab-close:%s", typing_document_id) {
+				chrome_became_disabled = chrome_became_disabled || node.disabled
+			}
 		}
 	}
 	testing.expect(t, optimistic_text_rendered,
 		"the rebuilt Alicorn description should visibly contain all committed characters before the backend lane is released")
+	testing.expect(t, !chrome_became_disabled,
+		"pending editor acknowledgements must not flash the toolbar or tab controls into disabled styling")
+	testing.expect(t, app.file_items[0].state.enabled && app.file_items[1].state.enabled,
+		"native menu availability should remain stable while source edits are pending")
 	state_while_held, state_held_ok, state_held_error := bridge.backend_read_latest(&app.backend, context.temp_allocator)
 	testing.expect(t, state_held_ok && !state_while_held && app.backend.state.application_rev == base_application_revision,
 		fmt.tprintf("the held worker must not mutate or publish backend state before its dispatch gate opens: %s", state_held_error))
@@ -886,15 +926,17 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
 		application_wake(rawptr(&app), &rt)
 	}
-	testing.expect(t, len(app.editor_edits) == 0 && view.optimistic_pending_edits == 0,
-		"all delayed edits should be acknowledged serially without dropping queued characters")
+	testing.expect(t, len(app.editor_edits) == 0 && len(app.deferred_actions) == 0 && view.optimistic_pending_edits == 0,
+		"all delayed edits should be acknowledged serially and then drain the deferred tab selection")
+	testing.expect(t, app.backend.state.active == other_document_id_copy,
+		"the queued tab switch should execute after the final authoritative edit acknowledgement")
 	document_after, found_after := find_document(&app.backend.state, document.id)
 	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+7,
 		"each committed character should converge through its own ordered authoritative revision")
 	canonical_after := bridge.backend_command(
 		&app.backend,
 		"read_visible_lines",
-		document_id=document.id,
+		document_id=typing_document_id,
 		start_line=0,
 		max_lines=bridge.MAX_VISIBLE_LINES,
 		max_bytes=bridge.MAX_VISIBLE_BYTES,
