@@ -754,7 +754,7 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	defer _ = os.remove_all(workspace)
 	path := fmt.tprintf("%s/typing.txt", workspace)
 	other_path := fmt.tprintf("%s/other.txt", workspace)
-	if write_error := os.write_entire_file_from_string(path, "hello world"); write_error != nil {
+	if write_error := os.write_entire_file_from_string(path, "hello world\r\nsecond\r\nthird\r\nfourth"); write_error != nil {
 		testing.expect(t, false, "could not create the committed-text source fixture")
 		return
 	}
@@ -868,12 +868,39 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 			host.Application_Text_Input_Event{kind=.Commit, text=text},
 		)
 	}
-	testing.expect(t, bridge.editor_edit_lane_is_active(&app.editor_edit_lane) && len(app.editor_edits) == 7,
+	// Replace a directional selection, then join lines with Backspace and
+	// Delete. All three operations must share the same optimistic replacement
+	// path while the first Caliber request remains deliberately blocked.
+	view.selection_anchor = 9
+	view.caret_byte = 16
+	editor_text_input(
+		rawptr(&app),
+		&rt,
+		app.editor_scroll_owner,
+		host.Application_Text_Input_Event{kind=.Commit, text="X"},
+	)
+	second_line, second_found := editor_window_line(&view.optimistic_window, 1)
+	testing.expect(t, second_found, "optimistic multi-line source should retain the second logical line")
+	if second_found {
+		view.selection_anchor = second_line.source_start
+		view.caret_byte = second_line.source_start
+		_ = editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Backspace})
+	}
+	joined_line, joined_found := editor_window_line(&view.optimistic_window, 0)
+	testing.expect(t, joined_found, "Backspace at line start should leave the joined line available")
+	if joined_found {
+		view.selection_anchor = joined_line.source_end
+		view.caret_byte = joined_line.source_end
+		_ = editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Delete})
+	}
+	expected_optimistic := "hello worXldsecondthird\r\nfourth"
+	testing.expect(t, bridge.editor_edit_lane_is_active(&app.editor_edit_lane) && len(app.editor_edits) == 10,
 		"the first request should be held in flight while later committed characters accumulate locally")
-	testing.expect(t, view.optimistic_window_ready && string(view.optimistic_window.source) == "hello worxabcdefld",
-		"committed text should update the bounded local source projection and caret before the backend can acknowledge it")
-	testing.expect(t, view.caret_byte == 16 && view.optimistic_pending_edits == 7,
-		"each committed character should advance the local caret and enter the serial queue")
+	testing.expect(t, view.optimistic_window_ready && string(view.optimistic_window.source) == expected_optimistic,
+		"typing, selection replacement, and cross-line deletion should update the bounded projection before backend acknowledgement")
+	testing.expect(t, view.caret_byte == 18 && view.optimistic_pending_edits == 10 &&
+		view.optimistic_window.end_line == 2 && view.optimistic_line_delta == -2,
+		"the replacement queue should preserve the caret and immediately reflect removed logical lines")
 	other_document_id := ""
 	for candidate in app.backend.state.documents {
 		if candidate.id != typing_document_id { other_document_id = candidate.id; break }
@@ -890,7 +917,7 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	for node_id in rt.order {
 		if node, found := rt.nodes[node_id]; found {
 			if node.key == fmt.tprintf("scratchpad-line:%s:0", document.id) {
-				optimistic_text_rendered = node.text == "hello worxabcdefld"
+				optimistic_text_rendered = node.text == "hello worXldsecondthird"
 			}
 			if node.key == "action-file-open" || node.key == "action-workspace-open" ||
 			   node.key == "action-document-close" || node.key == fmt.tprintf("tab:%s", typing_document_id) ||
@@ -917,10 +944,10 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 		max_bytes=bridge.MAX_VISIBLE_BYTES,
 		allocator=context.temp_allocator,
 	)
-	testing.expect(t, canonical_before_ack.ok && string(canonical_before_ack.visible_window.source) == "hello world",
+	testing.expect(t, canonical_before_ack.ok && string(canonical_before_ack.visible_window.source) == "hello world\r\nsecond\r\nthird\r\nfourth",
 		"the authoritative document should remain unchanged while only the first local edit is queued")
 	bridge.backend_command_result_destroy(&canonical_before_ack, context.temp_allocator)
-	for _ in 0..<7 { sync.sema_post(&gate) }
+	for _ in 0..<10 { sync.sema_post(&gate) }
 	for _ in 0..<120 {
 		if len(app.editor_edits) == 0 { break }
 		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
@@ -931,8 +958,8 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 	testing.expect(t, app.backend.state.active == other_document_id_copy,
 		"the queued tab switch should execute after the final authoritative edit acknowledgement")
 	document_after, found_after := find_document(&app.backend.state, document.id)
-	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+7,
-		"each committed character should converge through its own ordered authoritative revision")
+	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+10 && document_after.line_count == 2,
+		"every replacement should converge through its own ordered revision and update authoritative line topology")
 	canonical_after := bridge.backend_command(
 		&app.backend,
 		"read_visible_lines",
@@ -942,8 +969,8 @@ test_committed_text_is_optimistic_while_serial_caliber_edits_are_delayed :: proc
 		max_bytes=bridge.MAX_VISIBLE_BYTES,
 		allocator=context.temp_allocator,
 	)
-	testing.expect(t, canonical_after.ok && canonical_after.visible_window_owned && string(canonical_after.visible_window.source) == "hello worxabcdefld",
-		"the final Caliber visible window should match the complete local optimistic projection")
+	testing.expect(t, canonical_after.ok && canonical_after.visible_window_owned && string(canonical_after.visible_window.source) == expected_optimistic,
+		"the final Caliber visible window should match the complete local replacement projection")
 	bridge.backend_command_result_destroy(&canonical_after, context.temp_allocator)
 	testing.expect(t, app.backend.state_leases == 0 && app.backend.resource_leases == 0,
 		"the edit acknowledgement path should leave no Caliber publication or resource leases outstanding")

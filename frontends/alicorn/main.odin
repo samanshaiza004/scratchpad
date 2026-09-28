@@ -278,7 +278,16 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		editor_view_mark_active(view)
 	}
 	alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
-	heading := fmt.tprintf("%s  ·  %s  ·  %d lines", document_title(document.path), document.language, document.line_count)
+	display_line_count := document.line_count
+	if view.optimistic_pending_edits > 0 {
+		if view.optimistic_line_delta < 0 {
+			removed := u64(-view.optimistic_line_delta)
+			display_line_count = display_line_count-removed if removed < display_line_count else 1
+		} else {
+			display_line_count += u64(view.optimistic_line_delta)
+		}
+	}
+	heading := fmt.tprintf("%s  ·  %s  ·  %d lines", document_title(document.path), document.language, display_line_count)
 	alicorn.text(ui, heading)
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
@@ -300,13 +309,13 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.selection_anchor = editor_normalize_source_position(line, view.selection_anchor)
 		}
 	}
-	gutter_width := editor_line_number_gutter_width(document.line_count)
+	gutter_width := editor_line_number_gutter_width(display_line_count)
 	content_width := view.horizontal_extent
 	if window_matches {
 		measured_width := editor_window_content_width(window, 0, gutter_width)
 		content_width = editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
 	}
-	line_count := int(document.line_count)
+	line_count := int(display_line_count)
 	if line_count < 1 { line_count = 1 }
 	list := alicorn.virtual_list_begin(
 		ui,
@@ -1185,6 +1194,44 @@ editor_text_key :: proc(
 	view := &app.editor_views[view_index]
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches { return false }
+	if event.key == .Backspace || event.key == .Delete {
+		start_byte := view.caret_byte
+		end_byte := view.caret_byte
+		if view.selection_anchor != view.caret_byte {
+			start_byte = min(view.selection_anchor, view.caret_byte)
+			end_byte = max(view.selection_anchor, view.caret_byte)
+		} else {
+			line, line_found := editor_line_for_source(window, view.caret_byte)
+			if !line_found { return true }
+			if event.key == .Backspace {
+				if view.caret_byte > line.source_start {
+					previous, _, moved := editor_move_horizontal(line, view.caret_byte, view.caret_affinity, -1)
+					if !moved { return true }
+					start_byte = previous
+				} else if line.logical_line > window.start_line {
+					if previous, found := editor_window_line(window, line.logical_line-1); found {
+						start_byte = previous.source_end
+					} else { return true }
+				} else {
+					return true
+				}
+			} else {
+				if view.caret_byte < line.source_end {
+					next, _, moved := editor_move_horizontal(line, view.caret_byte, view.caret_affinity, 1)
+					if !moved { return true }
+					end_byte = next
+				} else if next, found := editor_window_line(window, line.logical_line+1); found {
+					end_byte = next.source_start
+				} else {
+					return true
+				}
+			}
+		}
+		if start_byte < end_byte {
+			_ = editor_apply_local_replace(app, rt, start_byte, end_byte, {}, start_byte, start_byte)
+		}
+		return true
+	}
 	old_caret := view.caret_byte
 	old_affinity := view.caret_affinity
 	next_caret := old_caret
@@ -1270,6 +1317,10 @@ editor_text_key :: proc(
 			mapped_caret, mapped_affinity, moved := editor_source_at_visual_x(rt, target, target_node, view.preferred_x)
 			if !moved { return true }
 			next_caret, next_affinity = mapped_caret, mapped_affinity
+		case .Backspace, .Delete:
+			// Handled by the replacement path above; keep the navigation switch
+			// exhaustive as the generic text-input key set grows.
+			return true
 		case:
 			return false
 		}
@@ -1309,6 +1360,91 @@ editor_pending_replacement_bytes :: proc(app: ^App) -> int {
 	return count
 }
 
+editor_apply_local_replace :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	start_byte, end_byte: u64,
+	replacement: []u8,
+	resulting_anchor, resulting_caret: u64,
+) -> bool {
+	if app == nil || rt == nil || !app.backend.started || end_byte < start_byte {
+		return false
+	}
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { return false }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok {
+		set_error(app, "Could not retain the active document's optimistic editor view.")
+		return false
+	}
+	view := &app.editor_views[view_index]
+	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches {
+		set_error(app, "The bounded source window is not ready for local editing.")
+		alicorn.invalidate_root(rt, "Scratchpad local replacement waited for a source window")
+		return false
+	}
+	window_end := window.start_byte + u64(len(window.source))
+	if start_byte < window.start_byte || end_byte > window_end {
+		set_error(app, "The replacement range is outside the loaded source window.")
+		alicorn.invalidate_root(rt, "Scratchpad replacement crossed a bounded window edge")
+		return false
+	}
+	if editor_pending_replacement_bytes(app)+len(replacement) > int(bridge.MAX_VISIBLE_BYTES) {
+		set_error(app, "Pending local edits reached the bounded 64 KiB queue limit.")
+		alicorn.invalidate_root(rt, "Scratchpad optimistic edit queue is full")
+		return false
+	}
+	local_start := int(start_byte-window.start_byte)
+	local_end := int(end_byte-window.start_byte)
+	removed_line_breaks := editor_count_line_breaks(window.source[local_start:local_end])
+	new_window, replaced, replace_error := editor_window_replace_bytes(window, start_byte, end_byte, replacement)
+	if !replaced {
+		set_error(app, replace_error)
+		alicorn.invalidate_root(rt, "Scratchpad could not apply a bounded optimistic replacement")
+		return false
+	}
+	document_id, id_error := strings.clone(document.id, context.allocator)
+	if id_error != nil {
+		editor_window_destroy(&new_window)
+		set_error(app, "Could not retain the edit's document identity.")
+		return false
+	}
+	replacement_copy, replacement_error := make([]u8, len(replacement), allocator=context.allocator)
+	if replacement_error != nil {
+		delete(document_id, context.allocator)
+		editor_window_destroy(&new_window)
+		set_error(app, "Could not retain replacement bytes for the serial edit queue.")
+		return false
+	}
+	if len(replacement) > 0 { mem.copy(rawptr(&replacement_copy[0]), rawptr(&replacement[0]), len(replacement)) }
+	app.editor_edit_sequence += 1
+	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
+	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
+	view.optimistic_window = new_window
+	view.optimistic_window_ready = true
+	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
+	view.optimistic_pending_edits += 1
+	view.optimistic_line_delta -= i64(removed_line_breaks)
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=app.editor_edit_sequence,
+		document_id=document_id,
+		start_byte=start_byte,
+		end_byte=end_byte,
+		replacement=replacement_copy,
+	})
+	view.selection_anchor = resulting_anchor
+	view.caret_byte = resulting_caret
+	view.anchor_affinity = .Trailing
+	view.caret_affinity = .Trailing
+	view.preferred_x_set = false
+	sync_menu_states(app)
+	accepted, dispatch_error := editor_dispatch_next_edit(app)
+	if !accepted { set_error(app, dispatch_error) } else { set_error(app, "") }
+	alicorn.invalidate_root(rt, "Scratchpad source replacement appeared optimistically")
+	return true
+}
+
 editor_remove_edit :: proc(app: ^App, index: int) {
 	if app == nil || index < 0 || index >= len(app.editor_edits) { return }
 	editor_edit_intent_destroy(&app.editor_edits[index])
@@ -1323,6 +1459,7 @@ editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 	if view_index := editor_view_find(app.editor_views[:], document_id); view_index >= 0 {
 		view := &app.editor_views[view_index]
 		view.optimistic_pending_edits = 0
+		view.optimistic_line_delta = 0
 		if view.optimistic_window_ready {
 			editor_window_destroy(&view.optimistic_window)
 			view.optimistic_window_ready = false
@@ -1394,6 +1531,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			if view.optimistic_pending_edits == 0 && view.optimistic_window_ready {
 				view.optimistic_window.editor_revision = result.command.edit.editor_revision
 				view.optimistic_window.application_rev = app.backend.state.application_rev
+				view.optimistic_line_delta = 0
 			}
 		}
 		editor_remove_edit(app, 0)
@@ -1448,66 +1586,11 @@ editor_text_input :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { set_error(app, "Could not retain the active document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
-	if view.selection_anchor != view.caret_byte {
-		set_error(app, "Selection replacement is not part of this initial committed-text slice.")
-		alicorn.invalidate_root(rt, "Scratchpad committed text requires a collapsed selection")
-		return
-	}
-	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
-	if !window_matches {
-		set_error(app, "The bounded source window is not ready for local text input.")
-		alicorn.invalidate_root(rt, "Scratchpad text input waited for a source window")
-		return
-	}
-	if editor_pending_replacement_bytes(app)+len(event.text) > int(bridge.MAX_VISIBLE_BYTES) {
-		set_error(app, "Pending local text input reached the bounded 64 KiB queue limit.")
-		alicorn.invalidate_root(rt, "Scratchpad optimistic edit queue is full")
-		return
-	}
 	replacement := transmute([]u8)event.text
-	new_window, replaced, replace_error := editor_window_replace_bytes(window, view.caret_byte, view.caret_byte, replacement)
-	if !replaced {
-		set_error(app, replace_error)
-		alicorn.invalidate_root(rt, "Scratchpad could not extend its bounded optimistic source window")
-		return
-	}
-	document_id, id_error := strings.clone(document.id, context.allocator)
-	if id_error != nil {
-		editor_window_destroy(&new_window)
-		set_error(app, "Could not retain the edit's document identity.")
-		return
-	}
-	replacement_copy, replacement_error := make([]u8, len(replacement), allocator=context.allocator)
-	if replacement_error != nil {
-		delete(document_id, context.allocator)
-		editor_window_destroy(&new_window)
-		set_error(app, "Could not retain committed text for the serial edit queue.")
-		return
-	}
-	if len(replacement) > 0 { mem.copy(rawptr(&replacement_copy[0]), rawptr(&replacement[0]), len(replacement)) }
-	app.editor_edit_sequence += 1
-	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
-	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
-	view.optimistic_window = new_window
-	view.optimistic_window_ready = true
-	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
-	view.optimistic_pending_edits += 1
-	append(&app.editor_edits, Editor_Edit_Intent{
-		sequence=app.editor_edit_sequence,
-		document_id=document_id,
-		start_byte=view.caret_byte,
-		end_byte=view.caret_byte,
-		replacement=replacement_copy,
-	})
-	view.caret_byte += u64(len(replacement))
-	view.selection_anchor = view.caret_byte
-	view.anchor_affinity = .Trailing
-	view.caret_affinity = .Trailing
-	view.preferred_x_set = false
-	sync_menu_states(app)
-	accepted, dispatch_error := editor_dispatch_next_edit(app)
-	if !accepted { set_error(app, dispatch_error) } else { set_error(app, "") }
-	alicorn.invalidate_root(rt, "Scratchpad committed text appeared optimistically")
+	start_byte := min(view.selection_anchor, view.caret_byte)
+	end_byte := max(view.selection_anchor, view.caret_byte)
+	resulting_caret := start_byte+u64(len(replacement))
+	_ = editor_apply_local_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret)
 }
 
 request_close_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {

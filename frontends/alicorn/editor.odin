@@ -55,6 +55,7 @@ Editor_View_State :: struct {
 	optimistic_window: Editor_Window,
 	optimistic_window_ready: bool,
 	optimistic_pending_edits: u64,
+	optimistic_line_delta: i64,
 }
 
 Editor_Edit_Intent :: struct {
@@ -495,6 +496,7 @@ editor_view_window :: proc(
 		editor_window_destroy(&view.optimistic_window, allocator)
 		view.optimistic_window_ready = false
 		view.optimistic_pending_edits = 0
+		view.optimistic_line_delta = 0
 		view.authoritative_revision = editor_revision
 	}
 	if base_ready && base != nil && base.document_id == document_id && base.editor_revision == editor_revision {
@@ -505,8 +507,8 @@ editor_view_window :: proc(
 }
 
 // editor_window_replace_bytes updates only the already-bounded source window.
-// The first optimistic-edit slice intentionally stays on one logical line;
-// newline policy and multi-line selection replacement are later edit work.
+// Replacements may remove line separators, but line-break insertion remains a
+// separate Scratchpad-owned Enter/paste semantic for a later slice.
 editor_window_replace_bytes :: proc(
 	source: ^Editor_Window,
 	start_byte, end_byte: u64,
@@ -522,7 +524,7 @@ editor_window_replace_bytes :: proc(
 	}
 	for value in replacement {
 		if value == '\n' || value == '\r' {
-			return {}, false, "committed line breaks are not part of the initial text-input slice"
+			return {}, false, "line-break insertion is not part of this replacement slice"
 		}
 	}
 	new_length := len(source.source)-int(end_byte-start_byte)+len(replacement)
@@ -533,6 +535,11 @@ editor_window_replace_bytes :: proc(
 	if allocation_error != nil { return {}, false, "could not allocate the optimistic source projection" }
 	local_start := int(start_byte-source.start_byte)
 	local_end := int(end_byte-source.start_byte)
+	removed_line_breaks := editor_count_line_breaks(source.source[local_start:local_end])
+	if removed_line_breaks > source.end_line-source.start_line {
+		delete(bytes, allocator)
+		return {}, false, "replacement removes more line breaks than the bounded window contains"
+	}
 	if local_start > 0 { mem.copy(rawptr(&bytes[0]), rawptr(&source.source[0]), local_start) }
 	if len(replacement) > 0 {
 		mem.copy(rawptr(&bytes[local_start]), rawptr(&replacement[0]), len(replacement))
@@ -556,7 +563,7 @@ editor_window_replace_bytes :: proc(
 		application_rev=source.application_rev,
 		editor_revision=source.editor_revision,
 		start_line=source.start_line,
-		end_line=source.end_line,
+		end_line=source.end_line-removed_line_breaks,
 		start_byte=source.start_byte,
 		line_byte_length=line_byte_length,
 		truncated=source.truncated,
@@ -565,6 +572,12 @@ editor_window_replace_bytes :: proc(
 	window, ok, message = editor_window_from_visible(&visible, allocator)
 	if !ok && len(visible.source) > 0 { delete(visible.source, allocator) }
 	return
+}
+
+editor_count_line_breaks :: proc(source: []u8) -> u64 {
+	count: u64 = 0
+	for value in source { if value == '\n' { count += 1 } }
+	return count
 }
 
 editor_window_from_visible :: proc(source: ^bridge.Visible_Window, allocator := context.allocator) -> (window: Editor_Window, ok: bool, message: string) {
