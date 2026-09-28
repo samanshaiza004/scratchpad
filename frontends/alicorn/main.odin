@@ -323,7 +323,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				.Container,
 				label="scratchpad-editor-logical-line",
 				key=row_key,
-				style=alicorn.layout_style(.Row, grow=1, height=EDITOR_ROW_HEIGHT, gap=8, align=.Center, clip=true),
+				style=editor_logical_row_style(),
 			)
 			alicorn.container_begin(
 				ui,
@@ -876,20 +876,29 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	return false
 }
 
-// Editor-local pointer placement uses the retained Runa run for the realized
-// text node, then translates its display byte boundary to Scratchpad source.
-// It deliberately emits no backend command: caret/selection are presentation.
+// Editor-local pointer placement is owned by the durable scroll region. It
+// finds the realized row under the pointer, hit-tests that retained Runa run,
+// then translates its display boundary to Scratchpad source. It deliberately
+// emits no backend command: caret/selection are presentation.
 editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
 	if event.kind != .Down || event.button != 1 { return }
 	app := cast(^App)state
-	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 { return }
+	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 || target != app.editor_scroll_owner { return }
+	owner, owner_found := rt.nodes[app.editor_scroll_owner]
+	if !owner_found || owner.scroll_viewport_width <= 0 || owner.scroll_viewport_height <= 0 { return }
+	// A scrollbar hit also reports the scroll owner. Keep the editor callback
+	// inside the content viewport so dragging/clicking scrollbar tracks never
+	// places a text caret behind the gutter.
+	if event.x < owner.bounds.x || event.x >= owner.bounds.x+owner.scroll_viewport_width ||
+	   event.y < owner.bounds.y || event.y >= owner.bounds.y+owner.scroll_viewport_height { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found || !app.editor_window_ready || app.editor_window.document_id != document.id || app.editor_window.editor_revision != document.editor_revision { return }
 	for row_target in app.editor_row_targets {
-		if row_target.node != target { continue }
+		row_node, row_found := rt.nodes[row_target.node]
+		if !row_found || event.y < row_node.bounds.y || event.y >= row_node.bounds.y+row_node.bounds.h { continue }
 		line, line_found := editor_window_line(&app.editor_window, row_target.logical_line)
 		if !line_found { return }
-		position, hit := alicorn.text_node_hit_test(rt, target, event.x, event.y)
+		position, hit := alicorn.text_node_hit_test(rt, row_target.node, event.x, event.y)
 		if !hit { return }
 		source_byte := editor_normalize_source_position(line, editor_display_to_source(line, position.byte))
 		view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)

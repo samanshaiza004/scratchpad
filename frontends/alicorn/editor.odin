@@ -9,6 +9,10 @@ EDITOR_ROW_HEIGHT :: f32(22)
 EDITOR_TAB_WIDTH :: 4
 EDITOR_LONG_LINE_CHUNK_BYTES :: u64(16 * 1024)
 
+editor_logical_row_style :: proc() -> alicorn.Layout_Style {
+	return alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT, gap=8, align=.Center, clip=true)
+}
+
 Editor_Display_Line :: struct {
 	logical_line:  u64,
 	source_start:  u64,

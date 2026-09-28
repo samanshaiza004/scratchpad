@@ -164,6 +164,47 @@ test_editor_projection_caret_movement_respects_grapheme_boundaries :: proc(t: ^t
 }
 
 @(test)
+test_editor_short_document_rows_keep_fixed_height :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 520})
+	ui, build := alicorn.begin_frame(&rt)
+	if !build { alicorn.destroy_runtime(&rt); return }
+	alicorn.container_begin(&ui, .Root, label="short-editor-root", style=alicorn.layout_style(.Column, width=800, height=520, clip=true))
+	list := alicorn.virtual_list_begin(
+		&ui,
+		2,
+		EDITOR_ROW_HEIGHT,
+		key=alicorn.key_string("short-editor-list"),
+		style=alicorn.layout_style(grow=1, clip=true),
+	)
+	row_ids: [2]alicorn.Node_ID
+	for position := list.first; position < list.last; position += 1 {
+		id := alicorn.container_begin(
+			&ui,
+			.Container,
+			label="short-editor-logical-row",
+			key=alicorn.key_string(fmt.tprintf("short-editor-row:%d", position)),
+			style=editor_logical_row_style(),
+		)
+		if position >= 0 && position < len(row_ids) { row_ids[position] = id }
+		alicorn.container_end(&ui)
+	}
+	alicorn.virtual_list_end(&ui, list)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+
+	row0, row0_ok := rt.nodes[row_ids[0]]
+	row1, row1_ok := rt.nodes[row_ids[1]]
+	testing.expect(t, row0_ok && row1_ok, "both short-document rows should be realized")
+	if row0_ok && row1_ok {
+		testing.expect(t, row0.bounds.h == EDITOR_ROW_HEIGHT && row1.bounds.h == EDITOR_ROW_HEIGHT,
+			"a short document must keep each source row at the fixed editor row height")
+		testing.expect(t, row1.bounds.y-row0.bounds.y == EDITOR_ROW_HEIGHT,
+			"unused viewport space must remain below short documents instead of spreading their rows")
+	}
+	alicorn.destroy_runtime(&rt)
+}
+
+@(test)
 test_editor_projection_accepts_multilingual_utf8_and_rejects_invalid_sequences :: proc(t: ^testing.T) {
 	multilingual := [?]u8{0xC3, 0xA9, 0xE0, 0xA4, 0x95, 0xD8, 0xA7, 0xD7, 0x90, 0xF0, 0x9F, 0x91, 0xA9, 0xE2, 0x80, 0x8D, 0xF0, 0x9F, 0x92, 0xBB}
 	line, ok := editor_project_line(multilingual[:], 0, 0, context.temp_allocator)
@@ -317,19 +358,29 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 			owner_node, owner_found := rt.nodes[app.editor_scroll_owner]
 			testing.expect(t, owner_found && owner_node.text_input_target && owner_node.focusable,
 				"the editor scroll owner should be retained as a generic text-input target")
-			hit, hit_ok := alicorn.text_node_hit_test(&rt, target.node, row_node.bounds.x+70, row_node.bounds.y+row_node.bounds.h/2)
+			click_x, click_y := row_node.bounds.x+70, row_node.bounds.y+row_node.bounds.h/2
+			hit, hit_ok := alicorn.text_node_hit_test(&rt, target.node, click_x, click_y)
 			testing.expect(t, hit_ok && hit.byte >= 0 && hit.byte <= len(row_node.text),
 				"the realized source row should expose a shaped-run hit-test in local display bytes")
 			document_revision := active.editor_revision
 			application_revision := app.backend.state.revision
-			editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Down, x=row_node.bounds.x+70, y=row_node.bounds.y+row_node.bounds.h/2, button=1}, target.node)
+			pointer_event := alicorn.Pointer_Event{kind=.Down, x=click_x, y=click_y, button=1}
+			pointer_target := alicorn.process_pointer(&rt, pointer_event)
+			testing.expect(t, pointer_target == app.editor_scroll_owner,
+				"the real retained hit-test should route source clicks to the durable generic text-input owner")
+			editor_pointer(rawptr(&app), &rt, pointer_event, pointer_target)
 			view_index := editor_view_find(app.editor_views[:], active.id)
 			testing.expect(t, rt.focused == app.editor_scroll_owner && view_index >= 0,
-				"clicking a virtual text row should focus the durable editor viewport and assign per-document caret state")
+				"a real pointer click should focus the durable editor viewport and assign per-document caret state")
 			if view_index >= 0 {
 				view := &app.editor_views[view_index]
 				testing.expect(t, view.caret_byte >= line.source_start && view.caret_byte <= line.source_end,
 					"pointer hit testing should map to a legal source byte within the clicked line")
+				semantic_focus_before_vertical_key := alicorn.semantic_focus_state(&rt).id
+				vertical_tree_handled := application_key(rawptr(&app), &rt, .Down)
+				testing.expect(t, !vertical_tree_handled && rt.focused == app.editor_scroll_owner &&
+					alicorn.semantic_focus_state(&rt).id == semantic_focus_before_vertical_key,
+					"vertical keys outside this editor slice must not fall through to workspace-tree navigation")
 				clicked_caret := view.caret_byte
 				right_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right})
 				testing.expect(t, right_handled && view.caret_byte > clicked_caret,
@@ -353,6 +404,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 			active_after, active_still_found := find_document(&app.backend.state, active.id)
 			testing.expect(t, active_still_found && active_after.editor_revision == document_revision && app.backend.state.revision == application_revision,
 				"read-only pointer and keyboard navigation must emit no Caliber mutation or revision change")
+			_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=click_x, y=click_y, button=1})
 		}
 	}
 
