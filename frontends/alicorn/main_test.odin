@@ -263,9 +263,15 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	content := make([dynamic]u8, 0, allocator=context.temp_allocator)
 	defer delete(content)
 	for index in 0..<26_150 {
+		if index == 1 {
+			append(&content, 'x')
+			append(&content, '\n')
+			continue
+		}
 		line := fmt.tprintf("line-%05d:", index)
 		for byte in transmute([]u8)line { append(&content, byte) }
-		for _ in 0..<(400-len(line)) { append(&content, 'x') }
+		target_bytes := 800 if index == 2 else 400
+		for _ in 0..<(target_bytes-len(line)) { append(&content, 'x') }
 		append(&content, '\n')
 	}
 	if err := os.write_entire_file_from_string(path, string(content[:])) ; err != nil {
@@ -376,6 +382,82 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 				view := &app.editor_views[view_index]
 				testing.expect(t, view.caret_byte >= line.source_start && view.caret_byte <= line.source_end,
 					"pointer hit testing should map to a legal source byte within the clicked line")
+				_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=click_x, y=click_y, button=1})
+				editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Up, x=click_x, y=click_y, button=1}, 0)
+
+				// The line's clickable horizontal area is the editor viewport, not
+				// only the glyph bounds. Clicking before text and after a short line
+				// should map to legal source line boundaries.
+				owner_node, _ = rt.nodes[app.editor_scroll_owner]
+				before_text_x := owner_node.bounds.x+2
+				before_text_y := row_node.bounds.y+row_node.bounds.h/2
+				before_event := alicorn.Pointer_Event{kind=.Down, x=before_text_x, y=before_text_y, button=1}
+				before_target := alicorn.process_pointer(&rt, before_event)
+				editor_pointer(rawptr(&app), &rt, before_event, before_target)
+				testing.expect(t, before_target == app.editor_scroll_owner && view.caret_byte == line.source_start,
+					"clicking before the first glyph should place the caret at the source line start")
+				_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=before_text_x, y=before_text_y, button=1})
+				editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Up, x=before_text_x, y=before_text_y, button=1}, 0)
+				short_node := alicorn.Node_ID(0)
+				for row in app.editor_row_targets {
+					if row.logical_line == 1 { short_node = row.node; break }
+				}
+				short_row, short_found := rt.nodes[short_node]
+				short_line, short_line_found := editor_window_line(&app.editor_window, 1)
+				if short_found && short_line_found {
+					far_right_x := owner_node.bounds.x+owner_node.scroll_viewport_width-4
+					far_right_y := short_row.bounds.y+short_row.bounds.h/2
+					right_event := alicorn.Pointer_Event{kind=.Down, x=far_right_x, y=far_right_y, button=1}
+					right_target := alicorn.process_pointer(&rt, right_event)
+					editor_pointer(rawptr(&app), &rt, right_event, right_target)
+					testing.expect(t, view.caret_byte == short_line.source_end,
+						"clicking beyond a short source line should place the caret at its end")
+					_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=far_right_x, y=far_right_y, button=1})
+					editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Up, x=far_right_x, y=far_right_y, button=1}, 0)
+				} else {
+					testing.expect(t, false, "the fixture's short logical row should be realized for line-edge hit testing")
+				}
+
+				// Dragging is captured by the stable scroll owner while selection
+				// endpoints move across independently retained text rows.
+				drag_start_x := row_node.bounds.x+90
+				drag_start_y := row_node.bounds.y+row_node.bounds.h/2
+				drag_down := alicorn.Pointer_Event{kind=.Down, x=drag_start_x, y=drag_start_y, button=1}
+				drag_target := alicorn.process_pointer(&rt, drag_down)
+				editor_pointer(rawptr(&app), &rt, drag_down, drag_target)
+				drag_anchor := view.selection_anchor
+				third_target := Editor_Row_Target{}
+				for row in app.editor_row_targets {
+					if row.logical_line == 2 { third_target = row; break }
+				}
+				drag_row, drag_row_found := rt.nodes[third_target.node]
+				drag_move := alicorn.Pointer_Event{kind=.Move, x=drag_row.bounds.x+150, y=drag_row.bounds.y+drag_row.bounds.h/2}
+				drag_move_target := alicorn.process_pointer(&rt, drag_move)
+				editor_pointer(rawptr(&app), &rt, drag_move, drag_move_target)
+				third_line, third_line_found := editor_window_line(&app.editor_window, 2)
+				testing.expect(t, drag_row_found && third_line_found && view.dragging_selection &&
+					view.selection_anchor == drag_anchor && view.caret_byte >= third_line.source_start && view.caret_byte <= third_line.source_end,
+					"captured pointer dragging should preserve the anchor and extend selection into the row under the pointer")
+				_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=drag_move.x, y=drag_move.y, button=1})
+				editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Up, x=drag_move.x, y=drag_move.y, button=1}, 0)
+				testing.expect(t, !view.dragging_selection, "pointer-up should release the frontend's drag-selection state")
+				cancel_down := alicorn.Pointer_Event{kind=.Down, x=drag_start_x, y=drag_start_y, button=1}
+				cancel_target := alicorn.process_pointer(&rt, cancel_down)
+				editor_pointer(rawptr(&app), &rt, cancel_down, cancel_target)
+				captured_before_cancel := rt.captured_node
+				cancel_event := alicorn.Pointer_Event{kind=.Cancel}
+				_ = alicorn.process_pointer(&rt, cancel_event)
+				editor_pointer(rawptr(&app), &rt, cancel_event, captured_before_cancel)
+				testing.expect(t, captured_before_cancel == app.editor_scroll_owner && rt.captured_node == 0 && !view.dragging_selection,
+					"native pointer-capture cancellation should release both Alicorn capture and local drag state")
+				// A plain click collapses the drag selection before testing the
+				// ordinary Left/Right contract.
+				reset_down := alicorn.Pointer_Event{kind=.Down, x=click_x, y=click_y, button=1}
+				reset_target := alicorn.process_pointer(&rt, reset_down)
+				editor_pointer(rawptr(&app), &rt, reset_down, reset_target)
+				_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=click_x, y=click_y, button=1})
+				editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Up, x=click_x, y=click_y, button=1}, 0)
+
 				semantic_focus_before_vertical_key := alicorn.semantic_focus_state(&rt).id
 				vertical_tree_handled := application_key(rawptr(&app), &rt, .Down)
 				testing.expect(t, !vertical_tree_handled && rt.focused == app.editor_scroll_owner &&
@@ -389,8 +471,59 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 				shift_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right, shift=true})
 				testing.expect(t, shift_handled && view.selection_anchor == anchor_before_extend && view.caret_byte > view.selection_anchor,
 					"Shift+Right should extend a directional frontend-local selection")
+				// Start at a nonzero column on a long row, then move through a one-character row and
+				// back. preferred_x must survive the short row and restore the same
+				// visual column on the following long row.
+				preferred_click_x := row_node.bounds.x+170
+				preferred_click_y := row_node.bounds.y+row_node.bounds.h/2
+				preferred_down := alicorn.Pointer_Event{kind=.Down, x=preferred_click_x, y=preferred_click_y, button=1}
+				preferred_target := alicorn.process_pointer(&rt, preferred_down)
+				editor_pointer(rawptr(&app), &rt, preferred_down, preferred_target)
+				_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=preferred_click_x, y=preferred_click_y, button=1})
+				editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Up, x=preferred_click_x, y=preferred_click_y, button=1}, 0)
+				first_caret := view.caret_byte
+				down_short := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Down})
+				short_caret := view.caret_byte
+				down_long := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Down, shift=true})
+				long_caret := view.caret_byte
+				selection_anchor_after_shift_down := view.selection_anchor
+				up_short := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Up, shift=true})
+				up_caret := view.caret_byte
+			down_restore := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Down, shift=true})
+				testing.expect(t, preferred_target == app.editor_scroll_owner && down_short && down_long && up_short && down_restore &&
+					view.preferred_x_set && short_line_found && short_caret == short_line.source_end &&
+					up_caret == short_caret && view.caret_byte == long_caret && long_caret > first_caret &&
+					view.selection_anchor == selection_anchor_after_shift_down && view.selection_anchor == short_caret,
+					"vertical motion should keep its preferred visual X across a short row and return to the original column")
+
+				// Page keys use the same local geometry and reveal the resulting
+				// logical row through the retained virtual-list viewport.
+				_ = editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Home})
+				page_down_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Page_Down})
+				page_down_line, page_down_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+				owner_after_page, owner_after_page_found := rt.nodes[app.editor_scroll_owner]
+				page_scroll_moved := owner_after_page_found && owner_after_page.scroll_offset_y > 0
+				page_up_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Page_Up})
+				page_up_line, page_up_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+				testing.expect(t, page_down_handled && page_down_line_found && page_down_line.logical_line > 0 && page_scroll_moved &&
+					page_up_handled && page_up_line_found && page_up_line.logical_line < page_down_line.logical_line,
+					"Page Down/Up should navigate by viewport-sized logical ranges and keep the caret visible")
+				page_anchor := view.selection_anchor
+				shift_page_down := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Page_Down, shift=true})
+				shift_page_line, shift_page_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+				shift_page_up := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Page_Up, shift=true})
+				shift_page_back_line, shift_page_back_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+				testing.expect(t, shift_page_down && shift_page_line_found && shift_page_up && shift_page_back_found &&
+					shift_page_line.logical_line > page_up_line.logical_line &&
+					shift_page_back_line.logical_line == page_up_line.logical_line && view.selection_anchor == page_anchor,
+					"Shift+Page Up/Down should extend and contract selection without moving its anchor")
+
+				_ = editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right, shift=true})
+				paint_line, paint_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+				paint_node_id := alicorn.Node_ID(0)
+				if paint_line_found { paint_node_id = editor_row_node_for_line(app.editor_row_targets[:], paint_line.logical_line) }
 				_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
-				row_node, row_found = rt.nodes[target.node]
+				row_node, row_found = rt.nodes[paint_node_id]
 				selection_commands, caret_commands := 0, 0
 				if row_found {
 					for command in row_node.paint {

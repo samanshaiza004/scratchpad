@@ -46,11 +46,94 @@ Editor_View_State :: struct {
 	caret_byte:        u64,
 	anchor_affinity:   alicorn.Text_Affinity,
 	caret_affinity:    alicorn.Text_Affinity,
+	preferred_x:       f32,
+	preferred_x_set:   bool,
+	dragging_selection: bool,
 }
 
 Editor_Row_Target :: struct {
 	node:         alicorn.Node_ID,
 	logical_line: u64,
+}
+
+editor_row_node_for_line :: proc(rows: []Editor_Row_Target, logical_line: u64) -> alicorn.Node_ID {
+	for row in rows {
+		if row.logical_line == logical_line { return row.node }
+	}
+	return 0
+}
+
+editor_temporary_text_run :: proc(rt: ^alicorn.Runtime, line: ^Editor_Display_Line) -> (run: alicorn.Text_Run, ok: bool) {
+	if rt == nil || line == nil { return }
+	return alicorn.text_run_build_with_overflow(
+		&rt.text_engine,
+		line.display,
+		16,
+		0,
+		context.temp_allocator,
+		context.temp_allocator,
+		.Monospace,
+		alicorn.FONT_WEIGHT_REGULAR,
+		.Clip,
+	)
+}
+
+// editor_visual_x_for_source measures the caret relative to the start of the
+// source lane, so horizontal scrolling does not change the preferred column.
+// Retained geometry is used for realized rows; a bounded one-line Runa product
+// is a fallback only while navigating to a neighboring row just outside the
+// current viewport realization.
+editor_visual_x_for_source :: proc(
+	rt: ^alicorn.Runtime,
+	line: ^Editor_Display_Line,
+	text_node: alicorn.Node_ID,
+	source_byte: u64,
+	affinity: alicorn.Text_Affinity,
+) -> (x: f32, ok: bool) {
+	if line == nil { return }
+	display_byte := editor_source_to_display(line, source_byte)
+	position := alicorn.Text_Position{byte=display_byte, affinity=affinity}
+	if node, found := rt.nodes[text_node]; found && text_node != 0 {
+		geometry := alicorn.text_node_caret_geometry(rt, text_node, position)
+		if geometry.valid { return geometry.rect.x-node.bounds.x, true }
+	}
+	run, built := editor_temporary_text_run(rt, line)
+	if !built { return }
+	defer alicorn.text_run_destroy(&run)
+	geometry := alicorn.text_run_caret_geometry(&run, position)
+	if geometry.valid { return geometry.rect.x, true }
+	return
+}
+
+// editor_source_at_visual_x maps a preferred source-lane X onto a target line
+// using the retained Runa run whenever that row is realized.
+editor_source_at_visual_x :: proc(
+	rt: ^alicorn.Runtime,
+	line: ^Editor_Display_Line,
+	text_node: alicorn.Node_ID,
+	visual_x: f32,
+) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
+	if line == nil { return }
+	position: alicorn.Text_Position
+	if node, found := rt.nodes[text_node]; found && text_node != 0 {
+		hit: bool
+		position, hit = alicorn.text_node_hit_test(
+			rt,
+			text_node,
+			node.bounds.x+visual_x,
+			node.bounds.y+node.bounds.h/2,
+		)
+		if !hit { return }
+	} else {
+		run, built := editor_temporary_text_run(rt, line)
+		if !built { return }
+		position = alicorn.text_run_hit_test(&run, visual_x, 0)
+		alicorn.text_run_destroy(&run)
+	}
+	source_byte = editor_normalize_source_position(line, editor_display_to_source(line, position.byte))
+	affinity = position.affinity
+	ok = true
+	return
 }
 
 Editor_View_Restore :: struct {

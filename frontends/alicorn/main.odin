@@ -876,41 +876,105 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	return false
 }
 
-// Editor-local pointer placement is owned by the durable scroll region. It
-// finds the realized row under the pointer, hit-tests that retained Runa run,
-// then translates its display boundary to Scratchpad source. It deliberately
-// emits no backend command: caret/selection are presentation.
-editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
-	if event.kind != .Down || event.button != 1 { return }
-	app := cast(^App)state
-	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 || target != app.editor_scroll_owner { return }
+editor_source_at_pointer :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	x, y: f32,
+	clamp_to_viewport := false,
+) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
+	if app == nil || rt == nil || app.editor_scroll_owner == 0 { return }
 	owner, owner_found := rt.nodes[app.editor_scroll_owner]
 	if !owner_found || owner.scroll_viewport_width <= 0 || owner.scroll_viewport_height <= 0 { return }
-	// A scrollbar hit also reports the scroll owner. Keep the editor callback
-	// inside the content viewport so dragging/clicking scrollbar tracks never
-	// places a text caret behind the gutter.
-	if event.x < owner.bounds.x || event.x >= owner.bounds.x+owner.scroll_viewport_width ||
-	   event.y < owner.bounds.y || event.y >= owner.bounds.y+owner.scroll_viewport_height { return }
+	left, top := owner.bounds.x, owner.bounds.y
+	right, bottom := left+owner.scroll_viewport_width, top+owner.scroll_viewport_height
+	hit_x, hit_y := x, y
+	if clamp_to_viewport {
+		hit_x = min(max(x, left), right-0.5)
+		hit_y = min(max(y, top), bottom-0.5)
+	} else if hit_x < left || hit_x >= right || hit_y < top || hit_y >= bottom {
+		return
+	}
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found || !app.editor_window_ready || app.editor_window.document_id != document.id || app.editor_window.editor_revision != document.editor_revision { return }
+	// Choose the realized row containing Y. During a captured drag, clamp into
+	// the nearest realized row so leaving the viewport selects its visible edge
+	// rather than dropping the interaction; autoscroll is a later slice.
+	best_distance := f32(1e30)
+	best_target: Editor_Row_Target
+	best_y := hit_y
 	for row_target in app.editor_row_targets {
 		row_node, row_found := rt.nodes[row_target.node]
-		if !row_found || event.y < row_node.bounds.y || event.y >= row_node.bounds.y+row_node.bounds.h { continue }
-		line, line_found := editor_window_line(&app.editor_window, row_target.logical_line)
-		if !line_found { return }
-		position, hit := alicorn.text_node_hit_test(rt, row_target.node, event.x, event.y)
-		if !hit { return }
-		source_byte := editor_normalize_source_position(line, editor_display_to_source(line, position.byte))
-		view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
-		if !view_ok { return }
-		view := &app.editor_views[view_index]
+		if !row_found || row_node.bounds.h <= 0 { continue }
+		if hit_y >= row_node.bounds.y && hit_y < row_node.bounds.y+row_node.bounds.h {
+			best_target, best_y = row_target, hit_y
+			best_distance = 0
+			break
+		}
+		row_y := min(max(hit_y, row_node.bounds.y), row_node.bounds.y+row_node.bounds.h-0.5)
+		distance := abs(hit_y-row_y)
+		if distance < best_distance {
+			best_distance = distance
+			best_target, best_y = row_target, row_y
+		}
+	}
+	if best_distance == 1e30 || (!clamp_to_viewport && best_distance > EDITOR_ROW_HEIGHT) { return }
+	line, line_found := editor_window_line(&app.editor_window, best_target.logical_line)
+	if !line_found { return }
+	position, hit := alicorn.text_node_hit_test(rt, best_target.node, hit_x, best_y)
+	if !hit { return }
+	return editor_normalize_source_position(line, editor_display_to_source(line, position.byte)), position.affinity, true
+}
+
+// Editor-local pointer placement is owned by the durable scroll region. The
+// generic text-input owner captures the pointer; realized rows provide only
+// shaped geometry, and Scratchpad retains caret/selection as source bytes.
+editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
+	app := cast(^App)state
+	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 { return }
+	if event.kind == .Cancel || event.kind == .Up {
+		drag_ended := false
+		for &view in app.editor_views {
+			if view.dragging_selection {
+				view.dragging_selection = false
+				drag_ended = true
+			}
+		}
+		if event.kind == .Up && drag_ended {
+			alicorn.invalidate_root(rt, "Scratchpad editor pointer selection ended")
+		}
+		return
+	}
+	if event.kind == .Move {
+		if document, found := find_document(&app.backend.state, app.backend.state.active); found {
+			if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
+				view := &app.editor_views[view_index]
+				if view.dragging_selection && rt.captured_node == app.editor_scroll_owner {
+					if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y, true); ok {
+						view.caret_byte = source_byte
+						view.caret_affinity = affinity
+						_ = alicorn.focus(rt, app.editor_scroll_owner)
+						alicorn.invalidate_root(rt, "Scratchpad read-only editor drag selection extended")
+					}
+				}
+			}
+		}
+		return
+	}
+	if event.kind != .Down || event.button != 1 || target != app.editor_scroll_owner { return }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { return }
+	view := &app.editor_views[view_index]
+	if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y); ok {
 		view.selection_anchor = source_byte
 		view.caret_byte = source_byte
-		view.anchor_affinity = position.affinity
-		view.caret_affinity = position.affinity
+		view.anchor_affinity = affinity
+		view.caret_affinity = affinity
+		view.preferred_x_set = false
+		view.dragging_selection = true
 		_ = alicorn.focus(rt, app.editor_scroll_owner)
 		alicorn.invalidate_root(rt, "Scratchpad read-only editor caret placed")
-		return
 	}
 }
 
@@ -986,9 +1050,42 @@ editor_text_key :: proc(
 		case .End:
 			next_caret = editor_normalize_source_position(line, line.source_end)
 			next_affinity = .Trailing
+		case .Up, .Down, .Page_Up, .Page_Down:
+			current_line := line.logical_line
+			owner_node, owner_found := rt.nodes[owner]
+			if !view.preferred_x_set {
+				if visual_x, measured := editor_visual_x_for_source(rt, line, editor_row_node_for_line(app.editor_row_targets[:], current_line), old_caret, old_affinity); measured {
+					view.preferred_x = visual_x
+					view.preferred_x_set = true
+				} else {
+					return true
+				}
+			}
+			step := u64(1)
+			if event.key == .Page_Up || event.key == .Page_Down {
+				page := f32(EDITOR_ROW_HEIGHT)
+				if owner_found && owner_node.scroll_viewport_height > 0 { page = owner_node.scroll_viewport_height }
+				step = u64(max(int(page/EDITOR_ROW_HEIGHT)-1, 1))
+			}
+			target_line := current_line
+			if event.key == .Up || event.key == .Page_Up {
+				target_line = current_line-step if current_line > step else 0
+			} else {
+				last_line := document.line_count-1 if document.line_count > 0 else 0
+				target_line = min(current_line+step, last_line)
+			}
+			target, target_found := editor_window_line(&app.editor_window, target_line)
+			if !target_found { return true }
+			target_node := editor_row_node_for_line(app.editor_row_targets[:], target_line)
+			mapped_caret, mapped_affinity, moved := editor_source_at_visual_x(rt, target, target_node, view.preferred_x)
+			if !moved { return true }
+			next_caret, next_affinity = mapped_caret, mapped_affinity
 		case:
 			return false
 		}
+	}
+	if event.key == .Left || event.key == .Right || event.key == .Home || event.key == .End {
+		view.preferred_x_set = false
 	}
 	if next_caret == old_caret && next_affinity == old_affinity { return true }
 	if !shift {
@@ -997,6 +1094,20 @@ editor_text_key :: proc(
 	}
 	view.caret_byte = next_caret
 	view.caret_affinity = next_affinity
+	if target_line, target_found := editor_line_for_source(&app.editor_window, next_caret); target_found {
+		_ = alicorn.virtual_list_ensure_visible(rt, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
+		if text_node := editor_row_node_for_line(app.editor_row_targets[:], target_line.logical_line); text_node != 0 {
+			if geometry := alicorn.text_node_caret_geometry(rt, text_node, alicorn.Text_Position{byte=editor_source_to_display(target_line, next_caret), affinity=next_affinity}); geometry.valid {
+				if owner_node, owner_found := rt.nodes[owner]; owner_found {
+					left, right := owner_node.bounds.x, owner_node.bounds.x+owner_node.scroll_viewport_width
+					next_x := owner_node.scroll_offset_x
+					if geometry.rect.x < left { next_x -= left-geometry.rect.x }
+					if geometry.rect.x+geometry.rect.w > right { next_x += geometry.rect.x+geometry.rect.w-right }
+					_ = alicorn.scroll_region_set_offset_x(rt, owner, next_x, "Scratchpad editor caret followed horizontally")
+				}
+			}
+		}
+	}
 	alicorn.invalidate_root(rt, "Scratchpad read-only editor caret navigation")
 	return true
 }
