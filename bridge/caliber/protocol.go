@@ -95,11 +95,12 @@ type ResourceDescriptor struct {
 }
 
 type EditAck struct {
-	DocumentID     string `json:"document_id"`
-	EditorRevision uint64 `json:"editor_revision"`
-	StartByte      uint64 `json:"start_byte"`
-	OldEndByte     uint64 `json:"old_end_byte"`
-	NewEndByte     uint64 `json:"new_end_byte"`
+	DocumentID         string `json:"document_id"`
+	EditorRevision     uint64 `json:"editor_revision"`
+	StartByte          uint64 `json:"start_byte"`
+	OldEndByte         uint64 `json:"old_end_byte"`
+	NewEndByte         uint64 `json:"new_end_byte"`
+	AppliedReplacement []int  `json:"applied_replacement,omitempty"`
 }
 
 // CloseDecision describes an application-owned close that needs an explicit

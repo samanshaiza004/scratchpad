@@ -60,11 +60,12 @@ Editor_View_State :: struct {
 }
 
 Editor_Edit_Intent :: struct {
-	sequence:    u64,
-	document_id: string,
-	start_byte:  u64,
-	end_byte:    u64,
-	replacement: []u8,
+	sequence:          u64,
+	document_id:       string,
+	start_byte:        u64,
+	end_byte:          u64,
+	replacement:       []u8,
+	wire_replacement:  []u8,
 }
 
 Editor_Row_Target :: struct {
@@ -269,6 +270,7 @@ editor_edit_intent_destroy :: proc(intent: ^Editor_Edit_Intent, allocator := con
 	if intent == nil { return }
 	if len(intent.document_id) > 0 { delete(intent.document_id, allocator) }
 	delete(intent.replacement, allocator)
+	delete(intent.wire_replacement, allocator)
 	intent^ = {}
 }
 
@@ -545,9 +547,52 @@ editor_view_window :: proc(
 	return nil, false
 }
 
+// editor_enter_projection mirrors the visible part of ScratchEditor.Enter for
+// immediate presentation. The actual command remains a literal LF so Go
+// chooses the authoritative document line ending and indentation; the edit
+// acknowledgement reconciles any difference in this prediction.
+editor_enter_projection :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	allocator := context.temp_allocator,
+) -> (replacement: []u8, ok: bool) {
+	if window == nil || line == nil || line.source_start < window.start_byte || line.source_end < line.source_start {
+		return {}, false
+	}
+	eol_length := 1
+	eol_crlf := false
+	for value, index in window.source {
+		if value != '\n' { continue }
+		if index > 0 && window.source[index-1] == '\r' {
+			eol_length = 2
+			eol_crlf = true
+		}
+		break
+	}
+	line_start := int(line.source_start-window.start_byte)
+	line_end := int(line.source_end-window.start_byte)
+	if line_start < 0 || line_end > len(window.source) || line_end < line_start { return {}, false }
+	indent_end := line_start
+	for indent_end < line_end {
+		value := window.source[indent_end]
+		if value != ' ' && value != '\t' { break }
+		indent_end += 1
+	}
+	result, allocation_error := make([]u8, eol_length+indent_end-line_start, allocator=allocator)
+	if allocation_error != nil { return {}, false }
+	if eol_crlf {
+		result[0], result[1] = '\r', '\n'
+	} else {
+		result[0] = '\n'
+	}
+	indent_length := indent_end-line_start
+	if indent_length > 0 {
+		mem.copy(rawptr(&result[eol_length]), rawptr(&window.source[line_start]), indent_length)
+	}
+	return result, true
+}
+
 // editor_window_replace_bytes updates only the already-bounded source window.
-// Replacements may remove line separators, but line-break insertion remains a
-// separate Scratchpad-owned Enter/paste semantic for a later slice.
 editor_window_replace_bytes :: proc(
 	source: ^Editor_Window,
 	start_byte, end_byte: u64,
@@ -561,11 +606,6 @@ editor_window_replace_bytes :: proc(
 	if end_byte > window_end {
 		return {}, false, "edit range crosses the loaded source-window boundary"
 	}
-	for value in replacement {
-		if value == '\n' || value == '\r' {
-			return {}, false, "line-break insertion is not part of this replacement slice"
-		}
-	}
 	new_length := len(source.source)-int(end_byte-start_byte)+len(replacement)
 	if new_length > EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES {
 		return {}, false, "optimistic source window exceeded its bounded capacity"
@@ -575,9 +615,14 @@ editor_window_replace_bytes :: proc(
 	local_start := int(start_byte-source.start_byte)
 	local_end := int(end_byte-source.start_byte)
 	removed_line_breaks := editor_count_line_breaks(source.source[local_start:local_end])
+	added_line_breaks := editor_count_line_breaks(replacement)
 	if removed_line_breaks > source.end_line-source.start_line {
 		delete(bytes, allocator)
 		return {}, false, "replacement removes more line breaks than the bounded window contains"
+	}
+	if source.end_line-source.start_line-removed_line_breaks+added_line_breaks > bridge.MAX_VISIBLE_LINES {
+		delete(bytes, allocator)
+		return {}, false, "replacement exceeds the bounded visible-line capacity"
 	}
 	if local_start > 0 { mem.copy(rawptr(&bytes[0]), rawptr(&source.source[0]), local_start) }
 	if len(replacement) > 0 {
@@ -602,7 +647,7 @@ editor_window_replace_bytes :: proc(
 		application_rev=source.application_rev,
 		editor_revision=source.editor_revision,
 		start_line=source.start_line,
-		end_line=source.end_line-removed_line_breaks,
+		end_line=source.end_line-removed_line_breaks+added_line_breaks,
 		start_byte=source.start_byte,
 		line_byte_length=line_byte_length,
 		truncated=source.truncated,
@@ -617,6 +662,45 @@ editor_count_line_breaks :: proc(source: []u8) -> u64 {
 	count: u64 = 0
 	for value in source { if value == '\n' { count += 1 } }
 	return count
+}
+
+editor_bytes_equal :: proc(left, right: []u8) -> bool {
+	if len(left) != len(right) { return false }
+	for value, index in left { if value != right[index] { return false } }
+	return true
+}
+
+// Maps source boundaries around a backend-canonicalized replacement. Matching
+// prefix/suffix bytes preserve positions within the inserted indentation even
+// when the authoritative line ending differs from the optimistic prediction.
+editor_rebase_replacement_position :: proc(
+	position, start_byte: u64,
+	old_replacement, new_replacement: []u8,
+) -> u64 {
+	old_length := u64(len(old_replacement))
+	new_length := u64(len(new_replacement))
+	old_end := start_byte+old_length
+	if position <= start_byte { return position }
+	if position >= old_end { return position-old_length+new_length }
+	prefix := 0
+	limit := min(len(old_replacement), len(new_replacement))
+	for prefix < limit && old_replacement[prefix] == new_replacement[prefix] { prefix += 1 }
+	suffix := 0
+	for suffix < min(len(old_replacement)-prefix, len(new_replacement)-prefix) &&
+		old_replacement[len(old_replacement)-1-suffix] == new_replacement[len(new_replacement)-1-suffix] {
+		suffix += 1
+	}
+	relative := int(position-start_byte)
+	old_middle_end := len(old_replacement)-suffix
+	new_middle_end := len(new_replacement)-suffix
+	if relative <= prefix { return start_byte+u64(relative) }
+	if relative >= old_middle_end {
+		return start_byte+u64(new_middle_end+relative-old_middle_end)
+	}
+	// The only expected interior mismatch is a normalized line ending (LF vs
+	// CRLF). A source boundary after it belongs after the complete canonical
+	// ending, which is the far edge of the changed middle.
+	return start_byte+u64(new_middle_end)
 }
 
 editor_window_from_visible :: proc(source: ^bridge.Visible_Window, allocator := context.allocator) -> (window: Editor_Window, ok: bool, message: string) {

@@ -197,6 +197,7 @@ Edit_Ack :: struct {
 	start_byte:      u64    `json:"start_byte"`,
 	old_end_byte:    u64    `json:"old_end_byte"`,
 	new_end_byte:    u64    `json:"new_end_byte"`,
+	applied_replacement: []u8 `json:"applied_replacement"`,
 }
 
 Directory_Listing :: struct {
@@ -789,6 +790,7 @@ Backend_Command_Result :: struct {
 	directory_listing_owned: bool,
 	close_id_owned: bool,
 	edit_document_id_owned: bool,
+	edit_applied_replacement_owned: bool,
 	visible_window_owned: bool,
 }
 
@@ -874,6 +876,17 @@ backend_command :: proc(
 		result.edit = response.edit
 		result.edit.document_id, _ = strings.clone(response.edit.document_id, allocator)
 		result.edit_document_id_owned = len(result.edit.document_id) > 0
+		if len(response.edit.applied_replacement) > 0 {
+			applied_copy, allocation_error := make([]u8, len(response.edit.applied_replacement), allocator=allocator)
+			if allocation_error != nil {
+				backend_response_destroy(&response, allocator)
+				backend_command_result_destroy(&result, allocator)
+				return Backend_Command_Result{code="allocation_failed", message="could not retain applied replacement bytes"}
+			}
+			mem.copy(rawptr(&applied_copy[0]), rawptr(&response.edit.applied_replacement[0]), len(response.edit.applied_replacement))
+			result.edit.applied_replacement = applied_copy
+			result.edit_applied_replacement_owned = true
+		}
 	}
 	code_copy, code_clone_err := strings.clone(response.outcome.code, allocator)
 	result.code = code_copy
@@ -937,6 +950,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.directory_listing_owned { directory_listing_destroy(&result.directory_listing, allocator) }
 	if result.close_id_owned { delete(result.close_decision.document_id, allocator) }
 	if result.edit_document_id_owned { delete(result.edit.document_id, allocator) }
+	if result.edit_applied_replacement_owned { delete(result.edit.applied_replacement, allocator) }
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	result^ = {}
 }
@@ -1488,6 +1502,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.close_decision.document_id, allocator)
 	delete(response.resource.document_id, allocator)
 	delete(response.edit.document_id, allocator)
+	delete(response.edit.applied_replacement, allocator)
 	directory_listing_destroy(&response.directory_listing, allocator)
 	response^ = {}
 }

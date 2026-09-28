@@ -1,6 +1,6 @@
 # Alicorn editing ownership contract
 
-Status: Phase 4C.1 committed-text insertion implemented. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not a complete editor specification. Editing remains intentionally limited; selection replacement, deletion, undo/redo, clipboard, and IME parity are not claimed.
+Status: Phase 4C.1–4C.4 implemented: optimistic insertion/replacement, deletion, stale recovery, and Scratchpad-owned Enter semantics. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not a complete editor specification. Clipboard, undo/redo, editor IME, and full editor parity are not claimed.
 
 ## Ownership
 
@@ -25,7 +25,7 @@ The frontend may keep bounded visible source windows and an optimistic projectio
 4. Whole-document bytes never cross Caliber. Source transfer remains bounded to the requested visible/resource window.
 5. Every source mutation must eventually converge to an authoritative Scratchpad editor revision. Optimistic frontend state is pending until accepted or reconciled with that authority.
 
-Committed text is projected locally before dispatch. The frontend retains ordered edit intents and sends only one `replace_document` request at a time; later keystrokes remain local until each preceding editor-revision acknowledgement arrives. No new backend API or protocol was added. Caliber carries bounded edit commands and their lifecycle; it does not become an editor model or a second source of document truth.
+Committed source edits are projected locally before dispatch. The frontend retains ordered edit intents and sends only one existing `replace_document` request at a time; later edits remain local until each preceding editor-revision acknowledgement arrives. Enter sends a literal LF through that same range-replacement command, allowing Scratchpad's Go editor to choose the document's line-ending convention and leading indentation. The existing acknowledgement now includes the effective inserted bytes when those semantics transform the requested LF, so the frontend can reconcile its projection and rebase queued offsets without synchronous whole-document access. Caliber carries bounded edit commands, acknowledgements, and their lifecycle; it does not become an editor model or a second source of document truth.
 
 ## Phase 4B — interactive read-only substrate
 
@@ -35,4 +35,8 @@ The Alicorn surface gives the durable editor viewport text-input focus, places a
 
 Committed SDL text is applied immediately to a per-document optimistic copy of the bounded visible source window; the caret advances before the foreign command is dispatched. The frontend queues source insertions locally and permits exactly one in-flight `replace_document` request. Each acknowledgement advances the expected Scratchpad editor revision before the next queued request is sent. Caliber leases remain short-lived and the UI thread consumes the publication after the worker command finishes.
 
-This slice accepts insertion only at a collapsed selection and within the loaded bounded window. It intentionally does not implement line breaks, selection replacement, Backspace/Delete, clipboard, undo/redo, indentation policy, or document-view IME composition. Save, close, and navigation commands are held off while local edits are pending so they cannot overtake queued text. Headless integration holds the worker before dispatch, verifies immediate `hello worxabcdefld` local presentation while Go still owns `hello world`, then releases the lane and checks seven serial editor revisions converge to the same bytes.
+This slice accepts insertion within the loaded bounded window. Save, close, and navigation actions remain visually stable and are deferred behind pending edits, so they cannot overtake queued text without leaking transport latency into the chrome. Headless integration holds the worker before dispatch, verifies immediate local presentation while Go still owns the original bytes, then releases the lane and checks serial editor revisions converge.
+
+## Phase 4C.2–4C.4 — replacement, recovery, and Enter
+
+Selection replacement and Backspace/Delete use the same local range-replacement path, including cross-line joins. Stale acknowledgements discard the dependent optimistic chain, reload a fresh authoritative bounded window, normalize the caret, and allow editing to resume. Enter is projected locally using the visible line ending/indentation, while Scratchpad remains authoritative for the actual line ending and indentation rule. If its effective replacement differs, the acknowledgement patches the optimistic source and rebases queued edit ranges and local positions. The regression holds the serial lane across two Enter operations and a subsequent character, verifies immediate multi-line/line-count presentation, then checks authoritative revision and bytes converge. Clipboard, undo/redo, and editor IME remain subsequent slices.

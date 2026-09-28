@@ -495,6 +495,62 @@ func TestReplaceDocumentIsRevisionedAndAcknowledged(t *testing.T) {
 	}
 }
 
+func TestReplaceDocumentEnterAcknowledgesScratchpadIndentAndLineEnding(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "enter.txt")
+	writeFile(t, path, "  α\r\n  β")
+
+	runtime := newStartedRuntime(t, workspace)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       70,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path",
+		Path:            path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := state.Active
+	start := uint64(len([]byte("  α")))
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       71,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "replace_document",
+		DocumentID:      string(id),
+		EditorRevision:  state.Documents[0].EditorRevision,
+		StartByte:       start,
+		EndByte:         start,
+		Replacement:     []int{'\n'},
+	}))
+	response := decodeResponse(t, runtime.Pump())
+	if !response.OK || response.Edit == nil {
+		t.Fatalf("Enter response = %+v", response)
+	}
+	applied := make([]byte, len(response.Edit.AppliedReplacement))
+	for i, value := range response.Edit.AppliedReplacement {
+		applied[i] = byte(value)
+	}
+	if want := []byte("\r\n  "); !bytes.Equal(applied, want) {
+		t.Fatalf("applied Enter replacement = %q, want %q", applied, want)
+	}
+	if response.Edit.NewEndByte != start+uint64(len([]byte("\r\n  "))) {
+		t.Fatalf("Enter new end = %d", response.Edit.NewEndByte)
+	}
+	state = latestStateForTest(t, runtime)
+	if got := state.Documents[0].LineCount; got != 3 {
+		t.Fatalf("line count after Enter = %d, want 3", got)
+	}
+	if got := string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()); got != "  α\r\n  \r\n  β" {
+		t.Fatalf("authoritative Enter text = %q", got)
+	}
+}
+
 func TestReplaceDocumentRejectsInvalidPackets(t *testing.T) {
 	runtime := newStartedRuntime(t, "")
 	defer stopRuntime(t, runtime)

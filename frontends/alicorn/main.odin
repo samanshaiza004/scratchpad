@@ -1059,6 +1059,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		alicorn.invalidate_root(rt, "dirty close cancelled by Escape")
 		return true
 	}
+	if key == .Return && app.editor_scroll_owner != 0 && rt.focused == app.editor_scroll_owner {
+		return editor_insert_newline(app, rt)
+	}
 	if app.tree_scroll_owner != 0 && rt.focused == app.tree_scroll_owner {
 		#partial switch key {
 		case .Up, .Down, .Page_Up, .Page_Down, .Home, .End:
@@ -1370,6 +1373,18 @@ editor_apply_local_replace :: proc(
 	replacement: []u8,
 	resulting_anchor, resulting_caret: u64,
 ) -> bool {
+	return editor_apply_local_replace_with_wire(
+		app, rt, start_byte, end_byte, replacement, {}, resulting_anchor, resulting_caret,
+	)
+}
+
+editor_apply_local_replace_with_wire :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	start_byte, end_byte: u64,
+	replacement, wire_replacement: []u8,
+	resulting_anchor, resulting_caret: u64,
+) -> bool {
 	if app == nil || rt == nil || !app.backend.started || end_byte < start_byte {
 		return false
 	}
@@ -1391,6 +1406,11 @@ editor_apply_local_replace :: proc(
 	if start_byte < window.start_byte || end_byte > window_end {
 		set_error(app, "The replacement range is outside the loaded source window.")
 		alicorn.invalidate_root(rt, "Scratchpad replacement crossed a bounded window edge")
+		return false
+	}
+	if editor_window_is_long_line_chunk(window) && editor_count_line_breaks(replacement) > 0 {
+		set_error(app, "Enter is unavailable inside a partially loaded long line; move to a complete line window first.")
+		alicorn.invalidate_root(rt, "Scratchpad deferred a line break beyond the bounded long-line projection")
 		return false
 	}
 	if editor_pending_replacement_bytes(app)+len(replacement) > int(bridge.MAX_VISIBLE_BYTES) {
@@ -1421,6 +1441,18 @@ editor_apply_local_replace :: proc(
 		return false
 	}
 	if len(replacement) > 0 { mem.copy(rawptr(&replacement_copy[0]), rawptr(&replacement[0]), len(replacement)) }
+	wire_copy: []u8
+	if len(wire_replacement) > 0 && !editor_bytes_equal(replacement, wire_replacement) {
+		wire_copy, replacement_error = make([]u8, len(wire_replacement), allocator=context.allocator)
+		if replacement_error != nil {
+			delete(document_id, context.allocator)
+			delete(replacement_copy, context.allocator)
+			editor_window_destroy(&new_window)
+			set_error(app, "Could not retain the authoritative replacement bytes for the serial edit queue.")
+			return false
+		}
+		mem.copy(rawptr(&wire_copy[0]), rawptr(&wire_replacement[0]), len(wire_replacement))
+	}
 	app.editor_edit_sequence += 1
 	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
 	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
@@ -1428,13 +1460,14 @@ editor_apply_local_replace :: proc(
 	view.optimistic_window_ready = true
 	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
 	view.optimistic_pending_edits += 1
-	view.optimistic_line_delta -= i64(removed_line_breaks)
+	view.optimistic_line_delta += i64(editor_count_line_breaks(replacement))-i64(removed_line_breaks)
 	append(&app.editor_edits, Editor_Edit_Intent{
 		sequence=app.editor_edit_sequence,
 		document_id=document_id,
 		start_byte=start_byte,
 		end_byte=end_byte,
 		replacement=replacement_copy,
+		wire_replacement=wire_copy,
 	})
 	view.selection_anchor = resulting_anchor
 	view.caret_byte = resulting_caret
@@ -1445,6 +1478,45 @@ editor_apply_local_replace :: proc(
 	accepted, dispatch_error := editor_dispatch_next_edit(app)
 	if !accepted { set_error(app, dispatch_error) } else { set_error(app, "") }
 	alicorn.invalidate_root(rt, "Scratchpad source replacement appeared optimistically")
+	return true
+}
+
+editor_insert_newline :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || app.editor_scroll_owner == 0 { return false }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { return true }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { return true }
+	view := &app.editor_views[view_index]
+	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches {
+		set_error(app, "The bounded source window is not ready for Enter.")
+		alicorn.invalidate_root(rt, "Scratchpad Enter waited for the bounded source window")
+		return true
+	}
+	start_byte := min(view.selection_anchor, view.caret_byte)
+	end_byte := max(view.selection_anchor, view.caret_byte)
+	line, line_found := editor_line_for_source(window, start_byte)
+	if !line_found {
+		set_error(app, "The source line needed for Enter is outside the loaded window.")
+		return true
+	}
+	replacement, projection_ok := editor_enter_projection(window, line)
+	if !projection_ok {
+		set_error(app, "Could not project Scratchpad's Enter indentation into the visible editor window.")
+		return true
+	}
+	caret := start_byte+u64(len(replacement))
+	_ = editor_apply_local_replace_with_wire(
+		app,
+		rt,
+		start_byte,
+		end_byte,
+		replacement,
+		[]u8{'\n'},
+		caret,
+		caret,
+	)
 	return true
 }
 
@@ -1499,6 +1571,8 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 	if !view_ok { return false, "could not retain the document's authoritative editor revision" }
 	view := &app.editor_views[view_index]
 	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
+	wire_replacement := edit.replacement
+	if len(edit.wire_replacement) > 0 { wire_replacement = edit.wire_replacement }
 	return bridge.editor_edit_lane_submit(
 		&app.editor_edit_lane,
 		edit.sequence,
@@ -1507,8 +1581,46 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 		view.authoritative_revision,
 		edit.start_byte,
 		edit.end_byte,
-		edit.replacement,
+		wire_replacement,
 	)
+}
+
+editor_reconcile_applied_replacement :: proc(
+	app: ^App,
+	view: ^Editor_View_State,
+	intent: ^Editor_Edit_Intent,
+	applied: []u8,
+) -> bool {
+	if app == nil || view == nil || intent == nil || !view.optimistic_window_ready { return false }
+	if editor_bytes_equal(intent.replacement, applied) { return true }
+	old_end := intent.start_byte+u64(len(intent.replacement))
+	window, replaced, _ := editor_window_replace_bytes(
+		&view.optimistic_window,
+		intent.start_byte,
+		old_end,
+		applied,
+	)
+	if !replaced { return false }
+	view.optimistic_line_delta += i64(editor_count_line_breaks(applied))-i64(editor_count_line_breaks(intent.replacement))
+	editor_window_destroy(&view.optimistic_window)
+	view.optimistic_window = window
+	for index in 1..<len(app.editor_edits) {
+		app.editor_edits[index].start_byte = editor_rebase_replacement_position(
+			app.editor_edits[index].start_byte,
+			intent.start_byte,
+			intent.replacement,
+			applied,
+		)
+		app.editor_edits[index].end_byte = editor_rebase_replacement_position(
+			app.editor_edits[index].end_byte,
+			intent.start_byte,
+			intent.replacement,
+			applied,
+		)
+	}
+	view.selection_anchor = editor_rebase_replacement_position(view.selection_anchor, intent.start_byte, intent.replacement, applied)
+	view.caret_byte = editor_rebase_replacement_position(view.caret_byte, intent.start_byte, intent.replacement, applied)
+	return true
 }
 
 editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Editor_Edit_Lane_Result) {
@@ -1531,8 +1643,38 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 	}
 	intent := app.editor_edits[0]
 	if result.command.ok && result.command.edit.document_id == intent.document_id {
+		acknowledged_length := len(intent.replacement)
+		if len(result.command.edit.applied_replacement) > 0 {
+			acknowledged_length = len(result.command.edit.applied_replacement)
+		}
+		ack_matches := result.command.edit.start_byte == intent.start_byte &&
+		               result.command.edit.old_end_byte == intent.end_byte &&
+		               result.command.edit.new_end_byte == result.command.edit.start_byte+u64(acknowledged_length)
+		if !ack_matches {
+			failed_document, _ := strings.clone(intent.document_id, context.allocator)
+			set_error(app, "Scratchpad returned an edit acknowledgement with inconsistent source ranges; reloading authoritative text.")
+			editor_discard_document_edits(app, failed_document)
+			delete(failed_document, context.allocator)
+			editor_views_prune(app)
+			sync_menu_states(app)
+			if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+			if rt != nil { alicorn.invalidate_root(rt, "Scratchpad recovered from an inconsistent edit acknowledgement") }
+			return
+		}
 		if view_index := editor_view_find(app.editor_views[:], intent.document_id); view_index >= 0 {
 			view := &app.editor_views[view_index]
+			if len(result.command.edit.applied_replacement) > 0 &&
+			   !editor_reconcile_applied_replacement(app, view, &app.editor_edits[0], result.command.edit.applied_replacement) {
+				failed_document, _ := strings.clone(intent.document_id, context.allocator)
+				set_error(app, "Could not reconcile Scratchpad's canonical Enter text; reloading authoritative text.")
+				editor_discard_document_edits(app, failed_document)
+				delete(failed_document, context.allocator)
+				editor_views_prune(app)
+				sync_menu_states(app)
+				if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+				if rt != nil { alicorn.invalidate_root(rt, "Scratchpad reloaded after edit acknowledgement reconciliation failed") }
+				return
+			}
 			if view.optimistic_pending_edits > 0 { view.optimistic_pending_edits -= 1 }
 			view.authoritative_revision = result.command.edit.editor_revision
 			if view.optimistic_pending_edits == 0 && view.optimistic_window_ready {

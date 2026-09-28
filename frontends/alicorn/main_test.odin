@@ -743,6 +743,61 @@ editor_edit_test_wake :: proc(data: rawptr) {
 }
 
 @(test)
+test_canonical_enter_ack_rebases_queued_source_positions :: proc(t: ^testing.T) {
+	source, source_error := make([]u8, len("a\nXb"), allocator=context.allocator)
+	if source_error != nil { testing.expect(t, false, "could not allocate the optimistic Enter fixture"); return }
+	copy(source, "a\nXb")
+	visible := bridge.Visible_Window{
+		document_id="enter-rebase-test",
+		start_line=0,
+		end_line=2,
+		start_byte=0,
+		source=source,
+	}
+	window, window_ok, window_error := editor_window_from_visible(&visible, context.allocator)
+	testing.expect(t, window_ok, window_error)
+	if !window_ok { if len(visible.source) > 0 { delete(visible.source, context.allocator) }; return }
+	app: App
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	view := Editor_View_State{
+		optimistic_window=window,
+		optimistic_window_ready=true,
+		selection_anchor=3,
+		caret_byte=3,
+	}
+	first_id, first_id_error := strings.clone("enter-rebase-test", context.allocator)
+	first_bytes, first_bytes_error := make([]u8, 1, allocator=context.allocator)
+	second_id, second_id_error := strings.clone("enter-rebase-test", context.allocator)
+	second_bytes, second_bytes_error := make([]u8, 1, allocator=context.allocator)
+	if first_id_error != nil || first_bytes_error != nil || second_id_error != nil || second_bytes_error != nil {
+		testing.expect(t, false, "could not allocate queued Enter-rebase intents")
+		delete(first_id, context.allocator)
+		delete(first_bytes, context.allocator)
+		delete(second_id, context.allocator)
+		delete(second_bytes, context.allocator)
+		editor_window_destroy(&view.optimistic_window, context.allocator)
+		delete(app.editor_edits)
+		return
+	}
+	first_bytes[0] = '\n'
+	second_bytes[0] = 'X'
+	append(&app.editor_edits,
+		Editor_Edit_Intent{document_id=first_id, start_byte=1, end_byte=1, replacement=first_bytes},
+		Editor_Edit_Intent{document_id=second_id, start_byte=2, end_byte=2, replacement=second_bytes},
+	)
+	applied := []u8{'\r', '\n', ' ', ' '}
+	reconciled := editor_reconcile_applied_replacement(&app, &view, &app.editor_edits[0], applied)
+	testing.expect(t, reconciled && string(view.optimistic_window.source) == "a\r\n  Xb",
+		"canonical CRLF plus Scratchpad indentation should replace the optimistic LF without losing later local text")
+	testing.expect(t, app.editor_edits[1].start_byte == 5 && app.editor_edits[1].end_byte == 5 &&
+		view.caret_byte == 6 && view.selection_anchor == 6,
+		"acknowledging Scratchpad's longer Enter replacement should rebase queued edits and the local caret")
+	for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+	delete(app.editor_edits)
+	editor_window_destroy(&view.optimistic_window, context.allocator)
+}
+
+@(test)
 test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testing.T) {
 	sync.mutex_lock(&backend_integration_test_mutex)
 	defer sync.mutex_unlock(&backend_integration_test_mutex)
@@ -754,7 +809,7 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	defer _ = os.remove_all(workspace)
 	path := fmt.tprintf("%s/typing.txt", workspace)
 	other_path := fmt.tprintf("%s/other.txt", workspace)
-	if write_error := os.write_entire_file_from_string(path, "hello world\r\nsecond\r\nthird\r\nfourth"); write_error != nil {
+	if write_error := os.write_entire_file_from_string(path, "hello world\r\nsecond\r\nthird\r\n  fourth"); write_error != nil {
 		testing.expect(t, false, "could not create the committed-text source fixture")
 		return
 	}
@@ -908,14 +963,31 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 		view.caret_byte = joined_line.source_end
 		_ = editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Delete})
 	}
-	expected_optimistic := "hello worXldsecondthird\r\nfourth"
-	testing.expect(t, bridge.editor_edit_lane_is_active(&app.editor_edit_lane) && len(app.editor_edits) == 10,
-		"the first request should be held in flight while later committed characters accumulate locally")
+	fourth_line, fourth_found := editor_window_line(&view.optimistic_window, 1)
+	testing.expect(t, fourth_found, "the trailing indented line should remain addressable after cross-line joins")
+	if fourth_found {
+		view.selection_anchor = fourth_line.source_start+2
+		view.caret_byte = fourth_line.source_start+2
+		first_enter_handled := application_key(rawptr(&app), &rt, .Return)
+		second_enter_handled := application_key(rawptr(&app), &rt, .Return)
+		testing.expect(t, first_enter_handled && second_enter_handled,
+			"the focused editor viewport should consume both Enter keys")
+		editor_text_input(
+			rawptr(&app),
+			&rt,
+			app.editor_scroll_owner,
+			host.Application_Text_Input_Event{kind=.Commit, text="X"},
+		)
+	}
+	expected_optimistic := "hello worXldsecondthird\r\n  \r\n  \r\n  Xfourth"
+	testing.expect(t, bridge.editor_edit_lane_is_active(&app.editor_edit_lane) && len(app.editor_edits) == 13,
+		"the first request should be held in flight while replacements and two Enter operations accumulate locally")
 	testing.expect(t, view.optimistic_window_ready && string(view.optimistic_window.source) == expected_optimistic,
-		"typing, selection replacement, and cross-line deletion should update the bounded projection before backend acknowledgement")
-	testing.expect(t, view.caret_byte == 18 && view.optimistic_pending_edits == 10 &&
-		view.optimistic_window.end_line == 2 && view.optimistic_line_delta == -2,
-		"the replacement queue should preserve the caret and immediately reflect removed logical lines")
+		"typing, selection replacement, cross-line deletion, and Scratchpad-indented Enter should update the bounded projection before backend acknowledgement")
+	testing.expect(t, view.caret_byte == u64(len("hello worXldsecondthird\r\n  \r\n  \r\n  X")) &&
+		view.optimistic_pending_edits == 13 && view.optimistic_window.end_line == 4 &&
+		view.optimistic_line_delta == 0,
+		"the replacement queue should preserve the caret and reflect both deleted and inserted logical lines immediately")
 	other_document_id := ""
 	for candidate in app.backend.state.documents {
 		if candidate.id != typing_document_id { other_document_id = candidate.id; break }
@@ -959,10 +1031,10 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 		max_bytes=bridge.MAX_VISIBLE_BYTES,
 		allocator=context.temp_allocator,
 	)
-	testing.expect(t, canonical_before_ack.ok && string(canonical_before_ack.visible_window.source) == "hello world\r\nsecond\r\nthird\r\nfourth",
+	testing.expect(t, canonical_before_ack.ok && string(canonical_before_ack.visible_window.source) == "hello world\r\nsecond\r\nthird\r\n  fourth",
 		"the authoritative document should remain unchanged while only the first local edit is queued")
 	bridge.backend_command_result_destroy(&canonical_before_ack, context.temp_allocator)
-	for _ in 0..<10 { sync.sema_post(&gate) }
+	for _ in 0..<13 { sync.sema_post(&gate) }
 	for _ in 0..<120 {
 		if len(app.editor_edits) == 0 { break }
 		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
@@ -973,8 +1045,8 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	testing.expect(t, app.backend.state.active == other_document_id_copy,
 		"the queued tab switch should execute after the final authoritative edit acknowledgement")
 	document_after, found_after := find_document(&app.backend.state, document.id)
-	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+10 && document_after.line_count == 2,
-		"every replacement should converge through its own ordered revision and update authoritative line topology")
+	testing.expect(t, found_after && document_after.editor_revision == base_editor_revision+13 && document_after.line_count == 4,
+		"every replacement and Enter should converge through its own ordered revision and update authoritative line topology")
 	canonical_after := bridge.backend_command(
 		&app.backend,
 		"read_visible_lines",

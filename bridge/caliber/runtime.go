@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -348,12 +349,23 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "application_error", err)
 		}
 		doc := r.app.Documents[application.DocumentID(request.DocumentID)]
+		appliedEnd := doc.Editor.Cursor
+		applied, err := doc.Editor.Buffer.Bytes(int(request.StartByte), appliedEnd)
+		if err != nil {
+			return commandError(request, "application_error", fmt.Errorf("read applied edit range: %w", err))
+		}
 		edit = &EditAck{
 			DocumentID:     request.DocumentID,
 			EditorRevision: doc.Revision(),
 			StartByte:      request.StartByte,
 			OldEndByte:     request.EndByte,
-			NewEndByte:     request.StartByte + uint64(len(replacement)),
+			NewEndByte:     uint64(appliedEnd),
+		}
+		if !bytes.Equal(applied, replacement) || bytes.ContainsAny(replacement, "\r\n") {
+			edit.AppliedReplacement = make([]int, len(applied))
+			for i, value := range applied {
+				edit.AppliedReplacement[i] = int(value)
+			}
 		}
 	case "find_current":
 		found := r.app.FindCurrent(application.DocumentID(request.DocumentID), []byte(request.Query))
