@@ -42,6 +42,7 @@ App :: struct {
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	editor_views:           [dynamic]Editor_View_State,
+	editor_row_targets:     [dynamic]Editor_Row_Target,
 	editor_window:          Editor_Window,
 	editor_window_ready:    bool,
 	editor_request_generation: u64,
@@ -85,6 +86,7 @@ build_app :: proc(
 	app := cast(^App)state
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
+	clear(&app.editor_row_targets)
 	if app.backend.started {
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
@@ -261,6 +263,16 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	window_matches := app.editor_window_ready &&
 	                  app.editor_window.document_id == document.id &&
 	                  app.editor_window.editor_revision == document.editor_revision
+	if window_matches {
+		if line, found := editor_line_for_source(&app.editor_window, view.caret_byte); found {
+			previous_caret := view.caret_byte
+			view.caret_byte = editor_normalize_source_position(line, view.caret_byte)
+			if view.selection_anchor == previous_caret { view.selection_anchor = view.caret_byte }
+		}
+		if line, found := editor_line_for_source(&app.editor_window, view.selection_anchor); found {
+			view.selection_anchor = editor_normalize_source_position(line, view.selection_anchor)
+		}
+	}
 	gutter_width := editor_line_number_gutter_width(document.line_count)
 	content_width := view.horizontal_extent
 	if window_matches {
@@ -280,6 +292,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		axes=.Both,
 		focusable=true,
 	)
+	_ = alicorn.text_input_target(ui, list.scroll.id)
 	app.editor_scroll_owner = list.scroll.id
 	restore := editor_view_sync_scroll(
 		view,
@@ -327,13 +340,26 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				font=.Monospace,
 			)
 			alicorn.container_end(ui)
-			alicorn.text(
+			line_node := alicorn.text(
 				ui,
 				line.display,
 				key=alicorn.key_string(fmt.tprintf("scratchpad-line:%s:%d", document.id, line.logical_line)),
 				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
 				font=.Monospace,
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Clip},
+			)
+			append(&app.editor_row_targets, Editor_Row_Target{node=line_node, logical_line=line.logical_line})
+			anchor_source := min(max(view.selection_anchor, line.source_start), line.source_end)
+			caret_source := min(max(view.caret_byte, line.source_start), line.source_end)
+			anchor_display := editor_source_to_display(line, anchor_source)
+			caret_display := editor_source_to_display(line, caret_source)
+			show_caret := rt.focused == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
+			_ = alicorn.text_interaction(
+				ui,
+				line_node,
+				alicorn.Text_Position{byte=anchor_display, affinity=view.anchor_affinity},
+				alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
+				show_caret,
 			)
 			alicorn.container_end(ui)
 		} else {
@@ -850,6 +876,122 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	return false
 }
 
+// Editor-local pointer placement uses the retained Runa run for the realized
+// text node, then translates its display byte boundary to Scratchpad source.
+// It deliberately emits no backend command: caret/selection are presentation.
+editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
+	if event.kind != .Down || event.button != 1 { return }
+	app := cast(^App)state
+	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 { return }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found || !app.editor_window_ready || app.editor_window.document_id != document.id || app.editor_window.editor_revision != document.editor_revision { return }
+	for row_target in app.editor_row_targets {
+		if row_target.node != target { continue }
+		line, line_found := editor_window_line(&app.editor_window, row_target.logical_line)
+		if !line_found { return }
+		position, hit := alicorn.text_node_hit_test(rt, target, event.x, event.y)
+		if !hit { return }
+		source_byte := editor_normalize_source_position(line, editor_display_to_source(line, position.byte))
+		view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+		if !view_ok { return }
+		view := &app.editor_views[view_index]
+		view.selection_anchor = source_byte
+		view.caret_byte = source_byte
+		view.anchor_affinity = position.affinity
+		view.caret_affinity = position.affinity
+		_ = alicorn.focus(rt, app.editor_scroll_owner)
+		alicorn.invalidate_root(rt, "Scratchpad read-only editor caret placed")
+		return
+	}
+}
+
+// Read-only movement stays entirely in the Alicorn frontend. It translates a
+// caret through the bounded visible projection and never dispatches a Caliber
+// document mutation.
+editor_text_key :: proc(
+	state: rawptr,
+	rt: ^alicorn.Runtime,
+	owner: alicorn.Node_ID,
+	event: host.Application_Text_Key_Event,
+) -> bool {
+	app := cast(^App)state
+	if app == nil || owner == 0 || owner != app.editor_scroll_owner || !app.backend.started { return false }
+	if event.control || event.alt || event.super { return false }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found || !app.editor_window_ready || app.editor_window.document_id != document.id || app.editor_window.editor_revision != document.editor_revision { return false }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { return false }
+	view := &app.editor_views[view_index]
+	old_caret := view.caret_byte
+	old_affinity := view.caret_affinity
+	next_caret := old_caret
+	next_affinity := old_affinity
+	shift := event.shift
+	selection_exists := view.selection_anchor != view.caret_byte
+
+	if !shift && selection_exists && (event.key == .Left || event.key == .Right) {
+		if event.key == .Left {
+			if view.selection_anchor < view.caret_byte {
+				next_caret, next_affinity = view.selection_anchor, view.anchor_affinity
+			} else {
+				next_caret, next_affinity = view.caret_byte, view.caret_affinity
+			}
+		} else {
+			if view.selection_anchor > view.caret_byte {
+				next_caret, next_affinity = view.selection_anchor, view.anchor_affinity
+			} else {
+				next_caret, next_affinity = view.caret_byte, view.caret_affinity
+			}
+		}
+	} else {
+		line, line_found := editor_line_for_source(&app.editor_window, old_caret)
+		if !line_found { return false }
+		switch event.key {
+		case .Left, .Right:
+			direction := -1 if event.key == .Left else 1
+			if direction < 0 && old_caret == line.source_start {
+				for index := len(app.editor_window.lines)-1; index >= 0; index -= 1 {
+					candidate := &app.editor_window.lines[index]
+					if candidate.logical_line+1 == line.logical_line {
+						next_caret = candidate.source_end
+						next_affinity = .Trailing
+						break
+					}
+				}
+			} else if direction > 0 && old_caret == line.source_end {
+				for candidate in app.editor_window.lines {
+					if candidate.logical_line == line.logical_line+1 {
+						next_caret = candidate.source_start
+						next_affinity = .Leading
+						break
+					}
+				}
+			} else {
+				moved_caret, moved_affinity, moved := editor_move_horizontal(line, old_caret, old_affinity, direction)
+				if !moved { return false }
+				next_caret, next_affinity = moved_caret, moved_affinity
+			}
+		case .Home:
+			next_caret = editor_normalize_source_position(line, line.source_start)
+			next_affinity = .Leading
+		case .End:
+			next_caret = editor_normalize_source_position(line, line.source_end)
+			next_affinity = .Trailing
+		case:
+			return false
+		}
+	}
+	if next_caret == old_caret && next_affinity == old_affinity { return true }
+	if !shift {
+		view.selection_anchor = next_caret
+		view.anchor_affinity = next_affinity
+	}
+	view.caret_byte = next_caret
+	view.caret_affinity = next_affinity
+	alicorn.invalidate_root(rt, "Scratchpad read-only editor caret navigation")
+	return true
+}
+
 request_close_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 	if document_id == "" { return }
 	response := bridge.backend_command(&app.backend, "close_document", document_id=document_id)
@@ -1072,6 +1214,8 @@ application_stop :: proc(state: rawptr) {
 	app.tree_scroll_owner = 0
 	editor_window_destroy(&app.editor_window)
 	editor_views_destroy(&app.editor_views)
+	delete(app.editor_row_targets)
+	app.editor_row_targets = {}
 	if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 	app.editor_presented_document_id = ""
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
@@ -1082,6 +1226,7 @@ main :: proc() {
 	app: App
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
 	init_menus(&app)
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
@@ -1094,6 +1239,8 @@ main :: proc() {
 		menus=app.menus[:],
 		build=build_app,
 		on_key=application_key,
+		on_pointer=editor_pointer,
+		on_text_key=editor_text_key,
 		on_services=application_services,
 		on_start=application_start,
 		on_dialog=application_dialog,

@@ -6,7 +6,11 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
+
+ALICORN_TEST_UI_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Variable.ttf")
+ALICORN_TEST_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
 
 tree_test_wake :: proc(data: rawptr) {}
 
@@ -103,6 +107,63 @@ test_editor_projection_preserves_source_bytes_and_maps_expansions :: proc(t: ^te
 }
 
 @(test)
+test_editor_projection_hit_testing_keeps_synthetic_spans_atomic :: proc(t: ^testing.T) {
+	source := [?]u8{'A', '\t', 0xFF, 'B'}
+	line, ok := editor_project_line(source[:], 100, 0, context.temp_allocator)
+	testing.expect(t, ok && line.display == "A   \\xFFB", "tab and invalid byte projection should remain visible and deterministic")
+	if !ok { return }
+	defer {
+		delete(line.display, context.temp_allocator)
+		delete(line.display_bytes, context.temp_allocator)
+	}
+	// The tab occupies display byte boundaries 1..4 but source bytes 101..102.
+	testing.expect(t, editor_display_to_source(&line, 1) == 101, "the leading edge of a tab should map before its source byte")
+	testing.expect(t, editor_display_to_source(&line, 2) == 101, "the left half of an expanded tab should snap before the source byte")
+	testing.expect(t, editor_display_to_source(&line, 3) == 102, "the right half of an expanded tab should snap after the source byte")
+	testing.expect(t, editor_source_to_display(&line, 101) == 1 && editor_source_to_display(&line, 102) == 4,
+		"source boundaries around an expanded tab should map to its visual edges")
+	// The escaped invalid byte occupies four display bytes but one source byte.
+	testing.expect(t, editor_display_to_source(&line, 6) == 103, "the right half of an escaped byte should snap after its one source byte")
+	testing.expect(t, editor_source_to_display(&line, 103) == 8, "the source boundary after an escaped byte should map after the full escape")
+	from_tab, tab_affinity, tab_moved := editor_move_horizontal(&line, 101, alicorn.Text_Affinity.Leading, 1)
+	testing.expect(t, tab_moved && from_tab == 102, "one horizontal movement should cross an expanded tab atomically")
+	from_escape, escape_affinity, escape_moved := editor_move_horizontal(&line, 102, alicorn.Text_Affinity.Leading, 1)
+	testing.expect(t, escape_moved && from_escape == 103, "one horizontal movement should cross an escaped byte atomically")
+	_ = tab_affinity
+	_ = escape_affinity
+}
+
+@(test)
+test_editor_projection_caret_movement_respects_grapheme_boundaries :: proc(t: ^testing.T) {
+	combining := [?]u8{'e', 0xCC, 0x81, 'x'}
+	line, ok := editor_project_line(combining[:], 40, 0, context.temp_allocator)
+	testing.expect(t, ok, "valid combining-mark source should project")
+	if !ok { return }
+	defer {
+		delete(line.display, context.temp_allocator)
+		delete(line.display_bytes, context.temp_allocator)
+	}
+	next, combining_affinity, combining_moved := editor_move_horizontal(&line, 40, alicorn.Text_Affinity.Leading, 1)
+	testing.expect(t, combining_moved && next == 43, "right movement should treat a base plus combining mark as one grapheme")
+	previous, previous_affinity, previous_moved := editor_move_horizontal(&line, 43, alicorn.Text_Affinity.Leading, -1)
+	testing.expect(t, previous_moved && previous == 40, "left movement should not split a combining grapheme")
+	_ = combining_affinity
+	_ = previous_affinity
+
+	family := [?]u8{0xF0, 0x9F, 0x91, 0xA8, 0xE2, 0x80, 0x8D, 0xF0, 0x9F, 0x91, 0xA9, 0xE2, 0x80, 0x8D, 0xF0, 0x9F, 0x91, 0xA7}
+	emoji, emoji_ok := editor_project_line(family[:], 0, 0, context.temp_allocator)
+	testing.expect(t, emoji_ok, "emoji ZWJ sequence should project")
+	if !emoji_ok { return }
+	defer {
+		delete(emoji.display, context.temp_allocator)
+		delete(emoji.display_bytes, context.temp_allocator)
+	}
+	emoji_next, emoji_affinity, emoji_moved := editor_move_horizontal(&emoji, 0, alicorn.Text_Affinity.Leading, 1)
+	testing.expect(t, emoji_moved && emoji_next == u64(len(family)), "one horizontal movement should keep an emoji ZWJ sequence atomic")
+	_ = emoji_affinity
+}
+
+@(test)
 test_editor_projection_accepts_multilingual_utf8_and_rejects_invalid_sequences :: proc(t: ^testing.T) {
 	multilingual := [?]u8{0xC3, 0xA9, 0xE0, 0xA4, 0x95, 0xD8, 0xA7, 0xD7, 0x90, 0xF0, 0x9F, 0x91, 0xA9, 0xE2, 0x80, 0x8D, 0xF0, 0x9F, 0x92, 0xBB}
 	line, ok := editor_project_line(multilingual[:], 0, 0, context.temp_allocator)
@@ -177,6 +238,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	app: App
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
 	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
 	testing.expect(t, loaded, fmt.tprintf("shared backend should load for editor-surface test: %s", load_message))
 	if !loaded { return }
@@ -188,6 +250,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 		if app.backend.started { _, _ = bridge.backend_stop(&app.backend, context.allocator) }
 		editor_window_destroy(&app.editor_window, context.allocator)
 		editor_views_destroy(&app.editor_views, context.allocator)
+		delete(app.editor_row_targets)
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		alicorn.destroy_runtime(&rt)
 	}
@@ -221,6 +284,11 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	if !window_ok { return }
 
 	rt = alicorn.new_runtime(alicorn.Rect{0, 0, 1100, 720})
+	testing.expect(t,
+		alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
+		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA),
+		"read-only editor interaction test should load the same bundled UI and monospace roles as the native host",
+	)
 	_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
 	realized_rows := 0
 	first_row_found := false
@@ -237,6 +305,56 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 		"the editor should emit only the virtualized viewport rows, not all document lines")
 	testing.expect(t, first_row_found && !last_fixture_row_found,
 		"the first viewport should contain real source and omit offscreen logical rows")
+
+	// The interactive read-only editor owns focus at the durable list owner,
+	// maps pointer geometry back into source bytes, and keeps navigation local.
+	if len(app.editor_row_targets) > 0 {
+		target := app.editor_row_targets[0]
+		row_node, row_found := rt.nodes[target.node]
+		line, line_found := editor_window_line(&app.editor_window, target.logical_line)
+		testing.expect(t, row_found && line_found, "a realized editor text node should have a corresponding bounded source row")
+		if row_found && line_found {
+			owner_node, owner_found := rt.nodes[app.editor_scroll_owner]
+			testing.expect(t, owner_found && owner_node.text_input_target && owner_node.focusable,
+				"the editor scroll owner should be retained as a generic text-input target")
+			hit, hit_ok := alicorn.text_node_hit_test(&rt, target.node, row_node.bounds.x+70, row_node.bounds.y+row_node.bounds.h/2)
+			testing.expect(t, hit_ok && hit.byte >= 0 && hit.byte <= len(row_node.text),
+				"the realized source row should expose a shaped-run hit-test in local display bytes")
+			document_revision := active.editor_revision
+			application_revision := app.backend.state.revision
+			editor_pointer(rawptr(&app), &rt, alicorn.Pointer_Event{kind=.Down, x=row_node.bounds.x+70, y=row_node.bounds.y+row_node.bounds.h/2, button=1}, target.node)
+			view_index := editor_view_find(app.editor_views[:], active.id)
+			testing.expect(t, rt.focused == app.editor_scroll_owner && view_index >= 0,
+				"clicking a virtual text row should focus the durable editor viewport and assign per-document caret state")
+			if view_index >= 0 {
+				view := &app.editor_views[view_index]
+				testing.expect(t, view.caret_byte >= line.source_start && view.caret_byte <= line.source_end,
+					"pointer hit testing should map to a legal source byte within the clicked line")
+				clicked_caret := view.caret_byte
+				right_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right})
+				testing.expect(t, right_handled && view.caret_byte > clicked_caret,
+					"Right should move the read-only caret locally without an authoritative edit")
+				anchor_before_extend := view.selection_anchor
+				shift_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right, shift=true})
+				testing.expect(t, shift_handled && view.selection_anchor == anchor_before_extend && view.caret_byte > view.selection_anchor,
+					"Shift+Right should extend a directional frontend-local selection")
+				_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
+				row_node, row_found = rt.nodes[target.node]
+				selection_commands, caret_commands := 0, 0
+				if row_found {
+					for command in row_node.paint {
+						if command.kind == .Text_Selection { selection_commands += 1 }
+						if command.kind == .Text_Caret { caret_commands += 1 }
+					}
+				}
+				testing.expect(t, selection_commands > 0 && caret_commands == 1,
+					"the retained Runa text node should paint the local selection and caret after navigation")
+			}
+			active_after, active_still_found := find_document(&app.backend.state, active.id)
+			testing.expect(t, active_still_found && active_after.editor_revision == document_revision && app.backend.state.revision == application_revision,
+				"read-only pointer and keyboard navigation must emit no Caliber mutation or revision change")
+		}
+	}
 
 	// Simulate wheel movement, then rebuild. The newly observed retained offset
 	// must be saved rather than mistaken for a stale view that needs restoring.

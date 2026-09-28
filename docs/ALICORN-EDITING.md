@@ -1,6 +1,6 @@
 # Alicorn editing ownership contract
 
-Status: Phase 4 kickoff. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not an implementation specification. No editing or IME parity is claimed yet.
+Status: Phase 4B initial read-only interaction. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not an implementation specification. Source editing and IME parity are not claimed.
 
 ## Ownership
 
@@ -26,3 +26,7 @@ The frontend may keep bounded visible source windows and an optimistic projectio
 5. Every source mutation must eventually converge to an authoritative Scratchpad editor revision. Optimistic frontend state is pending until accepted or reconciled with that authority.
 
 An IME commit is submitted as one source edit, not as a stream of preedit updates. Caliber carries bounded, ordered edit commands and their lifecycle; it does not become an editor model or a second source of document truth.
+
+## Current interactive read-only slice
+
+The Alicorn surface now gives the durable editor viewport text-input focus, places a caret by hit-testing the retained Runa run for a realized source row, and supports Left/Right, Home/End, and Shift selection over the bounded display projection. Caret and directional anchor remain frontend-local source-byte offsets. Expanded tabs and escaped invalid bytes are treated as indivisible source units, and horizontal movement uses Runa grapheme boundaries. These interactions issue no Caliber mutation command. Editing, drag selection, vertical/preferred-X navigation, word navigation, and IME integration remain later gates.

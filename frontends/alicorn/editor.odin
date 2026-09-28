@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:strings"
+import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 EDITOR_ROW_HEIGHT :: f32(22)
@@ -37,6 +38,15 @@ Editor_View_State :: struct {
 	extent_revision:    u64,
 	restore_y_pending: bool,
 	restore_x_pending: bool,
+	selection_anchor:  u64,
+	caret_byte:        u64,
+	anchor_affinity:   alicorn.Text_Affinity,
+	caret_affinity:    alicorn.Text_Affinity,
+}
+
+Editor_Row_Target :: struct {
+	node:         alicorn.Node_ID,
+	logical_line: u64,
 }
 
 Editor_View_Restore :: struct {
@@ -238,6 +248,88 @@ editor_project_line :: proc(
 		display=display,
 		display_bytes=offsets[:],
 	}, true
+}
+
+// editor_display_to_source maps an Runa hit-test boundary back to the nearest
+// legal source boundary. Interior positions in repeated-map synthetic runs
+// snap at the visual midpoint, so a tab or escaped byte remains one source
+// unit rather than exposing carets inside its display spelling.
+editor_display_to_source :: proc(line: ^Editor_Display_Line, display_byte: int) -> u64 {
+	if line == nil || len(line.display_bytes) == 0 { return 0 }
+	position := min(max(display_byte, 0), len(line.display_bytes)-1)
+	if position == len(line.display_bytes)-1 { return line.display_bytes[position] }
+	source := line.display_bytes[position]
+	first := position
+	for first > 0 && line.display_bytes[first-1] == source { first -= 1 }
+	last := position
+	for last+1 < len(line.display_bytes) && line.display_bytes[last+1] == source { last += 1 }
+	if first == 0 || last+1 >= len(line.display_bytes) { return source }
+	next_source := line.display_bytes[last+1]
+	if next_source <= source { return source }
+	// The repeated run spans the display boundaries from `first` through
+	// `last+1`; choose before/after based on the clicked boundary's midpoint.
+	if (position-first)*2 < last+1-first { return source }
+	return next_source
+}
+
+// editor_source_to_display returns the first visible display boundary for a
+// source position. If the source boundary is omitted (e.g. inside a BOM), it
+// chooses the nearest visible boundary, preferring the leading side on ties.
+editor_source_to_display :: proc(line: ^Editor_Display_Line, source_byte: u64) -> int {
+	if line == nil || len(line.display_bytes) == 0 { return 0 }
+	best_index := 0
+	first_boundary := line.display_bytes[0]
+	best_distance := first_boundary-source_byte if first_boundary >= source_byte else source_byte-first_boundary
+	for boundary, index in line.display_bytes {
+		if boundary == source_byte { return index }
+		distance := boundary-source_byte if boundary >= source_byte else source_byte-boundary
+		if distance < best_distance {
+			best_distance = distance
+			best_index = index
+		}
+	}
+	return best_index
+}
+
+// editor_normalize_source_position maps an arbitrary byte coordinate onto a
+// visible, legal projection boundary. It is used for initial positions and
+// for transformed regions such as a hidden BOM.
+editor_normalize_source_position :: proc(line: ^Editor_Display_Line, source_byte: u64) -> u64 {
+	return editor_display_to_source(line, editor_source_to_display(line, source_byte))
+}
+
+editor_line_for_source :: proc(window: ^Editor_Window, source_byte: u64) -> (line: ^Editor_Display_Line, found: bool) {
+	if window == nil { return nil, false }
+	for &candidate in window.lines {
+		if source_byte >= candidate.source_start && source_byte <= candidate.source_end {
+			return &candidate, true
+		}
+	}
+	return nil, false
+}
+
+// editor_move_horizontal moves by Runa grapheme boundaries in the projected
+// row, then maps back to source. Synthetic display spans can expose several
+// visual boundaries for one source byte; those are skipped atomically.
+editor_move_horizontal :: proc(
+	line: ^Editor_Display_Line,
+	source_byte: u64,
+	affinity: alicorn.Text_Affinity,
+	direction: int,
+) -> (next_source: u64, next_affinity: alicorn.Text_Affinity, moved: bool) {
+	if line == nil || direction == 0 { return source_byte, affinity, false }
+	display_byte := editor_source_to_display(line, source_byte)
+	position := alicorn.Text_Position{byte=display_byte, affinity=affinity}
+	for _ in 0..<max(len(line.display), 1) {
+		next := alicorn.text_move_logical(line.display, position, direction)
+		if next.byte == position.byte { break }
+		mapped := editor_display_to_source(line, next.byte)
+		if mapped != source_byte {
+			return mapped, next.affinity, true
+		}
+		position = next
+	}
+	return source_byte, affinity, false
 }
 
 editor_window_destroy :: proc(window: ^Editor_Window, allocator := context.allocator) {
