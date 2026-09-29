@@ -2046,6 +2046,7 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	testing.expect(t, found_before_stale, "the source document should be active for stale-chain recovery")
 	if !found_before_stale { return }
 	stale_base_revision := document_before_stale.editor_revision
+	publication_before_external_edit := app.backend.state_revision
 	view_index, view_ok = editor_view_ensure(&app.editor_views, typing_document_id)
 	testing.expect(t, view_ok, "the source document should retain its local editor view across tab changes")
 	if !view_ok { return }
@@ -2101,6 +2102,15 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	bridge.backend_command_result_destroy(&concurrent_change, context.temp_allocator)
 	testing.expect(t, view.optimistic_pending_edits == 3 && len(app.editor_edits) == 3,
 		"the optimistic dependent chain should remain local until the stale response is handled")
+	// Reproduce a stale local publication: another command advanced the real
+	// document, but this frontend has not yet adopted that newer state envelope.
+	app.backend.state_revision = publication_before_external_edit
+	for &stale_document in app.backend.state.documents {
+		if stale_document.id == typing_document_id {
+			stale_document.editor_revision = stale_base_revision+1
+			break
+		}
+	}
 	sync.sema_post(&gate)
 	for _ in 0..<120 {
 		if len(app.editor_edits) == 0 { break }
@@ -2110,6 +2120,10 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	testing.expect(t, len(app.editor_edits) == 0 && view.optimistic_pending_edits == 0 &&
 		!view.optimistic_window_ready && view.position_reconcile_pending,
 		"a stale request must discard itself and every dependent optimistic edit, then invalidate the old bounded window")
+	conflicted_document, conflicted_document_found := find_document(&app.backend.state, typing_document_id)
+	testing.expect(t, conflicted_document_found && conflicted_document.editor_revision == stale_base_revision+2 &&
+		app.backend.state_revision > publication_before_external_edit && !app.editor_window_ready,
+		"stale rejection should adopt the newer state publication and evict any cached window before recovery")
 	testing.expect(t, strings.contains(app.error_message, "reloading authoritative text"),
 		"stale rejection should report the controlled recovery instead of silently diverging")
 
@@ -2139,6 +2153,8 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 		view.caret_byte <= app.editor_window.start_byte+u64(len(app.editor_window.source)) &&
 		caret_is_legal,
 		"recovery should clamp and normalize the caret to a legal source boundary in the reloaded window")
+	testing.expect(t, app.error_message == "",
+		"a successful authoritative reload should clear the temporary stale-edit alert")
 
 	// The recovered editor remains usable: a new local edit should be accepted
 	// against the new authoritative revision and converge normally.

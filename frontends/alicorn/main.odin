@@ -518,12 +518,22 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			alicorn.container_end(ui)
 		} else if window_matches || !window_available {
 			label := fmt.tprintf("Loading line %d…", line_number+1)
-			alicorn.text(ui, label, style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT))
+			alicorn.text(
+				ui,
+				label,
+				key=alicorn.key_string(fmt.tprintf("scratchpad-loading-line:%s:%d", document.id, line_number)),
+				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
+			)
 		} else {
 			// A newer document snapshot may have added rows that do not exist in
 			// the last-good bounded window. Preserve the current topology without
 			// claiming those bytes are loading; the matching refresh will fill it.
-			alicorn.text(ui, "", style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT))
+			alicorn.text(
+				ui,
+				"",
+				key=alicorn.key_string(fmt.tprintf("scratchpad-stale-line:%s:%d", document.id, line_number)),
+				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
+			)
 		}
 	}
 	alicorn.virtual_list_end(ui, list)
@@ -943,6 +953,9 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 					if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 					app.editor_window_error = ""
 					installed = true
+					if strings.has_prefix(app.error_message, "Edit was not accepted; reloading authoritative text:") {
+						set_error(app, "")
+					}
 				} else {
 					if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 					app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
@@ -2004,8 +2017,29 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 	failed_document, _ := strings.clone(intent.document_id, context.allocator)
 	message := result.command.message
 	if message == "" { message = result.command.code }
+	stale_revision := result.command.code == "stale_editor_revision"
+	if stale_revision {
+		// A conflict can arrive after another command advanced the document while
+		// this frontend still holds an older publication. Refresh before using the
+		// local document descriptor to schedule the authoritative window reload.
+		changed, refreshed, refresh_message := bridge.backend_consume_wake(&app.backend, context.allocator)
+		if refreshed && changed {
+			sync_runtime_actions(app, rt)
+			sync_menu_states(app)
+			tree_sync_workspace(app, rt)
+			editor_views_prune(app)
+		} else if !refreshed {
+			message = fmt.tprintf("%s (latest state refresh failed: %s)", message, refresh_message)
+		}
+	}
 	set_error(app, fmt.tprintf("Edit was not accepted; reloading authoritative text: %s", message))
 	editor_discard_document_edits(app, failed_document)
+	if stale_revision && app.editor_window_ready && app.editor_window.document_id == failed_document {
+		// A rejected edit proves that matching revision numbers alone are not
+		// enough to trust this cached projection (Undo can reuse old revisions).
+		editor_window_destroy(&app.editor_window)
+		app.editor_window_ready = false
+	}
 	delete(failed_document, context.allocator)
 	editor_views_prune(app)
 	sync_menu_states(app)
