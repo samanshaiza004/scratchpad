@@ -283,6 +283,42 @@ func TestEditorCommandTransactionUndoRedoPreservesSelectionState(t *testing.T) {
 	}
 }
 
+func TestEditorInputReplacementNormalizesEnterAndPreservesPostSelection(t *testing.T) {
+	source := []byte("  alpha\r\n  beta")
+	e := NewScratchEditor(source)
+	start := len([]byte("  alpha"))
+
+	if err := e.ReplaceInputWithSelection(start, start, []byte{'\n'}, start, start, start+4, start+4); err != nil {
+		t.Fatal(err)
+	}
+	want := "  alpha\r\n  \r\n  beta"
+	if got := string(e.Buffer.Text()); got != want {
+		t.Fatalf("input Enter = %q, want %q", got, want)
+	}
+	if anchor, cursor := e.Selection(); anchor != start+4 || cursor != start+4 {
+		t.Fatalf("post-Enter selection = %d:%d, want %d:%d", anchor, cursor, start+4, start+4)
+	}
+
+	if err := e.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(e.Buffer.Text()); got != string(source) {
+		t.Fatalf("undo text = %q, want %q", got, source)
+	}
+	if anchor, cursor := e.Selection(); anchor != start || cursor != start {
+		t.Fatalf("undo selection = %d:%d, want %d:%d", anchor, cursor, start, start)
+	}
+	if err := e.Redo(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(e.Buffer.Text()); got != want {
+		t.Fatalf("redo text = %q, want %q", got, want)
+	}
+	if anchor, cursor := e.Selection(); anchor != start+4 || cursor != start+4 {
+		t.Fatalf("redo selection = %d:%d, want %d:%d", anchor, cursor, start+4, start+4)
+	}
+}
+
 func TestEditorSelectionAwareNoOpMovesSelectionWithoutUndo(t *testing.T) {
 	e := NewScratchEditor([]byte("abc"))
 	e.SetCursor(0)

@@ -363,13 +363,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
 
-	window, window_matches := editor_view_window(
+	window, window_matches := editor_presentation_window(
 		view,
 		&app.editor_window,
 		app.editor_window_ready,
 		document.id,
 		document.editor_revision,
 	)
+	window_available := window != nil
 	if window_matches {
 		_ = editor_view_resolve_document_edge(view, window, display_line_count)
 		if line, found := editor_line_for_source(window, view.caret_byte); found {
@@ -401,6 +402,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		focusable=true,
 	)
 	_ = editor_register_text_input_target(ui, list.scroll.id, view)
+	if rt != nil {
+		// Keep native text input away from stale source bytes. The editor input
+		// handlers independently reject edits until an exact-revision window is
+		// installed; suspending here also prevents IME preedit from targeting an
+		// obsolete caret location.
+		suspend_text_input := !window_matches || editor_preedit_recovery_is_full(view)
+		_ = alicorn.text_input_target_set_suspended(rt, list.scroll.id, suspend_text_input)
+	}
 	app.editor_scroll_owner = list.scroll.id
 	restore := editor_view_sync_scroll(
 		view,
@@ -424,7 +433,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	                      window.end_line >= visible_end
 	for position := list.first; position < list.last; position += 1 {
 		line_number := u64(position)
-		if line, found := editor_window_line(window, line_number); window_matches && found {
+		if line, found := editor_window_line(window, line_number); window_available && found {
 			row_key := alicorn.key_string(fmt.tprintf("scratchpad-row:%s:%d", document.id, line.logical_line))
 			alicorn.container_begin(
 				ui,
@@ -455,8 +464,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			caret_display := editor_source_to_display(line, caret_source)
 			caret_area_byte := caret_display
 			caret_area_affinity := view.caret_affinity
-			show_caret := rt.focused == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
-			if composition_display, composition_start, composition_end, applies := editor_preedit_display_for_line(view, window, line); applies {
+			show_caret := window_matches && rt.focused == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
+			if window_matches {
+				if composition_display, composition_start, composition_end, applies := editor_preedit_display_for_line(view, window, line); applies {
 				display_text = composition_display
 				anchor_display, caret_display = composition_start, composition_end
 				if anchor_display == caret_display && len(view.preedit_text) > 0 {
@@ -471,6 +481,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				caret_area_affinity = .Trailing
 				composition_start_line, start_found := editor_line_for_source(window, view.preedit_replace_start)
 				show_caret = start_found && composition_start_line.logical_line == line.logical_line && rt.focused == list.scroll.id
+				}
+			} else {
+				// The last authoritative selection may not describe the last-good
+				// bytes after an undo. Render the old text without stale selection
+				// or caret decoration while interaction authority is suspended.
+				anchor_display = caret_display
 			}
 			line_node := alicorn.text(
 				ui,
@@ -482,12 +498,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			)
 			append(&app.editor_row_targets, Editor_Row_Target{node=line_node, logical_line=line.logical_line})
 			composition_row := false
-			if view.preedit_active {
+			if window_matches && view.preedit_active {
 				if composition_line, composition_found := editor_line_for_source(window, view.preedit_replace_start); composition_found {
 					composition_row = composition_line.logical_line == line.logical_line
 				}
 			}
-			if rt.focused == list.scroll.id && ((view.caret_byte >= line.source_start && view.caret_byte <= line.source_end) || composition_row) {
+			if window_matches && rt.focused == list.scroll.id && ((view.caret_byte >= line.source_start && view.caret_byte <= line.source_end) || composition_row) {
 				app.editor_input_anchor_node = line_node
 				app.editor_input_anchor_byte = caret_area_byte
 				app.editor_input_anchor_affinity = caret_area_affinity
@@ -500,9 +516,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				show_caret,
 			)
 			alicorn.container_end(ui)
-		} else {
+		} else if window_matches || !window_available {
 			label := fmt.tprintf("Loading line %d…", line_number+1)
 			alicorn.text(ui, label, style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT))
+		} else {
+			// A newer document snapshot may have added rows that do not exist in
+			// the last-good bounded window. Preserve the current topology without
+			// claiming those bytes are loading; the matching refresh will fill it.
+			alicorn.text(ui, "", style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT))
 		}
 	}
 	alicorn.virtual_list_end(ui, list)
@@ -1256,6 +1277,27 @@ editor_source_at_pointer :: proc(
 	return editor_normalize_source_position(line, editor_display_to_source(line, position.byte)), position.affinity, true
 }
 
+// editor_presentation_window keeps a last-good projection visible across an
+// authoritative revision change. The bool remains strict: only an exact
+// revision match grants source/edit interaction authority.
+editor_presentation_window :: proc(
+	view: ^Editor_View_State,
+	base: ^Editor_Window,
+	base_ready: bool,
+	document_id: string,
+	editor_revision: u64,
+) -> (window: ^Editor_Window, authoritative: bool) {
+	window, authoritative = editor_view_window(view, base, base_ready, document_id, editor_revision)
+	if authoritative { return }
+	if base_ready && base != nil && base.document_id == document_id {
+		// Revision mismatch invalidates interaction authority, not immediately
+		// the pixels: this snapshot may remain visible until its replacement is
+		// installed as one retained-tree update.
+		return base, false
+	}
+	return nil, false
+}
+
 // Editor-local pointer placement is owned by the durable scroll region. The
 // generic text-input owner captures the pointer; realized rows provide only
 // shaped geometry, and Scratchpad retains caret/selection as source bytes.
@@ -1649,6 +1691,7 @@ editor_apply_local_replace_with_wire :: proc(
 		return false
 	}
 	view := &app.editor_views[view_index]
+	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches {
 		set_error(app, "The bounded source window is not ready for local editing.")
@@ -1719,6 +1762,10 @@ editor_apply_local_replace_with_wire :: proc(
 		document_id=document_id,
 		start_byte=start_byte,
 		end_byte=end_byte,
+		before_anchor_byte=selection_snapshot.before_anchor_byte,
+		before_cursor_byte=selection_snapshot.before_cursor_byte,
+		after_anchor_byte=selection_snapshot.after_anchor_byte,
+		after_cursor_byte=selection_snapshot.after_cursor_byte,
 		replacement=replacement_copy,
 		wire_replacement=wire_copy,
 	})
@@ -1838,6 +1885,10 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 		edit.start_byte,
 		edit.end_byte,
 		wire_replacement,
+		edit.before_anchor_byte,
+		edit.before_cursor_byte,
+		edit.after_anchor_byte,
+		edit.after_cursor_byte,
 	)
 }
 
@@ -1873,6 +1924,10 @@ editor_reconcile_applied_replacement :: proc(
 			intent.replacement,
 			applied,
 		)
+		app.editor_edits[index].before_anchor_byte = editor_rebase_replacement_position(app.editor_edits[index].before_anchor_byte, intent.start_byte, intent.replacement, applied)
+		app.editor_edits[index].before_cursor_byte = editor_rebase_replacement_position(app.editor_edits[index].before_cursor_byte, intent.start_byte, intent.replacement, applied)
+		app.editor_edits[index].after_anchor_byte = editor_rebase_replacement_position(app.editor_edits[index].after_anchor_byte, intent.start_byte, intent.replacement, applied)
+		app.editor_edits[index].after_cursor_byte = editor_rebase_replacement_position(app.editor_edits[index].after_cursor_byte, intent.start_byte, intent.replacement, applied)
 	}
 	view.selection_anchor = editor_rebase_replacement_position(view.selection_anchor, intent.start_byte, intent.replacement, applied)
 	view.caret_byte = editor_rebase_replacement_position(view.caret_byte, intent.start_byte, intent.replacement, applied)

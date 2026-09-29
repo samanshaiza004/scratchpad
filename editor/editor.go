@@ -1,6 +1,9 @@
 package editor
 
-import "unicode"
+import (
+	"errors"
+	"unicode"
+)
 
 // ScratchEditor is the intentionally boring Gate B behavior shell around
 // Buffer. It supports one byte-oriented caret, one selection, local grapheme
@@ -203,6 +206,30 @@ func (e *ScratchEditor) Insert(text []byte) error {
 // meaningful caret/anchor pair.
 func (e *ScratchEditor) ReplaceWithSelection(start, end int, text []byte, anchor, cursor int) error {
 	return e.replaceWithSelection(start, end, text, &selectionState{anchor: anchor, cursor: cursor})
+}
+
+// ReplaceInputWithSelection applies one foreign text-input transaction using
+// the same normalization as Insert. The explicit pre-edit selection becomes
+// the undo state, and the post-edit selection is already expressed in the
+// resulting normalized document's byte coordinates.
+func (e *ScratchEditor) ReplaceInputWithSelection(start, end int, text []byte, beforeAnchor, beforeCursor, afterAnchor, afterCursor int) error {
+	if e == nil || start < 0 || end < start || end > e.Buffer.ByteLen() {
+		return errors.New("editor input replacement range outside buffer")
+	}
+	beforeLength := e.Buffer.ByteLen()
+	if beforeAnchor < 0 || beforeAnchor > beforeLength || beforeCursor < 0 || beforeCursor > beforeLength {
+		return errors.New("pre-edit selection outside buffer")
+	}
+	replacement := text
+	if len(text) == 1 && text[0] == '\n' {
+		replacement = e.newlineText(start)
+	}
+	afterLength := beforeLength - (end - start) + len(replacement)
+	if afterAnchor < 0 || afterAnchor > afterLength || afterCursor < 0 || afterCursor > afterLength {
+		return errors.New("post-edit selection outside normalized buffer")
+	}
+	e.SetSelection(beforeAnchor, beforeCursor)
+	return e.ReplaceWithSelection(start, end, replacement, afterAnchor, afterCursor)
 }
 
 func (e *ScratchEditor) Backspace() error {

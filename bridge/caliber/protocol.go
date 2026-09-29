@@ -40,27 +40,32 @@ type StopRequest struct {
 }
 
 type CommandRequest struct {
-	Version         uint32 `json:"version"`
-	RequestID       uint64 `json:"request_id"`
-	BasedOnRevision uint64 `json:"based_on_revision"`
-	Command         string `json:"command"`
-	Path            string `json:"path,omitempty"`
-	Disposition     string `json:"disposition,omitempty"`
-	Name            string `json:"name,omitempty"`
-	DocumentID      string `json:"document_id,omitempty"`
-	Discard         bool   `json:"discard,omitempty"`
-	RelativePath    string `json:"relative_path,omitempty"`
-	Limit           int    `json:"limit,omitempty"`
-	StartLine       uint64 `json:"start_line,omitempty"`
-	AnchorByte      uint64 `json:"anchor_byte,omitempty"`
-	MaxLines        uint64 `json:"max_lines,omitempty"`
-	MaxBytes        uint64 `json:"max_bytes,omitempty"`
-	EditorRevision  uint64 `json:"editor_revision,omitempty"`
-	StartByte       uint64 `json:"start_byte,omitempty"`
-	EndByte         uint64 `json:"end_byte,omitempty"`
-	Replacement     []int  `json:"replacement,omitempty"`
-	Query           string `json:"query,omitempty"`
-	MaxMatches      int    `json:"max_matches,omitempty"`
+	Version           uint32 `json:"version"`
+	RequestID         uint64 `json:"request_id"`
+	BasedOnRevision   uint64 `json:"based_on_revision"`
+	Command           string `json:"command"`
+	Path              string `json:"path,omitempty"`
+	Disposition       string `json:"disposition,omitempty"`
+	Name              string `json:"name,omitempty"`
+	DocumentID        string `json:"document_id,omitempty"`
+	Discard           bool   `json:"discard,omitempty"`
+	RelativePath      string `json:"relative_path,omitempty"`
+	Limit             int    `json:"limit,omitempty"`
+	StartLine         uint64 `json:"start_line,omitempty"`
+	AnchorByte        uint64 `json:"anchor_byte,omitempty"`
+	MaxLines          uint64 `json:"max_lines,omitempty"`
+	MaxBytes          uint64 `json:"max_bytes,omitempty"`
+	EditorRevision    uint64 `json:"editor_revision,omitempty"`
+	StartByte         uint64 `json:"start_byte,omitempty"`
+	EndByte           uint64 `json:"end_byte,omitempty"`
+	Replacement       []int  `json:"replacement,omitempty"`
+	HasSelectionState bool   `json:"has_selection_state,omitempty"`
+	BeforeAnchorByte  uint64 `json:"before_anchor_byte,omitempty"`
+	BeforeCursorByte  uint64 `json:"before_cursor_byte,omitempty"`
+	AfterAnchorByte   uint64 `json:"after_anchor_byte,omitempty"`
+	AfterCursorByte   uint64 `json:"after_cursor_byte,omitempty"`
+	Query             string `json:"query,omitempty"`
+	MaxMatches        int    `json:"max_matches,omitempty"`
 }
 
 type Response struct {
@@ -286,6 +291,9 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.StartByte > uint64(^uint(0)>>1) || request.EndByte > uint64(^uint(0)>>1) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_range", "edit range does not fit the host word size", false), false
+		}
+		if request.HasSelectionState && (request.BeforeAnchorByte > uint64(^uint(0)>>1) || request.BeforeCursorByte > uint64(^uint(0)>>1) || request.AfterAnchorByte > uint64(^uint(0)>>1) || request.AfterCursorByte > uint64(^uint(0)>>1)) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_selection", "edit selection does not fit the host word size", false), false
 		}
 		if len(request.Replacement) > MaxEditBytes {
 			return request, errorResponse(request.RequestID, lifecycle, "edit_too_large", fmt.Sprintf("replacement exceeds %d bytes", MaxEditBytes), false), false

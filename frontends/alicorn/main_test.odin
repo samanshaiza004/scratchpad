@@ -74,6 +74,23 @@ editor_test_build_recovery_text_target :: proc(ui: ^alicorn.UI, view: ^Editor_Vi
 }
 
 @(test)
+test_editor_edit_selection_snapshot_captures_only_transaction_state :: proc(t: ^testing.T) {
+	view := Editor_View_State{selection_anchor=11, caret_byte=11}
+	collapsed := editor_edit_selection_snapshot(&view, 6, 6)
+	testing.expect(t,
+		collapsed.before_anchor_byte == 11 && collapsed.before_cursor_byte == 11 &&
+		collapsed.after_anchor_byte == 6 && collapsed.after_cursor_byte == 6,
+		"a collapsed word-delete transaction must carry its collapsed pre-edit caret and post-edit caret")
+
+	view.selection_anchor, view.caret_byte = 11, 6
+	selected := editor_edit_selection_snapshot(&view, 6, 6)
+	testing.expect(t,
+		selected.before_anchor_byte == 11 && selected.before_cursor_byte == 6 &&
+		selected.after_anchor_byte == 6 && selected.after_cursor_byte == 6,
+		"a selection-delete transaction must preserve the directional prior selection and record its collapsed result")
+}
+
+@(test)
 test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 	source, source_error := make([]u8, int(bridge.MAX_VISIBLE_BYTES), allocator=context.allocator)
 	testing.expect(t, source_error == nil, "clipboard test should allocate a full visible source window")

@@ -260,9 +260,14 @@ Backend_Command_Request :: struct {
 	max_lines:        u64    `json:"max_lines,omitempty"`,
 	max_bytes:        u64    `json:"max_bytes,omitempty"`,
 	editor_revision:  u64    `json:"editor_revision,omitempty"`,
-	start_byte:       u64    `json:"start_byte,omitempty"`,
-	end_byte:         u64    `json:"end_byte,omitempty"`,
-	replacement:      []int  `json:"replacement,omitempty"`,
+	start_byte:         u64    `json:"start_byte,omitempty"`,
+	end_byte:           u64    `json:"end_byte,omitempty"`,
+	replacement:        []int  `json:"replacement,omitempty"`,
+	has_selection_state: bool   `json:"has_selection_state,omitempty"`,
+	before_anchor_byte: u64    `json:"before_anchor_byte,omitempty"`,
+	before_cursor_byte: u64    `json:"before_cursor_byte,omitempty"`,
+	after_anchor_byte:  u64    `json:"after_anchor_byte,omitempty"`,
+	after_cursor_byte:  u64    `json:"after_cursor_byte,omitempty"`,
 }
 
 decode_state_envelope :: proc(data: []u8, allocator := context.allocator) -> (state: State_Envelope, ok: bool, message: string) {
@@ -825,6 +830,11 @@ backend_command :: proc(
 	start_byte: u64 = 0,
 	end_byte: u64 = 0,
 	replacement: []int = {},
+	has_selection_state := false,
+	before_anchor_byte: u64 = 0,
+	before_cursor_byte: u64 = 0,
+	after_anchor_byte: u64 = 0,
+	after_cursor_byte: u64 = 0,
 	based_on_revision: u64 = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
@@ -860,6 +870,11 @@ backend_command :: proc(
 		start_byte=start_byte,
 		end_byte=end_byte,
 		replacement=replacement,
+		has_selection_state=has_selection_state,
+		before_anchor_byte=before_anchor_byte,
+		before_cursor_byte=before_cursor_byte,
+		after_anchor_byte=after_anchor_byte,
+		after_cursor_byte=after_cursor_byte,
 	}
 	request_bytes, marshal_err := json.marshal(request, allocator=allocator)
 	if marshal_err != nil { return Backend_Command_Result{code="encode_failed", message="could not encode Scratchpad command"} }
@@ -1253,6 +1268,11 @@ Editor_Edit_Request :: struct {
 	editor_revision:   u64,
 	start_byte:        u64,
 	end_byte:          u64,
+	has_selection_state: bool,
+	before_anchor_byte: u64,
+	before_cursor_byte: u64,
+	after_anchor_byte:  u64,
+	after_cursor_byte:  u64,
 	replacement:       []u8,
 }
 
@@ -1330,6 +1350,11 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 				start_byte=request.start_byte,
 				end_byte=request.end_byte,
 				replacement=replacement,
+				has_selection_state=request.has_selection_state,
+				before_anchor_byte=request.before_anchor_byte,
+				before_cursor_byte=request.before_cursor_byte,
+				after_anchor_byte=request.after_anchor_byte,
+				after_cursor_byte=request.after_cursor_byte,
 				based_on_revision=request.based_on_revision,
 				read_latest_after=false,
 				allocator=lane.allocator,
@@ -1394,6 +1419,7 @@ editor_edit_lane_submit :: proc(
 	document_id: string,
 	based_on_revision, editor_revision, start_byte, end_byte: u64,
 	replacement: []u8,
+	before_anchor_byte, before_cursor_byte, after_anchor_byte, after_cursor_byte: u64,
 ) -> (accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 || sequence == 0 {
 		return false, "editor edit lane is not running or request identity is invalid"
@@ -1422,6 +1448,11 @@ editor_edit_lane_submit :: proc(
 		editor_revision=editor_revision,
 		start_byte=start_byte,
 		end_byte=end_byte,
+		has_selection_state=true,
+		before_anchor_byte=before_anchor_byte,
+		before_cursor_byte=before_cursor_byte,
+		after_anchor_byte=after_anchor_byte,
+		after_cursor_byte=after_cursor_byte,
 		replacement=owned_bytes,
 	}
 	lane.pending = true

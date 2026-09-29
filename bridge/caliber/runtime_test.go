@@ -563,15 +563,20 @@ func TestReplaceDocumentEnterAcknowledgesScratchpadIndentAndLineEnding(t *testin
 	id := state.Active
 	start := uint64(len([]byte("  α")))
 	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
-		Version:         ProtocolVersion,
-		RequestID:       71,
-		BasedOnRevision: state.ApplicationRev,
-		Command:         "replace_document",
-		DocumentID:      string(id),
-		EditorRevision:  state.Documents[0].EditorRevision,
-		StartByte:       start,
-		EndByte:         start,
-		Replacement:     []int{'\n'},
+		Version:           ProtocolVersion,
+		RequestID:         71,
+		BasedOnRevision:   state.ApplicationRev,
+		Command:           "replace_document",
+		DocumentID:        string(id),
+		EditorRevision:    state.Documents[0].EditorRevision,
+		StartByte:         start,
+		EndByte:           start,
+		Replacement:       []int{'\n'},
+		HasSelectionState: true,
+		BeforeAnchorByte:  start,
+		BeforeCursorByte:  start,
+		AfterAnchorByte:   start + uint64(len([]byte("\r\n  "))),
+		AfterCursorByte:   start + uint64(len([]byte("\r\n  "))),
 	}))
 	response := decodeResponse(t, runtime.Pump())
 	if !response.OK || response.Edit == nil {
@@ -593,6 +598,78 @@ func TestReplaceDocumentEnterAcknowledgesScratchpadIndentAndLineEnding(t *testin
 	}
 	if got := string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()); got != "  α\r\n  \r\n  β" {
 		t.Fatalf("authoritative Enter text = %q", got)
+	}
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 72,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         string(commands.EditUndo), DocumentID: string(id),
+	}))
+	undo := decodeResponse(t, runtime.Pump())
+	if !undo.OK || undo.EditorSelection == nil || undo.EditorSelection.AnchorByte != start || undo.EditorSelection.CursorByte != start {
+		t.Fatalf("Enter undo selection = %+v response=%+v", undo.EditorSelection, undo)
+	}
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 73,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         string(commands.EditRedo), DocumentID: string(id),
+	}))
+	redo := decodeResponse(t, runtime.Pump())
+	if !redo.OK || redo.EditorSelection == nil || redo.EditorSelection.AnchorByte != start+uint64(len([]byte("\r\n  "))) || redo.EditorSelection.CursorByte != start+uint64(len([]byte("\r\n  "))) {
+		t.Fatalf("Enter redo selection = %+v response=%+v", redo.EditorSelection, redo)
+	}
+}
+
+func TestReplaceDocumentAckUsesAppliedSpliceWhenCaretIsAfterDeletion(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "indent.txt")
+	source := "hello worXldsecondthird\r\n  \r\n  \r\n      fourth"
+	writeFile(t, path, source)
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 1,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	if len(state.Documents) != 1 {
+		t.Fatalf("opened documents = %+v", state.Documents)
+	}
+	start := uint64(len([]byte("hello worXldsecondthird\r\n  \r\n  \r\n")))
+	end := start + 4
+	caretBefore := start + 6
+	caretAfter := start + 2
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 2,
+		BasedOnRevision:   state.ApplicationRev,
+		Command:           "replace_document",
+		DocumentID:        string(state.Active),
+		EditorRevision:    state.Documents[0].EditorRevision,
+		StartByte:         start,
+		EndByte:           end,
+		HasSelectionState: true,
+		BeforeAnchorByte:  caretBefore,
+		BeforeCursorByte:  caretBefore,
+		AfterAnchorByte:   caretAfter,
+		AfterCursorByte:   caretAfter,
+	}))
+	response := decodeResponse(t, runtime.Pump())
+	if !response.OK || response.Edit == nil {
+		t.Fatalf("delete response = %+v", response)
+	}
+	if response.Edit.StartByte != start || response.Edit.OldEndByte != end || response.Edit.NewEndByte != start || len(response.Edit.AppliedReplacement) != 0 {
+		t.Fatalf("delete splice acknowledgement = %+v, want empty replacement over %d:%d", response.Edit, start, end)
+	}
+	if got := string(runtime.app.Documents[application.DocumentID(state.Active)].Editor.Buffer.Text()); got != "hello worXldsecondthird\r\n  \r\n  \r\n  fourth" {
+		t.Fatalf("deleted indentation source = %q", got)
 	}
 }
 
@@ -704,6 +781,112 @@ func TestSemanticUndoRedoRestoresGoSelectionAndRejectsPreUndoEditRevision(t *tes
 	}
 	if doc := afterRedo.Documents[0]; !doc.Dirty || doc.EditorRevision != 1 || !doc.CanUndo || doc.CanRedo || doc.ByteLength != 6 {
 		t.Fatalf("redo metadata = %+v", doc)
+	}
+}
+
+func TestReplaceDocumentUndoRedoRestoresTransactionSelectionSnapshots(t *testing.T) {
+	tests := []struct {
+		name                       string
+		start, end                 uint64
+		beforeAnchor, beforeCursor uint64
+		afterAnchor, afterCursor   uint64
+		undoAnchor, undoCursor     uint64
+		redoAnchor, redoCursor     uint64
+	}{
+		{
+			name:  "collapsed word delete",
+			start: 6, end: 11,
+			beforeAnchor: 11, beforeCursor: 11,
+			afterAnchor: 6, afterCursor: 6,
+			undoAnchor: 11, undoCursor: 11,
+			redoAnchor: 6, redoCursor: 6,
+		},
+		{
+			name:  "directional selection delete",
+			start: 6, end: 11,
+			beforeAnchor: 11, beforeCursor: 6,
+			afterAnchor: 6, afterCursor: 6,
+			undoAnchor: 11, undoCursor: 6,
+			redoAnchor: 6, redoCursor: 6,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "selection.txt")
+			writeFile(t, path, "hello world")
+			runtime := newStartedRuntime(t, root)
+			defer stopRuntime(t, runtime)
+
+			state := latestStateForTest(t, runtime)
+			dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+				Version: ProtocolVersion, RequestID: 1,
+				BasedOnRevision: state.ApplicationRev,
+				Command:         "open_path", Path: path,
+			}))
+			opened := decodeResponse(t, runtime.Pump())
+			if !opened.OK {
+				t.Fatalf("open response = %+v", opened)
+			}
+			state = latestStateForTest(t, runtime)
+			id := state.Active
+			if len(state.Documents) != 1 {
+				t.Fatalf("opened docs = %+v", state.Documents)
+			}
+
+			dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+				Version: ProtocolVersion, RequestID: 2,
+				BasedOnRevision: state.ApplicationRev,
+				Command:         "replace_document", DocumentID: string(id),
+				EditorRevision: state.Documents[0].EditorRevision,
+				StartByte:      test.start, EndByte: test.end, Replacement: []int{},
+				HasSelectionState: true,
+				BeforeAnchorByte:  test.beforeAnchor, BeforeCursorByte: test.beforeCursor,
+				AfterAnchorByte: test.afterAnchor, AfterCursorByte: test.afterCursor,
+			}))
+			edit := decodeResponse(t, runtime.Pump())
+			if !edit.OK || edit.Edit == nil {
+				t.Fatalf("edit response = %+v", edit)
+			}
+			if got := string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()); got != "hello " {
+				t.Fatalf("edited source = %q, want %q", got, "hello ")
+			}
+			state = latestStateForTest(t, runtime)
+
+			dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+				Version: ProtocolVersion, RequestID: 3,
+				BasedOnRevision: state.ApplicationRev,
+				Command:         string(commands.EditUndo), DocumentID: string(id),
+			}))
+			undo := decodeResponse(t, runtime.Pump())
+			if !undo.OK || undo.EditorSelection == nil {
+				t.Fatalf("undo response = %+v", undo)
+			}
+			if got := string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()); got != "hello world" {
+				t.Fatalf("undo source = %q, want original", got)
+			}
+			if got := undo.EditorSelection; got.AnchorByte != test.undoAnchor || got.CursorByte != test.undoCursor {
+				t.Fatalf("undo selection = %d:%d, want %d:%d", got.AnchorByte, got.CursorByte, test.undoAnchor, test.undoCursor)
+			}
+			state = latestStateForTest(t, runtime)
+
+			dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+				Version: ProtocolVersion, RequestID: 4,
+				BasedOnRevision: state.ApplicationRev,
+				Command:         string(commands.EditRedo), DocumentID: string(id),
+			}))
+			redo := decodeResponse(t, runtime.Pump())
+			if !redo.OK || redo.EditorSelection == nil {
+				t.Fatalf("redo response = %+v", redo)
+			}
+			if got := string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()); got != "hello " {
+				t.Fatalf("redo source = %q, want deleted word", got)
+			}
+			if got := redo.EditorSelection; got.AnchorByte != test.redoAnchor || got.CursorByte != test.redoCursor {
+				t.Fatalf("redo selection = %d:%d, want %d:%d", got.AnchorByte, got.CursorByte, test.redoAnchor, test.redoCursor)
+			}
+		})
 	}
 }
 

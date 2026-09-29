@@ -24,15 +24,20 @@ const (
 // contract. Paths, identities, save policy, and close policy remain
 // application-owned; a frontend supplies only semantic intent.
 type PresentationCommand struct {
-	Kind           PresentationCommandKind
-	Path           string
-	Preview        bool
-	DocumentID     DocumentID
-	Discard        bool
-	EditorRevision uint64
-	StartByte      int
-	EndByte        int
-	Replacement    []byte
+	Kind              PresentationCommandKind
+	Path              string
+	Preview           bool
+	DocumentID        DocumentID
+	Discard           bool
+	EditorRevision    uint64
+	StartByte         int
+	EndByte           int
+	Replacement       []byte
+	HasSelectionState bool
+	BeforeAnchorByte  int
+	BeforeCursorByte  int
+	AfterAnchorByte   int
+	AfterCursorByte   int
 }
 
 // PresentationDocument is the shell-visible portion of one open document.
@@ -157,7 +162,17 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 			return fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, command.EditorRevision, doc.Revision())
 		}
 		before := doc.Revision()
-		if err := doc.Replace(command.StartByte, command.EndByte, command.Replacement); err != nil {
+		var err error
+		if command.HasSelectionState {
+			err = doc.ReplaceWithSelectionState(
+				command.StartByte, command.EndByte, command.Replacement,
+				command.BeforeAnchorByte, command.BeforeCursorByte,
+				command.AfterAnchorByte, command.AfterCursorByte,
+			)
+		} else {
+			err = doc.Replace(command.StartByte, command.EndByte, command.Replacement)
+		}
+		if err != nil {
 			return err
 		}
 		if doc.Revision() != before {

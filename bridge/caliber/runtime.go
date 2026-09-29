@@ -338,12 +338,17 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			replacement[i] = byte(value)
 		}
 		if err := r.app.Dispatch(application.PresentationCommand{
-			Kind:           application.PresentationReplaceDocument,
-			DocumentID:     application.DocumentID(request.DocumentID),
-			EditorRevision: request.EditorRevision,
-			StartByte:      int(request.StartByte),
-			EndByte:        int(request.EndByte),
-			Replacement:    replacement,
+			Kind:              application.PresentationReplaceDocument,
+			DocumentID:        application.DocumentID(request.DocumentID),
+			EditorRevision:    request.EditorRevision,
+			StartByte:         int(request.StartByte),
+			EndByte:           int(request.EndByte),
+			Replacement:       replacement,
+			HasSelectionState: request.HasSelectionState,
+			BeforeAnchorByte:  int(request.BeforeAnchorByte),
+			BeforeCursorByte:  int(request.BeforeCursorByte),
+			AfterAnchorByte:   int(request.AfterAnchorByte),
+			AfterCursorByte:   int(request.AfterCursorByte),
 		}); err != nil {
 			if errors.Is(err, application.ErrStaleEditorRevision) {
 				return commandError(request, "stale_editor_revision", err)
@@ -351,7 +356,19 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "application_error", err)
 		}
 		doc := r.app.Documents[application.DocumentID(request.DocumentID)]
-		appliedEnd := doc.Editor.Cursor
+		appliedEnd := int(request.StartByte)
+		if doc.Revision() != request.EditorRevision {
+			edits, contiguous := doc.Editor.EditsSince(request.EditorRevision)
+			if !contiguous || len(edits) != 1 {
+				return commandError(request, "application_error", errors.New("could not identify the single source edit applied by replace_document"))
+			}
+			sourceEdit := edits[0]
+			if sourceEdit.BeforeRevision != request.EditorRevision || sourceEdit.AfterRevision != doc.Revision() ||
+				sourceEdit.StartByte != int(request.StartByte) || sourceEdit.OldEndByte != int(request.EndByte) {
+				return commandError(request, "application_error", errors.New("replace_document source-edit journal did not match the requested edit"))
+			}
+			appliedEnd = sourceEdit.NewEndByte
+		}
 		applied, err := doc.Editor.Buffer.Bytes(int(request.StartByte), appliedEnd)
 		if err != nil {
 			return commandError(request, "application_error", fmt.Errorf("read applied edit range: %w", err))

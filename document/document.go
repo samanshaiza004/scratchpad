@@ -508,6 +508,28 @@ func (d *Document) ReplaceWithSelection(start, end int, text []byte, anchor, cur
 	return nil
 }
 
+// ReplaceWithSelectionState records the frontend's actual selection on both
+// sides of one source-edit transaction. Post-edit positions use byte offsets
+// in the normalized resulting document. Ordinary caret movement stays local.
+func (d *Document) ReplaceWithSelectionState(start, end int, text []byte, beforeAnchor, beforeCursor, afterAnchor, afterCursor int) error {
+	if d == nil || d.Editor == nil || start < 0 || end < start || end > d.Editor.Buffer.ByteLen() {
+		return errors.New("document replace range outside buffer")
+	}
+	beforeLength := d.Editor.Buffer.ByteLen()
+	if beforeAnchor < 0 || beforeAnchor > beforeLength || beforeCursor < 0 || beforeCursor > beforeLength {
+		return errors.New("pre-edit selection outside buffer")
+	}
+	before := d.Revision()
+	if err := d.Editor.ReplaceInputWithSelection(start, end, text, beforeAnchor, beforeCursor, afterAnchor, afterCursor); err != nil {
+		return err
+	}
+	if d.Revision() != before {
+		d.observedRevision = d.Revision()
+		d.InvalidateDerived()
+	}
+	return nil
+}
+
 // Undo applies one editor-owned undo record and invalidates derived state if
 // the authoritative source revision changed. Cursor/selection restoration is
 // part of the editor's undo record and stays local to the document model.

@@ -78,11 +78,35 @@ Editor_View_State :: struct {
 
 Editor_Document_Edge :: enum { None, Start, End }
 
+Editor_Edit_Selection_Snapshot :: struct {
+	before_anchor_byte: u64,
+	before_cursor_byte: u64,
+	after_anchor_byte:  u64,
+	after_cursor_byte:  u64,
+}
+
+editor_edit_selection_snapshot :: proc(
+	view: ^Editor_View_State,
+	after_anchor_byte, after_cursor_byte: u64,
+) -> Editor_Edit_Selection_Snapshot {
+	if view == nil { return {} }
+	return Editor_Edit_Selection_Snapshot{
+		before_anchor_byte=view.selection_anchor,
+		before_cursor_byte=view.caret_byte,
+		after_anchor_byte=after_anchor_byte,
+		after_cursor_byte=after_cursor_byte,
+	}
+}
+
 Editor_Edit_Intent :: struct {
 	sequence:          u64,
 	document_id:       string,
 	start_byte:        u64,
 	end_byte:          u64,
+	before_anchor_byte: u64,
+	before_cursor_byte: u64,
+	after_anchor_byte:  u64,
+	after_cursor_byte:  u64,
 	replacement:       []u8,
 	wire_replacement:  []u8,
 }
