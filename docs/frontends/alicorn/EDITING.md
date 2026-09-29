@@ -1,6 +1,6 @@
 # Alicorn editing ownership contract
 
-Status: Phase 4C.1–4C.5 implemented: optimistic insertion/replacement, deletion, stale recovery, Scratchpad-owned Enter semantics, and platform-normalized keyboard editing. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not a complete editor specification. Clipboard, undo/redo, editor IME, and full editor parity are not claimed.
+Status: Phase 4D–4F implementation is in place: native clipboard commands, Scratchpad-authoritative Undo/Redo, and frontend-local IME preedit with committed edits sent through the normal edit lane. Automated tests cover the cross-language paths; native Windows/macOS clipboard and IME interaction still needs manual verification. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not a complete editor specification.
 
 ## Ownership
 
@@ -10,7 +10,8 @@ Status: Phase 4C.1–4C.5 implemented: optimistic insertion/replacement, deletio
 | Undo/redo history, dirty state, save, and external-change/conflict semantics | Scratchpad (Go) |
 | Caret, directional selection, preferred X, and viewport/scroll state | Alicorn frontend (Odin) |
 | Shaped visible rows, pointer hit testing, and bidi visual affinity | Alicorn frontend and Alicorn/Runa presentation |
-| IME preedit/composition display | Alicorn frontend and native text-input presentation |
+| OS clipboard access and UTF-8 transfer | Alicorn SDL host service; Scratchpad frontend owns Copy/Cut/Paste semantics |
+| IME preedit/composition display and candidate positioning | Alicorn frontend and native text-input presentation |
 | Unacknowledged optimistic source bytes | Alicorn frontend, pending reconciliation with Scratchpad |
 | Committed source edits | Alicorn applies a bounded optimistic projection; Scratchpad remains authoritative through the existing `replace_document` command and revision acknowledgement |
 | Bounded commands and resources, wakeups, and cross-language ownership/lifetimes | Caliber |
@@ -21,7 +22,7 @@ The frontend may keep bounded visible source windows and an optimistic projectio
 
 1. Cursor movement stays in the Alicorn frontend; cursor movement never crosses Caliber.
 2. Selection movement and changes stay in the Alicorn frontend; selection state never crosses Caliber.
-3. IME preedit/composition stays in the Alicorn frontend and is presentation state until commit; preedit never crosses Caliber.
+3. IME preedit/composition stays in the Alicorn frontend and is presentation state until commit; preedit never crosses Caliber. A commit becomes one ordinary bounded optimistic source edit.
 4. Whole-document bytes never cross Caliber. Source transfer remains bounded to the requested visible/resource window.
 5. Every source mutation must eventually converge to an authoritative Scratchpad editor revision. Optimistic frontend state is pending until accepted or reconciled with that authority.
 
@@ -39,8 +40,24 @@ This slice accepts insertion within the loaded bounded window. Save, close, and 
 
 ## Phase 4C.2–4C.4 — replacement, recovery, and Enter
 
-Selection replacement and Backspace/Delete use the same local range-replacement path, including cross-line joins. Stale acknowledgements discard the dependent optimistic chain, reload a fresh authoritative bounded window, normalize the caret, and allow editing to resume. Enter is projected locally using the visible line ending/indentation, while Scratchpad remains authoritative for the actual line ending and indentation rule. If its effective replacement differs, the acknowledgement patches the optimistic source and rebases queued edit ranges and local positions. The regression holds the serial lane across two Enter operations and a subsequent character, verifies immediate multi-line/line-count presentation, then checks authoritative revision and bytes converge. Clipboard, undo/redo, and editor IME remain subsequent slices.
+Selection replacement and Backspace/Delete use the same local range-replacement path, including cross-line joins. Stale acknowledgements discard the dependent optimistic chain, reload a fresh authoritative bounded window, normalize the caret, and allow editing to resume. Enter is projected locally using the visible line ending/indentation, while Scratchpad remains authoritative for the actual line ending and indentation rule. If its effective replacement differs, the acknowledgement patches the optimistic source and rebases queued edit ranges and local positions. The regression holds the serial lane across two Enter operations and a subsequent character, verifies immediate multi-line/line-count presentation, then checks authoritative revision and bytes converge. Clipboard, undo/redo, and editor IME are documented in phases 4D–4F below.
 
 ## Phase 4C.5 — keyboard ownership and word editing
 
 The native host checks menu/global shortcuts before routing normalized text-key intents to the focused generic text-input owner. That owner gets first refusal on Tab; if it declines, forward/backward focus traversal remains the fallback. Scratchpad inserts four spaces for Tab and removes one indentation unit from the caret's current line for Shift+Tab. The host translates platform-specific Ctrl/Option word keys, line-edge keys, and document-edge keys into semantic intents; Scratchpad applies Runa word boundaries to the bounded display projection and maps them back to source byte offsets. Word deletion and movement stay frontend-local except that deletion uses the existing serial source-replacement lane. Multi-line selection indentation and unsupported paragraph-navigation chords remain deferred.
+
+## Phase 4D — clipboard
+
+The SDL host owns native clipboard access and returns UTF-8 text to the application; it does not interpret editor commands. Scratchpad owns selection meaning and source edits. Copy requires a selection fully present in the bounded source window and valid UTF-8. Cut copies first and then queues the ordinary optimistic deletion. Paste queues the clipboard bytes through the existing replacement command; empty paste is a no-op. Select All adjusts frontend-local selection to the current projected document extent. Edit payloads are bounded to 128 KiB while the visible source window remains capped at 64 KiB, allowing a 100 KiB paste without transporting the full document.
+
+## Phase 4E — authoritative undo and redo
+
+The Go editor remains the sole owner of history. Undo/Redo are semantic Scratchpad commands; if local edits are still awaiting acknowledgement, the frontend queues the history command until those edits settle. Scratchpad returns the restored anchor, cursor byte, and cursor line so Alicorn restores local selection and scrolls the caret into view. Alicorn does not mirror the undo stack. Undo/Redo state is published with document metadata and reflected in the Edit menu.
+
+## Phase 4F — IME composition
+
+SDL editing/preedit events update a transient frontend-only projection over the original selected source range. They do not mutate committed source bytes, create a revision, or dispatch Caliber edits. A committed text-input event becomes an ordinary optimistic range replacement; if the bounded edit is rejected, committed text remains recoverable across SDL's terminal cancel and document switches. Further commits append without replacing prior bytes. If one commit crosses the 128 KiB recovery threshold, Alicorn preserves that commit with one exact-size growth and immediately suspends its generic text-input target; later commits are refused without changing retained recovery text. Copy clears recovery only after the OS clipboard write succeeds; close offers Copy Recovery, Discard Recovery, or Cancel, while save/discard close paths retain a backstop guard. Ordinary uncommitted preedit cancellation clears the transient projection. The native host updates SDL's text-input target rectangle from shaped caret geometry so candidate UI can follow the caret. Native composition and candidate placement remain platform-sensitive and require manual Windows/macOS verification.
+
+## Phase 4G — closeout boundary
+
+The fixed-row editor remains the Phase 4 scope. Soft wrapping, drag-selection autoscroll, and multiline selection indentation stay deferred because they require separate layout and interaction work. Automated clipboard, history, bounded-edit, and IME recovery/convergence checks pass, and the Windows native startup/publication/wake/presentation/shutdown smoke passes. Manually exercising native clipboard, Japanese composition/conversion/cancellation, candidate placement, and idle-after-edit on Windows and macOS remains part of platform validation.

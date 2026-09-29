@@ -33,11 +33,17 @@ func TestPublishedShellActionsUseCanonicalScratchpadIDsAndContext(t *testing.T) 
 	if got := byID[string(commands.WorkspaceOpen)]; !got.Visible || !got.Enabled {
 		t.Fatalf("Open Folder should be available without a workspace: %+v", got)
 	}
+	if got := byID[string(commands.EditUndo)]; !got.Visible || got.Enabled {
+		t.Fatalf("Undo should be visible but disabled without an active document/history: %+v", got)
+	}
+	if got := byID[string(commands.EditRedo)]; !got.Visible || got.Enabled {
+		t.Fatalf("Redo should be visible but disabled without an active document/history: %+v", got)
+	}
 
 	withWorkspace := stateFromApplication(2, application.PresentationState{
 		HasWorkspace: true,
 		Active:       "doc-1",
-		Documents:    []application.PresentationDocument{{ID: "doc-1"}, {ID: "doc-2"}},
+		Documents:    []application.PresentationDocument{{ID: "doc-1", ByteLength: 18, CanUndo: true}, {ID: "doc-2"}},
 	})
 	byID = make(map[string]ActionState, len(withWorkspace.Actions))
 	for _, action := range withWorkspace.Actions {
@@ -48,6 +54,15 @@ func TestPublishedShellActionsUseCanonicalScratchpadIDsAndContext(t *testing.T) 
 	}
 	if got := byID[string(commands.TabNext)]; !got.Visible || !got.Enabled || len(got.Bindings) != 1 {
 		t.Fatalf("tab navigation should be enabled with multiple documents: %+v", got)
+	}
+	if got := byID[string(commands.EditUndo)]; !got.Visible || !got.Enabled || len(got.Bindings) != 1 || got.Bindings[0] != "primary+z" {
+		t.Fatalf("Undo action should follow active document history: %+v", got)
+	}
+	if got := byID[string(commands.EditRedo)]; !got.Visible || got.Enabled || len(got.Bindings) != 1 || got.Bindings[0] != "primary+shift+z" {
+		t.Fatalf("Redo action should follow active document history: %+v", got)
+	}
+	if got := withWorkspace.Documents[0]; got.ByteLength != 18 || !got.CanUndo || got.CanRedo {
+		t.Fatalf("document metadata lost editor state: %+v", got)
 	}
 }
 

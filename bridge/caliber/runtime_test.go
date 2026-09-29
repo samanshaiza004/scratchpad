@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"scratchpad/application"
+	"scratchpad/commands"
 	"scratchpad/workspace"
 )
 
@@ -337,6 +338,50 @@ func TestVisibleLineRequestsRejectInvalidBounds(t *testing.T) {
 	}
 }
 
+func TestReadVisibleSingleLineKeepsLineChunkMetadataEmpty(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "lines.txt")
+	writeFile(t, path, "abc\nsecond\n")
+
+	runtime := newStartedRuntime(t, workspace)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 30, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	state = latestStateForTest(t, runtime)
+	if !opened.OK || len(state.Documents) != 1 {
+		t.Fatalf("open response = %+v, state = %+v", opened, state)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 31, BasedOnRevision: state.ApplicationRev,
+		Command: "read_visible_lines", DocumentID: state.Documents[0].ID,
+		StartLine: 0, MaxLines: 1, MaxBytes: 64,
+	}))
+	response := decodeResponse(t, runtime.Pump())
+	if !response.OK || response.Resource == nil {
+		t.Fatalf("single-line read response = %+v", response)
+	}
+	descriptor := response.Resource
+	if descriptor.ByteLen != 4 || descriptor.LineByteLength != 0 ||
+		descriptor.StartLine != 0 || descriptor.EndLine != 1 || !descriptor.Truncated {
+		t.Fatalf("single-line descriptor = %+v", descriptor)
+	}
+	resource, err := runtime.caliber.readResourceCopy(descriptor.ResourceID, descriptor.Generation)
+	if err != nil {
+		t.Fatalf("map single-line resource: %v", err)
+	}
+	if got := string(resource[visibleSliceHeaderBytes:]); got != "abc\n" {
+		t.Fatalf("single-line resource payload = %q, want %q", got, "abc\n")
+	}
+	if err := runtime.caliber.releaseResourceOwner(descriptor.ResourceID, descriptor.Generation); err != nil {
+		t.Fatalf("release single-line resource owner: %v", err)
+	}
+}
+
 func TestReadVisibleLongLineAsAnchoredBoundedChunks(t *testing.T) {
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "long-line.txt")
@@ -548,6 +593,117 @@ func TestReplaceDocumentEnterAcknowledgesScratchpadIndentAndLineEnding(t *testin
 	}
 	if got := string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()); got != "  α\r\n  \r\n  β" {
 		t.Fatalf("authoritative Enter text = %q", got)
+	}
+}
+
+func TestSemanticUndoRedoRestoresGoSelectionAndRejectsPreUndoEditRevision(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "undo.txt")
+	writeFile(t, path, "one\ntwo\nthree")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       101,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path",
+		Path:            path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := state.Active
+	if len(state.Documents) != 1 || state.Documents[0].ByteLength != 13 || state.Documents[0].CanUndo || state.Documents[0].CanRedo {
+		t.Fatalf("initial document metadata = %+v", state.Documents)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       102,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "replace_document",
+		DocumentID:      string(id),
+		EditorRevision:  state.Documents[0].EditorRevision,
+		StartByte:       0,
+		EndByte:         8,
+		Replacement:     []int{'X'},
+	}))
+	edit := decodeResponse(t, runtime.Pump())
+	if !edit.OK || edit.Edit == nil || edit.Edit.EditorRevision != 1 {
+		t.Fatalf("replace response = %+v", edit)
+	}
+	afterEdit := latestStateForTest(t, runtime)
+	if got := runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text(); string(got) != "Xthree" {
+		t.Fatalf("authoritative edited bytes = %q, want %q", got, "Xthree")
+	}
+	if doc := afterEdit.Documents[0]; !doc.Dirty || !doc.CanUndo || doc.CanRedo || doc.ByteLength != 6 {
+		t.Fatalf("edited metadata = %+v", doc)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       103,
+		BasedOnRevision: afterEdit.ApplicationRev,
+		Command:         string(commands.EditUndo),
+		DocumentID:      string(id),
+	}))
+	undo := decodeResponse(t, runtime.Pump())
+	if !undo.OK || undo.EditorSelection == nil || undo.EditorSelection.DocumentID != string(id) || undo.EditorSelection.EditorRevision != 0 || undo.EditorSelection.AnchorByte != 0 || undo.EditorSelection.CursorByte != 8 || undo.EditorSelection.CursorLine != 2 {
+		t.Fatalf("undo response selection = %+v response=%+v", undo.EditorSelection, undo)
+	}
+	afterUndo := latestStateForTest(t, runtime)
+	if got := runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text(); string(got) != "one\ntwo\nthree" {
+		t.Fatalf("authoritative undo bytes = %q, want original", got)
+	}
+	if doc := afterUndo.Documents[0]; doc.Dirty || doc.EditorRevision != 0 || !doc.CanRedo || doc.CanUndo || doc.ByteLength != 13 {
+		t.Fatalf("undo metadata = %+v", doc)
+	}
+	if afterUndo.ApplicationRev == afterEdit.ApplicationRev {
+		t.Fatalf("application revision did not advance after undo: %d", afterUndo.ApplicationRev)
+	}
+
+	// This is a delayed edit packet captured against the state before undo. The
+	// editor revision has returned to zero, but the monotonic application
+	// revision prevents the old request from being mistaken for current work.
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       104,
+		BasedOnRevision: afterEdit.ApplicationRev,
+		Command:         "replace_document",
+		DocumentID:      string(id),
+		EditorRevision:  1,
+		StartByte:       0,
+		EndByte:         0,
+		Replacement:     []int{'!'},
+	}))
+	stale := decodeResponse(t, runtime.Pump())
+	if stale.OK || stale.Outcome.Code != "stale_revision" {
+		t.Fatalf("pre-undo edit result = %+v, want stale_revision", stale)
+	}
+	if got := runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text(); string(got) != "one\ntwo\nthree" {
+		t.Fatalf("stale edit changed restored bytes: %q", got)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       105,
+		BasedOnRevision: afterUndo.ApplicationRev,
+		Command:         string(commands.EditRedo),
+	}))
+	redo := decodeResponse(t, runtime.Pump())
+	if !redo.OK || redo.EditorSelection == nil || redo.EditorSelection.EditorRevision != 1 || redo.EditorSelection.AnchorByte != 1 || redo.EditorSelection.CursorByte != 1 || redo.EditorSelection.CursorLine != 0 {
+		t.Fatalf("redo response selection = %+v response=%+v", redo.EditorSelection, redo)
+	}
+	afterRedo := latestStateForTest(t, runtime)
+	if got := runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text(); string(got) != "Xthree" {
+		t.Fatalf("authoritative redo bytes = %q, want edited bytes", got)
+	}
+	if doc := afterRedo.Documents[0]; !doc.Dirty || doc.EditorRevision != 1 || !doc.CanUndo || doc.CanRedo || doc.ByteLength != 6 {
+		t.Fatalf("redo metadata = %+v", doc)
 	}
 }
 

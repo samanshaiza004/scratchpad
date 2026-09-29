@@ -28,6 +28,7 @@ VISIBLE_SLICE_HEADER_BYTES :: 48
 VISIBLE_SLICE_SCHEMA_V1   :: u32(1)
 MAX_VISIBLE_LINES         :: u64(256)
 MAX_VISIBLE_BYTES         :: u64(64 * 1024)
+MAX_EDIT_BYTES            :: u64(128 * 1024)
 
 // Mirrors .deps/caliber/include/caliber.h. That header remains authoritative;
 // these declarations bind only the ABI surface this frontend actually uses.
@@ -123,6 +124,9 @@ State_Document :: struct {
 	preview:         bool   `json:"preview"`,
 	editor_revision: u64    `json:"editor_revision"`,
 	line_count:      u64    `json:"line_count"`,
+	byte_length:     u64    `json:"byte_length"`,
+	can_undo:        bool   `json:"can_undo"`,
+	can_redo:        bool   `json:"can_redo"`,
 	language:        string `json:"language"`,
 }
 
@@ -189,6 +193,15 @@ Backend_Response :: struct {
 	close_decision:   Close_Decision    `json:"close_decision"`,
 	resource:         Resource_Descriptor `json:"resource"`,
 	edit:             Edit_Ack           `json:"edit"`,
+	editor_selection: Editor_Selection   `json:"editor_selection"`,
+}
+
+Editor_Selection :: struct {
+	document_id:     string `json:"document_id"`,
+	editor_revision: u64    `json:"editor_revision"`,
+	anchor_byte:     u64    `json:"anchor_byte"`,
+	cursor_byte:     u64    `json:"cursor_byte"`,
+	cursor_line:      u64    `json:"cursor_line"`,
 }
 
 Edit_Ack :: struct {
@@ -780,6 +793,7 @@ Backend_Command_Result :: struct {
 	state_changed:  bool,
 	revision:       u64,
 	edit:           Edit_Ack,
+	editor_selection: Editor_Selection,
 	code:           string,
 	message:        string,
 	directory_listing: Directory_Listing,
@@ -791,6 +805,7 @@ Backend_Command_Result :: struct {
 	close_id_owned: bool,
 	edit_document_id_owned: bool,
 	edit_applied_replacement_owned: bool,
+	editor_selection_document_id_owned: bool,
 	visible_window_owned: bool,
 }
 
@@ -888,6 +903,11 @@ backend_command :: proc(
 			result.edit_applied_replacement_owned = true
 		}
 	}
+	if response.ok && (command == "edit.undo" || command == "edit.redo") && response.editor_selection.document_id != "" {
+		result.editor_selection = response.editor_selection
+		result.editor_selection.document_id, _ = strings.clone(response.editor_selection.document_id, allocator)
+		result.editor_selection_document_id_owned = len(result.editor_selection.document_id) > 0
+	}
 	code_copy, code_clone_err := strings.clone(response.outcome.code, allocator)
 	result.code = code_copy
 	result.code_owned = code_clone_err == nil && len(result.code) > 0
@@ -951,6 +971,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.close_id_owned { delete(result.close_decision.document_id, allocator) }
 	if result.edit_document_id_owned { delete(result.edit.document_id, allocator) }
 	if result.edit_applied_replacement_owned { delete(result.edit.applied_replacement, allocator) }
+	if result.editor_selection_document_id_owned { delete(result.editor_selection.document_id, allocator) }
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	result^ = {}
 }
@@ -1377,8 +1398,8 @@ editor_edit_lane_submit :: proc(
 	if lane == nil || lane.thread == nil || len(document_id) == 0 || sequence == 0 {
 		return false, "editor edit lane is not running or request identity is invalid"
 	}
-	if end_byte < start_byte || len(replacement) > 64*1024 {
-		return false, "editor edit request is invalid or exceeds the bounded payload limit"
+	if end_byte < start_byte || len(replacement) > int(MAX_EDIT_BYTES) {
+		return false, "editor edit request is invalid or exceeds the 128 KiB payload limit"
 	}
 	if sync.atomic_load(&lane.stopping) != 0 { return false, "editor edit lane is stopping" }
 	sync.mutex_lock(&lane.mutex)
@@ -1500,6 +1521,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.outcome.code, allocator)
 	delete(response.outcome.message, allocator)
 	delete(response.close_decision.document_id, allocator)
+	delete(response.editor_selection.document_id, allocator)
 	delete(response.resource.document_id, allocator)
 	delete(response.edit.document_id, allocator)
 	delete(response.edit.applied_replacement, allocator)

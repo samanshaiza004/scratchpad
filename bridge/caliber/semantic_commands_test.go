@@ -136,3 +136,39 @@ func TestOpenPathPreviewDispositionValidation(t *testing.T) {
 		t.Fatalf("disposition on non-open command response = %+v, ok=%v", response, ok)
 	}
 }
+
+func TestReplaceDocumentLimitSupportsLargePasteButRejectsOver128KiB(t *testing.T) {
+	base := CommandRequest{
+		Version:    ProtocolVersion,
+		RequestID:  90,
+		Command:    "replace_document",
+		DocumentID: "doc",
+	}
+	for _, size := range []int{100 * 1024, MaxEditBytes} {
+		request := base
+		request.Replacement = make([]int, size)
+		for i := range request.Replacement {
+			request.Replacement[i] = 'x'
+		}
+		input, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, response, ok := decodeCommandRequest(input, lifecycleRunning); !ok {
+			t.Fatalf("%d-byte edit rejected: %+v", size, response)
+		}
+	}
+
+	request := base
+	request.Replacement = make([]int, MaxEditBytes+1)
+	for i := range request.Replacement {
+		request.Replacement[i] = 'x'
+	}
+	input, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, response, ok := decodeCommandRequest(input, lifecycleRunning); ok || response.Outcome.Code != "edit_too_large" {
+		t.Fatalf("over-limit edit result = ok=%v response=%+v", ok, response)
+	}
+}

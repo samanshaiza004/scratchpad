@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -9,6 +10,662 @@ import "core:time"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
+
+Editor_Test_Clipboard :: struct {
+	text:      string,
+	last_write: string,
+	reads:     int,
+	writes:    int,
+	read_ok:   bool,
+	write_ok:  bool,
+}
+
+editor_test_clipboard_get_text :: proc(data: rawptr, allocator: mem.Allocator) -> (text: string, ok: bool) {
+	clipboard := cast(^Editor_Test_Clipboard)data
+	if clipboard == nil { return "", false }
+	clipboard.reads += 1
+	if !clipboard.read_ok { return "", false }
+	cloned, clone_error := strings.clone(clipboard.text, allocator)
+	return cloned, clone_error == nil
+}
+
+editor_test_clipboard_set_text :: proc(data: rawptr, text: string) -> bool {
+	clipboard := cast(^Editor_Test_Clipboard)data
+	if clipboard == nil || !clipboard.write_ok { return false }
+	if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+	cloned, clone_error := strings.clone(text, context.temp_allocator)
+	if clone_error != nil { return false }
+	clipboard.last_write = cloned
+	clipboard.writes += 1
+	return true
+}
+
+editor_test_render_scroll_list :: proc(rt: ^alicorn.Runtime, count: int) -> alicorn.Node_ID {
+	if rt == nil { return 0 }
+	alicorn.invalidate_root(rt, "Scratchpad editor scroll restoration test")
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build { return 0 }
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("undo-scroll-test-root"), style=alicorn.layout_style())
+	list := alicorn.virtual_list_begin(
+		&ui,
+		count,
+		EDITOR_ROW_HEIGHT,
+		key=alicorn.key_string("undo-scroll-test-list"),
+		style=alicorn.layout_style(grow=1, clip=true),
+		label="undo-scroll-test-list",
+		focusable=true,
+	)
+	for position := list.first; position < list.last; position += 1 {
+		alicorn.text(&ui, fmt.tprintf("row %d", position), style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT))
+	}
+	alicorn.virtual_list_end(&ui, list)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	return list.scroll.id
+}
+
+editor_test_build_recovery_text_target :: proc(ui: ^alicorn.UI, view: ^Editor_View_State) -> (owner: alicorn.Node_ID, added: bool) {
+	alicorn.container_begin(ui, .Root, key=alicorn.key_string("recovery-target-test-root"), style=alicorn.layout_style(grow=1))
+	owner = alicorn.container_begin(ui, .Container, key=alicorn.key_string("recovery-target-test-node"), style=alicorn.layout_style(grow=1))
+	added = editor_register_text_input_target(ui, owner, view)
+	alicorn.container_end(ui)
+	alicorn.container_end(ui)
+	return
+}
+
+@(test)
+test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
+	source, source_error := make([]u8, int(bridge.MAX_VISIBLE_BYTES), allocator=context.allocator)
+	testing.expect(t, source_error == nil, "clipboard test should allocate a full visible source window")
+	if source_error != nil { return }
+	for &byte in source { byte = 'a' }
+	visible := bridge.Visible_Window{
+		document_id="clipboard-doc",
+		editor_revision=1,
+		start_line=0,
+		end_line=1,
+		start_byte=0,
+		line_byte_length=u64(len(source)),
+		source=source,
+	}
+	window, window_ok, window_error := editor_window_from_visible(&visible, context.allocator)
+	testing.expect(t, window_ok, window_error)
+	if !window_ok {
+		if len(visible.source) > 0 { delete(visible.source, context.allocator) }
+		return
+	}
+
+	paste_bytes, paste_error := make([]u8, 100*1024, allocator=context.allocator)
+	testing.expect(t, paste_error == nil, "clipboard test should allocate the 100 KiB paste fixture")
+	if paste_error != nil { editor_window_destroy(&window); return }
+	defer delete(paste_bytes, context.allocator)
+	for &byte in paste_bytes { byte = 'p' }
+	clipboard := Editor_Test_Clipboard{text=string(paste_bytes), read_ok=true, write_ok=true}
+	app: App
+	app.backend.started = true
+	app.backend.state.active = "clipboard-doc"
+	documents := make([dynamic]bridge.State_Document, 0, allocator=context.allocator)
+	append(&documents, bridge.State_Document{id="clipboard-doc", byte_length=u64(len(source)), editor_revision=1})
+	app.backend.state.documents = documents[:]
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.editor_window = window
+	app.editor_window_ready = true
+	app.services.clipboard = host.Clipboard_Service{
+		data=rawptr(&clipboard),
+		get_text=editor_test_clipboard_get_text,
+		set_text=editor_test_clipboard_set_text,
+	}
+	init_menus(&app)
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+		delete(documents)
+		editor_window_destroy(&app.editor_window)
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "clipboard-doc", context.allocator)
+	if !view_ok { testing.expect(t, false, "clipboard test should retain local editor state"); return }
+	view := &app.editor_views[view_index]
+	view.selection_anchor = u64(len(source))
+	view.caret_byte = u64(len(source))
+
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_PASTE)
+	testing.expect(t, clipboard.reads == 1 && len(app.editor_edits) == 1 &&
+		len(view.optimistic_window.source) == len(source)+len(paste_bytes) &&
+		editor_bytes_equal(view.optimistic_window.source[:len(source)], source) &&
+		editor_bytes_equal(view.optimistic_window.source[len(source):], paste_bytes),
+		"Paste through Clipboard_Service should queue one complete 100 KiB edit against a full 64 KiB window")
+
+	document, document_found := find_document(&app.backend.state, "clipboard-doc")
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_SELECT_ALL)
+	testing.expect(t, document_found && view.selection_anchor == 0 &&
+		view.caret_byte == editor_current_byte_length(&app, document),
+		"Select All should include pending optimistic paste bytes")
+
+	view.selection_anchor, view.caret_byte = 0, 1
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_COPY)
+	testing.expect(t, clipboard.writes == 1 && clipboard.last_write == "a",
+		"Copy should write the exact selected UTF-8 source bytes")
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
+	testing.expect(t, clipboard.writes == 2 && clipboard.last_write == "a" && len(app.editor_edits) == 2 &&
+		len(view.optimistic_window.source) == len(source)+len(paste_bytes)-1 &&
+		view.optimistic_window.source[0] == 'a',
+		"Cut should copy the full UTF-8 selection then queue its complete source deletion")
+
+	cut_failure_length := len(view.optimistic_window.source)
+	cut_failure_byte := view.optimistic_window.source[1]
+	cut_failure_edits := len(app.editor_edits)
+	cut_failure_writes := clipboard.writes
+	clipboard.write_ok = false
+	view.selection_anchor, view.caret_byte = 1, 2
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
+	testing.expect(t, len(app.editor_edits) == cut_failure_edits && clipboard.writes == cut_failure_writes &&
+		len(view.optimistic_window.source) == cut_failure_length && view.optimistic_window.source[1] == cut_failure_byte,
+		"Cut must leave the source and edit queue unchanged when the OS clipboard rejects Copy")
+	clipboard.write_ok = true
+
+	edit_count := len(app.editor_edits)
+	view.selection_anchor, view.caret_byte = u64(len(view.optimistic_window.source)+10), u64(len(view.optimistic_window.source)+11)
+	clipboard.text = ""
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_PASTE)
+	testing.expect(t, len(app.editor_edits) == edit_count && clipboard.reads == 2,
+		"an empty clipboard should be a no-op even when the selected range is outside the loaded window")
+
+	view.selection_anchor, view.caret_byte = 0, 1
+	view.optimistic_window.source[0] = 0xFF
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_COPY)
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
+	testing.expect(t, clipboard.writes == 2 && len(app.editor_edits) == edit_count &&
+		view.optimistic_window.source[0] == 0xFF && strings.contains(app.error_message, "invalid UTF-8"),
+		"Copy and Cut must refuse invalid UTF-8 source bytes without writing or deleting them")
+}
+
+@(test)
+test_editor_ime_preedit_is_transient_and_uses_utf8_byte_offsets :: proc(t: ^testing.T) {
+	source_bytes := [?]u8{'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
+	visible := bridge.Visible_Window{
+		document_id="ime-doc",
+		start_line=0,
+		end_line=1,
+		start_byte=0,
+		line_byte_length=u64(len(source_bytes)),
+		source=source_bytes[:],
+	}
+	window, ok, message := editor_window_from_visible(&visible, context.temp_allocator)
+	testing.expect(t, ok, message)
+	if !ok { return }
+	defer editor_window_destroy(&window, context.temp_allocator)
+
+	view := Editor_View_State{selection_anchor=6, caret_byte=11}
+	if !editor_preedit_update(&view, "かな", 3, 6, context.temp_allocator) {
+		testing.expect(t, false, "IME preedit should be retained as frontend-owned transient bytes")
+		return
+	}
+	defer editor_preedit_clear(&view, context.temp_allocator)
+	first_start, first_end := view.preedit_replace_start, view.preedit_replace_end
+	if !editor_preedit_update(&view, "日本", 3, 6, context.temp_allocator) {
+		testing.expect(t, false, "subsequent IME updates should replace the preedit projection")
+		return
+	}
+	testing.expect(t, first_start == 6 && first_end == 11 && view.preedit_replace_start == 6 && view.preedit_replace_end == 11,
+		"repeated preedit updates must preserve the original UTF-8 source-byte selection")
+	line, found := editor_window_line(&window, 0)
+	if !found { testing.expect(t, false, "IME test source row should be projected"); return }
+	display, selection_start, selection_end, applies := editor_preedit_display_for_line(&view, &window, line, context.temp_allocator)
+	defer delete(display, context.temp_allocator)
+	testing.expect(t, applies && display == "hello 日本" && selection_start == 9 && selection_end == 12,
+		"the transient display should replace the selected source with UTF-8 preedit bytes and keep SDL offsets byte-based")
+	if !editor_preedit_update(&view, "日本", 0, 3, context.temp_allocator) {
+		testing.expect(t, false, "partial IME composition selection should remain in the frontend projection")
+		return
+	}
+	partial_display, partial_start, partial_end, partial_applies := editor_preedit_display_for_line(&view, &window, line, context.temp_allocator)
+	defer delete(partial_display, context.temp_allocator)
+	testing.expect(t, partial_applies && partial_display == "hello 日本",
+		"a partial SDL byte selection should keep the complete composition visible")
+	testing.expect(t, partial_start == 6 && partial_end == 9,
+		"a partial SDL byte selection should map the first UTF-8 grapheme range")
+	testing.expect(t, string(window.source) == "hello world", "preedit updates must not mutate the committed source window")
+
+	start, end := editor_preedit_take_replace_range(&view, view.selection_anchor, view.caret_byte, context.temp_allocator)
+	testing.expect(t, start == 6 && end == 11 && !view.preedit_active,
+		"commit should consume exactly the original selected source range and clear the preedit state")
+	testing.expect(t, string(window.source) == "hello world", "taking the commit range must not mutate source bytes itself")
+}
+
+@(test)
+test_editor_ime_cancel_and_commit_are_local_until_one_replacement_is_queued :: proc(t: ^testing.T) {
+	source := [?]u8{'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
+	visible := bridge.Visible_Window{
+		document_id="ime-commit-doc",
+		editor_revision=1,
+		start_line=0,
+		end_line=1,
+		start_byte=0,
+		line_byte_length=u64(len(source)),
+		source=source[:],
+	}
+	base, window_ok, window_error := editor_window_from_visible(&visible, context.temp_allocator)
+	testing.expect(t, window_ok, window_error)
+	if !window_ok { return }
+
+	app: App
+	app.backend.started = true
+	app.backend.state.active = "ime-commit-doc"
+	clipboard := Editor_Test_Clipboard{write_ok=true}
+	app.services.clipboard = host.Clipboard_Service{
+		data=rawptr(&clipboard),
+		set_text=editor_test_clipboard_set_text,
+	}
+	documents := make([dynamic]bridge.State_Document, 0, allocator=context.temp_allocator)
+	append(&documents, bridge.State_Document{id="ime-commit-doc", byte_length=u64(len(source)), editor_revision=1})
+	app.backend.state.documents = documents[:]
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.editor_window = base
+	app.editor_window_ready = true
+	app.editor_scroll_owner = 41
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+		delete(documents)
+		editor_window_destroy(&app.editor_window, context.temp_allocator)
+		if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "ime-commit-doc", context.allocator)
+	if !view_ok { testing.expect(t, false, "IME test should retain local view state"); return }
+	view := &app.editor_views[view_index]
+	view.selection_anchor = 6
+	view.caret_byte = 11
+	preedit := host.Application_Text_Input_Event{kind=.Preedit, text="かな", selection_start_byte=0, selection_end_byte=0}
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, preedit)
+	testing.expect(t, view.preedit_active && len(app.editor_edits) == 0 && string(app.editor_window.source) == "hello world",
+		"IME preedit must be frontend-only and must not call Caliber or mutate committed bytes")
+	tab_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Tab, shift=true})
+	testing.expect(t, tab_handled && view.preedit_active && string(app.editor_window.source) == "hello world",
+		"Tab and Shift+Tab should be consumed during composition without leaving the text target or changing source")
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Cancel})
+	testing.expect(t, !view.preedit_active && len(app.editor_edits) == 0 && string(app.editor_window.source) == "hello world",
+		"IME cancellation must clear composition without changing source or queueing a replacement")
+	oversized, oversized_error := make([]u8, int(bridge.MAX_EDIT_BYTES)+1, allocator=context.temp_allocator)
+	testing.expect(t, oversized_error == nil, "rejected IME commit fixture should allocate")
+	if oversized_error == nil {
+		defer delete(oversized, context.temp_allocator)
+		for &byte in oversized { byte = 'x' }
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, preedit)
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text=string(oversized)})
+		testing.expect(t, view.preedit_active && string(view.preedit_text) == string(oversized) &&
+			view.preedit_replace_start == 6 && view.preedit_replace_end == 11 && len(app.editor_edits) == 0 &&
+			string(app.editor_window.source) == "hello world" && strings.contains(app.error_message, "retryable composition"),
+			"a rejected committed composition must remain visibly retryable over its original selection without mutating source")
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Cancel})
+		testing.expect(t, view.preedit_active && view.preedit_recoverable && string(view.preedit_text) == string(oversized) &&
+			string(app.editor_window.source) == "hello world" && len(app.editor_edits) == 0,
+			"the host's empty terminal TEXT_EDITING cancel must preserve a rejected but committed TEXT_INPUT for recovery")
+		set_error(&app, "")
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, preedit)
+		testing.expect(t, view.preedit_active && view.preedit_recoverable && string(view.preedit_text) == string(oversized) &&
+			strings.contains(app.error_message, "Edit > Copy"),
+			"a new IME preedit must not overwrite committed text that is still awaiting explicit recovery")
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text="日本"})
+		testing.expect(t, view.preedit_active && view.preedit_recoverable &&
+			editor_preedit_recovery_is_full(view) && len(view.preedit_text) == len(oversized) &&
+			editor_bytes_equal(view.preedit_text, oversized) &&
+			view.preedit_replace_start == 6 && view.preedit_replace_end == 11 && len(app.editor_edits) == 0 &&
+			string(app.editor_window.source) == "hello world" && strings.contains(app.error_message, "buffer is full"),
+			"a commit received after an oversized initial recovery must be refused without changing its retained bytes")
+		for _ in 0..<32 {
+			editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text="z"})
+		}
+		testing.expect(t, len(view.preedit_text) == len(oversized) && editor_bytes_equal(view.preedit_text, oversized) &&
+			editor_preedit_recovery_is_full(view),
+			"repeated commits at the recovery limit must not grow or rewrite the original committed payload")
+		clipboard.write_ok = false
+		editor_clipboard_command(&app, &rt, ACTION_EDIT_COPY)
+		testing.expect(t, clipboard.writes == 0 && view.preedit_active && view.preedit_recoverable &&
+			len(view.preedit_text) == len(oversized) &&
+			strings.contains(app.error_message, "Could not copy"),
+			"a failed clipboard write must leave all committed IME recovery text visible and retryable")
+		clipboard.write_ok = true
+		editor_clipboard_command(&app, &rt, ACTION_EDIT_COPY)
+		testing.expect(t, clipboard.writes == 1 && len(clipboard.last_write) == len(oversized) &&
+			editor_bytes_equal(transmute([]u8)clipboard.last_write, oversized) && !view.preedit_active &&
+			strings.contains(app.error_message, "copied to the clipboard") &&
+			string(app.editor_window.source) == "hello world" && len(app.editor_edits) == 0,
+			"Edit Copy should recover the complete committed text, clear its overlay only after success, and leave source unchanged")
+	}
+
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, preedit)
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text="日本"})
+	testing.expect(t, len(app.editor_edits) == 1 && app.editor_edits[0].start_byte == 6 && app.editor_edits[0].end_byte == 11 &&
+		string(app.editor_edits[0].replacement) == "日本" && view.optimistic_window_ready &&
+		string(view.optimistic_window.source) == "hello 日本",
+		"IME commit should replace the original selected bytes with exactly one ordinary optimistic edit")
+}
+
+@(test)
+test_recoverable_ime_text_survives_document_switch_and_blocks_close :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		if len(app.close_document_id) > 0 { delete(app.close_document_id, context.allocator) }
+	}
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 320, 200})
+	defer alicorn.destroy_runtime(&rt)
+	index, ok := editor_view_ensure(&app.editor_views, "recoverable-doc", context.allocator)
+	if !ok { testing.expect(t, false, "recovery view should be retained"); return }
+	view := &app.editor_views[index]
+	view.selection_anchor, view.caret_byte = 2, 4
+	if !editor_preedit_update(view, "committed", 0, len("committed"), context.allocator) {
+		testing.expect(t, false, "recovery fixture text should be retained")
+		return
+	}
+	view.preedit_replace_start, view.preedit_replace_end = 2, 4
+	view.preedit_recoverable = true
+	editor_preedit_clear_for_document_switch(view, context.allocator)
+	testing.expect(t, view.preedit_active && view.preedit_recoverable && string(view.preedit_text) == "committed",
+		"switching away from a document must preserve its committed IME recovery text")
+	request_close_document(&app, &rt, "recoverable-doc")
+	testing.expect(t, view.preedit_active && view.preedit_recoverable && string(view.preedit_text) == "committed" &&
+		app.close_document_id == "recoverable-doc" && strings.contains(app.error_message, "Copy or explicitly discard"),
+		"closing a document with committed IME text must open an explicit copy-or-discard recovery prompt")
+	close_after_save(&app, &rt)
+	close_with_discard(&app, &rt)
+	testing.expect(t, view.preedit_active && view.preedit_recoverable && string(view.preedit_text) == "committed",
+		"save-and-close and discard-and-close backstops must preserve recovery until an explicit recovery choice")
+	testing.expect(t, editor_discard_recoverable_preedit(&app, &rt, "recoverable-doc") && !view.preedit_active &&
+		!view.preedit_recoverable && len(view.preedit_text) == 0 &&
+		strings.contains(app.error_message, "explicitly discarded"),
+		"the recovery prompt's explicit discard choice should clear only the held composition, not edit source bytes")
+}
+
+@(test)
+test_editor_recovery_commits_are_bounded_and_suspend_text_input :: proc(t: ^testing.T) {
+	source, source_error := make([]u8, len("hello world"), allocator=context.allocator)
+	if source_error != nil { testing.expect(t, false, "bounded recovery source should allocate"); return }
+	copy(source, "hello world")
+	visible := bridge.Visible_Window{
+		document_id="bounded-recovery-doc",
+		editor_revision=1,
+		start_line=0,
+		end_line=1,
+		start_byte=0,
+		line_byte_length=u64(len(source)),
+		source=source,
+	}
+	window, window_ok, window_error := editor_window_from_visible(&visible, context.allocator)
+	testing.expect(t, window_ok, window_error)
+	if !window_ok { if len(visible.source) > 0 { delete(visible.source, context.allocator) }; return }
+
+	app: App
+	app.backend.started = true
+	app.backend.state.active = "bounded-recovery-doc"
+	documents := make([dynamic]bridge.State_Document, 0, allocator=context.allocator)
+	append(&documents, bridge.State_Document{id="bounded-recovery-doc", byte_length=u64(len(source)), editor_revision=1, line_count=1})
+	app.backend.state.documents = documents[:]
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
+	app.editor_window = window
+	app.editor_window_ready = true
+	clipboard := Editor_Test_Clipboard{write_ok=true}
+	app.services.clipboard = host.Clipboard_Service{data=rawptr(&clipboard), set_text=editor_test_clipboard_set_text}
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views, context.allocator)
+		editor_window_destroy(&app.editor_window, context.allocator)
+		delete(app.editor_row_targets)
+		delete(documents)
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+		if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	alicorn.invalidate_root(&rt, "bounded recovery suspension test target")
+	ui, should_build := alicorn.begin_frame(&rt)
+	if !should_build { testing.expect(t, false, "bounded recovery target should build its initial frame"); return }
+	owner, initial_target_added := editor_test_build_recovery_text_target(&ui, nil)
+	alicorn.end_frame(&ui)
+	app.editor_scroll_owner = owner
+	testing.expect(t, initial_target_added && alicorn.text_input_target_is_active(&rt, owner),
+		"the recovery fixture should begin with an active retained target")
+	_ = alicorn.focus(&rt, owner)
+
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "bounded-recovery-doc", context.allocator)
+	if !view_ok { testing.expect(t, false, "bounded recovery view should allocate"); return }
+	view := &app.editor_views[view_index]
+	view.selection_anchor, view.caret_byte = 6, 11
+	if !editor_preedit_make_recoverable(view, "seed", 6, 11, context.allocator) {
+		testing.expect(t, false, "initial recovery text should allocate its bounded backing store")
+		return
+	}
+	// A full pending queue forces each retry to remain recoverable while the
+	// test feeds enough independent commits to reach and cross the soft limit.
+	pending_id, id_error := strings.clone("bounded-recovery-doc", context.allocator)
+	pending_bytes, bytes_error := make([]u8, int(bridge.MAX_EDIT_BYTES), allocator=context.allocator)
+	if id_error != nil || bytes_error != nil {
+		testing.expect(t, false, "bounded pending edit fixture should allocate")
+		if id_error == nil { delete(pending_id, context.allocator) }
+		if bytes_error == nil { delete(pending_bytes, context.allocator) }
+		return
+	}
+	append(&app.editor_edits, Editor_Edit_Intent{document_id=pending_id, replacement=pending_bytes})
+	chunk, chunk_error := make([]u8, 64, allocator=context.temp_allocator)
+	if chunk_error != nil { testing.expect(t, false, "bounded input chunk should allocate"); return }
+	defer delete(chunk, context.temp_allocator)
+	for &byte in chunk { byte = 'c' }
+	remaining := EDITOR_IME_RECOVERY_MAX_BYTES-1-len(view.preedit_text)
+	for remaining >= len(chunk) {
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text=string(chunk)})
+		remaining -= len(chunk)
+	}
+	if remaining > 0 {
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text=string(chunk[:remaining])})
+	}
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text="xy"})
+	testing.expect(t, view.preedit_recoverable && len(view.preedit_text) == EDITOR_IME_RECOVERY_MAX_BYTES+1 &&
+		len(view.preedit_recovery_storage) == EDITOR_IME_RECOVERY_MAX_BYTES+1 &&
+		string(view.preedit_text[:len("seed")]) == "seed" &&
+		string(view.preedit_text[len(view.preedit_text)-2:]) == "xy" &&
+		strings.contains(app.error_message, "combined edit was rejected"),
+		"the commit that crosses the recovery limit should be preserved in one final growth before suspension")
+	owner_node, owner_found := rt.nodes[owner]
+	testing.expect(t, owner_found && owner_node.text_input_target && owner_node.text_input_target_suspended &&
+		!alicorn.text_input_target_is_active(&rt, owner),
+		"the app callback should suspend the already-retained native target immediately when recovery reaches its cap")
+	storage_address := rawptr(&view.preedit_recovery_storage[0])
+	for _ in 0..<32 {
+		editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text="overflow"})
+	}
+	testing.expect(t, len(view.preedit_text) == EDITOR_IME_RECOVERY_MAX_BYTES+1 &&
+		len(view.preedit_recovery_storage) == EDITOR_IME_RECOVERY_MAX_BYTES+1 &&
+		rawptr(&view.preedit_recovery_storage[0]) == storage_address &&
+		string(view.preedit_text[:len("seed")]) == "seed" && string(view.preedit_text[len(view.preedit_text)-2:]) == "xy" &&
+		strings.contains(app.error_message, "recovery buffer is full"),
+		"commits after the crossing event must be refused without reallocating, copying, or changing recovery text")
+
+	alicorn.invalidate_root(&rt, "full recovery omits target on next description")
+	ui, should_build = alicorn.begin_frame(&rt)
+	if should_build {
+		target_id, target_added := editor_test_build_recovery_text_target(&ui, view)
+		alicorn.end_frame(&ui)
+		target_node, target_found := rt.nodes[target_id]
+		testing.expect(t, !target_added && target_id == owner && target_found && !target_node.text_input_target && target_node.text_input_target_suspended,
+			"a full recovery buffer should omit the retained text-input target so the host stops SDL text input")
+	} else {
+		testing.expect(t, false, "text-input target test should build one retained frame")
+	}
+	testing.expect(t, editor_copy_recoverable_preedit(&app, &rt, "bounded-recovery-doc") &&
+		!view.preedit_active && !view.preedit_recoverable && clipboard.writes == 1,
+		"successful recovery Copy should clear the retained recovery text")
+	owner_node, owner_found = rt.nodes[owner]
+	testing.expect(t, owner_found && !owner_node.text_input_target_suspended,
+		"successful Copy should resume the retained target immediately, even though the current description omitted it")
+	alicorn.invalidate_root(&rt, "recovery cleared restores target description")
+	ui, should_build = alicorn.begin_frame(&rt)
+	if should_build {
+		target_id, target_added := editor_test_build_recovery_text_target(&ui, view)
+		alicorn.end_frame(&ui)
+		testing.expect(t, target_id == owner && target_added && alicorn.text_input_target_is_active(&rt, owner),
+			"the resumed target should become natively eligible after the recovery-free description")
+	} else {
+		testing.expect(t, false, "recovery-free target test should build one retained frame")
+	}
+}
+
+@(test)
+test_editor_clipboard_commands_do_not_clobber_active_ime_composition :: proc(t: ^testing.T) {
+	source, source_error := make([]u8, 3, allocator=context.allocator)
+	if source_error != nil { testing.expect(t, false, "IME clipboard source should allocate"); return }
+	copy(source, "abc")
+	visible := bridge.Visible_Window{
+		document_id="ime-clipboard-doc",
+		editor_revision=1,
+		start_line=0,
+		end_line=1,
+		start_byte=0,
+		line_byte_length=u64(len(source)),
+		source=source[:],
+	}
+	window, window_ok, window_error := editor_window_from_visible(&visible, context.allocator)
+	testing.expect(t, window_ok, window_error)
+	if !window_ok { if len(visible.source) > 0 { delete(visible.source, context.allocator) }; return }
+	clipboard := Editor_Test_Clipboard{text="ignored paste", read_ok=true, write_ok=true}
+	app: App
+	app.backend.started = true
+	app.backend.state.active = "ime-clipboard-doc"
+	documents := make([dynamic]bridge.State_Document, 0, allocator=context.allocator)
+	append(&documents, bridge.State_Document{id="ime-clipboard-doc", byte_length=3, editor_revision=1})
+	app.backend.state.documents = documents[:]
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.editor_window = window
+	app.editor_window_ready = true
+	app.editor_scroll_owner = 51
+	app.services.clipboard = host.Clipboard_Service{
+		data=rawptr(&clipboard),
+		get_text=editor_test_clipboard_get_text,
+		set_text=editor_test_clipboard_set_text,
+	}
+	init_menus(&app)
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+		delete(documents)
+		editor_window_destroy(&app.editor_window)
+		if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "ime-clipboard-doc", context.allocator)
+	if !view_ok { testing.expect(t, false, "IME clipboard test should retain view state"); return }
+	view := &app.editor_views[view_index]
+	view.selection_anchor, view.caret_byte = 1, 2
+	preedit := host.Application_Text_Input_Event{kind=.Preedit, text="xy", selection_start_byte=1, selection_end_byte=2}
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, preedit)
+	testing.expect(t, view.preedit_active && view.preedit_replace_start == 1 && view.preedit_replace_end == 2 &&
+		string(app.editor_window.source) == "abc" && len(app.editor_edits) == 0,
+		"IME preedit should own a transient replacement span without mutating source")
+	copy_state_found, copy_state_enabled := false, false
+	cut_state_enabled, paste_state_enabled, select_all_state_enabled := true, true, true
+	for item in app.edit_items {
+		switch string_for_action_id(item.command) {
+		case ACTION_EDIT_COPY:
+			copy_state_found, copy_state_enabled = true, item.state.enabled
+		case ACTION_EDIT_CUT:
+			cut_state_enabled = item.state.enabled
+		case ACTION_EDIT_PASTE:
+			paste_state_enabled = item.state.enabled
+		case ACTION_EDIT_SELECT_ALL:
+			select_all_state_enabled = item.state.enabled
+		}
+	}
+	testing.expect(t, copy_state_found && copy_state_enabled && !cut_state_enabled && !paste_state_enabled && !select_all_state_enabled,
+		"while composing, Copy should target composition text and source-changing or selection commands should be disabled")
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_COPY)
+	testing.expect(t, clipboard.writes == 1 && clipboard.last_write == "xy" && len(app.editor_edits) == 0,
+		"Copy during composition should copy the visible preedit bytes without committing or changing source")
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_PASTE)
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_SELECT_ALL)
+	dispatch_action(&app, &rt, ACTION_EDIT_UNDO)
+	testing.expect(t, clipboard.reads == 0 && clipboard.writes == 1 && len(app.editor_edits) == 0 &&
+		view.preedit_active && view.preedit_replace_start == 1 && view.preedit_replace_end == 2 &&
+		string(app.editor_window.source) == "abc",
+		"Cut, Paste, Select All, and Undo during composition must not mutate clipboard/source or discard its original span")
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text="Z"})
+	testing.expect(t, len(app.editor_edits) == 1 && app.editor_edits[0].start_byte == 1 && app.editor_edits[0].end_byte == 2 &&
+		string(app.editor_edits[0].replacement) == "Z" && string(view.optimistic_window.source) == "aZc" && !view.preedit_active,
+		"a late IME commit after rejected menu commands should still replace the original source selection exactly once")
+}
+
+@(test)
+test_editor_select_all_tracks_queued_optimistic_byte_deltas :: proc(t: ^testing.T) {
+	app: App
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.temp_allocator)
+	defer delete(app.editor_edits)
+	replacement, allocation_error := make([]u8, 100, allocator=context.temp_allocator)
+	testing.expect(t, allocation_error == nil, "optimistic delta fixture should allocate")
+	if allocation_error != nil { return }
+	defer delete(replacement, context.temp_allocator)
+	append(&app.editor_edits, Editor_Edit_Intent{document_id="doc", start_byte=3, end_byte=5, replacement=replacement})
+	append(&app.editor_edits, Editor_Edit_Intent{document_id="other", start_byte=0, end_byte=0, replacement=replacement})
+	document := bridge.State_Document{id="doc", byte_length=10}
+	length := editor_current_byte_length(&app, document)
+	view := Editor_View_State{}
+	editor_select_all(&view, length)
+	testing.expect(t, length == 108 && view.selection_anchor == 0 && view.caret_byte == 108,
+		"Select All should include net pending edits for this document and ignore other documents")
+}
+
+@(test)
+test_editor_100k_paste_fits_full_visible_window_and_bounded_optimistic_source :: proc(t: ^testing.T) {
+	source, source_error := make([]u8, int(bridge.MAX_VISIBLE_BYTES), allocator=context.temp_allocator)
+	testing.expect(t, source_error == nil, "full visible source fixture should allocate")
+	if source_error != nil { return }
+	for &byte in source { byte = 'x' }
+	visible := bridge.Visible_Window{
+		document_id="large-paste-doc",
+		start_line=0,
+		end_line=1,
+		start_byte=0,
+		line_byte_length=u64(len(source)),
+		source=source,
+	}
+	window, ok, message := editor_window_from_visible(&visible, context.temp_allocator)
+	testing.expect(t, ok, message)
+	if !ok { delete(source, context.temp_allocator); return }
+	defer editor_window_destroy(&window, context.temp_allocator)
+	paste, paste_error := make([]u8, 100*1024, allocator=context.temp_allocator)
+	testing.expect(t, paste_error == nil, "100 KiB paste fixture should allocate")
+	if paste_error != nil { return }
+	defer delete(paste, context.temp_allocator)
+	for &byte in paste { byte = 'p' }
+	updated, replaced, replace_message := editor_window_replace_bytes(&window, u64(len(source)), u64(len(source)), paste, context.temp_allocator)
+	testing.expect(t, replaced, fmt.tprintf("100 KiB paste after a full 64 KiB visible window should fit: %s", replace_message))
+	if !replaced { return }
+	defer editor_window_destroy(&updated, context.temp_allocator)
+	testing.expect(t, len(updated.source) == int(bridge.MAX_VISIBLE_BYTES)+100*1024 &&
+		editor_bytes_equal(updated.source[:len(source)], source),
+		"the optimistic projection should retain the full 64 KiB base and append all 100 KiB without truncation")
+}
 
 ALICORN_TEST_UI_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Variable.ttf")
 ALICORN_TEST_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
@@ -756,6 +1413,230 @@ editor_edit_test_wake :: proc(data: rawptr) {
 }
 
 @(test)
+test_backend_replace_document_transports_100k_paste_payload :: proc(t: ^testing.T) {
+	sync.mutex_lock(&backend_integration_test_mutex)
+	defer sync.mutex_unlock(&backend_integration_test_mutex)
+	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-large-edit-*", context.temp_allocator)
+	if workspace_error != nil { testing.expect(t, false, "could not create a workspace for the bounded backend edit"); return }
+	defer _ = os.remove_all(workspace)
+	path := fmt.tprintf("%s/large-edit.txt", workspace)
+	source, source_error := make([]u8, int(bridge.MAX_VISIBLE_BYTES), allocator=context.temp_allocator)
+	if source_error != nil { testing.expect(t, false, "could not allocate the full visible-window source fixture"); return }
+	defer delete(source, context.temp_allocator)
+	for &byte in source { byte = 'a' }
+	if write_error := os.write_entire_file_from_string(path, string(source)); write_error != nil {
+		testing.expect(t, false, "could not write the full visible-window source fixture")
+		return
+	}
+	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
+	if !found_library { testing.expect(t, false, "large backend edit test requires the staged shared backend"); return }
+	defer delete(backend_library, context.temp_allocator)
+	app: App
+	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
+	testing.expect(t, loaded, fmt.tprintf("shared backend should load for large edit: %s", load_message))
+	if !loaded { return }
+	started, start_message := bridge.backend_start(&app.backend, workspace, tree_test_wake, nil, context.allocator)
+	testing.expect(t, started, fmt.tprintf("shared backend should start for large edit: %s", start_message))
+	if !started { return }
+	defer {
+		if app.backend.started { _, _ = bridge.backend_stop(&app.backend, context.allocator) }
+	}
+	opened := bridge.backend_command(&app.backend, "open_path", path=path, allocator=context.allocator)
+	testing.expect(t, opened.ok && len(app.backend.state.documents) == 1, "backend should open the bounded large-edit fixture")
+	bridge.backend_command_result_destroy(&opened, context.allocator)
+	document, document_found := find_document(&app.backend.state, app.backend.state.active)
+	if !document_found { testing.expect(t, false, "backend should publish the opened large-edit document"); return }
+	paste, paste_error := make([]int, 100*1024, allocator=context.temp_allocator)
+	if paste_error != nil { testing.expect(t, false, "could not allocate the 100 KiB backend payload"); return }
+	defer delete(paste, context.temp_allocator)
+	for &value in paste { value = int('p') }
+	edit := bridge.backend_command(
+		&app.backend,
+		"replace_document",
+		document_id=document.id,
+		editor_revision=document.editor_revision,
+		start_byte=u64(len(source)),
+		end_byte=u64(len(source)),
+		replacement=paste,
+		allocator=context.temp_allocator,
+	)
+	updated, updated_found := find_document(&app.backend.state, document.id)
+	testing.expect(t, edit.ok && edit.edit.document_id == document.id &&
+		edit.edit.editor_revision == document.editor_revision+1 &&
+		edit.edit.new_end_byte == u64(len(source)+len(paste)) && updated_found && updated.dirty &&
+		updated.editor_revision == edit.edit.editor_revision && updated.byte_length == u64(len(source)+len(paste)),
+		"the real replace_document transport should accept one complete 100 KiB paste and publish its resulting revision/length")
+	bridge.backend_command_result_destroy(&edit, context.temp_allocator)
+	visible := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=document.id,
+		start_line=0,
+		max_lines=1,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		allocator=context.temp_allocator,
+	)
+	testing.expect(t, visible.ok && visible.visible_window_owned &&
+		len(visible.visible_window.source) > 0 && len(visible.visible_window.source) <= int(bridge.MAX_VISIBLE_BYTES) &&
+		visible.visible_window.line_byte_length == u64(len(source)+len(paste)) &&
+		strings.has_prefix(string(visible.visible_window.source), "aaaa"),
+		"the backend should continue to return a bounded visible chunk of the enlarged document")
+	bridge.backend_command_result_destroy(&visible, context.temp_allocator)
+}
+
+@(test)
+test_undo_waits_for_pending_optimistic_edit_and_restores_selection :: proc(t: ^testing.T) {
+	sync.mutex_lock(&backend_integration_test_mutex)
+	defer sync.mutex_unlock(&backend_integration_test_mutex)
+	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-undo-*", context.temp_allocator)
+	if workspace_error != nil { testing.expect(t, false, "could not create a temporary workspace for queued Undo"); return }
+	defer _ = os.remove_all(workspace)
+	path := fmt.tprintf("%s/undo.txt", workspace)
+	tail, tail_error := strings.repeat("line\n", 999, context.temp_allocator)
+	if tail_error != nil { testing.expect(t, false, "could not create multi-line Undo fixture"); return }
+	defer delete(tail, context.temp_allocator)
+	source := fmt.aprintf("abc\n%s", tail, allocator=context.temp_allocator)
+	defer delete(source, context.temp_allocator)
+	if write_error := os.write_entire_file_from_string(path, source); write_error != nil {
+		testing.expect(t, false, "could not create the Undo regression source fixture")
+		return
+	}
+	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
+	if !found_library { testing.expect(t, false, "queued Undo test requires the staged shared backend"); return }
+	defer delete(backend_library, context.temp_allocator)
+
+	app: App
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
+	init_menus(&app)
+	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
+	testing.expect(t, loaded, fmt.tprintf("shared backend should load for queued Undo: %s", load_message))
+	if !loaded { return }
+	signal: Editor_Edit_Test_Signal
+	started, start_message := bridge.backend_start(&app.backend, workspace, editor_edit_test_wake, rawptr(&signal), context.allocator)
+	testing.expect(t, started, fmt.tprintf("shared backend should start for queued Undo: %s", start_message))
+	if !started { return }
+	gate: sync.Sema
+	if !bridge.editor_edit_lane_start(&app.editor_edit_lane, &app.backend, editor_edit_test_wake, rawptr(&signal), context.allocator, &gate) {
+		testing.expect(t, false, "serial edit lane should start for queued Undo")
+		_, _ = bridge.backend_stop(&app.backend, context.allocator)
+		return
+	}
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer {
+		for _ in 0..<8 { sync.sema_post(&gate) }
+		if app.backend.started {
+			_ = editor_flush_pending_edits(&app)
+			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
+			_, _ = bridge.backend_stop(&app.backend, context.allocator)
+		}
+		editor_window_destroy(&app.editor_window, context.allocator)
+		editor_views_destroy(&app.editor_views, context.allocator)
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		deferred_actions_clear(&app)
+		delete(app.deferred_actions)
+		delete(app.editor_row_targets)
+		tree_clear_directories(&app)
+		delete(app.tree_directories)
+		if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
+		tree_clear_focused_path(&app)
+		alicorn.destroy_runtime(&rt)
+	}
+
+	opened := bridge.backend_command(&app.backend, "open_path", path=path, allocator=context.allocator)
+	testing.expect(t, opened.ok && len(app.backend.state.documents) == 1, "backend should open the multi-line Undo fixture")
+	bridge.backend_command_result_destroy(&opened, context.allocator)
+	document, doc_found := find_document(&app.backend.state, app.backend.state.active)
+	if !doc_found { testing.expect(t, false, "opened document state should exist"); return }
+	initial_editor_revision := document.editor_revision
+	initial_line_count := document.line_count
+	testing.expect(t, !document.dirty,
+		fmt.tprintf("Undo/Redo fixture should start clean (dirty=%v lines=%d bytes=%d)", document.dirty, initial_line_count, document.byte_length))
+	if document.dirty { return }
+	testing.expect(t, initial_line_count >= 1000,
+		fmt.tprintf("Undo/Redo fixture should publish at least 1000 stable lines (lines=%d bytes=%d)", initial_line_count, document.byte_length))
+	if initial_line_count < 1000 { return }
+	visible := bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id, start_line=0, max_lines=1, max_bytes=bridge.MAX_VISIBLE_BYTES, allocator=context.allocator)
+	testing.expect(t, visible.ok && visible.visible_window_owned,
+		fmt.tprintf("backend should provide the bounded source window (ok=%v owned=%v code=%s message=%s)",
+			visible.ok, visible.visible_window_owned, visible.code, visible.message))
+	if !visible.visible_window_owned { bridge.backend_command_result_destroy(&visible, context.allocator); return }
+	window, window_ok, window_error := editor_window_from_visible(&visible.visible_window, context.allocator)
+	app.editor_window = window
+	app.editor_window_ready = window_ok
+	bridge.backend_command_result_destroy(&visible, context.allocator)
+	testing.expect(t, window_ok, window_error)
+	if !window_ok { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { testing.expect(t, false, "editor view should exist for queued Undo"); return }
+	view := &app.editor_views[view_index]
+	view.selection_anchor = 1
+	view.caret_byte = 1
+	app.editor_scroll_owner = editor_test_render_scroll_list(&rt, int(document.line_count))
+	testing.expect(t, app.editor_scroll_owner != 0 && document.line_count == initial_line_count && initial_line_count >= 1000,
+		fmt.tprintf("Undo regression should create a multi-page retained editor list (owner=%d lines=%d)", app.editor_scroll_owner, document.line_count))
+	if app.editor_scroll_owner == 0 { return }
+	_ = alicorn.scroll_region_set_offset(&rt, app.editor_scroll_owner, f32(900)*EDITOR_ROW_HEIGHT, "move viewport away before Undo")
+	owner_before, owner_before_found := rt.nodes[app.editor_scroll_owner]
+	testing.expect(t, owner_before_found && owner_before.scroll_offset_y > EDITOR_ROW_HEIGHT*800,
+		"Undo regression should move the visible list far away from its original caret line")
+	sync_runtime_actions(&app, &rt)
+	sync_menu_states(&app)
+	_, undo_state_before, undo_action_found := alicorn.action_lookup(&rt, action_id_for(ACTION_EDIT_UNDO))
+	testing.expect(t, undo_action_found && !undo_state_before.enabled && !app.edit_items[0].state.enabled,
+		"Undo should initially follow the backend's empty history state")
+	editor_text_input(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Input_Event{kind=.Commit, text="X"})
+	testing.expect(t, len(app.editor_edits) == 1 && string(view.optimistic_window.source) == "aXbc\n",
+		"typing should immediately create one optimistic edit while the worker waits at its gate")
+	_, undo_state_pending, undo_action_pending_found := alicorn.action_lookup(&rt, action_id_for(ACTION_EDIT_UNDO))
+	testing.expect(t, undo_action_pending_found && undo_state_pending.enabled && app.edit_items[0].state.enabled,
+		"a queued local edit should immediately enable runtime and native-menu Undo before its backend acknowledgement")
+	dispatch_action(&app, &rt, ACTION_EDIT_UNDO)
+	testing.expect(t, len(app.deferred_actions) == 1 && app.deferred_actions[0].value == ACTION_EDIT_UNDO,
+		"Undo must queue behind an unacknowledged local edit even when published history metadata is stale")
+
+	sync.sema_post(&gate)
+	for _ in 0..<120 {
+		_ = sync.sema_wait_with_timeout(&signal.sema, time.Duration(100_000_000))
+		application_wake(rawptr(&app), &rt)
+		if len(app.editor_edits) == 0 && len(app.deferred_actions) == 0 { break }
+	}
+	testing.expect(t, len(app.editor_edits) == 0 && len(app.deferred_actions) == 0,
+		"the edit should acknowledge before the deferred Undo command runs")
+	current, current_found := find_document(&app.backend.state, document.id)
+	canonical := bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id, start_line=0, max_lines=1, max_bytes=bridge.MAX_VISIBLE_BYTES, allocator=context.temp_allocator)
+	testing.expect(t, current_found && current.editor_revision == initial_editor_revision && !current.dirty &&
+		current.byte_length == u64(len(source)) && current.line_count == initial_line_count &&
+		canonical.ok && canonical.visible_window_owned && strings.has_prefix(string(canonical.visible_window.source), "abc\n"),
+		"Go should apply the queued replacement then Undo, restoring source, editor revision, line count, and clean state")
+	bridge.backend_command_result_destroy(&canonical, context.temp_allocator)
+	testing.expect(t, view.selection_anchor == 1 && view.caret_byte == 1,
+		"the Undo response should restore the original source selection through the semantic command result")
+	owner_after, owner_after_found := rt.nodes[app.editor_scroll_owner]
+	testing.expect(t, owner_after_found && owner_after.scroll_offset_y < EDITOR_ROW_HEIGHT,
+		"Undo should reveal the restored cursor line after the viewport moved away")
+
+	sync_runtime_actions(&app, &rt)
+	sync_menu_states(&app)
+	testing.expect(t, action_enabled(&app.backend.state, ACTION_EDIT_REDO),
+		"Undo should publish enabled Redo metadata before the frontend dispatches the next history step")
+	dispatch_action(&app, &rt, ACTION_EDIT_REDO)
+	current, current_found = find_document(&app.backend.state, document.id)
+	canonical = bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id, start_line=0, max_lines=1, max_bytes=bridge.MAX_VISIBLE_BYTES, allocator=context.temp_allocator)
+	testing.expect(t, current_found && current.editor_revision == initial_editor_revision+1 && current.dirty &&
+		current.byte_length == u64(len(source)+1) && current.line_count == initial_line_count &&
+		canonical.ok && canonical.visible_window_owned && strings.has_prefix(string(canonical.visible_window.source), "aXbc\n"),
+		"Redo should restore the edited source and revision, keep line count, and mark the document dirty")
+	bridge.backend_command_result_destroy(&canonical, context.temp_allocator)
+	testing.expect(t, view.selection_anchor == 2 && view.caret_byte == 2,
+		"the Redo response should restore the post-edit caret selection")
+}
+
+@(test)
 test_canonical_enter_ack_rebases_queued_source_positions :: proc(t: ^testing.T) {
 	source, source_error := make([]u8, len("a\nXb"), allocator=context.allocator)
 	if source_error != nil { testing.expect(t, false, "could not allocate the optimistic Enter fixture"); return }
@@ -942,6 +1823,15 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	view.caret_byte = 9 // hello wor|ld
 	view.selection_anchor = view.caret_byte
 	_ = alicorn.focus(&rt, app.editor_scroll_owner)
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	if caret_node := editor_row_node_for_line(app.editor_row_targets[:], 0); caret_node != 0 {
+		geometry := alicorn.text_node_caret_geometry(&rt, caret_node, alicorn.Text_Position{byte=9, affinity=.Leading})
+		area, area_ok := alicorn.text_input_area(&rt, app.editor_scroll_owner)
+		testing.expect(t, geometry.valid && area_ok && area.rect.y == geometry.rect.y && area.rect.h >= geometry.rect.h,
+			"the generic text-input candidate area should follow the shaped caret row after layout")
+	} else {
+		testing.expect(t, false, "focused source row should be retained for candidate-area geometry")
+	}
 	commits := [7]string{"x", "a", "b", "c", "d", "e", "f"}
 	for text in commits {
 		editor_text_input(

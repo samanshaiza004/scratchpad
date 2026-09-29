@@ -14,6 +14,8 @@ type CommandContext struct {
 	Markdown          bool
 	Code              bool
 	EditorFocused     bool
+	CanUndo           bool
+	CanRedo           bool
 	HasSelection      bool
 	Cursor            int
 	SelectionStart    int
@@ -128,6 +130,8 @@ func DefaultRegistry() Registry {
 		{ID: FileSave, Title: "Save", Category: "File", Bindings: []Keybinding{{Key: "primary+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: DocumentClose, Title: "Close Document", Category: "File", Bindings: []Keybinding{{Key: "primary+w"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: DocumentActivate, Title: "Activate Document", Category: "Document", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
+		{ID: EditUndo, Title: "Undo", Category: "Edit", Bindings: []Keybinding{{Key: "primary+z"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument && ctx.CanUndo }},
+		{ID: EditRedo, Title: "Redo", Category: "Edit", Bindings: []Keybinding{{Key: "primary+shift+z"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument && ctx.CanRedo }},
 		{ID: TabNext, Title: "Next Document", Category: "Document", Bindings: []Keybinding{{Key: "primary+tab"}}, Visible: multipleDocuments, Enabled: multipleDocuments},
 		{ID: TabPrevious, Title: "Previous Document", Category: "Document", Bindings: []Keybinding{{Key: "primary+shift+tab"}}, Visible: multipleDocuments, Enabled: multipleDocuments},
 		{ID: WorkspaceRefresh, Title: "Refresh Workspace", Category: "Workspace", Bindings: []Keybinding{{Key: "primary+shift+r"}}, Visible: workspace, Enabled: workspace},

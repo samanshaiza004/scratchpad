@@ -393,6 +393,14 @@ func (d *Document) Dirty() bool {
 	return d.Revision() != d.SavedRevision
 }
 
+// CanUndo reports whether the document's authoritative editor has an undo
+// record.
+func (d *Document) CanUndo() bool { return d != nil && d.Editor != nil && d.Editor.CanUndo() }
+
+// CanRedo reports whether the document's authoritative editor has a redo
+// record.
+func (d *Document) CanRedo() bool { return d != nil && d.Editor != nil && d.Editor.CanRedo() }
+
 // ReplaceText replaces the entire editable state through the same editor
 // contract used for ordinary edits. It is useful for initial reload and test
 // seams; it does not create a second source authority.
@@ -491,6 +499,41 @@ func (d *Document) ReplaceWithSelection(start, end int, text []byte, anchor, cur
 	}
 	before := d.Revision()
 	if err := d.Editor.ReplaceWithSelection(start, end, text, anchor, cursor); err != nil {
+		return err
+	}
+	if d.Revision() != before {
+		d.observedRevision = d.Revision()
+		d.InvalidateDerived()
+	}
+	return nil
+}
+
+// Undo applies one editor-owned undo record and invalidates derived state if
+// the authoritative source revision changed. Cursor/selection restoration is
+// part of the editor's undo record and stays local to the document model.
+func (d *Document) Undo() error {
+	if d == nil || d.Editor == nil {
+		return errors.New("document has no editor")
+	}
+	before := d.Revision()
+	if err := d.Editor.Undo(); err != nil {
+		return err
+	}
+	if d.Revision() != before {
+		d.observedRevision = d.Revision()
+		d.InvalidateDerived()
+	}
+	return nil
+}
+
+// Redo reapplies one editor-owned undo record and invalidates derived state
+// when the authoritative source revision changed.
+func (d *Document) Redo() error {
+	if d == nil || d.Editor == nil {
+		return errors.New("document has no editor")
+	}
+	before := d.Revision()
+	if err := d.Editor.Redo(); err != nil {
 		return err
 	}
 	if d.Revision() != before {

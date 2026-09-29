@@ -78,6 +78,13 @@ func (e *ScratchEditor) Revision() uint64 {
 	return e.revision
 }
 
+// CanUndo reports whether the editor has a source edit that can be undone.
+func (e *ScratchEditor) CanUndo() bool { return e != nil && len(e.undo) != 0 }
+
+// CanRedo reports whether the editor has an undone source edit that can be
+// reapplied.
+func (e *ScratchEditor) CanRedo() bool { return e != nil && len(e.redo) != 0 }
+
 // Reset replaces the editable content with a newly loaded file state. The
 // load is not an edit and therefore clears undo history. It still receives a
 // new revision identity: derived workers may still be finishing a parse of

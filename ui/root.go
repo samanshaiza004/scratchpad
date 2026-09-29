@@ -2731,6 +2731,8 @@ func commandContext(state *application.Application) commands.CommandContext {
 	ctx.Markdown = doc.RootLanguage == string(language.Markdown)
 	ctx.Code = !ctx.Markdown
 	ctx.EditorFocused = true
+	ctx.CanUndo = doc.Editor.CanUndo()
+	ctx.CanRedo = doc.Editor.CanRedo()
 	ctx.Cursor = doc.Editor.Cursor
 	ctx.SelectionStart, ctx.SelectionEnd = doc.Editor.Selection()
 	if ctx.SelectionStart > ctx.SelectionEnd {
@@ -3115,13 +3117,9 @@ func executeCommand(state *application.Application, shell *workbenchState, id co
 	case commands.FileRevealActive:
 		revealActiveFile(state, shell)
 	case commands.EditUndo:
-		if doc := state.ActiveDocument(); doc != nil {
-			_ = doc.Editor.Undo()
-		}
+		_ = state.UndoDocument(state.Active)
 	case commands.EditRedo:
-		if doc := state.ActiveDocument(); doc != nil {
-			_ = doc.Editor.Redo()
-		}
+		_ = state.RedoDocument(state.Active)
 	case commands.EditCut:
 		if doc := state.ActiveDocument(); doc != nil {
 			if text, err := doc.Editor.Cut(); err == nil && text != "" {

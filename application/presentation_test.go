@@ -205,6 +205,55 @@ func TestPresentationContractAppliesRevisionedReplacement(t *testing.T) {
 	}
 }
 
+func TestApplicationUndoRedoPublishesAuthoritativeSelectionAndAvailability(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undo.txt")
+	if err := os.WriteFile(path, []byte("abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := New(nil)
+	if err := app.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	id := app.Active
+	doc := app.Documents[id]
+	doc.Editor.SetSelection(5, 2)
+	if err := doc.ReplaceWithSelection(2, 5, []byte("X"), 2, 3); err != nil {
+		t.Fatal(err)
+	}
+	beforeUndo := app.Snapshot()
+	if beforeUndo.Documents[0].ByteLength != 4 || !beforeUndo.Documents[0].CanUndo || beforeUndo.Documents[0].CanRedo {
+		t.Fatalf("edited metadata = %+v", beforeUndo.Documents[0])
+	}
+
+	if err := app.UndoDocument(""); err != nil {
+		t.Fatal(err)
+	}
+	undo := app.Snapshot()
+	if undo.Revision <= beforeUndo.Revision || undo.Documents[0].EditorRevision != 0 || undo.Documents[0].Dirty || undo.Documents[0].ByteLength != 6 {
+		t.Fatalf("undo state = %+v; before = %+v", undo, beforeUndo)
+	}
+	if undo.Documents[0].CanUndo || !undo.Documents[0].CanRedo {
+		t.Fatalf("undo history metadata = %+v", undo.Documents[0])
+	}
+	if anchor, cursor := doc.Editor.Selection(); anchor != 5 || cursor != 2 {
+		t.Fatalf("undo selection = %d:%d, want directional 5:2", anchor, cursor)
+	}
+
+	if err := app.RedoDocument(id); err != nil {
+		t.Fatal(err)
+	}
+	redo := app.Snapshot()
+	if redo.Revision <= undo.Revision || redo.Documents[0].EditorRevision != 1 || !redo.Documents[0].Dirty || redo.Documents[0].ByteLength != 4 {
+		t.Fatalf("redo state = %+v; undo = %+v", redo, undo)
+	}
+	if !redo.Documents[0].CanUndo || redo.Documents[0].CanRedo {
+		t.Fatalf("redo history metadata = %+v", redo.Documents[0])
+	}
+	if anchor, cursor := doc.Editor.Selection(); anchor != 2 || cursor != 3 {
+		t.Fatalf("redo selection = %d:%d, want 2:3", anchor, cursor)
+	}
+}
+
 func BenchmarkPresentationDispatchSelect(b *testing.B) {
 	app, id := benchmarkPresentationApplication(b)
 	var client PresentationClient = app

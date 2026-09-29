@@ -45,7 +45,10 @@ type PresentationDocument struct {
 	Dirty          bool
 	Preview        bool
 	EditorRevision uint64
+	ByteLength     uint64
 	LineCount      uint64
+	CanUndo        bool
+	CanRedo        bool
 	Language       string
 }
 
@@ -105,7 +108,10 @@ func (a *Application) Snapshot() PresentationState {
 			Dirty:          doc.Dirty(),
 			Preview:        a.Preview == id && !doc.Dirty(),
 			EditorRevision: doc.Revision(),
+			ByteLength:     uint64(doc.Editor.Buffer.ByteLen()),
 			LineCount:      uint64(doc.Editor.Buffer.LineCount()),
+			CanUndo:        doc.Editor.CanUndo(),
+			CanRedo:        doc.Editor.CanRedo(),
 			Language:       doc.RootLanguage,
 		})
 	}
@@ -162,6 +168,49 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 	default:
 		return errors.New("unknown presentation command")
 	}
+}
+
+// UndoDocument applies one authoritative edit-history step. An empty ID
+// targets the active document. The application advances its presentation
+// revision only when the editor's source state changes.
+func (a *Application) UndoDocument(id DocumentID) error {
+	return a.applyDocumentHistoryStep(id, false)
+}
+
+// RedoDocument reapplies one authoritative edit-history step. An empty ID
+// targets the active document.
+func (a *Application) RedoDocument(id DocumentID) error {
+	return a.applyDocumentHistoryStep(id, true)
+}
+
+func (a *Application) applyDocumentHistoryStep(id DocumentID, redo bool) error {
+	if a == nil {
+		return errors.New("nil application")
+	}
+	if id == "" {
+		id = a.Active
+	}
+	doc := a.Documents[id]
+	if doc == nil {
+		return errors.New("unknown document")
+	}
+	before := doc.Revision()
+	var err error
+	if redo {
+		err = doc.Redo()
+	} else {
+		err = doc.Undo()
+	}
+	if err != nil {
+		return err
+	}
+	if doc.Revision() != before {
+		if doc.Dirty() {
+			a.PinPreview(id)
+		}
+		a.touchPresentation()
+	}
+	return nil
 }
 
 var _ PresentationClient = (*Application)(nil)

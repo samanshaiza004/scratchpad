@@ -73,6 +73,59 @@ func TestDocumentEditorRevisionAndDerivedState(t *testing.T) {
 	}
 }
 
+func TestDocumentUndoRedoRestoresSelectionRevisionAndInvalidatesDerivedState(t *testing.T) {
+	doc := New("notes/today.md", []byte("abcdef"), "text")
+	doc.Editor.SetSelection(5, 2)
+	if !doc.SetDerived(nil, Projections{Revision: doc.Revision()}) {
+		t.Fatal("could not seed derived state for initial revision")
+	}
+
+	if err := doc.ReplaceWithSelection(2, 5, []byte("X"), 2, 3); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != "abXf" || doc.Revision() != 1 || !doc.Dirty() {
+		t.Fatalf("edited state = %q revision=%d dirty=%v", got, doc.Revision(), doc.Dirty())
+	}
+	if !doc.SetDerived(nil, Projections{Revision: doc.Revision()}) {
+		t.Fatal("could not seed derived state for edited revision")
+	}
+
+	if err := doc.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != "abcdef" {
+		t.Fatalf("undo text = %q, want original bytes", got)
+	}
+	if anchor, cursor := doc.Editor.Selection(); anchor != 5 || cursor != 2 {
+		t.Fatalf("undo selection = %d:%d, want directional 5:2", anchor, cursor)
+	}
+	if doc.Revision() != 0 || doc.Dirty() || doc.DerivedCurrent() {
+		t.Fatalf("undo state = revision %d dirty=%v derived_current=%v", doc.Revision(), doc.Dirty(), doc.DerivedCurrent())
+	}
+	if doc.CanUndo() || !doc.CanRedo() {
+		t.Fatalf("undo availability = can_undo %v can_redo %v", doc.CanUndo(), doc.CanRedo())
+	}
+
+	if !doc.SetDerived(nil, Projections{Revision: doc.Revision()}) {
+		t.Fatal("could not seed derived state after undo")
+	}
+	if err := doc.Redo(); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != "abXf" {
+		t.Fatalf("redo text = %q, want edited bytes", got)
+	}
+	if anchor, cursor := doc.Editor.Selection(); anchor != 2 || cursor != 3 {
+		t.Fatalf("redo selection = %d:%d, want 2:3", anchor, cursor)
+	}
+	if doc.Revision() != 1 || !doc.Dirty() || doc.DerivedCurrent() {
+		t.Fatalf("redo state = revision %d dirty=%v derived_current=%v", doc.Revision(), doc.Dirty(), doc.DerivedCurrent())
+	}
+	if !doc.CanUndo() || doc.CanRedo() {
+		t.Fatalf("redo availability = can_undo %v can_redo %v", doc.CanUndo(), doc.CanRedo())
+	}
+}
+
 func TestDocumentMetadataDoesNotOwnText(t *testing.T) {
 	doc := New("notes/old.md", []byte("authoritative"), "text")
 	doc.Path = "notes/new.md"

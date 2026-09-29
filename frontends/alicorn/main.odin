@@ -19,6 +19,12 @@ ACTION_DOCUMENT_CLOSE  :: "document.close"
 ACTION_TAB_NEXT        :: "tab.next"
 ACTION_TAB_PREVIOUS    :: "tab.previous"
 ACTION_WORKSPACE_REFRESH :: "workspace.refresh"
+ACTION_EDIT_UNDO       :: "edit.undo"
+ACTION_EDIT_REDO       :: "edit.redo"
+ACTION_EDIT_CUT        :: "edit.cut"
+ACTION_EDIT_COPY       :: "edit.copy"
+ACTION_EDIT_PASTE      :: "edit.paste"
+ACTION_EDIT_SELECT_ALL :: "edit.select_all"
 TREE_SEMANTIC_NAMESPACE :: u64(0x5343524154434850)
 TREE_ROW_HEIGHT :: 28
 TREE_SCROLL_KEY :: "scratchpad-workspace-tree"
@@ -75,6 +81,9 @@ App :: struct {
 	editor_restore_x:       f32,
 	editor_restore_y:       f32,
 	editor_presented_document_id: string,
+	editor_input_anchor_node: alicorn.Node_ID,
+	editor_input_anchor_byte: int,
+	editor_input_anchor_affinity: alicorn.Text_Affinity,
 	editor_window_error:    string,
 	waker:                  host.Application_Waker,
 	services:               host.Application_Services,
@@ -90,9 +99,10 @@ App :: struct {
 	dialog_sequence:        u64,
 	dialog_action:          string,
 	file_items:             [5]host.Application_Menu_Item,
+	edit_items:             [8]host.Application_Menu_Item,
 	workspace_items:        [1]host.Application_Menu_Item,
 	document_items:         [2]host.Application_Menu_Item,
-	menus:                  [3]host.Application_Menu,
+	menus:                  [4]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
 	smoke_wake_observed:    bool,
@@ -109,6 +119,7 @@ build_app :: proc(
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	clear(&app.editor_row_targets)
+	app.editor_input_anchor_node = 0
 	if app.backend.started {
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
@@ -223,16 +234,45 @@ build_app :: proc(
 	if app.close_document_id != "" {
 		alicorn.modal_overlay_begin(&ui, alicorn.key_string("dirty-close-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 		alicorn.container_begin(&ui, .Container, label="dirty-close-dialog", style=alicorn.layout_style(.Column, width=440, height=190, padding=22, gap=14, align=.Start, clip=true), color=COLOR_PANEL)
-		alicorn.text(&ui, "Save changes before closing?")
+		recovery_pending := editor_document_has_recoverable_preedit(app, app.close_document_id)
+		if recovery_pending {
+			alicorn.text(&ui, "A committed text composition is waiting for recovery.")
+			alicorn.text(&ui, "Copy it or explicitly discard it before closing this document.")
+		} else {
+			alicorn.text(&ui, "Save changes before closing?")
+		}
 		if document, found := find_document(&app.backend.state, app.close_document_id); found {
 			alicorn.text(&ui, document_title(document.path))
 		}
 		alicorn.container_begin(&ui, .Container, label="dirty-close-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-		if alicorn.button(&ui, "Save & Close", key=alicorn.key_string("dirty-close-save"), style=alicorn.layout_style(.Row, width=130, height=34)) {
-			close_after_save(app, rt)
-		}
-		if alicorn.button(&ui, "Discard", key=alicorn.key_string("dirty-close-discard"), style=alicorn.layout_style(.Row, width=100, height=34)) {
-			close_with_discard(app, rt)
+		if recovery_pending {
+			if alicorn.button(&ui, "Copy Recovery", key=alicorn.key_string("recovery-close-copy"), style=alicorn.layout_style(.Row, width=130, height=34)) {
+				if editor_copy_recoverable_preedit(app, rt, app.close_document_id) {
+					document_id, clone_err := strings.clone(app.close_document_id, context.allocator)
+					if clone_err == nil {
+						clear_close_prompt(app)
+						request_close_document(app, rt, document_id)
+						delete(document_id, context.allocator)
+					}
+				}
+			}
+			if alicorn.button(&ui, "Discard Recovery", key=alicorn.key_string("recovery-close-discard"), style=alicorn.layout_style(.Row, width=140, height=34)) {
+				if editor_discard_recoverable_preedit(app, rt, app.close_document_id) {
+					document_id, clone_err := strings.clone(app.close_document_id, context.allocator)
+					if clone_err == nil {
+						clear_close_prompt(app)
+						request_close_document(app, rt, document_id)
+						delete(document_id, context.allocator)
+					}
+				}
+			}
+		} else {
+			if alicorn.button(&ui, "Save & Close", key=alicorn.key_string("dirty-close-save"), style=alicorn.layout_style(.Row, width=130, height=34)) {
+				close_after_save(app, rt)
+			}
+			if alicorn.button(&ui, "Discard", key=alicorn.key_string("dirty-close-discard"), style=alicorn.layout_style(.Row, width=100, height=34)) {
+				close_with_discard(app, rt)
+			}
 		}
 		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("dirty-close-cancel"), style=alicorn.layout_style(.Row, width=90, height=34)) {
 			clear_close_prompt(app)
@@ -256,6 +296,20 @@ build_app :: proc(
 		app.editor_restore_vertical = false
 		app.editor_restore_horizontal = false
 	}
+	if app.editor_input_anchor_node != 0 && app.editor_scroll_owner != 0 {
+		geometry := alicorn.text_node_caret_geometry(
+			rt,
+			app.editor_input_anchor_node,
+			alicorn.Text_Position{byte=app.editor_input_anchor_byte, affinity=app.editor_input_anchor_affinity},
+		)
+		if geometry.valid {
+			area := alicorn.Text_Input_Area{
+				rect=alicorn.Rect{geometry.rect.x, geometry.rect.y, 1, max(geometry.rect.h, EDITOR_ROW_HEIGHT)},
+				cursor_x=0,
+			}
+			_ = alicorn.text_input_target_area_set(rt, app.editor_scroll_owner, area)
+		}
+	}
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	return root
 }
@@ -268,6 +322,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	view := &app.editor_views[view_index]
 	if app.editor_presented_document_id != document.id {
+		if old_view_index := editor_view_find(app.editor_views[:], app.editor_presented_document_id); old_view_index >= 0 {
+			editor_preedit_clear_for_document_switch(&app.editor_views[old_view_index])
+		}
 		presented_id, clone_error := strings.clone(document.id, context.allocator)
 		if clone_error != nil {
 			alicorn.text(ui, "Could not retain the active document identity.")
@@ -329,7 +386,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		axes=.Both,
 		focusable=true,
 	)
-	_ = alicorn.text_input_target(ui, list.scroll.id)
+	_ = editor_register_text_input_target(ui, list.scroll.id, view)
 	app.editor_scroll_owner = list.scroll.id
 	restore := editor_view_sync_scroll(
 		view,
@@ -377,20 +434,50 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				font=.Monospace,
 			)
 			alicorn.container_end(ui)
+			anchor_source := min(max(view.selection_anchor, line.source_start), line.source_end)
+			caret_source := min(max(view.caret_byte, line.source_start), line.source_end)
+			display_text := line.display
+			anchor_display := editor_source_to_display(line, anchor_source)
+			caret_display := editor_source_to_display(line, caret_source)
+			caret_area_byte := caret_display
+			caret_area_affinity := view.caret_affinity
+			show_caret := rt.focused == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
+			if composition_display, composition_start, composition_end, applies := editor_preedit_display_for_line(view, window, line); applies {
+				display_text = composition_display
+				anchor_display, caret_display = composition_start, composition_end
+				if anchor_display == caret_display && len(view.preedit_text) > 0 {
+					// A zero-width SDL composition range still needs visible
+					// feedback; highlight the composed text as the underline
+					// equivalent while keeping the candidate caret at SDL's byte
+					// position.
+					anchor_display = composition_start
+					caret_display = composition_start+len(view.preedit_text)
+				}
+				caret_area_byte = composition_end
+				caret_area_affinity = .Trailing
+				composition_start_line, start_found := editor_line_for_source(window, view.preedit_replace_start)
+				show_caret = start_found && composition_start_line.logical_line == line.logical_line && rt.focused == list.scroll.id
+			}
 			line_node := alicorn.text(
 				ui,
-				line.display,
+				display_text,
 				key=alicorn.key_string(fmt.tprintf("scratchpad-line:%s:%d", document.id, line.logical_line)),
 				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
 				font=.Monospace,
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Clip},
 			)
 			append(&app.editor_row_targets, Editor_Row_Target{node=line_node, logical_line=line.logical_line})
-			anchor_source := min(max(view.selection_anchor, line.source_start), line.source_end)
-			caret_source := min(max(view.caret_byte, line.source_start), line.source_end)
-			anchor_display := editor_source_to_display(line, anchor_source)
-			caret_display := editor_source_to_display(line, caret_source)
-			show_caret := rt.focused == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
+			composition_row := false
+			if view.preedit_active {
+				if composition_line, composition_found := editor_line_for_source(window, view.preedit_replace_start); composition_found {
+					composition_row = composition_line.logical_line == line.logical_line
+				}
+			}
+			if rt.focused == list.scroll.id && ((view.caret_byte >= line.source_start && view.caret_byte <= line.source_end) || composition_row) {
+				app.editor_input_anchor_node = line_node
+				app.editor_input_anchor_byte = caret_area_byte
+				app.editor_input_anchor_affinity = caret_area_affinity
+			}
 			_ = alicorn.text_interaction(
 				ui,
 				line_node,
@@ -892,6 +979,10 @@ open_path_from_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_EDIT_CUT) { editor_clipboard_command(app, rt, ACTION_EDIT_CUT); return }
+	if command == action_id_for(ACTION_EDIT_COPY) { editor_clipboard_command(app, rt, ACTION_EDIT_COPY); return }
+	if command == action_id_for(ACTION_EDIT_PASTE) { editor_clipboard_command(app, rt, ACTION_EDIT_PASTE); return }
+	if command == action_id_for(ACTION_EDIT_SELECT_ALL) { editor_clipboard_command(app, rt, ACTION_EDIT_SELECT_ALL); return }
 	for action in app.backend.state.actions {
 		if action_id_for(action.id) == command {
 			dispatch_action(app, rt, action.id)
@@ -902,6 +993,21 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || !app.backend.started { return }
+	if editor_active_preedit(app) && (action_id == ACTION_EDIT_UNDO || action_id == ACTION_EDIT_REDO) {
+		set_error(app, "Finish or cancel the active text composition before using Undo or Redo.")
+		alicorn.invalidate_root(rt, "Scratchpad history command refused during IME composition")
+		return
+	}
+	if len(app.editor_edits) > 0 && (action_id == ACTION_EDIT_UNDO || action_id == ACTION_EDIT_REDO) {
+		// The current published action state can still say disabled while a
+		// local edit is waiting for acknowledgement. Queue history navigation
+		// behind that edit so the refreshed state decides whether it is enabled.
+		if !deferred_action_enqueue(app, .Action, value=action_id) {
+			set_error(app, "Could not queue Undo/Redo behind pending editor edits.")
+		}
+		alicorn.invalidate_root(rt, "Scratchpad history action queued behind pending editor edits")
+		return
+	}
 	if !action_enabled(&app.backend.state, action_id) { return }
 	entry, found := find_action(&app.backend.state, action_id)
 	if !found { return }
@@ -926,6 +1032,13 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			handle_command_result(app, rt, &response)
 			bridge.backend_command_result_destroy(&response, context.allocator)
 		}
+	case ACTION_EDIT_UNDO, ACTION_EDIT_REDO:
+		response := bridge.backend_command(&app.backend, action_id, document_id=app.backend.state.active)
+		handle_command_result(app, rt, &response)
+		if response.ok && response.editor_selection.document_id != "" {
+			editor_apply_backend_selection(app, rt, response.editor_selection)
+		}
+		bridge.backend_command_result_destroy(&response, context.allocator)
 	case ACTION_DOCUMENT_CLOSE:
 		request_close_document(app, rt, app.backend.state.active)
 	case ACTION_TAB_NEXT:
@@ -1202,6 +1315,13 @@ editor_text_key :: proc(
 	view := &app.editor_views[view_index]
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches { return false }
+	if view.preedit_active {
+		// The platform IME owns navigation/commit keys while it has an active
+		// composition. Tab is consumed specifically to prevent the native host
+		// from moving focus away before it can deliver the corresponding commit.
+		if event.key == .Tab { return true }
+		return false
+	}
 	if view.pending_document_edge != .None && event.key != .Document_Start && event.key != .Document_End {
 		view.pending_document_edge = .None
 		view.pending_document_edge_shift = false
@@ -1532,8 +1652,8 @@ editor_apply_local_replace_with_wire :: proc(
 		alicorn.invalidate_root(rt, "Scratchpad deferred a line break beyond the bounded long-line projection")
 		return false
 	}
-	if editor_pending_replacement_bytes(app)+len(replacement) > int(bridge.MAX_VISIBLE_BYTES) {
-		set_error(app, "Pending local edits reached the bounded 64 KiB queue limit.")
+	if editor_pending_replacement_bytes(app)+len(replacement) > int(bridge.MAX_EDIT_BYTES) {
+		set_error(app, "Pending local edits reached the bounded 128 KiB queue limit.")
 		alicorn.invalidate_root(rt, "Scratchpad optimistic edit queue is full")
 		return false
 	}
@@ -1594,6 +1714,9 @@ editor_apply_local_replace_with_wire :: proc(
 	view.caret_affinity = .Trailing
 	view.preferred_x_set = false
 	sync_menu_states(app)
+	// Text and the next key can arrive in the same SDL pump, before the next
+	// application build refreshes action metadata.
+	sync_runtime_actions(app, rt)
 	accepted, dispatch_error := editor_dispatch_next_edit(app)
 	if !accepted { set_error(app, dispatch_error) } else { set_error(app, "") }
 	alicorn.invalidate_root(rt, "Scratchpad source replacement appeared optimistically")
@@ -1848,23 +1971,142 @@ editor_text_input :: proc(
 	event: host.Application_Text_Input_Event,
 ) {
 	app := cast(^App)state
-	if app == nil || !app.backend.started || owner == 0 || owner != app.editor_scroll_owner || event.kind != .Commit || len(event.text) == 0 { return }
+	if app == nil { return }
+	if event.kind == .Cancel {
+		cleared := false
+		for &view in app.editor_views {
+			// SDL commonly sends an empty TEXT_EDITING cancel immediately after
+			// TEXT_INPUT. Preserve committed text that could not be queued as an
+			// edit so the terminal event cannot silently erase it.
+			if view.preedit_active && !view.preedit_recoverable {
+				editor_preedit_clear(&view)
+				cleared = true
+			}
+		}
+		if cleared {
+			sync_menu_states(app)
+			if rt != nil {
+				sync_runtime_actions(app, rt)
+				alicorn.invalidate_root(rt, "Scratchpad IME composition canceled")
+			}
+		}
+		return
+	}
+	if !app.backend.started || owner == 0 || owner != app.editor_scroll_owner { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { set_error(app, "Could not retain the active document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
+	if event.kind == .Preedit {
+		if view.preedit_recoverable {
+			set_error(app, "A committed composition still needs recovery. Use Edit > Copy before starting another composition.")
+			sync_menu_states(app)
+			if rt != nil {
+				sync_runtime_actions(app, rt)
+				alicorn.invalidate_root(rt, "Scratchpad preserved committed IME text during a new preedit")
+			}
+			return
+		}
+		if !editor_preedit_update(view, event.text, event.selection_start_byte, event.selection_end_byte) {
+			set_error(app, "Could not retain the active IME preedit text.")
+		}
+		sync_menu_states(app)
+		if rt != nil {
+			sync_runtime_actions(app, rt)
+			alicorn.invalidate_root(rt, "Scratchpad IME preedit updated")
+		}
+		return
+	}
+	if event.kind != .Commit { return }
 	view.pending_document_edge = .None
 	view.pending_document_edge_shift = false
+	if len(event.text) == 0 {
+		if view.preedit_active && !view.preedit_recoverable {
+			editor_preedit_clear(view)
+			sync_menu_states(app)
+			if rt != nil {
+				sync_runtime_actions(app, rt)
+				alicorn.invalidate_root(rt, "Scratchpad IME composition ended without committed text")
+			}
+		}
+		return
+	}
+	start_byte, end_byte := min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)
+	if view.preedit_recoverable {
+		// A later text-input commit must not replace (and lose) the earlier OS
+		// commit that could not be applied. Append in place to the preallocated
+		// bounded recovery buffer and retry the original source span.
+		start_byte, end_byte = view.preedit_replace_start, view.preedit_replace_end
+		if !editor_preedit_append_recovery(view, event.text) {
+			set_error(app, "Committed input was refused because the recovery buffer is full. Earlier text remains available; use Edit > Copy or Discard Recovery.")
+			sync_menu_states(app)
+			sync_runtime_actions(app, rt)
+			if rt != nil {
+				_ = alicorn.text_input_target_set_suspended(rt, owner, true)
+				alicorn.invalidate_root(rt, "Scratchpad refused an IME commit beyond the recovery limit")
+			}
+			return
+		}
+		replacement := view.preedit_text
+		resulting_caret := start_byte+u64(len(replacement))
+		if editor_apply_local_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
+			editor_preedit_clear(view)
+			editor_resume_text_input_target(app, rt, document.id)
+			sync_menu_states(app)
+			sync_runtime_actions(app, rt)
+		} else {
+			failure_reason := app.error_message
+			set_error(app, fmt.tprintf("Committed input was appended to the recovery text, but the combined edit was rejected (%s). Use Edit > Copy to recover the text.", failure_reason))
+			sync_menu_states(app)
+			sync_runtime_actions(app, rt)
+			if rt != nil {
+				if editor_preedit_recovery_is_full(view) { _ = alicorn.text_input_target_set_suspended(rt, owner, true) }
+				alicorn.invalidate_root(rt, "Scratchpad retained rejected combined IME text")
+			}
+		}
+		return
+	}
+	if view.preedit_active {
+		// Preserve the preedit and its original source span until the optimistic
+		// replacement is accepted. On rejection, committed OS text can replace
+		// the preedit and remain visible for retry.
+		start_byte, end_byte = view.preedit_replace_start, view.preedit_replace_end
+	}
 	replacement := transmute([]u8)event.text
-	start_byte := min(view.selection_anchor, view.caret_byte)
-	end_byte := max(view.selection_anchor, view.caret_byte)
 	resulting_caret := start_byte+u64(len(replacement))
-	_ = editor_apply_local_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret)
+	if editor_apply_local_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
+		editor_preedit_clear(view)
+		sync_menu_states(app)
+		sync_runtime_actions(app, rt)
+	} else {
+		failure_reason := app.error_message
+		retained := editor_preedit_make_recoverable(view, event.text, start_byte, end_byte)
+		if retained {
+			set_error(app, fmt.tprintf("The input method committed text but the edit was rejected (%s). The text remains in the editor as a retryable composition.", failure_reason))
+			if rt != nil && editor_preedit_recovery_is_full(view) {
+				_ = alicorn.text_input_target_set_suspended(rt, owner, true)
+			}
+		} else {
+			set_error(app, "The input method committed text but the edit was rejected and could not be retained for retry.")
+		}
+		sync_menu_states(app)
+		sync_runtime_actions(app, rt)
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad could not apply committed IME text") }
+	}
 }
 
 request_close_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 	if document_id == "" { return }
+	if editor_document_has_recoverable_preedit(app, document_id) {
+		if app.close_document_id != document_id {
+			clear_close_prompt(app)
+			app.close_document_id, _ = strings.clone(document_id, context.allocator)
+		}
+		set_error(app, "Copy or explicitly discard the committed IME recovery text before closing this document.")
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad blocked close to preserve committed IME text") }
+		return
+	}
 	if len(app.editor_edits) > 0 {
 		if !deferred_action_enqueue(app, .Close_Document, value=document_id) {
 			set_error(app, "Could not queue the document close behind pending edits.")
@@ -1878,6 +2120,11 @@ request_close_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: str
 }
 
 close_after_save :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if editor_document_has_recoverable_preedit(app, app.close_document_id) {
+		set_error(app, "Copy the committed IME recovery text with Edit > Copy before closing this document.")
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad blocked save-and-close to preserve committed IME text") }
+		return
+	}
 	if len(app.editor_edits) > 0 {
 		if !deferred_action_enqueue(app, .Close_After_Save) {
 			set_error(app, "Could not queue save-and-close behind pending edits.")
@@ -1903,6 +2150,11 @@ close_after_save :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 close_with_discard :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if editor_document_has_recoverable_preedit(app, app.close_document_id) {
+		set_error(app, "Copy the committed IME recovery text with Edit > Copy before closing this document.")
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad blocked discard-and-close to preserve committed IME text") }
+		return
+	}
 	if len(app.editor_edits) > 0 {
 		if !deferred_action_enqueue(app, .Close_With_Discard) {
 			set_error(app, "Could not queue discard-and-close behind pending edits.")
@@ -1972,12 +2224,33 @@ navigate_tab :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) {
 	select_document(app, rt, documents[index].id)
 }
 
+editor_has_pending_active_document_edit :: proc(app: ^App) -> bool {
+	if app == nil { return false }
+	for edit in app.editor_edits {
+		if edit.document_id == app.backend.state.active { return true }
+	}
+	return false
+}
+
+editor_active_preedit :: proc(app: ^App) -> bool {
+	if app == nil || app.backend.state.active == "" { return false }
+	if index := editor_view_find(app.editor_views[:], app.backend.state.active); index >= 0 {
+		return app.editor_views[index].preedit_active
+	}
+	return false
+}
+
 sync_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil { return }
+	composition_active := editor_active_preedit(app)
 	for action in app.backend.state.actions {
 		if action.id == "" || action.title == "" { continue }
+		enabled := action.enabled
+		if action.id == ACTION_EDIT_UNDO && editor_has_pending_active_document_edit(app) { enabled = true }
+		if composition_active && (action.id == ACTION_EDIT_UNDO || action.id == ACTION_EDIT_REDO) { enabled = false }
 		accepted := alicorn.action_update(rt,
 			alicorn.Action_Descriptor{id=action_id_for(action.id), name=action.id, label=action.title},
-			alicorn.Action_State{enabled=action.enabled, checked=action.checked},
+			alicorn.Action_State{enabled=enabled, checked=action.checked},
 		)
 		if !accepted { set_error(app, fmt.tprintf("Alicorn rejected action metadata for %s", action.id)) }
 	}
@@ -1994,6 +2267,8 @@ disable_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 sync_menu_states :: proc(app: ^App) {
+	if app == nil { return }
+	composition_active := editor_active_preedit(app)
 	for &item in app.file_items {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
@@ -2006,6 +2281,220 @@ sync_menu_states :: proc(app: ^App) {
 		if item.kind != .Command { continue }
 		item.state = menu_action_state(&app.backend.state, item.command)
 	}
+	active_document, has_document := find_document(&app.backend.state, app.backend.state.active)
+	active_view: ^Editor_View_State
+	active_window: ^Editor_Window
+	window_matches := false
+	if has_document {
+		if view_index := editor_view_find(app.editor_views[:], active_document.id); view_index >= 0 {
+			active_view = &app.editor_views[view_index]
+			active_window, window_matches = editor_view_window(
+				active_view,
+				&app.editor_window,
+				app.editor_window_ready,
+				active_document.id,
+				active_document.editor_revision,
+			)
+		}
+	}
+	selection_nonempty := active_view != nil && active_view.selection_anchor != active_view.caret_byte
+	selection_available := false
+	if selection_nonempty && window_matches {
+		_, selection_available = editor_selected_source_bytes(active_window, active_view.selection_anchor, active_view.caret_byte)
+		if selection_available {
+			selected_bytes, _ := editor_selected_source_bytes(active_window, active_view.selection_anchor, active_view.caret_byte)
+			selection_available = editor_source_bytes_valid_utf8(selected_bytes)
+		}
+	}
+	for &item in app.edit_items {
+		if item.kind != .Command { continue }
+		switch string_for_action_id(item.command) {
+		case ACTION_EDIT_UNDO:
+			item.state = menu_action_state(&app.backend.state, item.command)
+			if editor_has_pending_active_document_edit(app) { item.state.enabled = true }
+		case ACTION_EDIT_REDO:
+			item.state = menu_action_state(&app.backend.state, item.command)
+		case ACTION_EDIT_COPY:
+			item.state = alicorn.Action_State{enabled=selection_nonempty && selection_available}
+		case ACTION_EDIT_CUT:
+			item.state = alicorn.Action_State{enabled=selection_nonempty && selection_available}
+		case ACTION_EDIT_PASTE:
+			paste_range_available := false
+			if active_view != nil && window_matches {
+				start_byte := min(active_view.selection_anchor, active_view.caret_byte)
+				end_byte := max(active_view.selection_anchor, active_view.caret_byte)
+				window_end := active_window.start_byte+u64(len(active_window.source))
+				paste_range_available = start_byte >= active_window.start_byte && end_byte <= window_end
+			}
+			item.state = alicorn.Action_State{enabled=has_document && paste_range_available && app.services.clipboard.get_text != nil}
+		case ACTION_EDIT_SELECT_ALL:
+			item.state = alicorn.Action_State{enabled=has_document && editor_current_byte_length(app, active_document) > 0}
+		}
+		if composition_active {
+			switch string_for_action_id(item.command) {
+			case ACTION_EDIT_UNDO, ACTION_EDIT_REDO, ACTION_EDIT_CUT, ACTION_EDIT_PASTE, ACTION_EDIT_SELECT_ALL:
+				item.state.enabled = false
+			case ACTION_EDIT_COPY:
+				item.state = alicorn.Action_State{enabled=active_view != nil && len(active_view.preedit_text) > 0 && app.services.clipboard.set_text != nil}
+			}
+		}
+	}
+}
+
+string_for_action_id :: proc(id: host.Application_Command_ID) -> string {
+	if id == action_id_for(ACTION_EDIT_UNDO) { return ACTION_EDIT_UNDO }
+	if id == action_id_for(ACTION_EDIT_REDO) { return ACTION_EDIT_REDO }
+	if id == action_id_for(ACTION_EDIT_CUT) { return ACTION_EDIT_CUT }
+	if id == action_id_for(ACTION_EDIT_COPY) { return ACTION_EDIT_COPY }
+	if id == action_id_for(ACTION_EDIT_PASTE) { return ACTION_EDIT_PASTE }
+	if id == action_id_for(ACTION_EDIT_SELECT_ALL) { return ACTION_EDIT_SELECT_ALL }
+	return ""
+}
+
+active_editor_context :: proc(app: ^App) -> (document: bridge.State_Document, view: ^Editor_View_State, window: ^Editor_Window, ok: bool) {
+	if app == nil || !app.backend.started { return }
+	document, ok = find_document(&app.backend.state, app.backend.state.active)
+	if !ok { return }
+	view_index := editor_view_find(app.editor_views[:], document.id)
+	if view_index < 0 { return document, nil, nil, false }
+	view = &app.editor_views[view_index]
+	window, ok = editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	return
+}
+
+editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
+	if app == nil || rt == nil || !app.backend.started { return }
+	if index := editor_view_find(app.editor_views[:], app.backend.state.active); index >= 0 {
+		view := &app.editor_views[index]
+		if view.preedit_active {
+			switch action_id {
+			case ACTION_EDIT_COPY:
+				if view.preedit_recoverable {
+					_ = editor_copy_recoverable_preedit(app, rt, app.backend.state.active)
+					return
+				}
+				if len(view.preedit_text) == 0 { return }
+				if !editor_source_bytes_valid_utf8(view.preedit_text) {
+					set_error(app, "The active text composition is not valid UTF-8; it was not copied.")
+					alicorn.invalidate_root(rt, "Scratchpad refused invalid IME text for the UTF-8 clipboard")
+					return
+				}
+				if !host.ClipboardSetText(app.services.clipboard, string(view.preedit_text)) {
+					set_error(app, "Could not copy the active text composition to the system clipboard.")
+					alicorn.invalidate_root(rt, "Scratchpad clipboard write failed during IME composition")
+					return
+				}
+				return
+			case ACTION_EDIT_CUT, ACTION_EDIT_PASTE, ACTION_EDIT_SELECT_ALL:
+				set_error(app, "Finish or cancel the active text composition before using Cut, Paste, or Select All.")
+				alicorn.invalidate_root(rt, "Scratchpad clipboard command refused during IME composition")
+				return
+			}
+		}
+	}
+	document, view, window, ready := active_editor_context(app)
+	if !ready || view == nil || window == nil {
+		set_error(app, "The active document's bounded source window is not ready for this Edit command.")
+		alicorn.invalidate_root(rt, "Scratchpad Edit command needs a bounded source window")
+		return
+	}
+	switch action_id {
+	case ACTION_EDIT_SELECT_ALL:
+		editor_select_all(view, editor_current_byte_length(app, document))
+		alicorn.invalidate_root(rt, "Scratchpad Select All updated the local editor selection")
+	case ACTION_EDIT_COPY, ACTION_EDIT_CUT:
+		start_byte := min(view.selection_anchor, view.caret_byte)
+		end_byte := max(view.selection_anchor, view.caret_byte)
+		if start_byte == end_byte { return }
+		bytes, available := editor_selected_source_bytes(window, view.selection_anchor, view.caret_byte)
+		if !available {
+			set_error(app, "The full selection is outside the loaded source window; copy and cut were not performed.")
+			alicorn.invalidate_root(rt, "Scratchpad refused a partial bounded-window clipboard operation")
+			return
+		}
+		if !editor_source_bytes_valid_utf8(bytes) {
+			set_error(app, "The selected source contains invalid UTF-8 bytes; copy and cut were not performed.")
+			alicorn.invalidate_root(rt, "Scratchpad refused to send invalid source bytes to the UTF-8 clipboard")
+			return
+		}
+		if !host.ClipboardSetText(app.services.clipboard, string(bytes)) {
+			set_error(app, "Could not copy text to the system clipboard.")
+			alicorn.invalidate_root(rt, "Scratchpad clipboard write failed")
+			return
+		}
+		if action_id == ACTION_EDIT_CUT {
+			_ = editor_apply_local_replace(app, rt, start_byte, end_byte, {}, start_byte, start_byte)
+		}
+	case ACTION_EDIT_PASTE:
+		text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
+		if !clipboard_ok {
+			set_error(app, "Could not read text from the system clipboard.")
+			alicorn.invalidate_root(rt, "Scratchpad clipboard read failed")
+			return
+		}
+		defer delete(text, context.allocator)
+		if len(text) == 0 { return }
+		if len(text) > int(bridge.MAX_EDIT_BYTES) {
+			set_error(app, "Clipboard text exceeds the 128 KiB per-edit limit.")
+			alicorn.invalidate_root(rt, "Scratchpad rejected oversized clipboard text")
+			return
+		}
+		start_byte := min(view.selection_anchor, view.caret_byte)
+		end_byte := max(view.selection_anchor, view.caret_byte)
+		window_end := window.start_byte+u64(len(window.source))
+		if start_byte < window.start_byte || end_byte > window_end {
+			set_error(app, "The replacement range is outside the loaded source window; paste was not performed.")
+			alicorn.invalidate_root(rt, "Scratchpad refused a paste across the bounded source-window edge")
+			return
+		}
+		caret := start_byte+u64(len(text))
+		_ = editor_apply_local_replace(app, rt, start_byte, end_byte, transmute([]u8)text, caret, caret)
+	}
+}
+
+editor_current_byte_length :: proc(app: ^App, document: bridge.State_Document) -> u64 {
+	length := document.byte_length
+	if app == nil { return length }
+	for edit in app.editor_edits {
+		if edit.document_id != document.id || edit.end_byte < edit.start_byte { continue }
+		removed := edit.end_byte-edit.start_byte
+		inserted := u64(len(edit.replacement))
+		if inserted >= removed {
+			delta := inserted-removed
+			if length > u64(0xFFFF_FFFF_FFFF_FFFF)-delta { length = u64(0xFFFF_FFFF_FFFF_FFFF) } else { length += delta }
+		} else {
+			delta := removed-inserted
+			length = length-delta if length >= delta else 0
+		}
+	}
+	return length
+}
+
+editor_apply_backend_selection :: proc(app: ^App, rt: ^alicorn.Runtime, selection: bridge.Editor_Selection) {
+	if app == nil || selection.document_id == "" { return }
+	document, found := find_document(&app.backend.state, selection.document_id)
+	if !found || selection.anchor_byte > document.byte_length || selection.cursor_byte > document.byte_length { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, selection.document_id)
+	if !view_ok { set_error(app, "Could not restore the document selection after Undo/Redo."); return }
+	view := &app.editor_views[view_index]
+	editor_preedit_clear(view)
+	view.authoritative_revision = selection.editor_revision
+	view.selection_anchor = selection.anchor_byte
+	view.caret_byte = selection.cursor_byte
+	view.anchor_affinity = .Leading
+	view.caret_affinity = .Trailing
+	view.preferred_x_set = false
+	view.pending_document_edge = .None
+	view.pending_document_edge_shift = false
+	if app.editor_scroll_owner != 0 && selection.cursor_line <= u64(0x7FFF_FFFF_FFFF_FFFF) {
+		_ = alicorn.virtual_list_ensure_visible(
+			rt,
+			app.editor_scroll_owner,
+			int(selection.cursor_line),
+			"Scratchpad restored the Undo/Redo caret line",
+		)
+	}
+	alicorn.invalidate_root(rt, "Scratchpad restored selection after Undo/Redo")
 }
 
 menu_action_state :: proc(state: ^bridge.State_Envelope, id: host.Application_Command_ID) -> alicorn.Action_State {
@@ -2035,6 +2524,64 @@ find_document :: proc(state: ^bridge.State_Envelope, id: string) -> (document: b
 document_is_open :: proc(state: ^bridge.State_Envelope, id: string) -> bool {
 	_, found := find_document(state, id)
 	return found
+}
+
+editor_document_has_recoverable_preedit :: proc(app: ^App, document_id: string) -> bool {
+	if app == nil || document_id == "" { return false }
+	if index := editor_view_find(app.editor_views[:], document_id); index >= 0 {
+		return app.editor_views[index].preedit_active && app.editor_views[index].preedit_recoverable
+	}
+	return false
+}
+
+editor_register_text_input_target :: proc(ui: ^alicorn.UI, owner: alicorn.Node_ID, view: ^Editor_View_State) -> bool {
+	if ui == nil || owner == 0 || editor_preedit_recovery_is_full(view) { return false }
+	return alicorn.text_input_target(ui, owner)
+}
+
+editor_resume_text_input_target :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
+	if app == nil || rt == nil || !app.backend.started || app.backend.state.active != document_id || app.editor_scroll_owner == 0 { return }
+	_ = alicorn.text_input_target_set_suspended(rt, app.editor_scroll_owner, false)
+}
+
+editor_copy_recoverable_preedit :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) -> bool {
+	if app == nil || rt == nil { return false }
+	index := editor_view_find(app.editor_views[:], document_id)
+	if index < 0 { return false }
+	view := &app.editor_views[index]
+	if !view.preedit_active || !view.preedit_recoverable || len(view.preedit_text) == 0 { return false }
+	if !editor_source_bytes_valid_utf8(view.preedit_text) {
+		set_error(app, "The committed recovery text is not valid UTF-8; it was not copied or discarded.")
+		alicorn.invalidate_root(rt, "Scratchpad refused invalid recovery text for the UTF-8 clipboard")
+		return false
+	}
+	if !host.ClipboardSetText(app.services.clipboard, string(view.preedit_text)) {
+		set_error(app, "Could not copy the committed recovery text. It remains available in this document.")
+		alicorn.invalidate_root(rt, "Scratchpad clipboard write failed during IME recovery")
+		return false
+	}
+	editor_preedit_clear(view)
+	editor_resume_text_input_target(app, rt, document_id)
+	sync_menu_states(app)
+	sync_runtime_actions(app, rt)
+	set_error(app, "Committed composition copied to the clipboard; the document was left unchanged.")
+	alicorn.invalidate_root(rt, "Scratchpad copied committed IME recovery text")
+	return true
+}
+
+editor_discard_recoverable_preedit :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) -> bool {
+	if app == nil || rt == nil { return false }
+	index := editor_view_find(app.editor_views[:], document_id)
+	if index < 0 { return false }
+	view := &app.editor_views[index]
+	if !view.preedit_active || !view.preedit_recoverable { return false }
+	editor_preedit_clear(view)
+	editor_resume_text_input_target(app, rt, document_id)
+	sync_menu_states(app)
+	sync_runtime_actions(app, rt)
+	set_error(app, "Committed composition recovery text was explicitly discarded; the document source was left unchanged.")
+	alicorn.invalidate_root(rt, "Scratchpad explicitly discarded committed IME recovery text")
+	return true
 }
 
 editor_views_prune :: proc(app: ^App) {
@@ -2086,6 +2633,16 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE), label="Save", shortcut=host.Application_Menu_Shortcut{'S', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_CLOSE), label="Close Document", shortcut=host.Application_Menu_Shortcut{'W', {.Primary}}},
 	}
+	app.edit_items = [8]host.Application_Menu_Item{
+		{kind=.Command, command=action_id_for(ACTION_EDIT_UNDO), label="Undo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_EDIT_REDO), label="Redo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary, .Shift}}},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_EDIT_CUT), label="Cut", shortcut=host.Application_Menu_Shortcut{'X', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_EDIT_COPY), label="Copy", shortcut=host.Application_Menu_Shortcut{'C', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_EDIT_PASTE), label="Paste", shortcut=host.Application_Menu_Shortcut{'V', {.Primary}}},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_EDIT_SELECT_ALL), label="Select All", shortcut=host.Application_Menu_Shortcut{'A', {.Primary}}},
+	}
 	app.workspace_items = [1]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_REFRESH), label="Refresh Workspace", shortcut=host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}},
 	}
@@ -2093,8 +2650,9 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_TAB_NEXT), label="Next Document"},
 		{kind=.Command, command=action_id_for(ACTION_TAB_PREVIOUS), label="Previous Document"},
 	}
-	app.menus = [3]host.Application_Menu{
+	app.menus = [4]host.Application_Menu{
 		{label="File", items=app.file_items[:]},
+		{label="Edit", items=app.edit_items[:]},
 		{label="Workspace", items=app.workspace_items[:]},
 		{label="Document", items=app.document_items[:]},
 	}

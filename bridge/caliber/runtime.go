@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"scratchpad/application"
+	"scratchpad/commands"
 )
 
 const (
@@ -242,6 +243,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var listing *DirectoryListing
 	var edit *EditAck
 	var closeDecision *CloseDecision
+	var editorSelection *EditorSelection
 	var matches []CurrentMatch
 	var matchesTruncated bool
 	switch request.Command {
@@ -367,6 +369,33 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 				edit.AppliedReplacement[i] = int(value)
 			}
 		}
+	case string(commands.EditUndo), string(commands.EditRedo):
+		documentID := application.DocumentID(request.DocumentID)
+		var err error
+		if request.Command == string(commands.EditUndo) {
+			err = r.app.UndoDocument(documentID)
+		} else {
+			err = r.app.RedoDocument(documentID)
+		}
+		if err != nil {
+			return commandError(request, "application_error", err)
+		}
+		if documentID == "" {
+			documentID = r.app.Active
+		}
+		doc := r.app.Documents[documentID]
+		anchor, cursor := doc.Editor.Selection()
+		cursorLine, ok := doc.Editor.Buffer.LineAt(cursor)
+		if !ok {
+			return commandError(request, "application_error", errors.New("restored editor cursor is outside the document"))
+		}
+		editorSelection = &EditorSelection{
+			DocumentID:     string(documentID),
+			EditorRevision: doc.Revision(),
+			AnchorByte:     uint64(anchor),
+			CursorByte:     uint64(cursor),
+			CursorLine:     uint64(cursorLine),
+		}
 	case "find_current":
 		found := r.app.FindCurrent(application.DocumentID(request.DocumentID), []byte(request.Query))
 		limit := request.MaxMatches
@@ -415,6 +444,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response.BasedOnRevision = request.BasedOnRevision
 	response.DirectoryListing = listing
 	response.Edit = edit
+	response.EditorSelection = editorSelection
 	response.CloseDecision = closeDecision
 	response.Matches = matches
 	response.MatchesTruncated = matchesTruncated
@@ -460,7 +490,12 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 			int(request.MaxLines),
 			int(request.MaxBytes),
 		)
-		if truncated && endLine == int(request.StartLine)+1 {
+		// Only describe a line as an incomplete single-line window when the
+		// byte limit cut through its content. BoundedLines also marks a result
+		// truncated when maxLines stops before later lines; in that case the
+		// returned first line can include its LF terminator, which is not part
+		// of LineRange's logical line length.
+		if truncated && endLine == int(request.StartLine)+1 && len(lines) < lineByteLength {
 			describedLineByteLength = lineEnd - lineStart
 		}
 	}

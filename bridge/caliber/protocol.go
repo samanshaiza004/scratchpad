@@ -22,7 +22,7 @@ const (
 	MaxVisibleLines                 = 256
 	MaxVisibleBytes                 = 64 * 1024
 	MaxVisibleLineChunkBytes        = 16 * 1024
-	MaxEditBytes                    = 64 * 1024
+	MaxEditBytes                    = 128 * 1024
 	MaxFindMatches                  = 1000
 	VisibleSliceSchemaV1            = 1
 	visibleSliceHeaderBytes         = 48
@@ -75,6 +75,7 @@ type Response struct {
 	DirectoryListing *DirectoryListing   `json:"directory_listing,omitempty"`
 	Resource         *ResourceDescriptor `json:"resource,omitempty"`
 	Edit             *EditAck            `json:"edit,omitempty"`
+	EditorSelection  *EditorSelection    `json:"editor_selection,omitempty"`
 	CloseDecision    *CloseDecision      `json:"close_decision,omitempty"`
 	Matches          []CurrentMatch      `json:"matches,omitempty"`
 	MatchesTruncated bool                `json:"matches_truncated,omitempty"`
@@ -101,6 +102,17 @@ type EditAck struct {
 	OldEndByte         uint64 `json:"old_end_byte"`
 	NewEndByte         uint64 `json:"new_end_byte"`
 	AppliedReplacement []int  `json:"applied_replacement,omitempty"`
+}
+
+// EditorSelection is returned after authoritative undo/redo so a foreign
+// frontend can restore the editor-owned caret/selection without mirroring the
+// application's undo stack or sending ordinary cursor motion over Caliber.
+type EditorSelection struct {
+	DocumentID     string `json:"document_id"`
+	EditorRevision uint64 `json:"editor_revision"`
+	AnchorByte     uint64 `json:"anchor_byte"`
+	CursorByte     uint64 `json:"cursor_byte"`
+	CursorLine     uint64 `json:"cursor_line"`
 }
 
 // CloseDecision describes an application-owned close that needs an explicit
@@ -161,7 +173,10 @@ type StateDocument struct {
 	Dirty          bool   `json:"dirty"`
 	Preview        bool   `json:"preview,omitempty"`
 	EditorRevision uint64 `json:"editor_revision"`
+	ByteLength     uint64 `json:"byte_length"`
 	LineCount      uint64 `json:"line_count"`
+	CanUndo        bool   `json:"can_undo"`
+	CanRedo        bool   `json:"can_redo"`
 	Language       string `json:"language,omitempty"`
 }
 
@@ -255,7 +270,7 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.Disposition != "" && request.Disposition != "preview" {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "open_path disposition must be empty or preview", false), false
 		}
-	case "select_document", "save_document", "close_document":
+	case "select_document", "save_document", "close_document", string(commands.EditUndo), string(commands.EditRedo):
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
 		}
@@ -436,9 +451,16 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			Dirty:          document.Dirty,
 			Preview:        document.Preview,
 			EditorRevision: document.EditorRevision,
+			ByteLength:     document.ByteLength,
 			LineCount:      document.LineCount,
+			CanUndo:        document.CanUndo,
+			CanRedo:        document.CanRedo,
 			Language:       document.Language,
 		})
+		if document.ID == snapshot.Active {
+			commandContext.CanUndo = document.CanUndo
+			commandContext.CanRedo = document.CanRedo
+		}
 	}
 	registry := commands.DefaultRegistry()
 	for _, id := range shellActionIDs {
@@ -467,6 +489,8 @@ var shellActionIDs = []commands.ID{
 	commands.WorkspaceOpen,
 	commands.FileSave,
 	commands.DocumentClose,
+	commands.EditUndo,
+	commands.EditRedo,
 	commands.TabNext,
 	commands.TabPrevious,
 	commands.WorkspaceRefresh,
