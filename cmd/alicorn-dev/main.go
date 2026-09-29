@@ -377,6 +377,9 @@ func buildCaliberAndBackend(root, caliberRoot, goExe, out string, release bool) 
 		if err := relocateDarwinCaliber(caliberLibrary, caliberCopy, backend); err != nil {
 			return nil, "", err
 		}
+		if err := verifyDarwinBackendArtifact(backend); err != nil {
+			return nil, "", err
+		}
 	}
 	return goEnv, caliberLibrary, nil
 }
@@ -474,7 +477,66 @@ func relocateDarwinCaliber(source, copyPath, backend string) error {
 	if err := runCommand(".", nil, "install_name_tool", "install_name_tool", "-change", encoded, "@rpath/libcaliber_ffi.dylib", backend); err != nil {
 		return err
 	}
-	return runCommand(".", nil, "install_name_tool", "install_name_tool", "-add_rpath", "@loader_path", backend)
+	return nil
+}
+
+func verifyDarwinBackendArtifact(backend string) error {
+	loadCommands, err := commandOutput(".", "otool", "-l", backend)
+	if err != nil {
+		return fmt.Errorf("inspect macOS backend load commands: %w", err)
+	}
+	linkedLibraries, err := commandOutput(".", "otool", "-L", backend)
+	if err != nil {
+		return fmt.Errorf("inspect macOS backend dependencies: %w", err)
+	}
+	if err := validateDarwinBackendArtifact(string(loadCommands), string(linkedLibraries)); err != nil {
+		return fmt.Errorf("invalid macOS backend artifact %s: %w", backend, err)
+	}
+	return nil
+}
+
+func validateDarwinBackendArtifact(loadCommands, linkedLibraries string) error {
+	rpaths := darwinRuntimePaths(loadCommands)
+	for _, expected := range []string{"@loader_path", "@executable_path"} {
+		count := 0
+		for _, path := range rpaths {
+			if path == expected {
+				count++
+			}
+		}
+		if count != 1 {
+			return fmt.Errorf("LC_RPATH %s occurs %d times, want exactly once", expected, count)
+		}
+	}
+	for _, line := range strings.Split(linkedLibraries, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "@rpath/libcaliber_ffi.dylib" {
+			return nil
+		}
+	}
+	return errors.New("backend does not link @rpath/libcaliber_ffi.dylib")
+}
+
+func darwinRuntimePaths(loadCommands string) []string {
+	lines := strings.Split(loadCommands, "\n")
+	var paths []string
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "cmd LC_RPATH" {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			trimmed := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(trimmed, "Load command ") {
+				break
+			}
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 2 && fields[0] == "path" {
+				paths = append(paths, fields[1])
+				break
+			}
+		}
+	}
+	return paths
 }
 
 func writeManifest(out string, manifest artifactManifest) error {

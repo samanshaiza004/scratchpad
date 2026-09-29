@@ -1221,6 +1221,58 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	view_index := editor_view_find(app.editor_views[:], active.id)
 	view_saved := view_index >= 0 && app.editor_views[view_index].scroll_y == 1_000 && app.editor_views[view_index].scroll_x == 300
 	testing.expect(t, view_saved, "ordinary description rebuilds must preserve live vertical and horizontal offsets")
+
+	workspace_split_id := alicorn.Node_ID(0)
+	for node_id in rt.order {
+		node, node_found := rt.nodes[node_id]
+		if node_found && node.kind == .Split && node.label == "scratchpad-workspace-editor-split" {
+			workspace_split_id = node_id
+			break
+		}
+	}
+	testing.expect(t, workspace_split_id != 0, "the Scratchpad tree and editor should use Alicorn's retained split primitive")
+	if workspace_split_id == 0 { return }
+	workspace_split, split_found := rt.nodes[workspace_split_id]
+	testing.expect(t, split_found && workspace_split.split_min_first == 180 && workspace_split.split_min_second == 480,
+		"the workspace split should preserve useful minimum widths for both panes")
+	if !split_found || len(workspace_split.children) != 3 { return }
+	first_before, first_found := rt.nodes[workspace_split.children[0]]
+	divider, divider_found := rt.nodes[workspace_split.children[1]]
+	second_before, second_found := rt.nodes[workspace_split.children[2]]
+	if !first_found || !divider_found || !second_found { return }
+	position_before := workspace_split.split_position
+	first_before_width := first_before.bounds.w
+	second_before_width := second_before.bounds.w
+	start_x := divider.bounds.x + divider.bounds.w/2
+	start_y := divider.bounds.y + divider.bounds.h/2
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{.Down, start_x, start_y, 1})
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{.Move, start_x+40, start_y, 0})
+	presentation_ui, presentation_ready := alicorn.begin_presentation_frame(&rt)
+	if presentation_ready { alicorn.end_presentation_frame(&presentation_ui) }
+	workspace_split_after, split_after_found := rt.nodes[workspace_split_id]
+	first_after, first_after_found := rt.nodes[workspace_split.children[0]]
+	second_after, second_after_found := rt.nodes[workspace_split.children[2]]
+	testing.expect(t, presentation_ready, "the workspace divider drag should resolve a retained presentation frame")
+	testing.expect(t, split_after_found && workspace_split_after.split_position == position_before+40,
+		"dragging the Alicorn divider should update the retained split position")
+	testing.expect(t, first_after_found && first_after.bounds.w > first_before_width &&
+		second_after_found && second_after.bounds.w < second_before_width,
+		fmt.tprintf("dragging the Alicorn divider should resize the real tree and editor panes (first %v -> %v; second %v -> %v)",
+			first_before_width, first_after.bounds.w, second_before_width, second_after.bounds.w))
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{.Up, start_x+40, start_y, 1})
+	alicorn.invalidate_root(&rt, "Scratchpad workspace split retention test rebuild")
+	_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
+	workspace_split_id = 0
+	for node_id in rt.order {
+		node, node_found := rt.nodes[node_id]
+		if node_found && node.kind == .Split && node.label == "scratchpad-workspace-editor-split" {
+			workspace_split_id = node_id
+			break
+		}
+	}
+	retained_split, retained_split_found := rt.nodes[workspace_split_id]
+	testing.expect(t, retained_split_found && retained_split.split_position == position_before+40,
+		"the keyed split should retain the user's width across an application description rebuild")
 }
 
 @(test)

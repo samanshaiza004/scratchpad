@@ -181,8 +181,18 @@ build_app :: proc(
 		}
 		alicorn.container_end(&ui)
 
-		alicorn.container_begin(&ui, .Container, label="workbench-content", style=alicorn.layout_style(.Row, grow=1, gap=12, clip=true))
-		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, width=250, grow=0, padding=14, gap=12, clip=true), color=COLOR_PANEL)
+		workspace_split := alicorn.split_begin(
+			&ui,
+			key=alicorn.key_string("scratchpad-workspace-editor-split"),
+			axis=.Horizontal,
+			initial=250,
+			min_first=180,
+			min_second=480,
+			style=alicorn.layout_style(.Row, grow=1, gap=12, clip=true),
+			label="scratchpad-workspace-editor-split",
+		)
+		alicorn.split_first_begin(&ui, workspace_split)
+		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=COLOR_PANEL)
 		alicorn.text(&ui, "FILES")
 		alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
 		alicorn.text(&ui, fmt.tprintf("%d open documents", len(state.documents)))
@@ -194,6 +204,9 @@ build_app :: proc(
 		}
 		build_workspace_tree(app, &ui, rt)
 		alicorn.container_end(&ui)
+		alicorn.split_first_end(&ui, workspace_split)
+		alicorn.split_divider(&ui, workspace_split)
+		alicorn.split_second_begin(&ui, workspace_split)
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=COLOR_PANEL)
 		alicorn.container_begin(&ui, .Container, label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), color=COLOR_SUBTLE)
@@ -223,7 +236,8 @@ build_app :: proc(
 		}
 		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
-		alicorn.container_end(&ui)
+		alicorn.split_second_end(&ui, workspace_split)
+		alicorn.split_end(&ui, workspace_split)
 	} else {
 		alicorn.container_begin(&ui, .Container, label="backend-stopped-card", style=alicorn.layout_style(.Column, grow=1, padding=24, gap=12), color=COLOR_PANEL)
 		alicorn.text(&ui, "Start the shared Scratchpad backend to load real workspace and document state.")
