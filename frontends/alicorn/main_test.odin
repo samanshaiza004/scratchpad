@@ -91,6 +91,37 @@ test_editor_edit_selection_snapshot_captures_only_transaction_state :: proc(t: ^
 }
 
 @(test)
+test_rejected_editor_window_request_does_not_repeat_until_request_changes :: proc(t: ^testing.T) {
+	app: App
+	defer editor_window_rejection_clear(&app)
+	request := bridge.Visible_Window_Request{
+		document_id="doc-1",
+		application_rev=12,
+		editor_revision=3,
+		start_line=10,
+		anchor_byte=0,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+	}
+	set := editor_window_rejection_set(&app, request)
+	testing.expect(t, set && editor_window_request_is_rejected(&app, request),
+		"a rejected window request should be suppressed when the same request is rebuilt")
+
+	scrolled := request
+	scrolled.start_line += 1
+	testing.expect(t, !editor_window_request_is_rejected(&app, scrolled),
+		"moving to a different visible range should permit a fresh request")
+	new_revision := request
+	new_revision.editor_revision += 1
+	testing.expect(t, !editor_window_request_is_rejected(&app, new_revision),
+		"a changed authoritative editor revision should permit a fresh request")
+	other_document := request
+	other_document.document_id = "doc-2"
+	testing.expect(t, !editor_window_request_is_rejected(&app, other_document),
+		"switching documents should permit a fresh request")
+}
+
+@(test)
 test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 	source, source_error := make([]u8, int(bridge.MAX_VISIBLE_BYTES), allocator=context.allocator)
 	testing.expect(t, source_error == nil, "clipboard test should allocate a full visible source window")

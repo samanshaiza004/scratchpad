@@ -85,6 +85,8 @@ App :: struct {
 	editor_input_anchor_byte: int,
 	editor_input_anchor_affinity: alicorn.Text_Affinity,
 	editor_window_error:    string,
+	editor_window_rejected_request: bridge.Visible_Window_Request,
+	editor_window_request_rejected: bool,
 	waker:                  host.Application_Waker,
 	services:               host.Application_Services,
 	workspace_path:         string,
@@ -107,6 +109,31 @@ App :: struct {
 	smoke_rendered:         bool,
 	smoke_wake_observed:    bool,
 	smoke_shutdown:         bool,
+}
+
+editor_window_request_is_rejected :: proc(app: ^App, request: bridge.Visible_Window_Request) -> bool {
+	return app != nil && app.editor_window_request_rejected &&
+	       bridge.visible_window_request_equal(app.editor_window_rejected_request, request)
+}
+
+editor_window_rejection_clear :: proc(app: ^App) {
+	if app == nil { return }
+	if len(app.editor_window_rejected_request.document_id) > 0 {
+		delete(app.editor_window_rejected_request.document_id, context.allocator)
+	}
+	app.editor_window_rejected_request = {}
+	app.editor_window_request_rejected = false
+}
+
+editor_window_rejection_set :: proc(app: ^App, request: bridge.Visible_Window_Request) -> bool {
+	if app == nil { return false }
+	owned_document_id, clone_error := strings.clone(request.document_id, context.allocator)
+	if clone_error != nil { return false }
+	editor_window_rejection_clear(app)
+	app.editor_window_rejected_request = request
+	app.editor_window_rejected_request.document_id = owned_document_id
+	app.editor_window_request_rejected = true
+	return true
 }
 
 build_app :: proc(
@@ -555,23 +582,35 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		request_lines = 1
 	}
 	if document.line_count > 0 && view.optimistic_pending_edits == 0 && (!window_covers_view || request_anchor > 0) {
-		generation, accepted, request_error := bridge.visible_window_lane_request(
-			&app.visible_window_lane,
-			document.id,
-			app.backend.state.application_rev,
-			document.editor_revision,
-			request_start,
-			request_lines,
-			bridge.MAX_VISIBLE_BYTES,
-			request_anchor,
-		)
-		if accepted {
-			app.editor_request_generation = generation
-			if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
-			app.editor_window_error = ""
-		} else if request_error != "" {
-			if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
-			app.editor_window_error, _ = strings.clone(request_error, context.allocator)
+		request := bridge.Visible_Window_Request{
+			document_id=document.id,
+			application_rev=app.backend.state.application_rev,
+			editor_revision=document.editor_revision,
+			start_line=request_start,
+			anchor_byte=request_anchor,
+			max_lines=request_lines,
+			max_bytes=bridge.MAX_VISIBLE_BYTES,
+		}
+		if !editor_window_request_is_rejected(app, request) {
+			generation, accepted, request_error := bridge.visible_window_lane_request(
+				&app.visible_window_lane,
+				document.id,
+				app.backend.state.application_rev,
+				document.editor_revision,
+				request_start,
+				request_lines,
+				bridge.MAX_VISIBLE_BYTES,
+				request_anchor,
+			)
+			if accepted {
+				app.editor_request_generation = generation
+				editor_window_rejection_clear(app)
+				if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
+				app.editor_window_error = ""
+			} else if request_error != "" {
+				if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
+				app.editor_window_error, _ = strings.clone(request_error, context.allocator)
+			}
 		}
 	}
 	if len(app.editor_edits) > 0 && bridge.editor_edit_lane_can_submit(&app.editor_edit_lane) {
@@ -918,56 +957,76 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 			sync_menu_states(app)
 			tree_sync_workspace(app, rt)
 			editor_views_prune(app)
+			editor_window_rejection_clear(app)
 			alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
 		}
 	}
 	window_result, window_found := bridge.visible_window_lane_take(&app.visible_window_lane)
 	if window_found {
 		installed := false
+		visible_error_changed := false
 		active, active_found := find_document(&app.backend.state, app.backend.state.active)
-		if window_result.generation == app.editor_request_generation && window_result.window_owned && active_found &&
-		   window_result.window.document_id == active.id && window_result.window.editor_revision == active.editor_revision {
-			view_index := editor_view_find(app.editor_views[:], active.id)
-			if view_index < 0 || app.editor_views[view_index].optimistic_pending_edits == 0 {
-				window, converted, conversion_error := editor_window_from_visible(&window_result.window)
-				if converted {
-					if view_index >= 0 && app.editor_views[view_index].optimistic_window_ready {
-						editor_window_destroy(&app.editor_views[view_index].optimistic_window)
-						app.editor_views[view_index].optimistic_window_ready = false
+		if window_result.generation == app.editor_request_generation && window_result.window_owned {
+			if active_found && window_result.window.document_id == active.id && window_result.window.editor_revision == active.editor_revision {
+				view_index := editor_view_find(app.editor_views[:], active.id)
+				if view_index < 0 || app.editor_views[view_index].optimistic_pending_edits == 0 {
+					window, converted, conversion_error := editor_window_from_visible(&window_result.window)
+					if converted {
+						if view_index >= 0 && app.editor_views[view_index].optimistic_window_ready {
+							editor_window_destroy(&app.editor_views[view_index].optimistic_window)
+							app.editor_views[view_index].optimistic_window_ready = false
+						}
+						advancing_long_line := app.editor_window_ready &&
+						                       app.editor_window.document_id == window.document_id &&
+						                       app.editor_window.editor_revision == window.editor_revision &&
+						                       app.editor_window.start_line == window.start_line &&
+						                       window.start_byte > app.editor_window.start_byte &&
+						                       window.line_byte_length == app.editor_window.line_byte_length
+						editor_window_destroy(&app.editor_window)
+						app.editor_window = window
+						app.editor_window_ready = true
+						if view_index >= 0 && app.editor_views[view_index].position_reconcile_pending {
+							_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
+						}
+						if advancing_long_line && app.editor_scroll_owner != 0 {
+							_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
+						}
+						editor_window_rejection_clear(app)
+						if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+						app.editor_window_error = ""
+						installed = true
+						if strings.has_prefix(app.error_message, "Edit was not accepted; reloading authoritative text:") {
+							set_error(app, "")
+						}
+					} else {
+						_ = editor_window_rejection_set(app, window_result.request)
+						if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+						app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
+						visible_error_changed = true
 					}
-					advancing_long_line := app.editor_window_ready &&
-					                       app.editor_window.document_id == window.document_id &&
-					                       app.editor_window.editor_revision == window.editor_revision &&
-					                       app.editor_window.start_line == window.start_line &&
-					                       window.start_byte > app.editor_window.start_byte &&
-					                       window.line_byte_length == app.editor_window.line_byte_length
-					editor_window_destroy(&app.editor_window)
-					app.editor_window = window
-					app.editor_window_ready = true
-					if view_index >= 0 && app.editor_views[view_index].position_reconcile_pending {
-						_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
-					}
-					if advancing_long_line && app.editor_scroll_owner != 0 {
-						_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
-					}
-					if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
-					app.editor_window_error = ""
-					installed = true
-					if strings.has_prefix(app.error_message, "Edit was not accepted; reloading authoritative text:") {
-						set_error(app, "")
-					}
-				} else {
-					if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
-					app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
 				}
+			} else if active_found && window_result.window.document_id == active.id {
+				_ = editor_window_rejection_set(app, window_result.request)
+				if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+				message := fmt.tprintf(
+					"response revision %d does not match published editor revision %d",
+					window_result.window.editor_revision,
+					active.editor_revision,
+				)
+				owned_error, clone_error := strings.clone(message, context.allocator)
+				if clone_error == nil { app.editor_window_error = owned_error }
+				visible_error_changed = true
 			}
 		} else if window_result.generation == app.editor_request_generation && window_result.error != "" {
+			_ = editor_window_rejection_set(app, window_result.request)
 			if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 			app.editor_window_error, _ = strings.clone(window_result.error, context.allocator)
+			visible_error_changed = true
 		}
 		bridge.visible_window_lane_result_destroy(&window_result, app.visible_window_lane.allocator)
-		_ = installed
-		alicorn.invalidate_root(rt, "Scratchpad bounded editor window completed")
+		if installed || visible_error_changed {
+			alicorn.invalidate_root(rt, "Scratchpad bounded editor window completed")
+		}
 	}
 	edit_result, edit_found := bridge.editor_edit_lane_take(&app.editor_edit_lane)
 	if edit_found {
@@ -2789,6 +2848,7 @@ application_stop :: proc(state: rawptr) {
 	app.editor_presented_document_id = ""
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 	app.editor_window_error = ""
+	editor_window_rejection_clear(app)
 }
 
 main :: proc() {

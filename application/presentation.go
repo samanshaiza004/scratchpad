@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+
+	"scratchpad/editor"
 )
 
 // PresentationCommandKind names the small set of application-owned lifecycle
@@ -154,35 +156,51 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 		}
 		return a.CloseDocument(id, command.Discard)
 	case PresentationReplaceDocument:
-		doc := a.Documents[command.DocumentID]
-		if doc == nil {
-			return errors.New("unknown document")
-		}
-		if doc.Revision() != command.EditorRevision {
-			return fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, command.EditorRevision, doc.Revision())
-		}
-		before := doc.Revision()
-		var err error
-		if command.HasSelectionState {
-			err = doc.ReplaceWithSelectionState(
-				command.StartByte, command.EndByte, command.Replacement,
-				command.BeforeAnchorByte, command.BeforeCursorByte,
-				command.AfterAnchorByte, command.AfterCursorByte,
-			)
-		} else {
-			err = doc.Replace(command.StartByte, command.EndByte, command.Replacement)
-		}
-		if err != nil {
-			return err
-		}
-		if doc.Revision() != before {
-			a.PinPreview(command.DocumentID)
-			a.touchPresentation()
-		}
-		return nil
+		_, err := a.ReplaceDocument(command)
+		return err
 	default:
 		return errors.New("unknown presentation command")
 	}
+}
+
+// ReplaceDocument applies one revision-checked source transaction and returns
+// the exact edit result needed by foreign clients. The result is produced by
+// the editor operation itself, so branched undo/redo history cannot make its
+// acknowledgement ambiguous.
+func (a *Application) ReplaceDocument(command PresentationCommand) (editor.AppliedEdit, error) {
+	if a == nil {
+		return editor.AppliedEdit{}, errors.New("nil application")
+	}
+	if command.Kind != PresentationReplaceDocument {
+		return editor.AppliedEdit{}, errors.New("not a document replacement command")
+	}
+	doc := a.Documents[command.DocumentID]
+	if doc == nil {
+		return editor.AppliedEdit{}, errors.New("unknown document")
+	}
+	if doc.Revision() != command.EditorRevision {
+		return editor.AppliedEdit{}, fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, command.EditorRevision, doc.Revision())
+	}
+	before := doc.Revision()
+	var applied editor.AppliedEdit
+	var err error
+	if command.HasSelectionState {
+		applied, err = doc.ReplaceWithSelectionStateResult(
+			command.StartByte, command.EndByte, command.Replacement,
+			command.BeforeAnchorByte, command.BeforeCursorByte,
+			command.AfterAnchorByte, command.AfterCursorByte,
+		)
+	} else {
+		applied, err = doc.ReplaceResult(command.StartByte, command.EndByte, command.Replacement)
+	}
+	if err != nil {
+		return editor.AppliedEdit{}, err
+	}
+	if doc.Revision() != before {
+		a.PinPreview(command.DocumentID)
+		a.touchPresentation()
+	}
+	return applied, nil
 }
 
 // UndoDocument applies one authoritative edit-history step. An empty ID

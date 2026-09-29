@@ -48,6 +48,16 @@ type SourceEdit struct {
 	NewEndPoint BytePoint
 }
 
+// AppliedEdit is the exact result of one synchronous source replacement.
+// Replacement is the canonical byte sequence inserted by the editor, after
+// input normalization such as Enter indentation and line-ending handling.
+// Callers that need an acknowledgement should use this result rather than
+// trying to reconstruct the operation from revision history.
+type AppliedEdit struct {
+	SourceEdit  SourceEdit
+	Replacement []byte
+}
+
 const editJournalCapacity = 4096
 
 type Affinity uint8
@@ -213,12 +223,20 @@ func (e *ScratchEditor) ReplaceWithSelection(start, end int, text []byte, anchor
 // the undo state, and the post-edit selection is already expressed in the
 // resulting normalized document's byte coordinates.
 func (e *ScratchEditor) ReplaceInputWithSelection(start, end int, text []byte, beforeAnchor, beforeCursor, afterAnchor, afterCursor int) error {
+	_, err := e.ReplaceInputWithSelectionResult(start, end, text, beforeAnchor, beforeCursor, afterAnchor, afterCursor)
+	return err
+}
+
+// ReplaceInputWithSelectionResult applies one foreign text-input transaction
+// and returns the edit created by that exact operation. The result remains
+// unambiguous even when undo/redo has caused revision numbers to branch.
+func (e *ScratchEditor) ReplaceInputWithSelectionResult(start, end int, text []byte, beforeAnchor, beforeCursor, afterAnchor, afterCursor int) (AppliedEdit, error) {
 	if e == nil || start < 0 || end < start || end > e.Buffer.ByteLen() {
-		return errors.New("editor input replacement range outside buffer")
+		return AppliedEdit{}, errors.New("editor input replacement range outside buffer")
 	}
 	beforeLength := e.Buffer.ByteLen()
 	if beforeAnchor < 0 || beforeAnchor > beforeLength || beforeCursor < 0 || beforeCursor > beforeLength {
-		return errors.New("pre-edit selection outside buffer")
+		return AppliedEdit{}, errors.New("pre-edit selection outside buffer")
 	}
 	replacement := text
 	if len(text) == 1 && text[0] == '\n' {
@@ -226,10 +244,35 @@ func (e *ScratchEditor) ReplaceInputWithSelection(start, end int, text []byte, b
 	}
 	afterLength := beforeLength - (end - start) + len(replacement)
 	if afterAnchor < 0 || afterAnchor > afterLength || afterCursor < 0 || afterCursor > afterLength {
-		return errors.New("post-edit selection outside normalized buffer")
+		return AppliedEdit{}, errors.New("post-edit selection outside normalized buffer")
 	}
 	e.SetSelection(beforeAnchor, beforeCursor)
-	return e.ReplaceWithSelection(start, end, replacement, afterAnchor, afterCursor)
+	sourceEdit, err := e.replaceWithSelectionResult(start, end, replacement, &selectionState{anchor: afterAnchor, cursor: afterCursor})
+	if err != nil {
+		return AppliedEdit{}, err
+	}
+	return AppliedEdit{SourceEdit: sourceEdit, Replacement: replacement}, nil
+}
+
+// ReplaceRangeResult preserves Document.Replace's range-selection semantics
+// while returning the exact source edit and normalized inserted bytes.
+func (e *ScratchEditor) ReplaceRangeResult(start, end int, text []byte) (AppliedEdit, error) {
+	if e == nil || start < 0 || end < start || end > e.Buffer.ByteLen() {
+		return AppliedEdit{}, errors.New("editor input replacement range outside buffer")
+	}
+	replacement := text
+	if len(text) == 1 && text[0] == '\n' {
+		replacement = e.newlineText(start)
+	}
+	e.SetSelection(start, end)
+	sourceEdit, err := e.replaceWithSelectionResult(start, end, replacement, &selectionState{
+		anchor: start + len(replacement),
+		cursor: start + len(replacement),
+	})
+	if err != nil {
+		return AppliedEdit{}, err
+	}
+	return AppliedEdit{SourceEdit: sourceEdit, Replacement: replacement}, nil
 }
 
 func (e *ScratchEditor) Backspace() error {
@@ -584,6 +627,11 @@ type selectionState struct {
 }
 
 func (e *ScratchEditor) replaceWithSelection(start, end int, text []byte, after *selectionState) error {
+	_, err := e.replaceWithSelectionResult(start, end, text, after)
+	return err
+}
+
+func (e *ScratchEditor) replaceWithSelectionResult(start, end int, text []byte, after *selectionState) (SourceEdit, error) {
 	if start == end && len(text) == 0 {
 		if after != nil {
 			e.Anchor = e.Buffer.boundary(after.anchor)
@@ -591,19 +639,25 @@ func (e *ScratchEditor) replaceWithSelection(start, end int, text []byte, after 
 			e.Affinity = AffinityLeading
 			e.ClearPreferredVerticalX()
 		}
-		return nil
+		return SourceEdit{
+			BeforeRevision: e.revision,
+			AfterRevision:  e.revision,
+			StartByte:      start,
+			OldEndByte:     end,
+			NewEndByte:     start,
+		}, nil
 	}
 	deleted, err := e.Buffer.Bytes(start, end)
 	if err != nil {
-		return err
+		return SourceEdit{}, err
 	}
 	beforeCursor, beforeAnchor := e.Cursor, e.Anchor
 	edit := e.sourceEdit(start, end, text, 0)
 	if err := e.Buffer.Delete(start, end); err != nil {
-		return err
+		return SourceEdit{}, err
 	}
 	if err := e.Buffer.Insert(start, text); err != nil {
-		return err
+		return SourceEdit{}, err
 	}
 	beforeRevision := e.revision
 	afterRevision := e.nextRevision
@@ -628,7 +682,7 @@ func (e *ScratchEditor) replaceWithSelection(start, end int, text []byte, after 
 		beforeRevision: beforeRevision, afterRevision: afterRevision,
 	})
 	e.redo = nil
-	return nil
+	return edit, nil
 }
 
 func (e *ScratchEditor) sourceEdit(start, end int, text []byte, afterRevision uint64) SourceEdit {

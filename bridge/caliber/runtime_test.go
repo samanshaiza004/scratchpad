@@ -540,6 +540,121 @@ func TestReplaceDocumentIsRevisionedAndAcknowledged(t *testing.T) {
 	}
 }
 
+func TestReplaceDocumentAcknowledgementSurvivesUndoBranchAtOldRevision(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "branch.txt")
+	writeFile(t, path, "one beta gamma")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 401,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := state.Active
+	if len(state.Documents) != 1 || state.Documents[0].EditorRevision != 0 {
+		t.Fatalf("opened state = %+v", state)
+	}
+
+	applyDelete := func(requestID, revision uint64, start, end, before, after uint64) Response {
+		t.Helper()
+		state := latestStateForTest(t, runtime)
+		if state.Documents[0].EditorRevision != revision {
+			t.Fatalf("pre-edit state revision = %d, want %d", state.Documents[0].EditorRevision, revision)
+		}
+		dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+			Version: ProtocolVersion, RequestID: requestID,
+			BasedOnRevision:   state.ApplicationRev,
+			Command:           "replace_document",
+			DocumentID:        string(id),
+			EditorRevision:    revision,
+			StartByte:         start,
+			EndByte:           end,
+			HasSelectionState: true,
+			BeforeAnchorByte:  before,
+			BeforeCursorByte:  before,
+			AfterAnchorByte:   after,
+			AfterCursorByte:   after,
+		}))
+		return decodeResponse(t, runtime.Pump())
+	}
+
+	first := applyDelete(402, 0, 9, 14, 14, 9)
+	if !first.OK || first.Edit == nil || first.Edit.EditorRevision != 1 {
+		t.Fatalf("first delete response = %+v", first)
+	}
+	second := applyDelete(403, 1, 4, 9, 9, 4)
+	if !second.OK || second.Edit == nil || second.Edit.EditorRevision != 2 {
+		t.Fatalf("second delete response = %+v", second)
+	}
+
+	for index, wantRevision := range []uint64{1, 0} {
+		state = latestStateForTest(t, runtime)
+		dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+			Version: ProtocolVersion, RequestID: uint64(404 + index),
+			BasedOnRevision: state.ApplicationRev,
+			Command:         string(commands.EditUndo), DocumentID: string(id),
+		}))
+		undone := decodeResponse(t, runtime.Pump())
+		if !undone.OK {
+			t.Fatalf("undo %d response = %+v", index+1, undone)
+		}
+		state = latestStateForTest(t, runtime)
+		if got := state.Documents[0].EditorRevision; got != wantRevision {
+			t.Fatalf("undo %d editor revision = %d, want %d", index+1, got, wantRevision)
+		}
+	}
+	if got := string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()); got != "one beta gamma" {
+		t.Fatalf("source after undo branch point = %q", got)
+	}
+
+	branch := applyDelete(406, 0, 9, 14, 14, 9)
+	if !branch.OK || branch.Edit == nil {
+		t.Fatalf("branched delete response = %+v", branch)
+	}
+	if branch.Edit.DocumentID != string(id) || branch.Edit.EditorRevision != 3 ||
+		branch.Edit.StartByte != 9 || branch.Edit.OldEndByte != 14 || branch.Edit.NewEndByte != 9 ||
+		len(branch.Edit.AppliedReplacement) != 0 {
+		t.Fatalf("branched delete acknowledgement = %+v", branch.Edit)
+	}
+	state = latestStateForTest(t, runtime)
+	if state.Documents[0].EditorRevision != 3 || string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()) != "one beta " {
+		t.Fatalf("branch state = %+v, source=%q", state.Documents[0], runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text())
+	}
+
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 407,
+		BasedOnRevision:   state.ApplicationRev,
+		Command:           "replace_document",
+		DocumentID:        string(id),
+		EditorRevision:    3,
+		StartByte:         9,
+		EndByte:           9,
+		Replacement:       []int{'!'},
+		HasSelectionState: true,
+		BeforeAnchorByte:  9,
+		BeforeCursorByte:  9,
+		AfterAnchorByte:   10,
+		AfterCursorByte:   10,
+	}))
+	fourth := decodeResponse(t, runtime.Pump())
+	if !fourth.OK || fourth.Edit == nil || fourth.Edit.EditorRevision != 4 || fourth.Edit.StartByte != 9 || fourth.Edit.NewEndByte != 10 {
+		t.Fatalf("edit after branch response = %+v", fourth)
+	}
+	state = latestStateForTest(t, runtime)
+	if state.Documents[0].EditorRevision != 4 || string(runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text()) != "one beta !" {
+		t.Fatalf("post-branch state = %+v, source=%q", state.Documents[0], runtime.app.Documents[application.DocumentID(id)].Editor.Buffer.Text())
+	}
+}
+
 func TestReplaceDocumentEnterAcknowledgesScratchpadIndentAndLineEnding(t *testing.T) {
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "enter.txt")

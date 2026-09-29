@@ -1011,6 +1011,7 @@ Visible_Window_Request :: struct {
 
 Visible_Window_Lane_Result :: struct {
 	generation: u64,
+	request:    Visible_Window_Request,
 	window:     Visible_Window,
 	error:      string,
 	window_owned: bool,
@@ -1096,6 +1097,10 @@ visible_window_lane_worker :: proc(t: ^thread.Thread) {
 		if is_current {
 			visible_window_lane_result_destroy(&lane.completed, lane.allocator)
 			lane.completed.generation = request.generation
+			lane.completed.request = request
+			// The completed result now owns the request identity. It is needed by
+			// the application to suppress retries of a rejected response.
+			request.document_id = ""
 			if result.ok && result.visible_window_owned {
 				lane.completed.window = result.visible_window
 				lane.completed.window_owned = true
@@ -1234,6 +1239,7 @@ visible_window_lane_take :: proc(lane: ^Visible_Window_Lane) -> (result: Visible
 
 visible_window_lane_result_destroy :: proc(result: ^Visible_Window_Lane_Result, allocator: mem.Allocator) {
 	if result == nil { return }
+	if len(result.request.document_id) > 0 { delete(result.request.document_id, allocator) }
 	if result.window_owned { visible_window_destroy(&result.window, allocator) }
 	if result.error_owned { delete(result.error, allocator) }
 	result^ = {}

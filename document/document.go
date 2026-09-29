@@ -473,19 +473,26 @@ func (d *Document) Delete(start, end int) error {
 // this seam for actions such as task toggles; Document remains the owner of
 // invalidation while ScratchEditor remains the content authority.
 func (d *Document) Replace(start, end int, text []byte) error {
+	_, err := d.ReplaceResult(start, end, text)
+	return err
+}
+
+// ReplaceResult applies one ordinary undoable source edit and returns the
+// exact edit and normalized inserted bytes created by the editor.
+func (d *Document) ReplaceResult(start, end int, text []byte) (editor.AppliedEdit, error) {
 	if d == nil || d.Editor == nil || start < 0 || end < start || end > d.Editor.Buffer.ByteLen() {
-		return errors.New("document replace range outside buffer")
+		return editor.AppliedEdit{}, errors.New("document replace range outside buffer")
 	}
 	before := d.Revision()
-	d.Editor.SetSelection(start, end)
-	if err := d.Editor.Insert(text); err != nil {
-		return err
+	applied, err := d.Editor.ReplaceRangeResult(start, end, text)
+	if err != nil {
+		return editor.AppliedEdit{}, err
 	}
 	if d.Revision() != before {
 		d.observedRevision = d.Revision()
 		d.InvalidateDerived()
 	}
-	return nil
+	return applied, nil
 }
 
 // ReplaceWithSelection performs one command replacement while preserving the
@@ -512,22 +519,30 @@ func (d *Document) ReplaceWithSelection(start, end int, text []byte, anchor, cur
 // sides of one source-edit transaction. Post-edit positions use byte offsets
 // in the normalized resulting document. Ordinary caret movement stays local.
 func (d *Document) ReplaceWithSelectionState(start, end int, text []byte, beforeAnchor, beforeCursor, afterAnchor, afterCursor int) error {
+	_, err := d.ReplaceWithSelectionStateResult(start, end, text, beforeAnchor, beforeCursor, afterAnchor, afterCursor)
+	return err
+}
+
+// ReplaceWithSelectionStateResult applies one foreign editor transaction and
+// returns its exact source edit for acknowledgement without journal lookup.
+func (d *Document) ReplaceWithSelectionStateResult(start, end int, text []byte, beforeAnchor, beforeCursor, afterAnchor, afterCursor int) (editor.AppliedEdit, error) {
 	if d == nil || d.Editor == nil || start < 0 || end < start || end > d.Editor.Buffer.ByteLen() {
-		return errors.New("document replace range outside buffer")
+		return editor.AppliedEdit{}, errors.New("document replace range outside buffer")
 	}
 	beforeLength := d.Editor.Buffer.ByteLen()
 	if beforeAnchor < 0 || beforeAnchor > beforeLength || beforeCursor < 0 || beforeCursor > beforeLength {
-		return errors.New("pre-edit selection outside buffer")
+		return editor.AppliedEdit{}, errors.New("pre-edit selection outside buffer")
 	}
 	before := d.Revision()
-	if err := d.Editor.ReplaceInputWithSelection(start, end, text, beforeAnchor, beforeCursor, afterAnchor, afterCursor); err != nil {
-		return err
+	applied, err := d.Editor.ReplaceInputWithSelectionResult(start, end, text, beforeAnchor, beforeCursor, afterAnchor, afterCursor)
+	if err != nil {
+		return editor.AppliedEdit{}, err
 	}
 	if d.Revision() != before {
 		d.observedRevision = d.Revision()
 		d.InvalidateDerived()
 	}
-	return nil
+	return applied, nil
 }
 
 // Undo applies one editor-owned undo record and invalidates derived state if
