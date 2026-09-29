@@ -76,7 +76,7 @@ an ephemeral grid with alternate-screen state, scrollback, cursor modes,
 colors, attributes, control-sequence effects, and application-generated input
 responses. It must not be represented as a `Document`, saved to disk, or fed
 through the editor's byte↔rune selection and undo paths. See the existing
-[architecture boundary](ARCHITECTURE.md) and [editor contract](EDITOR-CORE-CONTRACT.md).
+[architecture boundary](../ARCHITECTURE.md) and [editor contract](../design/EDITOR-CORE-CONTRACT.md).
 
 The terminal view should own only terminal presentation state. A minimal
 internal shape is:
@@ -234,7 +234,7 @@ Scratchpad already made a conscious native-CGO release decision for its
 official Tree-sitter backend: official desktop artifacts are built natively
 per target, while a no-CGO build is a compatibility path rather than the
 release artifact. That makes libghostty technically plausible, but it does not
-remove the need to measure binary size, signing, and per-OS packaging. [Gate E packaging contract](GATE-E-RESULTS.md)
+remove the need to measure binary size, signing, and per-OS packaging. [Gate E packaging contract](../history/GATE-E-RESULTS.md)
 
 ### Fallback: xterm-go
 
@@ -409,7 +409,7 @@ No product UI yet.
 
 ### Phase 0 result — 2026-09-02
 
-The isolated proof in [`terminal/phase0/`](../terminal/phase0/) passed on
+The isolated proof in [`terminal/phase0/`](../../terminal/phase0/) passed on
 macOS arm64. The pinned Go binding and matching Ghostty revision built with
 Go 1.27, Zig 0.16.0, and AppleClang 21 using static linking, while the root
 Scratchpad module remained on Go 1.25. Deterministic VT fixtures, Unicode and

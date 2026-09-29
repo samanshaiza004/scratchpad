@@ -1,0 +1,460 @@
+# Implementation plan and gates
+
+The order below is intentionally evidence-driven. The main correction to the
+initial instinct is that a scalable editor decision comes before language
+architecture and before a feature-rich UI.
+
+## Gate C0 — preflight hardening
+
+Objective: enter file-native work with one content authority, explicit save
+guarantees, reproducible evidence, broader deterministic fixtures, differential
+fuzz coverage, and bounded long-line shaping.
+
+Status: complete. `document.Document` owns one `*editor.ScratchEditor`; the
+document no longer stores a `Source` shadow. Atomic replacement now preserves
+existing regular-file permissions, rejects symlink paths, flushes the parent
+directory on Unix, and requests write-through replacement on Windows. CI runs
+tests, vet, and command builds. Realistic benchmark TSV is retained under
+`docs/baselines/`, and `FuzzBufferDifferential` retains committed seeds.
+
+The editor view limits each synchronous Shirei shaping request to deterministic
+16 KiB chunks for a pathological logical line. Caret-driven chunk selection and
+explicit `primary+Alt+Left/Right` chunk navigation keep the request bounded;
+this remains a fixed-line limitation rather than soft wrapping.
+
+Deferred from C0: external-change conflict policy, file watching, encoding and
+line-ending policy, and all language or Markdown work.
+
+## Gate 0 — source-pinned scaffold
+
+Objective: keep a tiny native application and a reproducible research baseline.
+
+Prerequisites: Go 1.25+, the audited Shirei snapshot or its pinned module.
+
+Implementation work:
+
+- keep the normal Go process entry point and minimal Shirei window;
+- retain only useful domain baselines: document revision state, line index,
+  workspace containment/atomic write, language hint, and command IDs;
+- record the source snapshot and local replace workflow.
+
+Tests and benchmarks: `go test ./...`; document and workspace unit tests; line
+index baseline benchmarks.
+
+Acceptance: `go test ./...` and `go run ./cmd/scratchpad` work on a Go-equipped
+desktop; no parser, LSP, plugin, sync, or custom editor dependency exists.
+
+Framework risks: module/API drift between the pinned Shirei snapshot and later
+versions.
+
+Deferred: every product feature beyond the scaffold.
+
+## Gate A — Shirei editor audit
+
+Objective: establish behavioral expectations and a list of proven framework
+capabilities.
+
+Prerequisites: current Shirei source, tests, examples, and a native desktop.
+
+Implementation work:
+
+- run the existing text-input behavior and snapshot tests;
+- manually exercise multiline input, selection, undo/redo, Unicode, combining
+  marks, emoji/ZWJ, bidi, IME, soft wrap, mouse selection, clipboard, and
+  programmatic cursor/selection;
+- retain `EDITOR-AUDIT.md` as the behavioral reference.
+
+Tests: pure editcore/textinput/textlayout tests; snapshot tests; native smoke
+tests on macOS, Linux Wayland/X11, and Windows as available.
+
+Benchmarks: none required for correctness, but capture startup and ordinary
+typing baseline.
+
+Acceptance: each capability is classified as works as-is, scale concern,
+missing, bug, or unknown; no custom editor is started from assumption.
+
+Framework risks: platform IME/focus differences and single-window limits.
+
+Deferred: upstream issues unless a reproducible generic bug appears.
+
+## Gate B — editor-scale experiment
+
+Objective: determine whether current `TextArea` meets practical file-size and
+latency requirements.
+
+Prerequisites: Gate A; benchmark harness and representative fixtures.
+
+Implementation work:
+
+- measure current `TextArea` with 100 KiB, 1 MiB, and 10 MiB files;
+- include long single-line, Unicode-heavy, 100 KiB paste, and edits at three
+  positions;
+- record first paint, typing/backspace/paste latency, scroll, resize, undo,
+  peak memory, and allocations;
+- if it fails, build the smallest line-oriented buffer/viewport proof with no
+  soft wrap and visible-row-only shaping.
+
+Tests: correctness parity for selection, cluster motion, bidi, IME, clipboard,
+undo, and hit testing on small fixtures; large-file stress tests.
+
+Benchmarks: repeatable `go test -bench` or behavior harness with a written
+machine/environment record; compare work per keystroke against document size.
+
+Acceptance: either a measured decision to use `TextArea`, or a measured list
+of failures and a minimal custom editor boundary. This gate now has the
+measured failure, balanced-index fragmentation proof, and Shirei-backed visual
+parity result recorded in [`GATE-B-RESULTS.md`](GATE-B-RESULTS.md). Gate B is
+closed; “it feels slow” was not used as an acceptance criterion.
+
+Framework risks: no public scalable editable-text primitive; custom paint may
+need a small Shirei capability or a downstream adapter. A simple piece sequence
+has now been replaced by a cached balanced piece index after fragmentation
+testing; row-copy allocation remains a measured follow-up bottleneck.
+
+Deferred: soft wrapping, long-line chunked shaping, syntax highlighting,
+parser selection, LSP.
+
+## Gate C — file-native Scratchpad
+
+Gate B and the editor storage architecture are closed. Gate C is split into
+independently verifiable product slices; no parser, language, or editor-core
+reopening belongs here.
+
+### C1 — file/document lifecycle
+
+Status: implemented. Raw bytes remain authoritative; valid UTF-8, invalid
+bytes, BOMs, CRLF/LF, missing final newlines, disk fingerprints, dirty state,
+Save As, reload, and byte-identical no-op saves are covered by tests.
+
+### C2 — application shell and multiple documents
+
+Status: implemented. `OpenPath` is shared by CLI/UI entry points. The
+application owns the workspace, document registry, active document, tab order,
+and per-document viewport state; tabs do not own content.
+
+### C3 — external changes and conflicts
+
+Status: implemented. Parent directories of open documents are watched only for
+advisory hints. Reconciliation reads/fingerprints disk state. Clean documents
+reload; dirty documents enter a document-scoped conflict state and ordinary
+Save is blocked. Symlink targets are preserved and hard-linked files are
+protected from accidental rename replacement.
+
+### C4 — recovery and session restore
+
+Status: implemented. Session metadata and raw-byte recovery files are separate
+disposable systems. Recovery writes are asynchronous and restore dirty content
+without becoming canonical note storage.
+
+### C5 — workspace tree and quick-open
+
+Status: implemented. The initial tree supports folders, files, expand/collapse,
+open, and refresh-by-render. Shirei's fuzzy path picker provides quick-open.
+Workspace mutation is now being added as a separate product slice: exclusive
+file/folder creation, no-replace rename/move, open-document rekeying, and
+drag-to-directory moves are application operations over the workspace kernel.
+OS trash remains a separate `workspace.Trasher` adapter; Scratchpad never
+silently turns an unavailable trash integration into permanent deletion.
+
+### C6 — find and workspace search
+
+Status: implemented. Current-file search uses the document buffer; workspace
+search scans raw filesystem bytes asynchronously with streamed results and
+cancellation. No persistent index exists.
+
+### C7 — integration and native certification
+
+Status: code-complete; native certification pending. The deterministic
+LF/CRLF/BOM/invalid-byte, multi-document, conflict, recovery, symlink, and
+10 MiB certification is covered by `application.TestGateC*`. Run native
+certification on macOS first; keep pure tests and headless checks mandatory in
+CI. Idle CPU remains a native/manual observation rather than a hosted timing
+gate.
+
+Acceptance: a user can open a folder or file, edit multiple ordinary files,
+save without unintended byte transformations, recover dirty work, and resolve
+external changes without silent overwrite.
+
+The C-closeout long-line work is complete for the fixed-line baseline: shaping
+is deterministic and bounded to 16 KiB chunks, caret traversal can move across
+the entire logical line, and the visual bridge no longer allocates a per-glyph
+caret-position map. The remaining aggregate chunk-walk allocation cost is
+recorded as a targeted follow-up before any future long-line polish; it does
+not reopen Gate B or the buffer architecture. Native macOS IME, bidi, conflict,
+recovery, huge-file, and idle checks remain manual certification work.
+
+### C8 — workbench usability and native certification pass
+
+Status: implementation complete for the first workbench pass; native desktop
+certification remains a manual macOS task. The application now presents a
+focused single-file editor when no workspace is open, and a two-column
+workspace with a dense tree, dominant editor, compact menus, stable
+active/dirty tabs, close confirmation for dirty documents, transient find and
+quick-open surfaces, conflict comparison summary, status rail, and
+keyboard-first commands when a workspace is open. Opening a file no longer
+invents a containing workspace. The editor viewport has a headless regression
+test proving wheel scrolling changes and preserves its visible-row offset.
+
+This slice intentionally does not reopen the editor/storage design. Picker
+navigation and the headless editor scroll regression are covered. Remaining
+native checks are IME/bidi interaction, external conflict UX, recovery restart,
+huge-file responsiveness, and idle CPU on macOS. Gate D is complete; Gate E is
+the next product phase. Syntax highlighting and all language work remain
+deferred to Gate E.
+
+## Gate D — Markdown and structural prose
+
+Objective: prove the notes side without creating a note mode.
+
+Prerequisites: Gate C and a stable document/view model.
+
+Status: complete for the current structural-prose scope. The
+implementation keeps `Document` and
+`ScratchEditor.Buffer` authoritative and puts Goldmark v2 behind
+`language/markdown`. Projection capture is revision-tagged and debounced with
+bounded global concurrency; stale results remain visible but are not
+actionable. Headings, Outline navigation, folding, line numbers, task toggles,
+links, and heading fragments are implemented. Native cross-platform menu and
+visual certification remain release-hardening work. Gate E is now the next
+implementation phase; this plan does not reopen Gate D or the editor core.
+
+Implementation work:
+
+- heading outline, line-number gutter, and folding;
+- Markdown-aware todo and link projections only in eligible regions;
+- contextual unified commands such as `outline.toggle` and `item.toggle`.
+
+Tests: pure projection tests with nested/fenced/invalid Markdown and revision
+staleness; snapshot tests for outline/folds; native keyboard smoke tests.
+
+Benchmarks: projection latency during typing and on large Markdown files;
+ensure parser/projection work never blocks the keystroke-to-frame path.
+
+Acceptance: Markdown structure is useful while the same Document/editor model
+still handles plain text and code files.
+
+Framework risks: folds/outline may need stable keyed identity and visible-range
+updates; do not make Shirei own Markdown semantics.
+
+Deferred: tables, backlinks, graph view, rich text, collaboration, Markdown
+rendering, syntax highlighting, and Tree-sitter.
+
+## Gate E — language-service proof
+
+Objective: resolve the parser/runtime decision with one or two real languages.
+
+Prerequisites: Gate B scalable snapshot/input boundary; Gate D projection
+patterns; selected grammar fixtures.
+
+Implementation work:
+
+- implement a narrow provider seam only after two adapters or equivalent
+  evidence shape it;
+- compare pure-Go `gotreesitter` with isolated official Go Tree-sitter + CGO;
+- prove incremental edits, visible syntax spans, folds, outline, and one
+  injection case;
+- convert byte captures to rune-indexed visible Shirei spans without a global
+  document conversion;
+- run parsing asynchronously with revision/cancellation checks.
+
+Tests: parser projection and stale-result unit tests; Unicode byte/rune mapping;
+Shirei snapshots for visible highlights; native smoke test for typing while a
+parse is pending.
+
+Benchmarks: incremental parse, highlight conversion, memory, grammar payload /
+binary size, startup, and cross-build/package time.
+
+Status: complete for the automated language-service proof. E0 selected the
+official Tree-sitter C runtime after a deterministic Go bake-off; E1 provides
+the concrete Go adapter, E2 provides the shared revision-safe coordinator, E3
+composes fenced Go through Goldmark, and E4 provides TypeScript/TSX adapters.
+E6 makes the packaging consequence explicit: official desktop artifacts are
+built natively per macOS, Windows, and Linux target with CGO, while
+`treesitter_pure` is an explicit developer/compatibility build with reduced
+language coverage. The decision record and platform build evidence are in
+[`GATE-E-RESULTS.md`](GATE-E-RESULTS.md).
+
+Acceptance: one selected backend works on Go and TypeScript/TSX, composes Go
+inside Markdown, the build story is documented for macOS/Windows/Linux, and
+unsupported languages remain usable plain text.
+
+Framework risks: rune-indexed spans versus byte-offset parsers; parser work may
+starve frames; a generic visible-span primitive may be missing. Native macOS
+interaction smoke remains release-hardening work; no Windows/Linux desktop
+session is claimed by this automated gate.
+
+Deferred: LSP, autocomplete, diagnostics, format-on-save, debugging.
+
+### E6 — release packaging contract
+
+Status: complete. Backend identity and capabilities are observable through
+`scratchpad --version` and `treesitter.Capabilities()`. Explicit
+`treesitter_release` builds fail unless the official CGO backend provides Go,
+TypeScript, and TSX. Native CI runners build and upload the official per-OS
+artifacts; an explicit no-CGO Windows compatibility build exercises the pure
+Go fallback and is never treated as a release artifact.
+
+This closes the packaging consequence of Gate E without reopening parser or
+editor architecture. Cross-CGO toolchain engineering remains deferred to
+release hardening if a single-host release workflow later becomes necessary.
+
+## Milestone M — paper workstation visual pass
+
+Status: complete for the headless visual and interaction scope. Scratchpad now
+uses one semantic material palette and a small set of downstream Shirei
+primitives for raised, inset, flat-paper, selected, focused, and floating
+states. The shell separates cool-gray machinery from the warm editor surface;
+Files/Outline tabs, command and toolbar controls, tree rows, document tabs,
+splitter, status bar, scrollbars, popups, and dialogs share that physical
+grammar. The editor/document/language contracts are unchanged.
+
+Ten host-font visual baselines live under `ui/testdata/snapshots/` and cover
+empty, single-file, Markdown workspace, selected tree, multiple tabs, both
+sidebar modes, status, popup, and dialog states. They run explicitly with
+`SCRATCHPAD_VISUAL_SNAPSHOTS=1` so font-dependent images do not make ordinary
+CI brittle. Behavioral tests continue to cover segmented selection, buttons,
+tree layout, tab activation/close, editor scrolling, and shell commands.
+
+Known framework limits in Shirei v0.6.7: stock menu popup colors are private,
+and the stock modal has a fixed white card. Scratchpad preserves Shirei menu
+behavior while styling its trigger, and uses a downstream modal shell around
+the framework focus/dismiss primitives. Native visual and interaction checks
+remain platform smoke work; no macOS, Windows, or Linux native certification
+is claimed by this headless milestone.
+
+Deferred to Prose Presentation: richer Markdown layout, punctuation hiding,
+tables, variable row heights, block surfaces, and soft wrapping.
+
+### M.1 — Aero Paper retheme and shell freeze
+
+Status: complete. The workstation shell has been rethemed toward the approved
+Aero Paper direction without changing its structure or behavior. The palette
+now separates warm ivory paper from softened silver-blue-gray machinery, with
+muted blue reserved for selection/focus and shallow gradients carrying most of
+the depth. Raised and inset primitives remain in place but use fine contours
+and lower-contrast surfaces instead of the earlier Classic four-edge bevel.
+
+The shell is frozen for the next milestone: future chrome changes require a
+concrete usability problem. M.1 adds no document, editor, or Markdown behavior;
+Milestone N owns richer prose presentation, variable row metrics, block
+surfaces, tables, and soft wrapping.
+
+## Milestone N — prose presentation
+
+Status: complete. The M.1 workstation shell remains frozen while the document
+surface gains semantic presentation without a second Markdown mode or text
+authority. Gate F is next; richer Markdown presentation remains a future
+milestone.
+
+Slices:
+
+1. N0 audit the existing logical-line, Shirei shaping, projection, and
+   viewport seams.
+2. N1 establish visual-row geometry and variable logical-line heights. **Done.**
+3. N2 add width-aware soft wrapping for Markdown and plain text; code remains
+   unwrapped by default. **Done.**
+4. N3 add heading hierarchy, semantic spacing, and source-visible inline
+   presentation. **Done.**
+5. N4 add block/row decoration for fenced code, blockquotes, lists, tasks,
+   and thematic breaks. **Done.**
+6. N5 add source-visible table structure without a rendered-table model. **Done.**
+7. N6 verify folding, injected Go, caret/selection, and stale projection
+   composition. **Done.**
+8. N7 add document-surface snapshots and targeted performance evidence. **Done.**
+
+The first implementation uses Shirei `ShapeTextMax` inside the existing
+virtualized logical-line list. Visual-row mappings remain local to each shaped
+line, and all source bytes remain owned by `ScratchEditor.Buffer`. No shell
+redesign, soft-wrap support for code, Markdown preview, or language/parser
+work is part of N.
+
+## Gate F — unified contextual commands
+
+Objective: make one command vocabulary useful across prose and code contexts.
+
+Prerequisites: Gate D and Gate E semantics.
+
+Status: implementation slice complete for the command registry, explicit
+Markdown/code contexts, source-preserving Markdown authoring commands, stale
+projection refresh, one-edit undo routing, slash picker, selection toolbar,
+smart URL paste, and fence-language chooser. The F0 audit and research map
+are in [`GATE-F-AUDIT.md`](GATE-F-AUDIT.md). User-configurable bindings remain
+deferred.
+
+Implementation work: stabilize command IDs, context providers, enablement,
+undo grouping, Markdown authoring transformations, and small contextual
+surfaces. Transformations stay in `commands`; Shirei is used only by the UI
+adapter and popup/input surfaces.
+
+Tests: command behavior independent of UI; keybinding/native smoke tests;
+headless checks for Markdown menus and contextual surfaces if added.
+
+Benchmarks: command dispatch and projection refresh under ordinary typing.
+
+Acceptance: no separate note/code configuration universes are required for the
+same conceptual action.
+
+Framework risks: focus/identity and command routing can become coupled to view
+construction; keep context explicit.
+
+Deferred: plugin API, macros, broad automation, IDE features.
+
+## Milestone H — workspace mutation and future pane seam
+
+Status: implementation in progress. This milestone adds the smallest useful
+filesystem actions without reopening document authority or the editor core:
+create file/folder, rename, no-replace move, drag-to-directory move, and
+trash confirmation for dirty documents. All actions enter through explicit
+workspace paths and the application document registry; the UI's active
+document is only a convenience default for command surfaces.
+
+The workspace mutation kernel uses Go 1.25 `os.Root` containment and
+platform-specific no-replace primitives on Linux, macOS, and Windows. Other
+platforms refuse moves when an atomic no-replace primitive is unavailable.
+Watchers remain advisory and are updated after a committed move. Trash is
+intentionally not part of `Workspace`: a platform `Trasher` must be injected,
+and clean affected tabs close only after the adapter confirms success.
+
+The future multiplexer/pane model is deliberately not introduced here. Tabs,
+documents, and per-document view state remain unchanged; a later pane slice
+may add views without changing mutation APIs that already accept explicit
+paths and document IDs.
+
+Deferred: trash UX/policy refinements, pane layout/state, split navigation,
+create/rename/delete policy beyond the basic safe actions, and shell polish.
+
+## Gate G — release hardening
+
+Objective: validate the product as a modest-hardware native desktop app.
+
+Prerequisites: Gates C–F as applicable.
+
+Implementation work: packaging, crash recovery verification, idle/typing/scroll
+profiling, accessibility assessment as Shirei evolves, and platform-specific
+regression coverage.
+
+Tests: complete pure, snapshot/headless, and native smoke layers.
+
+Benchmarks: cold start, idle CPU, memory by file size, typing latency, scroll
+latency, workspace search, save, and parser background load.
+
+Acceptance: ordinary files are always recoverable, unsupported languages remain
+plain text, and no background feature blocks editing.
+
+Framework risks: Shirei currently documents one window, no accessibility, and
+no GPU surfaces; product scope must respect those facts.
+
+Deferred: cloud sync, collaboration, CRDT, Git UI, execution/debugging, and
+plugins until a separate product decision.
+
+## Testing layers used by every applicable gate
+
+1. Pure unit tests for document, line/index, selection mapping, undo, language
+   detection/projections, conflict logic, and command behavior.
+2. Shirei headless/snapshot tests for layout, editor chrome, sidebars, dialogs,
+   themes, and selected/caret visuals where pixels add value.
+3. Native smoke tests for IME, clipboard, shortcuts, file watching, window
+   behavior, and Wayland/X11/macOS/Windows differences.
+
+Behavior should not be converted into pixel tests merely because a snapshot
+harness exists.

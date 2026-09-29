@@ -26,8 +26,8 @@ go run -tags treesitter_cgo ./cmd/treebench -backend=official -sizes=1024,102400
 go run -tags treesitter_pure ./cmd/treebench -backend=pure -sizes=1024,102400,1048576
 ```
 
-Raw compact JSONL is retained in [`baselines/gate-e-go-official.jsonl`](baselines/gate-e-go-official.jsonl)
-and [`baselines/gate-e-go-pure.jsonl`](baselines/gate-e-go-pure.jsonl).
+Raw compact JSONL is retained in [`baselines/gate-e-go-official.jsonl`](../baselines/gate-e-go-official.jsonl)
+and [`baselines/gate-e-go-pure.jsonl`](../baselines/gate-e-go-pure.jsonl).
 
 | Runtime | 1 KiB full / incremental | 100 KiB full / incremental | 1 MiB full / incremental | Highlight count parity | Tag capture parity |
 | --- | ---: | ---: | ---: | --- | --- |

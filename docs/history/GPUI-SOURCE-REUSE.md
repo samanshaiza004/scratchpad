@@ -3,7 +3,7 @@
 This ledger records the GPUI dependencies and reusable upstream material for
 the Scratchpad frontend migration. It is an audit of Scratchpad commit
 `e621f3b14ca97b989925e675ffce6ff9e4b51b17` and the exact dependency resolution
-in [`frontends/gpui/Cargo.lock`](../frontends/gpui/Cargo.lock).
+in [`frontends/gpui/Cargo.lock`](../../frontends/gpui/Cargo.lock).
 
 The frontend is MIT-licensed Scratchpad code. A dependency is not a source
 reuse event: Cargo links the published package and its license remains the

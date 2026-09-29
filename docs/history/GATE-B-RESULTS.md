@@ -5,7 +5,7 @@ source: commit [`6df9f18`](https://github.com/hasenj/go-shirei/tree/6df9f18).
 
 ## Method
 
-[`cmd/textbench`](../cmd/textbench/main.go) drives the real Shirei `TextArea`
+[`cmd/textbench`](../../cmd/textbench/main.go) drives the real Shirei `TextArea`
 through `RunFrameFn`: TextArea input processing, whole-buffer text shaping,
 layout, surface generation, and deterministic synthetic input are included.
 The default run does not add software rasterization because the current
@@ -60,8 +60,8 @@ the edit. A fresh stable Shirei identity is used for each independent case.
 
 ## Minimal ScratchEditor spike
 
-Because TextArea fails the scale gate, [`cmd/scratcheditor`](../cmd/scratcheditor/main.go)
-and [`editor/`](../editor/) contain the smallest conditional alternative:
+Because TextArea fails the scale gate, [`cmd/scratcheditor`](../../cmd/scratcheditor/main.go)
+and [`editor/`](../../editor/) contain the smallest conditional alternative:
 
 - piece-backed byte storage with an append-only add store;
 - insertion splits only the piece containing the edit point;
@@ -94,7 +94,7 @@ Unicode multi-line edits remain sub-millisecond in this small proof.
 
 ## Fragmentation experiment
 
-[`cmd/fragmentbench`](../cmd/fragmentbench/main.go) starts from a deterministic
+[`cmd/fragmentbench`](../../cmd/fragmentbench/main.go) starts from a deterministic
 10 MiB ordinary-source fixture and uses a fixed random seed. It performs random
 single-byte insert/delete edits, then measures line lookup, repeated edits at
 the beginning/middle/end, and visible-row scrolling. Each row records wall
@@ -177,7 +177,7 @@ the balanced implementation above.
 
 ## Shirei-backed visual and native parity
 
-The custom path is now wired through [`ui/editor_view.go`](../ui/editor_view.go)
+The custom path is now wired through [`ui/editor_view.go`](../../ui/editor_view.go)
 as a real fixed-height Shirei view. `VirtualListViewExt` builds only visible
 logical rows. Each row copies and shapes only its own byte range, then retains
 the local byte/rune mapping needed by painting and pointer hit-testing. No
@@ -283,7 +283,7 @@ chunk is reshaped as the caret traverses it: 1.316 s and 1.465 GB across the
 full 2 MiB traversal. That is bounded and responsive per frame, but remains a
 future long-line cache/allocation optimization rather than a reason to reopen
 the buffer architecture. The raw output is retained in
-[`docs/baselines/scratcheditor-longline-closeout.tsv`](baselines/scratcheditor-longline-closeout.tsv).
+[`docs/baselines/scratcheditor-longline-closeout.tsv`](../baselines/scratcheditor-longline-closeout.tsv).
 
 The existing `scroll-top-bottom` operation remains bounded at 11.967 ms after
 the change, and the headless viewport scroll regression remains green.
@@ -295,4 +295,4 @@ remain locally mappable, and caret traversal continues across the chunks. The
 view expands a boundary only within a 1 KiB cap, so a pathological grapheme
 cannot turn the shaping request into an unbounded line. The follow-up run kept
 first paint at 9.962 ms and near-end edit at 3.711 ms; its raw output is
-[`scratcheditor-longline-boundary.tsv`](baselines/scratcheditor-longline-boundary.tsv).
+[`scratcheditor-longline-boundary.tsv`](../baselines/scratcheditor-longline-boundary.tsv).
