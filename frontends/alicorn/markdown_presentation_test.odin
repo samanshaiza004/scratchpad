@@ -1,6 +1,7 @@
 package main
 
 import "core:testing"
+import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
@@ -26,6 +27,77 @@ test_markdown_display_mapping_covers_bom_tabs_and_invalid_bytes :: proc(t: ^test
 			break
 		}
 	}
+}
+
+@(test)
+test_markdown_typography_maps_semantics_without_changing_display_bytes :: proc(t: ^testing.T) {
+	source := [?]u8{'#', ' ', 'H', ' ', '*', '*', 'B', '*', '*', ' ', '*', 'I', '*'}
+	line, line_ok := editor_project_line(source[:], 0, 0, context.temp_allocator)
+	testing.expect(t, line_ok, "source projection should succeed for typography mapping")
+	if !line_ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	spans := [?]bridge.Presentation_Record{
+		{kind=2, start_byte=2, end_byte=3, level_flags=1},
+		{kind=3, start_byte=6, end_byte=7},
+		{kind=4, start_byte=11, end_byte=12},
+	}
+	window := Editor_Window{
+		document_id="typography-test",
+		editor_revision=5,
+		start_byte=0,
+		source=source[:],
+		presentation_revision=5,
+		presentation_ready=true,
+		presentation_spans=spans[:],
+	}
+	styles := editor_presentation_text_styles_for_line(&window, &line, context.temp_allocator)
+	defer delete(styles, context.temp_allocator)
+	testing.expect(t, len(styles) == 3, "heading, strong, and emphasis should each produce a typography span")
+	if len(styles) == 3 {
+		testing.expect(t, styles[0].start == 2 && styles[0].end == 3 && styles[0].font_weight_set && styles[0].font_weight == alicorn.FONT_WEIGHT_SEMIBOLD,
+			"level-one heading should use semibold at the mapped source range")
+		testing.expect(t, styles[1].start == 6 && styles[1].end == 7 && styles[1].font_weight_set && styles[1].font_weight == alicorn.FONT_WEIGHT_BOLD,
+			"strong content should map to bold")
+		testing.expect(t, styles[2].start == 11 && styles[2].end == 12 && styles[2].italic_set && styles[2].italic,
+			"emphasis content should map to italic")
+	}
+	testing.expect(t, line.display == "# H **B** *I*", "typography metadata must not alter source-derived display bytes")
+}
+
+@(test)
+test_markdown_heading_levels_use_modest_weights_without_size_metadata :: proc(t: ^testing.T) {
+	source := [?]u8{'1', '2', '3'}
+	line, line_ok := editor_project_line(source[:], 0, 0, context.temp_allocator)
+	testing.expect(t, line_ok, "source projection should succeed for heading hierarchy")
+	if !line_ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	spans := [?]bridge.Presentation_Record{
+		{kind=2, start_byte=0, end_byte=1, level_flags=1},
+		{kind=2, start_byte=1, end_byte=2, level_flags=2},
+		{kind=2, start_byte=2, end_byte=3, level_flags=3},
+	}
+	window := Editor_Window{
+		document_id="heading-levels-test",
+		editor_revision=6,
+		start_byte=0,
+		source=source[:],
+		presentation_revision=6,
+		presentation_ready=true,
+		presentation_spans=spans[:],
+	}
+	styles := editor_presentation_text_styles_for_line(&window, &line, context.temp_allocator)
+	defer delete(styles, context.temp_allocator)
+	testing.expect(t, len(styles) == 3, "three heading levels should produce three mapped style spans")
+	if len(styles) == 3 {
+		testing.expect(t, styles[0].font_weight == 600 && styles[1].font_weight == 500 && styles[2].font_weight == 450,
+			"heading weights should step modestly from H1 to H3")
+		for style in styles {
+			testing.expect(t, !style.italic_set, "heading styles should not set italic or font-size metadata")
+		}
+	}
+	testing.expect(t, line.display == "123", "heading typography must not alter source-derived display bytes")
 }
 
 @(test)

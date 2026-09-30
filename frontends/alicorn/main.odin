@@ -548,6 +548,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current { paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator) }
 			_ = alicorn.text_paint_spans(ui, line_node, paint_spans)
+			text_style_spans: []alicorn.Text_Style_Span
+			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, rt.scratch_allocator) }
+			_ = alicorn.text_style_spans(ui, line_node, text_style_spans)
 			append(&app.editor_row_targets, Editor_Row_Target{node=line_node, logical_line=line.logical_line})
 			composition_row := false
 			if window_matches && view.preedit_active {

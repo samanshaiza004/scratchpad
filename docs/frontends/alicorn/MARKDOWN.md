@@ -22,13 +22,13 @@ The source limit remains 64 KiB / 256 logical lines, with 16 KiB anchored long-l
 
 ## Styling and next gate
 
-This slice uses colors, underline/strikethrough, and solid backgrounds for basic headings, strong/emphasis, inline code, links, blockquotes, lists, and tasks. It preserves fixed row height, font size, weight, shaping, and source text. It does not claim full Shirei appearance parity.
+This slice uses colors, underline/strikethrough, and solid backgrounds for headings, inline code, links, blockquotes, lists, and tasks. Shaping-aware text style spans map strong to bold and emphasis to italic; heading levels use modest font weights without changing font size. These spans use the same source-to-display byte mapping and exact-revision gate as paint spans. Paint spans remain paint-only and preserve shaping and caret geometry. Typography can change glyph shaping within the fixed row height while source text stays unchanged. It does not claim full Shirei appearance parity.
 
 Soft wrapping/visual rows (issue #8) is the next geometry gate. Heading sizes, richer blocks, code/table presentation, and full Markdown parity follow it. Ordinary advanced editor gestures remain outside this slice. Shirei remains the default/product frontend.
 
 ## Validation limits
 
-Headless tests must cover exact/stale revision handling, metadata bounds and malformed payloads, source/display mapping, lease ownership, and unchanged caret/layout geometry under styling. Native startup smoke verifies publication, wake, presentation, and shutdown; it does not certify visual style or native IME. Windows/macOS visual checks and the remaining Phase 4 manual matrix must be recorded separately before release certification.
+Headless tests must cover exact/stale revision handling, metadata bounds and malformed payloads, source/display mapping, lease ownership, and unchanged caret/layout geometry under paint spans. Typography tests verify semantic ranges and source preservation; shaping changes are expected for those spans. Native startup smoke verifies publication, wake, presentation, and shutdown; it does not certify visual style or native IME. Windows/macOS visual checks and the remaining Phase 4 manual matrix must be recorded separately before release certification.
 
 ## Validation recorded for Markdown A
 

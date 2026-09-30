@@ -26,7 +26,10 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 	path := fmt.tprintf("%s/notes.md", workspace)
 	source := make([dynamic]u8, 0, allocator=context.temp_allocator)
 	defer delete(source)
-	append(&source, "# Metric stable\n\nOpening text with **bold**, *emphasis*, [link](https://example.test), and `inline code`.\n")
+	// Keep the retained first row paint-only so this integration check continues
+	// to prove paint metadata reuses the original shaped run. Typography spans
+	// intentionally reshape their own text ranges and are covered separately.
+	append(&source, "Stable text with [link](https://example.test) only.\n\n# Metric stable\n\nOpening text with **bold**, *emphasis*, [link](https://example.test), and `inline code`.\n")
 	for index in 0..<1200 {
 		line := fmt.tprintf("paragraph-%04d with **bold text** and `code`\n", index)
 		append(&source, line)

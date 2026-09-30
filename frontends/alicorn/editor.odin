@@ -850,6 +850,55 @@ editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, co
 	}
 }
 
+// Markdown typography is applied over the same source-derived display bytes as
+// paint spans. It changes glyph shaping but leaves the row's font size and
+// layout bounds fixed.
+editor_presentation_text_styles_for_line :: proc(window: ^Editor_Window, line: ^Editor_Display_Line, allocator := context.temp_allocator) -> []alicorn.Text_Style_Span {
+	result := make([dynamic]alicorn.Text_Style_Span, 0, allocator=allocator)
+	if window == nil || line == nil || !window.presentation_ready || window.presentation_revision != window.editor_revision { return result[:] }
+	window_end := window.start_byte+u64(len(window.source))
+	for record in window.presentation_spans {
+		weight: f32
+		weight_set := false
+		italic := false
+		italic_set := false
+		switch record.kind {
+		case 2: // heading; modest hierarchy without a size change
+			switch record.level_flags & 0xFF {
+			case 1: weight = alicorn.FONT_WEIGHT_SEMIBOLD
+			case 2: weight = alicorn.FONT_WEIGHT_MEDIUM
+			case 3: weight = 450
+			case: continue
+			}
+			weight_set = true
+		case 3: // strong
+			weight = alicorn.FONT_WEIGHT_BOLD
+			weight_set = true
+		case 4: // emphasis
+			italic = true
+			italic_set = true
+		case:
+			continue
+		}
+		absolute_start := window.start_byte+u64(record.start_byte)
+		absolute_end := window.start_byte+u64(record.end_byte)
+		start_byte := max(absolute_start, line.source_start)
+		end_byte := min(absolute_end, line.source_end)
+		if absolute_end > window_end || end_byte <= start_byte { continue }
+		start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
+		if !mapped { continue }
+		append(&result, alicorn.Text_Style_Span{
+			start=start,
+			end=end,
+			font_weight=weight,
+			font_weight_set=weight_set,
+			italic=italic,
+			italic_set=italic_set,
+		})
+	}
+	return result[:]
+}
+
 editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor_Display_Line, allocator := context.temp_allocator) -> []alicorn.Text_Paint_Span {
 	result := make([dynamic]alicorn.Text_Paint_Span, 0, allocator=allocator)
 	if window == nil || line == nil || !window.presentation_ready || window.presentation_revision != window.editor_revision { return result[:] }
