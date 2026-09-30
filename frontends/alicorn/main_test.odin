@@ -996,7 +996,9 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-editor-*", context.temp_allocator)
 	if workspace_error != nil { testing.expect(t, false, "could not create editor-surface workspace"); return }
 	defer _ = os.remove_all(workspace)
-	path := fmt.tprintf("%s/large-source.txt", workspace)
+	// This is deliberately a source-code fixture: soft-wrap policy should keep
+	// long Go rows on the horizontal-scroll path while prose rows wrap.
+	path := fmt.tprintf("%s/large-source.go", workspace)
 	content := make([dynamic]u8, 0, allocator=context.temp_allocator)
 	defer delete(content)
 	for index in 0..<26_150 {
@@ -1045,6 +1047,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	testing.expect(t, active_found && active.line_count > 26_000 && len(content) > 10*1024*1024,
 		"10 MiB fixture should expose real logical-line metadata without a whole-document frontend copy")
 	if !active_found { return }
+	testing.expect(t, active.language == "go", "the long-line fixture should exercise the source-code no-wrap policy")
 	visible := bridge.backend_command(
 		&app.backend,
 		"read_visible_lines",
@@ -1352,6 +1355,100 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	retained_split, retained_split_found := rt.nodes[workspace_split_id]
 	testing.expect(t, retained_split_found && retained_split.split_position == position_before+40,
 		"the keyed split should retain the user's width across an application description rebuild")
+}
+
+@(test)
+test_workspace_tree_ignore_toggle_preserves_expansion_and_focus :: proc(t: ^testing.T) {
+	sync.mutex_lock(&backend_integration_test_mutex)
+	defer sync.mutex_unlock(&backend_integration_test_mutex)
+	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-ignore-*", context.temp_allocator)
+	if workspace_error != nil {
+		testing.expect(t, false, "could not create a temporary workspace for the ignored-file tree test")
+		return
+	}
+	defer _ = os.remove_all(workspace)
+	ordinary := fmt.tprintf("%s/ordinary", workspace)
+	ignored := fmt.tprintf("%s/ignored", workspace)
+	keep_file := fmt.tprintf("%s/ordinary/keep.txt", workspace)
+	ignored_file := fmt.tprintf("%s/ignored/generated.txt", workspace)
+	if err := os.write_entire_file_from_string(fmt.tprintf("%s/.gitignore", workspace), "ignored/\n"); err != nil {
+		testing.expect(t, false, "could not create the ignored-file tree rule")
+		return
+	}
+	if err := os.make_directory(ordinary); err != nil {
+		testing.expect(t, false, "could not create the ordinary test directory")
+		return
+	}
+	if err := os.make_directory(ignored); err != nil {
+		testing.expect(t, false, "could not create the ignored test directory")
+		return
+	}
+	if err := os.write_entire_file_from_string(keep_file, "keep\n"); err != nil {
+		testing.expect(t, false, "could not create the ordinary test file")
+		return
+	}
+	if err := os.write_entire_file_from_string(ignored_file, "generated\n"); err != nil {
+		testing.expect(t, false, "could not create the ignored test file")
+		return
+	}
+
+	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
+	if !found_library {
+		testing.expect(t, false, "ignored-file tree test requires the staged shared Scratchpad backend")
+		return
+	}
+	defer delete(backend_library, context.temp_allocator)
+	app: App
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
+	testing.expect(t, loaded, fmt.tprintf("shared Scratchpad backend should load: %s", load_message))
+	if !loaded { return }
+	started, start_message := bridge.backend_start(&app.backend, workspace, tree_test_wake, nil, context.allocator)
+	testing.expect(t, started, fmt.tprintf("shared Scratchpad backend should start: %s", start_message))
+	if !started { return }
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 600})
+	defer tree_test_cleanup(t, &app, &rt)
+	tree_sync_workspace(&app, &rt)
+	alicorn.invalidate_root(&rt, "initial ignored-file tree description")
+	if !test_render_workspace_tree(t, &app, &rt) { return }
+	_ = tree_load_directory(&app, "ordinary", true)
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	tree_flatten_directory(&app, "", 0, &rows)
+	focused_index := -1
+	for row, index in rows {
+		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "ordinary/keep.txt") {
+			focused_index = index
+			tree_set_focused_row(&app, &rt, row, index)
+			break
+		}
+	}
+	delete(rows)
+	testing.expect(t, focused_index >= 0, "the expanded ordinary folder should expose its focus target")
+	if focused_index < 0 { return }
+	alicorn.invalidate_root(&rt, "show the expanded ordinary folder")
+	if !test_render_workspace_tree(t, &app, &rt) { return }
+	focus_before := alicorn.semantic_focus_state(&rt)
+
+	tree_set_show_ignored_files(&app, &rt, true)
+	ordinary_index := tree_directory_index(&app, "ordinary")
+	testing.expect(t, ordinary_index >= 0 && app.tree_directories[ordinary_index].expanded,
+		"turning ignored-file visibility on should preserve expanded folders")
+	if !test_render_workspace_tree(t, &app, &rt) { return }
+	_, ignored_visible := test_workspace_tree_row(&rt, "ignored")
+	_, keep_visible := test_workspace_tree_row(&rt, "ordinary/keep.txt")
+	focus_after := alicorn.semantic_focus_state(&rt)
+	testing.expect(t, ignored_visible, "the ignored folder should appear when visibility is enabled")
+	testing.expect(t, keep_visible, "the previously expanded ordinary folder should remain visible")
+	focused_path_preserved := tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "ordinary/keep.txt")
+	testing.expect(t, focus_after.id == focus_before.id && focused_path_preserved,
+		"toggling ignored-file visibility should preserve semantic focus")
+
+	tree_set_show_ignored_files(&app, &rt, false)
+	if !test_render_workspace_tree(t, &app, &rt) { return }
+	_, ignored_hidden := test_workspace_tree_row(&rt, "ignored")
+	_, keep_visible = test_workspace_tree_row(&rt, "ordinary/keep.txt")
+	testing.expect(t, !ignored_hidden && keep_visible,
+		"turning ignored-file visibility off should hide ignored entries and retain ordinary expansions")
 }
 
 @(test)

@@ -29,7 +29,9 @@
         "test",
         "--alicorn-root",
         "{candidate}",
-        "--allow-alicorn-revision"
+        "--allow-alicorn-revision",
+        "--out",
+        "out/alicorn-caliber-validation"
       ],
       "unix": [
         "go",
@@ -38,7 +40,9 @@
         "test",
         "--alicorn-root",
         "{candidate}",
-        "--allow-alicorn-revision"
+        "--allow-alicorn-revision",
+        "--out",
+        "out/alicorn-caliber-validation"
       ]
     }
   },

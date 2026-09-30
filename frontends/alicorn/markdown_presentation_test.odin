@@ -101,6 +101,116 @@ test_markdown_heading_levels_use_modest_weights_without_size_metadata :: proc(t:
 }
 
 @(test)
+test_soft_wrap_policy_keeps_code_tables_and_code_languages_unwrapped :: proc(t: ^testing.T) {
+	source := [?]u8{'a', ' ', 'b', ' ', 'c'}
+	line, line_ok := editor_project_line(source[:], 10, 0, context.temp_allocator)
+	testing.expect(t, line_ok, "source projection should succeed for wrap policy")
+	if !line_ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	prose := Editor_Window{editor_revision=4, start_byte=10, presentation_revision=4, presentation_ready=true}
+	testing.expect(t, editor_line_should_wrap("markdown", &prose, &line), "ordinary Markdown prose should wrap")
+	testing.expect(t, !editor_line_should_wrap("odin", &prose, &line), "source-code language rows should stay horizontally scrollable")
+	code_spans := [?]bridge.Presentation_Record{{kind=EDITOR_PRESENTATION_CODE_BLOCK, start_byte=0, end_byte=5}}
+	prose.presentation_spans = code_spans[:]
+	testing.expect(t, !editor_line_should_wrap("markdown", &prose, &line), "fenced code rows should stay horizontally scrollable")
+	table_spans := [?]bridge.Presentation_Record{{kind=EDITOR_PRESENTATION_TABLE, start_byte=0, end_byte=5}}
+	prose.presentation_spans = table_spans[:]
+	testing.expect(t, !editor_line_should_wrap("markdown", &prose, &line), "Markdown table rows should stay horizontally scrollable")
+	prose.presentation_spans = nil
+	table_blocks := [?]bridge.Presentation_Record{{kind=EDITOR_PRESENTATION_BLOCK_TABLE, start_byte=0, end_byte=5}}
+	prose.presentation_blocks = table_blocks[:]
+	testing.expect(t, !editor_line_should_wrap("markdown", &prose, &line), "table block metadata also keeps table rows unwrapped")
+}
+
+@(test)
+test_soft_wrap_shapes_styled_source_before_wrapping :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 420, 220})
+	defer alicorn.destroy_runtime(&rt)
+	if !alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA) {
+		testing.expect(t, false, "soft-wrap regression should load the bundled monospace face")
+		return
+	}
+	source := "This **source text** should wrap after its Markdown typography has been applied."
+	source_bytes, source_error := make([]u8, len(source), context.temp_allocator)
+	if source_error != nil { testing.expect(t, false, "could not allocate styled wrap source bytes"); return }
+	defer delete(source_bytes, context.temp_allocator)
+	for index in 0..<len(source) { source_bytes[index] = source[index] }
+	line, line_ok := editor_project_line(source_bytes, 0, 0, context.temp_allocator)
+	testing.expect(t, line_ok, "source projection should succeed before shaping")
+	if !line_ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	strong_start := 7
+	spans := [?]bridge.Presentation_Record{{kind=3, start_byte=u32(strong_start), end_byte=u32(strong_start+len("source text"))}}
+	window := Editor_Window{
+		document_id="wrap-style-test", editor_revision=9, start_byte=0, source=source_bytes,
+		presentation_revision=9, presentation_ready=true, presentation_spans=spans[:],
+	}
+	styles := editor_presentation_text_styles_for_line(&window, &line, context.temp_allocator)
+	defer delete(styles, context.temp_allocator)
+	run, run_ok := editor_temporary_text_run(&rt, &line, 96, .Wrap, styles)
+	testing.expect(t, run_ok, "Runa should shape the styled text under a constrained width")
+	if !run_ok { return }
+	defer alicorn.text_run_destroy(&run)
+	testing.expect(t, len(run.lines) > 1, "the constrained styled text should produce multiple visual rows")
+	testing.expect(t, run.value == line.display, "wrapping and typography must not rewrite source-derived display bytes")
+	if len(run.lines) > 1 {
+		first_end := run.lines[0].byte_end
+		second_start := run.lines[1].byte_start
+		testing.expect(t, second_start >= first_end, "visual rows should preserve monotonic display-byte ranges")
+		mapped := editor_display_to_source(&line, second_start)
+		testing.expect(t, mapped >= line.source_start && mapped <= line.source_end,
+			"visual-row boundaries should map back to legal source-byte coordinates")
+	}
+	long_word := "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
+	word_bytes, word_error := make([]u8, len(long_word), context.temp_allocator)
+	if word_error != nil { testing.expect(t, false, "could not allocate long-word wrap fixture"); return }
+	defer delete(word_bytes, context.temp_allocator)
+	for index in 0..<len(long_word) { word_bytes[index] = long_word[index] }
+	word_line, word_line_ok := editor_project_line(word_bytes, 0, 0, context.temp_allocator)
+	testing.expect(t, word_line_ok, "source projection should accept a long unbroken word")
+	if !word_line_ok { return }
+	defer delete(word_line.display, context.temp_allocator)
+	defer delete(word_line.display_bytes, context.temp_allocator)
+	word_run, word_run_ok := editor_temporary_text_run(&rt, &word_line, 48, .Wrap)
+	testing.expect(t, word_run_ok, "Runa should shape an unbroken word under a constrained width")
+	if !word_run_ok { return }
+	defer alicorn.text_run_destroy(&word_run)
+	testing.expect(t, len(word_run.lines) > 1, "a pathological long prose word should fall back to grapheme-safe visual rows")
+	previous_end := 0
+	for visual_line in word_run.lines {
+		testing.expect(t, visual_line.byte_start >= previous_end && visual_line.byte_end >= visual_line.byte_start,
+			"long-word visual rows should retain monotonic, non-overlapping display-byte ranges")
+		previous_end = visual_line.byte_end
+	}
+}
+
+@(test)
+test_wrap_height_edits_shift_unaffected_logical_lines :: proc(t: ^testing.T) {
+	source := [?]u8{'o','n','e','\n','t','w','o','\n','t','h','r','e','e','\n','f','o','u','r'}
+	visible := bridge.Visible_Window{
+		document_id="height-edit-test", editor_revision=2, start_line=0, end_line=4,
+		start_byte=0, source=source[:],
+	}
+	window, window_ok, message := editor_window_from_visible(&visible, context.temp_allocator)
+	testing.expect(t, window_ok, message)
+	if !window_ok { return }
+	defer editor_window_destroy(&window, context.temp_allocator)
+	view: Editor_View_State
+	view.wrap_height_index_ready = alicorn.virtual_list_height_index_init(&view.wrap_height_index, 4, EDITOR_ROW_HEIGHT, context.allocator)
+	if !view.wrap_height_index_ready { testing.expect(t, false, "sparse wrap-height cache should initialize"); return }
+	defer alicorn.virtual_list_height_index_destroy(&view.wrap_height_index)
+	_ = alicorn.virtual_list_height_index_set_height(&view.wrap_height_index, 3, 66)
+	editor_wrap_heights_apply_edit(&view, &window, 4, 8, {}, 1)
+	testing.expect(t, view.wrap_height_index.item_count == 3, "joining two logical lines should update cached collection size")
+	testing.expect(t, alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, 2) == 66,
+		"the measured unaffected suffix should shift to its new source-line identity")
+	testing.expect(t, alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, 1) == EDITOR_ROW_HEIGHT,
+		"measurements belonging to replaced logical lines should be discarded")
+}
+
+@(test)
 test_markdown_display_lines_keep_crlf_source_offsets :: proc(t: ^testing.T) {
 	source, source_error := make([]u8, 6, context.temp_allocator)
 	if source_error != nil { testing.expect(t, false, "could not allocate CRLF source fixture"); return }

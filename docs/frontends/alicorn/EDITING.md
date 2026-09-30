@@ -1,6 +1,6 @@
 # Alicorn editing ownership contract
 
-Status: The ordinary fixed-row editing behaviors in Phase 4 are implemented and headless-tested, including pointer selection, multiline indentation, clipboard, undo/redo, and IME composition. Native Windows/macOS click-count, modifier, drag-autoscroll, clipboard, and IME behavior still needs manual verification. This document records ownership boundaries, invariants, and the ordinary editing contract for the experimental Alicorn frontend.
+Status: Phase 4 ordinary editing and Phase 5A soft wrapping/visual rows are implemented and headless-tested, including pointer selection, multiline indentation, clipboard, undo/redo, IME composition, and source-preserving reflow. Native Windows/macOS click-count, modifier, drag-autoscroll, clipboard, IME, and wrap-resize behavior still needs manual verification. This document records ownership boundaries, invariants, and the editing contract for the experimental Alicorn frontend.
 
 ## Ownership
 
@@ -60,4 +60,14 @@ SDL editing/preedit events update a transient frontend-only projection over the 
 
 ## Phase 4G — closeout boundary
 
-The fixed-row editor remains the Phase 4 scope; soft wrapping stays deferred. Pointer selection now supports Shift-click, UAX #29 word double-click/drag, logical-line triple-click/drag, and captured-drag autoscroll on both axes. Tab/Shift+Tab applies one undoable indent/outdent transaction across the touched lines when the complete range is present in the bounded window. Headless tests cover these semantics and the existing clipboard, history, bounded-edit, and IME recovery paths. Native Windows/macOS click-count and modifier delivery, drag autoscroll feel, clipboard, Japanese composition/conversion/cancellation, candidate placement, and idle-after-edit still require manual platform verification.
+Pointer selection supports Shift-click, UAX #29 word double-click/drag, logical-line triple-click/drag, and captured-drag autoscroll on both axes. Tab/Shift+Tab applies one undoable indent/outdent transaction across the touched lines when the complete range is present in the bounded window. Headless tests cover these semantics and the existing clipboard, history, bounded-edit, and IME recovery paths. Native Windows/macOS click-count and modifier delivery, drag autoscroll feel, clipboard, Japanese composition/conversion/cancellation, candidate placement, and idle-after-edit still require manual platform verification.
+
+## Phase 5A — soft wrapping and visual rows
+
+Scratchpad keeps logical source lines as the stable edit identity. For prose, Alicorn shapes each bounded logical line with its final exact-revision typography spans and the current text width; Runa then supplies the visual rows, caret geometry, selection rectangles, and hit-test positions. The bytes and source/display map do not change. A logical line can therefore render as several visual rows without creating new source lines.
+
+Up/Down move between adjacent shaped visual rows, including rows within one logical line. Page Up/Down target a content-space position using measured variable row heights. The preferred horizontal caret position survives row transitions. Home/End remain logical-line edges; soft wrapping does not redefine them. Pointer selection, caret reveal, IME candidate positioning, and source-byte mapping use Runa's wrapped run geometry.
+
+Markdown and plain-text prose wrap. Exact Markdown code-block and table metadata keeps those rows on the horizontal-scroll path; ordinary language/code files remain unwrapped. A long word can break at Runa's grapheme-safe fallback boundary. Width changes reshape only the current bounded source window, and the visible logical-line anchor plus its intra-row offset is retained through reflow.
+
+Alicorn's variable-height virtual-list index stores measured overrides sparsely from the fixed row-height estimate. Source edits drop measurements for touched logical lines and shift unaffected suffix identities. Undo/redo or other external authoritative revision changes discard old measurements before remeasurement. Shaping work remains bounded by the loaded source window rather than the full document. Automated integration covers styled multi-row shaping, source fidelity, within-line keyboard movement/selection, code/table wrapping policy, long-word fallback, line-count edits, and resize anchoring. Native resize, scroll, and IME checks remain platform certification work.

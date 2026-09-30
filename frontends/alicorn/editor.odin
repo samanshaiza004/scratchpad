@@ -13,6 +13,13 @@ EDITOR_TAB_INSERT :: [4]u8{' ', ' ', ' ', ' '}
 EDITOR_LONG_LINE_CHUNK_BYTES :: u64(16 * 1024)
 EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES :: int(bridge.MAX_VISIBLE_BYTES + bridge.MAX_EDIT_BYTES)
 EDITOR_IME_RECOVERY_MAX_BYTES :: int(bridge.MAX_EDIT_BYTES)
+EDITOR_PRESENTATION_CODE_BLOCK :: u32(8)
+EDITOR_PRESENTATION_TABLE :: u32(29)
+EDITOR_PRESENTATION_TABLE_HEADER :: u32(30)
+EDITOR_PRESENTATION_TABLE_DELIMITER :: u32(31)
+EDITOR_PRESENTATION_TABLE_PIPE :: u32(32)
+EDITOR_PRESENTATION_BLOCK_CODE :: u32(0x10001)
+EDITOR_PRESENTATION_BLOCK_TABLE :: u32(0x10005)
 
 editor_logical_row_style :: proc() -> alicorn.Layout_Style {
 	return alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT, gap=8, align=.Center, clip=true)
@@ -79,6 +86,18 @@ Editor_View_State :: struct {
 	drag_pointer_x: f32,
 	drag_pointer_y: f32,
 	drag_pointer_valid: bool,
+	wrap_height_index: alicorn.Virtual_List_Height_Index,
+	wrap_height_index_ready: bool,
+	wrap_measurement_width: f32,
+	wrap_measurement_revision: u64,
+	wrap_measurement_presentation_revision: u64,
+	wrap_measurement_start_line: u64,
+	wrap_measurement_end_line: u64,
+	wrap_measurement_pending_edits: u64,
+	wrap_last_outer_width: f32,
+	wrap_last_outer_height: f32,
+	wrap_last_split_position: f32,
+	wrap_last_split_position_valid: bool,
 	authoritative_revision: u64,
 	optimistic_window: Editor_Window,
 	optimistic_window_ready: bool,
@@ -271,72 +290,116 @@ editor_row_node_for_line :: proc(rows: []Editor_Row_Target, logical_line: u64) -
 	return 0
 }
 
-editor_temporary_text_run :: proc(rt: ^alicorn.Runtime, line: ^Editor_Display_Line) -> (run: alicorn.Text_Run, ok: bool) {
+editor_temporary_text_run :: proc(
+	rt: ^alicorn.Runtime,
+	line: ^Editor_Display_Line,
+	max_width: f32 = 0,
+	overflow := alicorn.Text_Overflow.Clip,
+	style_spans: []alicorn.Text_Style_Span = nil,
+) -> (run: alicorn.Text_Run, ok: bool) {
 	if rt == nil || line == nil { return }
 	return alicorn.text_run_build_with_overflow(
 		&rt.text_engine,
 		line.display,
 		16,
-		0,
+		max_width,
 		context.temp_allocator,
 		context.temp_allocator,
 		.Monospace,
 		alicorn.FONT_WEIGHT_REGULAR,
-		.Clip,
+		overflow,
+		editable=true,
+		text_style_spans=style_spans,
 	)
 }
 
-// editor_visual_x_for_source measures the caret relative to the start of the
-// source lane, so horizontal scrolling does not change the preferred column.
-// Retained geometry is used for realized rows; a bounded one-line Runa product
-// is a fallback only while navigating to a neighboring row just outside the
-// current viewport realization.
-editor_visual_x_for_source :: proc(
+editor_navigation_text_run :: proc(
 	rt: ^alicorn.Runtime,
+	window: ^Editor_Window,
 	line: ^Editor_Display_Line,
+	language: string,
+	width: f32,
+	presentation_current: bool,
+) -> (run: alicorn.Text_Run, ok: bool) {
+	if line == nil { return }
+	style_spans: []alicorn.Text_Style_Span
+	if presentation_current { style_spans = editor_presentation_text_styles_for_line(window, line, context.temp_allocator) }
+	wrap := editor_line_should_wrap(language, window, line, presentation_current)
+	overflow := alicorn.Text_Overflow.Clip
+	max_width: f32 = 0
+	if wrap {
+		overflow = .Wrap
+		max_width = width
+	}
+	return editor_temporary_text_run(rt, line, max_width, overflow, style_spans)
+}
+
+// Return the exact displayed run's caret geometry when a logical row is
+// realized. A bounded one-line shape is used only for a target row just beyond
+// the current viewport realization.
+editor_line_visual_caret_metrics :: proc(
+	rt: ^alicorn.Runtime,
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	language: string,
+	width: f32,
+	presentation_current: bool,
 	text_node: alicorn.Node_ID,
 	source_byte: u64,
 	affinity: alicorn.Text_Affinity,
-) -> (x: f32, ok: bool) {
-	if line == nil { return }
-	display_byte := editor_source_to_display(line, source_byte)
-	position := alicorn.Text_Position{byte=display_byte, affinity=affinity}
+	measure_caret := true,
+) -> (geometry: alicorn.Text_Caret_Geometry, visual_rows: int, run_height: f32, ok: bool) {
+	if rt == nil || line == nil { return }
+	position := alicorn.Text_Position{byte=editor_source_to_display(line, source_byte), affinity=affinity}
 	if node, found := rt.nodes[text_node]; found && text_node != 0 {
-		geometry := alicorn.text_node_caret_geometry(rt, text_node, position)
-		if geometry.valid { return geometry.rect.x-node.bounds.x, true }
+		if node.active && node.text_run_valid && len(node.text_run.lines) > 0 {
+			visual_rows, run_height = len(node.text_run.lines), node.text_run.height
+			if measure_caret { geometry = alicorn.text_run_caret_geometry(&node.text_run, position, rt.scratch_allocator) }
+			ok = visual_rows > 0
+			return
+		}
 	}
-	run, built := editor_temporary_text_run(rt, line)
+	run, built := editor_navigation_text_run(rt, window, line, language, width, presentation_current)
 	if !built { return }
 	defer alicorn.text_run_destroy(&run)
-	geometry := alicorn.text_run_caret_geometry(&run, position)
-	if geometry.valid { return geometry.rect.x, true }
+	visual_rows, run_height = len(run.lines), run.height
+	if measure_caret { geometry = alicorn.text_run_caret_geometry(&run, position, rt.scratch_allocator) }
+	ok = visual_rows > 0
 	return
 }
 
-// editor_source_at_visual_x maps a preferred source-lane X onto a target line
-// using the retained Runa run whenever that row is realized.
-editor_source_at_visual_x :: proc(
+// Map a preferred X and a chosen visual-row Y through the same styled Runa run
+// used by rendering, then convert the resulting display boundary to source.
+editor_source_at_visual_point :: proc(
 	rt: ^alicorn.Runtime,
+	window: ^Editor_Window,
 	line: ^Editor_Display_Line,
+	language: string,
+	width: f32,
+	presentation_current: bool,
 	text_node: alicorn.Node_ID,
-	visual_x: f32,
+	visual_x, visual_y: f32,
+	visual_row := -1,
 ) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
-	if line == nil { return }
+	if rt == nil || line == nil { return }
 	position: alicorn.Text_Position
-	if node, found := rt.nodes[text_node]; found && text_node != 0 {
-		hit: bool
-		position, hit = alicorn.text_node_hit_test(
-			rt,
-			text_node,
-			node.bounds.x+visual_x,
-			node.bounds.y+node.bounds.h/2,
-		)
-		if !hit { return }
+	if node, found := rt.nodes[text_node]; found && text_node != 0 && node.active && node.text_run_valid && len(node.text_run.lines) > 0 {
+		y := visual_y
+		if visual_row >= 0 {
+			row := node.text_run.lines[clamp(visual_row, 0, len(node.text_run.lines)-1)]
+			y = row.y+row.height*0.5
+		}
+		position = alicorn.text_run_hit_test(&node.text_run, visual_x, y, rt.scratch_allocator)
 	} else {
-		run, built := editor_temporary_text_run(rt, line)
+		run, built := editor_navigation_text_run(rt, window, line, language, width, presentation_current)
 		if !built { return }
-		position = alicorn.text_run_hit_test(&run, visual_x, 0)
-		alicorn.text_run_destroy(&run)
+		defer alicorn.text_run_destroy(&run)
+		y := visual_y
+		if visual_row >= 0 {
+			row := run.lines[clamp(visual_row, 0, len(run.lines)-1)]
+			y = row.y+row.height*0.5
+		}
+		position = alicorn.text_run_hit_test(&run, visual_x, y, rt.scratch_allocator)
 	}
 	source_byte = editor_normalize_source_position(line, editor_display_to_source(line, position.byte))
 	affinity = position.affinity
@@ -619,6 +682,9 @@ editor_view_remove :: proc(views: ^[dynamic]Editor_View_State, index: int, alloc
 	if views[index].optimistic_window_ready {
 		editor_window_destroy(&views[index].optimistic_window, allocator)
 	}
+	if views[index].wrap_height_index_ready {
+		alicorn.virtual_list_height_index_destroy(&views[index].wrap_height_index)
+	}
 	delete(views[index].document_id, allocator)
 	ordered_remove(views, index)
 }
@@ -628,6 +694,7 @@ editor_views_destroy :: proc(views: ^[dynamic]Editor_View_State, allocator := co
 	for &view in views {
 		editor_preedit_clear(&view, allocator)
 		if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window, allocator) }
+		if view.wrap_height_index_ready { alicorn.virtual_list_height_index_destroy(&view.wrap_height_index) }
 		if len(view.document_id) > 0 { delete(view.document_id, allocator) }
 	}
 	delete(views^)
@@ -1314,6 +1381,64 @@ editor_count_line_breaks :: proc(source: []u8) -> u64 {
 	return count
 }
 
+// Source edits shift the logical-line identities used by sparse wrap-height
+// measurements. Retire measurements for touched lines and shift only the
+// unaffected suffix; if a bounded-range edge cannot be mapped, discard the
+// measurements safely and let visible rows be remeasured.
+editor_wrap_heights_apply_edit :: proc(
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	start_byte, end_byte: u64,
+	replacement: []u8,
+	removed_line_breaks: u64,
+) {
+	if view == nil || window == nil || !view.wrap_height_index_ready { return }
+	first, first_found := editor_line_for_source(window, start_byte)
+	last, last_found := editor_line_for_source(window, end_byte)
+	line_delta := i64(editor_count_line_breaks(replacement))-i64(removed_line_breaks)
+	result_count := view.wrap_height_index.item_count+int(line_delta)
+	valid: bool = first_found && last_found && first.logical_line <= last.logical_line && result_count > 0
+	if valid {
+		first_index := int(first.logical_line)
+		removed_count := int(last.logical_line-first.logical_line+1)
+		inserted_count := removed_count+int(line_delta)
+		valid = inserted_count > 0 && alicorn.virtual_list_height_index_apply_edit(
+			&view.wrap_height_index,
+			first_index,
+			removed_count,
+			inserted_count,
+			result_count,
+		)
+	}
+	if !valid {
+		alicorn.virtual_list_height_index_destroy(&view.wrap_height_index)
+		view.wrap_height_index_ready = alicorn.virtual_list_height_index_init(
+			&view.wrap_height_index,
+			max(result_count, 1),
+			EDITOR_ROW_HEIGHT,
+			context.allocator,
+		)
+	}
+	view.wrap_measurement_revision = 0
+}
+
+editor_wrap_heights_reset :: proc(view: ^Editor_View_State, item_count: int) {
+	if view == nil || !view.wrap_height_index_ready { return }
+	alicorn.virtual_list_height_index_destroy(&view.wrap_height_index)
+	view.wrap_height_index_ready = alicorn.virtual_list_height_index_init(
+		&view.wrap_height_index,
+		max(item_count, 1),
+		EDITOR_ROW_HEIGHT,
+		context.allocator,
+	)
+	view.wrap_measurement_width = -1
+	view.wrap_measurement_revision = 0
+	view.wrap_measurement_presentation_revision = 0
+	view.wrap_measurement_start_line = 0
+	view.wrap_measurement_end_line = 0
+	view.wrap_measurement_pending_edits = 0
+}
+
 editor_bytes_equal :: proc(left, right: []u8) -> bool {
 	if len(left) != len(right) { return false }
 	for value, index in left { if value != right[index] { return false } }
@@ -1424,10 +1549,78 @@ editor_window_line :: proc(window: ^Editor_Window, logical_line: u64) -> (line: 
 	return &window.lines[index], true
 }
 
-editor_window_content_width :: proc(window: ^Editor_Window, minimum, gutter_width: f32) -> f32 {
+editor_line_should_wrap :: proc(language: string, window: ^Editor_Window, line: ^Editor_Display_Line, presentation_current := true) -> bool {
+	if language != "markdown" && language != "plain-text" { return false }
+	if language != "markdown" || !presentation_current || window == nil || line == nil ||
+	   !window.presentation_ready || window.presentation_revision != window.editor_revision {
+		return true
+	}
+	for record in window.presentation_spans {
+		// Fenced code and Markdown table rows remain on the horizontal-scroll
+		// path. Inline code is prose content and continues to wrap normally.
+		if record.kind != EDITOR_PRESENTATION_CODE_BLOCK && record.kind != EDITOR_PRESENTATION_TABLE &&
+		   record.kind != EDITOR_PRESENTATION_TABLE_HEADER && record.kind != EDITOR_PRESENTATION_TABLE_DELIMITER &&
+		   record.kind != EDITOR_PRESENTATION_TABLE_PIPE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if start < line.source_end && end > line.source_start { return false }
+	}
+	for record in window.presentation_blocks {
+		if record.kind != EDITOR_PRESENTATION_BLOCK_CODE && record.kind != EDITOR_PRESENTATION_BLOCK_TABLE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if start < line.source_end && end > line.source_start { return false }
+	}
+	return true
+}
+
+editor_measure_line_height :: proc(
+	rt: ^alicorn.Runtime,
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	width: f32,
+	wrap: bool,
+	presentation_current: bool,
+) -> (height: f32, shaped_width: f32, visual_rows: int, ok: bool) {
+	if line == nil { return }
+	style_spans: []alicorn.Text_Style_Span
+	if presentation_current { style_spans = editor_presentation_text_styles_for_line(window, line, context.temp_allocator) }
+	overflow := alicorn.Text_Overflow.Clip
+	if wrap { overflow = .Wrap }
+	run, built := editor_temporary_text_run(rt, line, width, overflow, style_spans)
+	if !built { return EDITOR_ROW_HEIGHT, 0, 1, false }
+	defer alicorn.text_run_destroy(&run)
+	height = max(EDITOR_ROW_HEIGHT, run.height)
+	shaped_width = run.width
+	visual_rows = max(len(run.lines), 1)
+	ok = true
+	return
+}
+
+editor_measure_window_wrapping :: proc(
+	rt: ^alicorn.Runtime,
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	language: string,
+	width: f32,
+	presentation_current: bool,
+) -> bool {
+	if rt == nil || view == nil || window == nil || !view.wrap_height_index_ready || width <= 0 { return false }
+	changed := false
+	for &line in window.lines {
+		wrap := editor_line_should_wrap(language, window, &line, presentation_current)
+		height, _, _, ok := editor_measure_line_height(rt, window, &line, width, wrap, presentation_current)
+		if !ok { continue }
+		changed = alicorn.virtual_list_height_index_set_height(&view.wrap_height_index, int(line.logical_line), height) || changed
+	}
+	return changed
+}
+
+editor_window_content_width :: proc(window: ^Editor_Window, minimum, gutter_width: f32, language := "", presentation_current := true) -> f32 {
 	width := minimum
 	if window == nil { return width }
-	for line in window.lines {
+	for &line in window.lines {
+		if editor_line_should_wrap(language, window, &line, presentation_current) { continue }
 		// Deliberately conservative for multi-byte glyphs: the frontier is based
 		// only on the bounded window, never a scan of the full document.
 		width = max(width, f32(len(line.display))*10 + gutter_width + 8)

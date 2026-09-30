@@ -97,6 +97,7 @@ App :: struct {
 	tree_directories:       [dynamic]Tree_Directory,
 	tree_focused_path:      string,
 	tree_focused_is_dir:    bool,
+	show_ignored_files:     bool,
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
 	dialog_action:          string,
@@ -233,6 +234,15 @@ build_app :: proc(
 		alicorn.split_first_begin(&ui, workspace_split)
 		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=COLOR_PANEL)
 		alicorn.text(&ui, "FILES")
+		ignored_change := alicorn.checkbox(
+			&ui,
+			"Show ignored files",
+			app.show_ignored_files,
+			key=alicorn.key_string("workspace-show-ignored"),
+			style=alicorn.layout_style(.Row, height=26),
+			disabled=!state.has_workspace,
+		)
+		if ignored_change.changed { tree_set_show_ignored_files(app, rt, ignored_change.value) }
 		alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
 		alicorn.text(&ui, fmt.tprintf("%d open documents", len(state.documents)))
 		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("sidebar-open-folder"), style=alicorn.layout_style(.Row, height=34)) {
@@ -367,6 +377,39 @@ build_app :: proc(
 	return root
 }
 
+editor_wrap_viewport_size :: proc(
+	rt: ^alicorn.Runtime,
+	view: ^Editor_View_State,
+	previous: alicorn.Scroll_Region_Handle,
+) -> (width, height: f32) {
+	if rt == nil || view == nil { return 240, EDITOR_ROW_HEIGHT }
+	outer_width, outer_height := rt.viewport.w, rt.viewport.h
+	width, height = previous.viewport_width, previous.viewport_height
+	if previous.id == 0 || width <= 0 {
+		width = max(outer_width-320, 240)
+	} else if view.wrap_last_outer_width > 0 {
+		width += outer_width-view.wrap_last_outer_width
+	}
+	if previous.id == 0 || height <= 0 {
+		height = max(outer_height-220, EDITOR_ROW_HEIGHT)
+	} else if view.wrap_last_outer_height > 0 {
+		height += outer_height-view.wrap_last_outer_height
+	}
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if !found || node.kind != .Split || node.label != "scratchpad-workspace-editor-split" { continue }
+		if view.wrap_last_split_position_valid {
+			width -= node.split_position-view.wrap_last_split_position
+		}
+		view.wrap_last_split_position = node.split_position
+		view.wrap_last_split_position_valid = true
+		break
+	}
+	view.wrap_last_outer_width = outer_width
+	view.wrap_last_outer_height = outer_height
+	return max(width, 240), max(height, EDITOR_ROW_HEIGHT)
+}
+
 build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok {
@@ -422,17 +465,65 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		}
 	}
 	gutter_width := editor_line_number_gutter_width(display_line_count)
-	content_width := view.horizontal_extent
-	if window_matches {
-		measured_width := editor_window_content_width(window, 0, gutter_width)
-		content_width = editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
-	}
 	line_count := int(display_line_count)
 	if line_count < 1 { line_count = 1 }
-	list := alicorn.virtual_list_begin(
+	if !view.wrap_height_index_ready {
+		view.wrap_height_index_ready = alicorn.virtual_list_height_index_init(
+			&view.wrap_height_index, line_count, EDITOR_ROW_HEIGHT, context.allocator,
+		)
+	}
+	if view.wrap_height_index_ready {
+		_ = alicorn.virtual_list_height_index_set_count(&view.wrap_height_index, line_count)
+	}
+	previous_scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
+	viewport_width, viewport_height := editor_wrap_viewport_size(rt, view, previous_scroll)
+	wrap_width := max(viewport_width-gutter_width-16, 80)
+	scroll_y := view.scroll_y
+	if !view.restore_y_pending && previous_scroll.id != 0 { scroll_y = previous_scroll.offset_y }
+	request_presentation := document.language == "markdown"
+	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
+	                              window.presentation_revision == document.presentation_revision &&
+	                              window.presentation_revision == document.editor_revision
+	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_window_matches
+	if view.wrap_height_index_ready && window_available {
+		needs_measurement := abs(view.wrap_measurement_width-wrap_width) > 0.5 ||
+		                     view.wrap_measurement_revision != window.editor_revision ||
+		                     view.wrap_measurement_presentation_revision != window.presentation_revision ||
+		                     view.wrap_measurement_start_line != window.start_line ||
+		                     view.wrap_measurement_end_line != window.end_line ||
+		                     view.wrap_measurement_pending_edits != view.optimistic_pending_edits ||
+	                     metadata_refresh_needed
+		if needs_measurement {
+			before := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll_y, viewport_height)
+			anchor_line := before.first
+			anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
+			_ = editor_measure_window_wrapping(
+				rt, view, window, document.language, wrap_width,
+				presentation_window_matches,
+			)
+			new_anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
+			if !view.restore_y_pending && previous_scroll.id != 0 {
+				scroll_y = max(scroll_y+new_anchor_top-anchor_top, 0)
+				if abs(scroll_y-previous_scroll.offset_y) > 0.01 {
+					_ = alicorn.scroll_region_set_offset(rt, previous_scroll.id, scroll_y, "Scratchpad preserved the logical source anchor while text reflowed")
+				}
+			}
+			view.wrap_measurement_width = wrap_width
+			view.wrap_measurement_revision = window.editor_revision
+			view.wrap_measurement_presentation_revision = window.presentation_revision
+			view.wrap_measurement_start_line = window.start_line
+			view.wrap_measurement_end_line = window.end_line
+			view.wrap_measurement_pending_edits = view.optimistic_pending_edits
+		}
+	}
+	content_width := view.horizontal_extent
+	if window_matches {
+		measured_width := editor_window_content_width(window, viewport_width, gutter_width, document.language, presentation_window_matches)
+		content_width = editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
+	}
+	list := alicorn.virtual_list_begin_variable(
 		ui,
-		line_count,
-		EDITOR_ROW_HEIGHT,
+		&view.wrap_height_index,
 		key=alicorn.key_string(fmt.tprintf("scratchpad-editor:%s", document.id)),
 		style=alicorn.layout_style(grow=1, clip=true),
 		content_width=content_width,
@@ -470,28 +561,26 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	window_covers_view := window_matches &&
 	                      window.start_line <= visible_start &&
 	                      window.end_line >= visible_end
-	request_presentation := document.language == "markdown"
-	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
-	                              window.presentation_revision == document.presentation_revision &&
-	                              window.presentation_revision == document.editor_revision
-	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_window_matches
 	if metadata_refresh_needed { window_covers_view = false }
 	for position := list.first; position < list.last; position += 1 {
 		line_number := u64(position)
+		row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, position)
+		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT }
 		if line, found := editor_window_line(window, line_number); window_available && found {
+			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_window_matches)
 			row_key := alicorn.key_string(fmt.tprintf("scratchpad-row:%s:%d", document.id, line.logical_line))
 			alicorn.container_begin(
 				ui,
 				.Container,
 				label="scratchpad-editor-logical-line",
 				key=row_key,
-				style=editor_logical_row_style(),
+				style=alicorn.layout_style(.Row, height=row_height, gap=8, align=.Center, clip=true),
 			)
 			alicorn.container_begin(
 				ui,
 				.Container,
 				label="scratchpad-editor-line-number-gutter",
-				style=alicorn.layout_style(.Row, width=gutter_width, height=EDITOR_ROW_HEIGHT, align=.Center),
+				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center),
 			)
 			alicorn.container_begin(ui, .Container, label="scratchpad-editor-line-number-spacer", style=alicorn.layout_style(.Row, grow=1))
 			alicorn.container_end(ui)
@@ -533,13 +622,19 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				// or caret decoration while interaction authority is suspended.
 				anchor_display = caret_display
 			}
+			line_text_style := alicorn.layout_style(.Row, height=row_height)
+			text_overflow := alicorn.Text_Overflow.Clip
+			if line_wraps {
+				line_text_style.width = wrap_width
+				text_overflow = .Wrap
+			}
 			line_node := alicorn.text(
 				ui,
 				display_text,
 				key=alicorn.key_string(fmt.tprintf("scratchpad-line:%s:%d", document.id, line.logical_line)),
-				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
+				style=line_text_style,
 				font=.Monospace,
-				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Clip},
+				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=text_overflow},
 			)
 			paint_spans: []alicorn.Text_Paint_Span
 			paint_current := window_matches && view.optimistic_pending_edits == 0 &&
@@ -577,7 +672,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				ui,
 				label,
 				key=alicorn.key_string(fmt.tprintf("scratchpad-loading-line:%s:%d", document.id, line_number)),
-				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
+				style=alicorn.layout_style(.Row, height=row_height),
 			)
 		} else {
 			// A newer document snapshot may have added rows that do not exist in
@@ -587,7 +682,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				ui,
 				"",
 				key=alicorn.key_string(fmt.tprintf("scratchpad-stale-line:%s:%d", document.id, line_number)),
-				style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
+				style=alicorn.layout_style(.Row, height=row_height),
 			)
 		}
 	}
@@ -728,7 +823,7 @@ tree_load_directory :: proc(app: ^App, relative_path: string, expanded := true) 
 		app.tree_directories[index].expanded = expanded
 		return true
 	}
-	response := bridge.backend_command(&app.backend, "list_directory", relative_path=relative_path)
+	response := bridge.backend_command(&app.backend, "list_directory", relative_path=relative_path, include_ignored=app.show_ignored_files)
 	if !response.ok {
 		set_error(app, response.message if response.message != "" else "Could not load this folder.")
 		bridge.backend_command_result_destroy(&response, context.allocator)
@@ -743,6 +838,41 @@ tree_load_directory :: proc(app: ^App, relative_path: string, expanded := true) 
 	bridge.backend_command_result_destroy(&response, context.allocator)
 	if !stored { set_error(app, "Could not retain this folder listing.") }
 	return stored
+}
+
+// Changing ignore visibility reloads each expanded listing under the new
+// policy while keeping the expanded paths and semantic tree focus intact.
+tree_set_show_ignored_files :: proc(app: ^App, rt: ^alicorn.Runtime, enabled: bool) {
+	if app == nil || app.show_ignored_files == enabled { return }
+	expanded_paths := make([dynamic]string, 0, allocator=context.temp_allocator)
+	defer delete(expanded_paths)
+	for directory in app.tree_directories {
+		if directory.expanded {
+			path_copy, err := strings.clone(directory.path, context.temp_allocator)
+			if err == nil { append(&expanded_paths, path_copy) }
+		}
+	}
+	app.show_ignored_files = enabled
+	tree_clear_directories(app)
+	for path in expanded_paths {
+		_ = tree_load_directory(app, path, true)
+	}
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	defer delete(rows)
+	tree_flatten_directory(app, "", 0, &rows)
+	focus_restored := false
+	for row, index in rows {
+		if row.path == app.tree_focused_path && row.is_dir == app.tree_focused_is_dir {
+			tree_set_focused_row(app, rt, row, index)
+			focus_restored = true
+			break
+		}
+	}
+	if len(app.tree_focused_path) > 0 && !focus_restored {
+		tree_clear_focused_path(app)
+		_ = alicorn.semantic_focus_clear(rt)
+	}
+	alicorn.invalidate_root(rt, "Scratchpad ignored-file visibility changed")
 }
 
 tree_store_listing :: proc(app: ^App, listing: bridge.Directory_Listing, expanded: bool) -> bool {
@@ -1020,9 +1150,14 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 						app.editor_window = window
 						app.editor_window_ready = true
 						if view_index >= 0 {
-							app.editor_views[view_index].authoritative_revision = window.editor_revision
-							if app.editor_views[view_index].position_reconcile_pending {
-								_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
+							view := &app.editor_views[view_index]
+							if view.optimistic_pending_edits == 0 && view.authoritative_revision != 0 &&
+							   view.authoritative_revision != window.editor_revision {
+								editor_wrap_heights_reset(view, int(active.line_count))
+							}
+							view.authoritative_revision = window.editor_revision
+							if view.position_reconcile_pending {
+								_ = editor_view_reconcile_positions(view, &app.editor_window)
 							}
 						}
 						if advancing_long_line && app.editor_scroll_owner != 0 {
@@ -1212,7 +1347,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	case ACTION_TAB_PREVIOUS:
 		navigate_tab(app, rt, -1)
 	case ACTION_WORKSPACE_REFRESH:
-		response := bridge.backend_command(&app.backend, "refresh_workspace")
+		response := bridge.backend_command(&app.backend, "refresh_workspace", include_ignored=app.show_ignored_files)
 		if response.ok {
 			tree_clear_directories(app)
 			if response.directory_listing_owned {
@@ -1406,6 +1541,21 @@ editor_source_at_pointer :: proc(
 	position, hit := alicorn.text_node_hit_test(rt, best_target.node, hit_x, best_y)
 	if !hit { return }
 	return editor_normalize_source_position(line, editor_display_to_source(line, position.byte)), position.affinity, true
+}
+
+editor_ensure_line_visible :: proc(
+	rt: ^alicorn.Runtime,
+	view: ^Editor_View_State,
+	owner: alicorn.Node_ID,
+	logical_line: int,
+	reason: string,
+) -> bool {
+	if view != nil && view.wrap_height_index_ready {
+		return alicorn.virtual_list_variable_ensure_visible(
+			rt, &view.wrap_height_index, owner, logical_line, reason,
+		)
+	}
+	return alicorn.virtual_list_ensure_visible(rt, owner, logical_line, reason)
 }
 
 editor_pointer_outside_viewport :: proc(rt: ^alicorn.Runtime, owner_id: alicorn.Node_ID, x, y: f32) -> (outside: bool, dx, dy: f32) {
@@ -1742,6 +1892,8 @@ editor_text_key :: proc(
 				next_caret, next_affinity = moved_caret, moved_affinity
 			}
 		case .Home, .Line_Start:
+			// Home and End intentionally target logical source-line boundaries;
+			// wrapping changes visual rows, never the meaning of these commands.
 			next_caret = editor_normalize_source_position(line, line.source_start)
 			next_affinity = .Leading
 		case .End, .Line_End:
@@ -1762,7 +1914,7 @@ editor_text_key :: proc(
 			if !target_found {
 				view.pending_document_edge = .Start if event.key == .Document_Start else .End
 				view.pending_document_edge_shift = shift
-				_ = alicorn.virtual_list_ensure_visible(rt, owner, int(target_line), "Scratchpad editor moved to document edge")
+				_ = editor_ensure_line_visible(rt, view, owner, int(target_line), "Scratchpad editor moved to document edge")
 				view.preferred_x_set = false
 				alicorn.invalidate_root(rt, "Scratchpad editor requested a bounded document-edge window")
 				return true
@@ -1777,40 +1929,91 @@ editor_text_key :: proc(
 		case .Up, .Down, .Page_Up, .Page_Down:
 			current_line := line.logical_line
 			owner_node, owner_found := rt.nodes[owner]
+			gutter_width := editor_line_number_gutter_width(document.line_count)
+			wrap_width := f32(0)
+			if owner_found { wrap_width = max(owner_node.scroll_viewport_width-gutter_width-16, 80) }
+			presentation_current := window.presentation_ready && window.presentation_revision == window.editor_revision &&
+			                       document.presentation_ready && document.presentation_revision == window.presentation_revision &&
+			                       view.optimistic_pending_edits == 0
+			current_node := editor_row_node_for_line(app.editor_row_targets[:], current_line)
+			current_geometry, current_visual_rows, _, current_measured := editor_line_visual_caret_metrics(
+				rt, window, line, document.language, wrap_width, presentation_current,
+				current_node, old_caret, old_affinity,
+			)
+			if !current_measured || !current_geometry.valid { return true }
 			if !view.preferred_x_set {
-				if visual_x, measured := editor_visual_x_for_source(rt, line, editor_row_node_for_line(app.editor_row_targets[:], current_line), old_caret, old_affinity); measured {
-					view.preferred_x = visual_x
-					view.preferred_x_set = true
-				} else {
-					return true
-				}
-			}
-			step := u64(1)
-			if event.key == .Page_Up || event.key == .Page_Down {
-				page := f32(EDITOR_ROW_HEIGHT)
-				if owner_found && owner_node.scroll_viewport_height > 0 { page = owner_node.scroll_viewport_height }
-				step = u64(max(int(page/EDITOR_ROW_HEIGHT)-1, 1))
+				view.preferred_x = current_geometry.rect.x
+				view.preferred_x_set = true
 			}
 			target_line := current_line
-			if event.key == .Up || event.key == .Page_Up {
-				target_line = current_line-step if current_line > step else 0
-			} else {
-				line_count := document.line_count
-				if view.optimistic_pending_edits > 0 {
-					if view.optimistic_line_delta < 0 {
-						removed := u64(-view.optimistic_line_delta)
+			target_visual_row := -1
+			target_visual_y: f32 = 0
+			if event.key == .Up || event.key == .Down {
+				direction := -1 if event.key == .Up else 1
+				next_visual_row := current_geometry.line_index+direction
+				if next_visual_row >= 0 && next_visual_row < current_visual_rows {
+					target_visual_row = next_visual_row
+				} else if direction < 0 {
+					target_line = current_line-1 if current_line > 0 else 0
+				} else {
+					line_count := document.line_count
+					if view.optimistic_pending_edits > 0 {
+						if view.optimistic_line_delta < 0 {
+							removed := u64(-view.optimistic_line_delta)
 						line_count = line_count-removed if removed < line_count else 1
+						} else {
+							line_count += u64(view.optimistic_line_delta)
+						}
+					}
+					last_line := line_count-1 if line_count > 0 else 0
+					target_line = min(current_line+1, last_line)
+				}
+			} else {
+				if view.wrap_height_index_ready && owner_found {
+					page := max(owner_node.scroll_viewport_height-current_geometry.rect.h, current_geometry.rect.h)
+					current_content_y := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, int(current_line)) +
+					                     current_geometry.rect.y + current_geometry.rect.h*0.5
+					target_content_y := current_content_y-page if event.key == .Page_Up else current_content_y+page
+					target_line = u64(alicorn.virtual_list_height_index_item_at(&view.wrap_height_index, target_content_y))
+					target_visual_y = target_content_y-alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, int(target_line))
+				} else {
+					step := u64(1)
+					if owner_found {
+						step = u64(max(int(owner_node.scroll_viewport_height/EDITOR_ROW_HEIGHT)-1, 1))
+					}
+					if event.key == .Page_Up {
+						target_line = current_line-step if current_line > step else 0
 					} else {
-						line_count += u64(view.optimistic_line_delta)
+						line_count := document.line_count
+						last_line := line_count-1 if line_count > 0 else 0
+						target_line = min(current_line+step, last_line)
 					}
 				}
-				last_line := line_count-1 if line_count > 0 else 0
-				target_line = min(current_line+step, last_line)
 			}
 			target, target_found := editor_window_line(window, target_line)
-			if !target_found { return true }
+			if !target_found {
+				_ = editor_ensure_line_visible(rt, view, owner, int(target_line), "Scratchpad requested the bounded window for vertical editor navigation")
+				alicorn.invalidate_root(rt, "Scratchpad vertical editor navigation reached the bounded source window edge")
+				return true
+			}
 			target_node := editor_row_node_for_line(app.editor_row_targets[:], target_line)
-			mapped_caret, mapped_affinity, moved := editor_source_at_visual_x(rt, target, target_node, view.preferred_x)
+			mapped_visual_row := -1
+			if event.key == .Up || event.key == .Down {
+				if target_line != current_line {
+					_, target_visual_rows, _, target_measured := editor_line_visual_caret_metrics(
+						rt, window, target, document.language, wrap_width, presentation_current,
+						target_node, 0, .Leading, false,
+					)
+					if !target_measured { return true }
+					mapped_visual_row = 0 if event.key == .Down else target_visual_rows-1
+				} else {
+					mapped_visual_row = target_visual_row
+				}
+			}
+			mapped_caret, mapped_affinity, moved := editor_source_at_visual_point(
+				rt, window, target, document.language, wrap_width, presentation_current,
+				target_node, view.preferred_x, target_visual_y, mapped_visual_row,
+			)
 			if !moved { return true }
 			next_caret, next_affinity = mapped_caret, mapped_affinity
 		case .Backspace, .Delete, .Delete_Word_Backward, .Delete_Word_Forward,
@@ -1835,10 +2038,15 @@ editor_text_key :: proc(
 	view.caret_byte = next_caret
 	view.caret_affinity = next_affinity
 	if target_line, target_found := editor_line_for_source(window, next_caret); target_found {
-		_ = alicorn.virtual_list_ensure_visible(rt, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
+		_ = editor_ensure_line_visible(rt, view, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
 		if text_node := editor_row_node_for_line(app.editor_row_targets[:], target_line.logical_line); text_node != 0 {
 			if geometry := alicorn.text_node_caret_geometry(rt, text_node, alicorn.Text_Position{byte=editor_source_to_display(target_line, next_caret), affinity=next_affinity}); geometry.valid {
 				if owner_node, owner_found := rt.nodes[owner]; owner_found {
+					top, bottom := owner_node.scroll_viewport_bounds.y, owner_node.scroll_viewport_bounds.y+owner_node.scroll_viewport_height
+					next_y := owner_node.scroll_offset_y
+					if geometry.rect.y < top { next_y -= top-geometry.rect.y }
+					if geometry.rect.y+geometry.rect.h > bottom { next_y += geometry.rect.y+geometry.rect.h-bottom }
+					_ = alicorn.scroll_region_set_offset(rt, owner, next_y, "Scratchpad editor caret followed vertically across visual rows")
 					left, right := owner_node.bounds.x, owner_node.bounds.x+owner_node.scroll_viewport_width
 					next_x := owner_node.scroll_offset_x
 					if geometry.rect.x < left { next_x -= left-geometry.rect.x }
@@ -1949,6 +2157,7 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	app.editor_edit_sequence += 1
 	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
+	editor_wrap_heights_apply_edit(view, window, start_byte, end_byte, replacement, removed_line_breaks)
 	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
 	view.optimistic_window = new_window
 	view.optimistic_window_ready = true
@@ -2044,6 +2253,7 @@ editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 		}
 		if document, found := find_document(&app.backend.state, document_id); found {
 			view.authoritative_revision = document.editor_revision
+			editor_wrap_heights_reset(view, int(document.line_count))
 		}
 	}
 	if app.editor_window_ready && app.editor_window.document_id == document_id {
@@ -2766,6 +2976,7 @@ editor_apply_backend_selection :: proc(app: ^App, rt: ^alicorn.Runtime, selectio
 	if !view_ok { set_error(app, "Could not restore the document selection after Undo/Redo."); return }
 	view := &app.editor_views[view_index]
 	editor_preedit_clear(view)
+	editor_wrap_heights_reset(view, int(document.line_count))
 	view.authoritative_revision = selection.editor_revision
 	view.selection_anchor = selection.anchor_byte
 	view.caret_byte = selection.cursor_byte
@@ -2775,8 +2986,9 @@ editor_apply_backend_selection :: proc(app: ^App, rt: ^alicorn.Runtime, selectio
 	view.pending_document_edge = .None
 	view.pending_document_edge_shift = false
 	if app.editor_scroll_owner != 0 && selection.cursor_line <= u64(0x7FFF_FFFF_FFFF_FFFF) {
-		_ = alicorn.virtual_list_ensure_visible(
+		_ = editor_ensure_line_visible(
 			rt,
+			&app.editor_views[view_index],
 			app.editor_scroll_owner,
 			int(selection.cursor_line),
 			"Scratchpad restored the Undo/Redo caret line",

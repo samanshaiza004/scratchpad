@@ -8,6 +8,7 @@ import "core:sync"
 import "core:testing"
 import "core:time"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 markdown_test_wake :: proc(data: rawptr) {
@@ -30,6 +31,11 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 	// to prove paint metadata reuses the original shaped run. Typography spans
 	// intentionally reshape their own text ranges and are covered separately.
 	append(&source, "Stable text with [link](https://example.test) only.\n\n# Metric stable\n\nOpening text with **bold**, *emphasis*, [link](https://example.test), and `inline code`.\n")
+	append(&source, "Soft-wrap regression paragraph: ")
+	for _ in 0..<10 {
+		append(&source, "A source sentence with **strong text**, *emphasis*, and enough ordinary prose to cross the editor's visual-row boundary. ")
+	}
+	append(&source, '\n')
 	for index in 0..<1200 {
 		line := fmt.tprintf("paragraph-%04d with **bold text** and `code`\n", index)
 		append(&source, line)
@@ -178,6 +184,72 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 	testing.expect(t, styled_found && styled_line_found && styled_row.node == plain_id,
 		"pending-to-ready styling should preserve the retained row identity")
 	if !styled_found || !styled_line_found { return }
+	wrapped_logical_line: u64 = 0
+	wrapped_line_found := false
+	for candidate in app.editor_window.lines {
+		if strings.has_prefix(candidate.display, "Soft-wrap regression paragraph:") {
+			wrapped_logical_line = candidate.logical_line
+			wrapped_line_found = true
+			break
+		}
+	}
+	wrapped_line, wrapped_line_available := editor_window_line(&app.editor_window, wrapped_logical_line)
+	wrapped_line_found = wrapped_line_found && wrapped_line_available
+	wrapped_target := Editor_Row_Target{}
+	if wrapped_line_found {
+		for target in app.editor_row_targets {
+			if target.logical_line == wrapped_line.logical_line { wrapped_target = target; break }
+		}
+	}
+	wrapped_node, wrapped_node_found := rt.nodes[wrapped_target.node]
+	wrapped_view_index := editor_view_find(app.editor_views[:], document_id)
+	wrapped_height: f32 = 0
+	if wrapped_view_index >= 0 && wrapped_line_found {
+		wrapped_height = alicorn.virtual_list_height_index_item_height(
+			&app.editor_views[wrapped_view_index].wrap_height_index,
+			int(wrapped_line.logical_line),
+		)
+	}
+	wrapped_source_unchanged := wrapped_line_found && strings.has_prefix(
+		string(app.editor_window.source[int(wrapped_line.source_start-app.editor_window.start_byte):]),
+		"Soft-wrap regression paragraph:",
+	)
+	testing.expect(t, wrapped_line_found && wrapped_node_found && len(wrapped_node.text_run.lines) > 1 &&
+		wrapped_height > EDITOR_ROW_HEIGHT && wrapped_source_unchanged,
+		"styled Markdown prose should shape into multiple visual rows while preserving source bytes and measured row height")
+	if wrapped_line_found && wrapped_node_found && len(wrapped_node.text_run.lines) > 1 && wrapped_view_index >= 0 {
+		first_visual_end := wrapped_node.text_run.lines[0].byte_end
+		first_visual_source_end := editor_display_to_source(wrapped_line, first_visual_end)
+		view := &app.editor_views[wrapped_view_index]
+		view.selection_anchor, view.caret_byte = first_visual_source_end, first_visual_source_end
+		view.anchor_affinity, view.caret_affinity = .Trailing, .Trailing
+		wrapped_down := editor_text_key(
+			rawptr(&app), &rt, app.editor_scroll_owner,
+			host.Application_Text_Key_Event{key=.Down},
+		)
+		after_down_line, after_down_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+		testing.expect(t, wrapped_down && after_down_found && after_down_line.logical_line == wrapped_line.logical_line &&
+			view.caret_byte > first_visual_source_end,
+			"Down should move to the next shaped visual row within the same logical source line")
+		wrapped_up := editor_text_key(
+			rawptr(&app), &rt, app.editor_scroll_owner,
+			host.Application_Text_Key_Event{key=.Up},
+		)
+		up_line, up_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+		testing.expect(t, wrapped_up && up_line_found && up_line.logical_line == wrapped_line.logical_line &&
+			view.caret_byte <= first_visual_source_end,
+			"Up should return to the previous visual row without crossing the logical source line")
+		view.selection_anchor, view.caret_byte = first_visual_source_end, first_visual_source_end
+		view.anchor_affinity, view.caret_affinity = .Trailing, .Trailing
+		wrapped_shift_down := editor_text_key(
+			rawptr(&app), &rt, app.editor_scroll_owner,
+			host.Application_Text_Key_Event{key=.Down, shift=true},
+		)
+		shift_line, shift_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+		testing.expect(t, wrapped_shift_down && shift_line_found && shift_line.logical_line == wrapped_line.logical_line &&
+			view.selection_anchor == first_visual_source_end && view.caret_byte > first_visual_source_end,
+			"Shift+Down should extend the source selection across a visual-row boundary")
+	}
 	paints := editor_presentation_spans_for_line(&app.editor_window, styled_line, context.temp_allocator)
 	testing.expect(t, len(paints) > 0 && len(styled_node.text_paint_spans) > 0,
 		"the same retained Markdown row should carry actual paint-only semantic spans after readiness")
@@ -222,4 +294,30 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 		}
 	}
 	bridge.backend_command_result_destroy(&canonical, context.allocator)
+	if wrapped_line_found && wrapped_view_index >= 0 {
+		view := &app.editor_views[wrapped_view_index]
+		anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, int(wrapped_line.logical_line))
+		_ = alicorn.scroll_region_set_offset(&rt, app.editor_scroll_owner, anchor_top+5, "soft-wrap resize anchor regression")
+		alicorn.invalidate_root(&rt, "soft-wrap resize anchor setup")
+		_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+		before_scroll := alicorn.scroll_region_state(&rt, app.editor_scroll_owner)
+		before_metrics := alicorn.virtual_list_variable_metrics(
+			&view.wrap_height_index, before_scroll.offset_y, before_scroll.viewport_height,
+		)
+		before_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, int(wrapped_line.logical_line))
+		before_wrap_width := view.wrap_measurement_width
+		rt.viewport.w = 820
+		alicorn.invalidate_root(&rt, "soft-wrap width reflow regression")
+		_ = build_app(rawptr(&app), &rt, 820, 680, 1)
+		after_scroll := alicorn.scroll_region_state(&rt, app.editor_scroll_owner)
+		after_metrics := alicorn.virtual_list_variable_metrics(
+			&view.wrap_height_index, after_scroll.offset_y, after_scroll.viewport_height,
+		)
+		after_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, int(wrapped_line.logical_line))
+		testing.expect(t, view.wrap_measurement_width < 0.9*before_wrap_width && after_height > before_height,
+			"resizing narrower should reshape only the bounded window and increase rows for a long prose line")
+		testing.expect(t, before_metrics.first == int(wrapped_line.logical_line) &&
+			after_metrics.first == before_metrics.first && abs(after_metrics.leading_offset_y-before_metrics.leading_offset_y) < 1,
+			"width reflow should preserve the visible logical source anchor and its intra-row offset")
+	}
 }

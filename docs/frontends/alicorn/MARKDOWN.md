@@ -20,11 +20,15 @@ The appended little-endian trailer has a 24-byte header: presentation revision (
 
 The source limit remains 64 KiB / 256 logical lines, with 16 KiB anchored long-line chunks. Metadata is capped at 4,096 combined records plus its header. A pathological window may truncate metadata while retaining all its bounded source; the flag makes that degradation explicit. Pending or unsupported presentation produces plain source. Revision/readiness changes trigger a request through the existing latest-wins visible-window lane, not a fourth async lane.
 
-## Styling and next gate
+## Styling and visual-row geometry
 
-This slice uses colors, underline/strikethrough, and solid backgrounds for headings, inline code, links, blockquotes, lists, and tasks. Shaping-aware text style spans map strong to bold and emphasis to italic; heading levels use modest font weights without changing font size. These spans use the same source-to-display byte mapping and exact-revision gate as paint spans. Paint spans remain paint-only and preserve shaping and caret geometry. Typography can change glyph shaping within the fixed row height while source text stays unchanged. It does not claim full Shirei appearance parity.
+Markdown presentation uses colors, underline/strikethrough, and solid backgrounds for headings, inline code, links, blockquotes, lists, and tasks. Shaping-aware text style spans map strong to bold and emphasis to italic; heading levels use modest font weights without changing font size. These spans use the same source-to-display byte mapping and exact-revision gate as paint spans. Paint spans remain paint-only while typography participates in shaping; the source text stays unchanged. This is not full Shirei appearance parity.
 
-Soft wrapping/visual rows (issue #8) is the next geometry gate. Heading sizes, richer blocks, code/table presentation, and full Markdown parity follow it. Ordinary advanced editor gestures remain outside this slice. Shirei remains the default/product frontend.
+Soft wrapping now operates on the final shaped typography. One logical Markdown source line can contain multiple Runa visual rows, while Scratchpad continues to own the logical line and source-byte ranges. The bounded Odin frontend measures only the loaded 64 KiB / 256-line window; Alicorn's sparse variable-height list index maps logical rows to scroll geometry without allocating one height entry per document line. Caret navigation, hit testing, selection, and caret geometry use the wrapped run. Home/End remain logical-line boundaries.
+
+Markdown and plain-text prose wrap; exact Markdown fenced-code and table records remain horizontally scrollable, as do ordinary code-language files. Runa's constrained shaping handles long unbroken words at grapheme boundaries. Width changes remeasure the bounded source window and keep the top visible logical line plus its pixel offset stable. Local source edits invalidate and shift the affected sparse row measurements; authoritative Undo/Redo revisions clear stale measurements.
+
+Automated coverage verifies styled multi-row shaping, source/display mapping, visual-row Up/Down and Shift selection, no-wrap policy for code/tables, long-word wrapping, line-height identity shifts after edits, and resize anchoring. Native Windows/macOS resizing, scrolling, and IME candidate placement still need manual verification. Heading sizes, richer block geometry, and full Markdown parity remain after this gate. Shirei remains the default/product frontend.
 
 ## Validation limits
 
@@ -38,4 +42,4 @@ The locked native Alicorn smoke passes startup, publication, wake, GPU submissio
 
 The bounded transport benchmark caps a 20,000-block fixture at 4,096 records (about 120 microseconds per query on this machine). A late-viewport query with an enclosing span and 100,000 indexed spans takes about 3 microseconds; indexed subtree end bounds prevent scanning all earlier spans. These are local microbenchmarks, not end-to-end typing measurements.
 
-macOS/Linux execution, native Markdown appearance, and the remaining Phase 4 pointer/clipboard/IME certification were not performed in this slice. Issue #7 remains partial; wrapping and richer Markdown presentation are not implemented here.
+macOS/Linux execution and native Markdown appearance/wrap feel were not manually checked in this slice. Native Phase 4 pointer/clipboard/IME certification also remains open. Markdown blocks and full product presentation remain incomplete.
