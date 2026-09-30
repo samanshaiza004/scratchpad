@@ -501,6 +501,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	if !view.restore_y_pending && previous_scroll.id != 0 { scroll_y = previous_scroll.offset_y }
 	request_presentation := document.language == "markdown"
 	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
+	                              !window.presentation_stale &&
 	                              window.presentation_revision == document.presentation_revision &&
 	                              window.presentation_revision == document.editor_revision
 	// Exact parser metadata is authoritative. A locally rebased presentation is
@@ -509,7 +510,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	presentation_visual := presentation_window_matches ||
 	                       (document.language == "markdown" && window_matches && window.presentation_ready &&
 	                        window.presentation_stale)
-	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_visual
+	// A rebased projection can keep the current text styled, but it is not the
+	// parser's answer for a newer revision. Fetch exact metadata when Goldmark
+	// catches up; if this revision was already chased into the optimistic window,
+	// do not request the same projection repeatedly.
+	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_window_matches
+	if window_matches && window.presentation_ready && window.presentation_revision == document.presentation_revision {
+		metadata_refresh_needed = false
+	}
 	if view.wrap_height_index_ready && window_available {
 		needs_measurement := abs(view.wrap_measurement_width-wrap_width) > 0.5 ||
 		                     view.wrap_measurement_revision != window.editor_revision ||
@@ -759,7 +767,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		request_start = window.start_line
 		request_lines = 1
 	}
-	if document.line_count > 0 && view.optimistic_pending_edits == 0 && (!window_covers_view || request_anchor > 0) {
+	if document.line_count > 0 && (!window_covers_view || request_anchor > 0 || metadata_refresh_needed) {
+		if metadata_refresh_needed && window_matches && !editor_window_is_long_line_chunk(window) {
+			// Request the same source window so a returned parser projection can be
+			// rebased through the queued local edits without changing its byte origin.
+			request_start = window.start_line
+			request_lines = window.end_line-window.start_line
+			request_anchor = 0
+		}
 		request := bridge.Visible_Window_Request{
 			document_id=document.id,
 			application_rev=app.backend.state.application_rev,
@@ -1220,9 +1235,26 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		if window_result.generation == app.editor_request_generation && window_result.window_owned {
 			if active_found && window_result.window.document_id == active.id && window_result.window.editor_revision == active.editor_revision {
 				view_index := editor_view_find(app.editor_views[:], active.id)
-				if view_index < 0 || app.editor_views[view_index].optimistic_pending_edits == 0 {
-					window, converted, conversion_error := editor_window_from_visible(&window_result.window)
-					if converted {
+				pending_edits := view_index >= 0 && app.editor_views[view_index].optimistic_pending_edits > 0
+				window, converted, conversion_error := editor_window_from_visible(&window_result.window)
+				if converted && pending_edits {
+					view := &app.editor_views[view_index]
+					if editor_window_chase_pending_edits(app, &window, view) {
+						editor_window_destroy(&view.optimistic_window)
+						view.optimistic_window = window
+						view.optimistic_window_ready = true
+						installed = true
+						editor_window_rejection_clear(app)
+						if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+						app.editor_window_error = ""
+					} else {
+						// A parser response outside the bounded optimistic source window
+						// cannot be safely chased. Keep the current text and retry after
+						// the edit queue or request window changes.
+						_ = editor_window_rejection_set(app, window_result.request)
+						editor_window_destroy(&window)
+					}
+				} else if converted {
 						if view_index >= 0 && app.editor_views[view_index].optimistic_window_ready {
 							editor_window_destroy(&app.editor_views[view_index].optimistic_window)
 							app.editor_views[view_index].optimistic_window_ready = false
@@ -1263,12 +1295,15 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 						if strings.has_prefix(app.error_message, "Edit was not accepted; reloading authoritative text:") {
 							set_error(app, "")
 						}
-					} else {
-						_ = editor_window_rejection_set(app, window_result.request)
-						if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
-						app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
-						visible_error_changed = true
-					}
+				} else if pending_edits && editor_metadata_result_should_suppress_retry(window_result.request, active, window_result.window) {
+					// Parser work has not caught this revision yet. Keep the optimistic
+					// text and avoid retrying the same not-ready response every frame.
+					_ = editor_window_rejection_set(app, window_result.request)
+				} else {
+					_ = editor_window_rejection_set(app, window_result.request)
+					if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+					app.editor_window_error, _ = strings.clone(conversion_error, context.allocator)
+					visible_error_changed = true
 				}
 			} else if active_found && window_result.window.document_id == active.id {
 				_ = editor_window_rejection_set(app, window_result.request)
@@ -1299,6 +1334,44 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		bridge.editor_edit_lane_result_destroy(&edit_result, app.editor_edit_lane.allocator)
 		alicorn.invalidate_root(rt, "Scratchpad optimistic editor edit acknowledged")
 	}
+}
+
+// Apply every still-unacknowledged local edit that follows an authoritative
+// parser window, so a useful Goldmark result can catch up with the text already
+// visible in Alicorn. Edit coordinates are revision-scoped and applied in queue
+// order, matching the serial backend lane.
+editor_window_chase_pending_edits :: proc(
+	app: ^App,
+	window: ^Editor_Window,
+	view: ^Editor_View_State,
+) -> bool {
+	if app == nil || window == nil || view == nil || !view.optimistic_window_ready ||
+	   !window.presentation_ready || window.presentation_revision != window.editor_revision {
+		return false
+	}
+	base_revision := window.editor_revision
+	for intent in app.editor_edits {
+		if intent.document_id != window.document_id || intent.base_editor_revision < base_revision { continue }
+		next, replaced, _ := editor_window_replace_bytes(
+			window,
+			intent.start_byte,
+			intent.end_byte,
+			intent.replacement,
+		)
+		if !replaced { return false }
+		editor_window_destroy(window)
+		window^ = next
+	}
+	target := &view.optimistic_window
+	if target.document_id != window.document_id || target.start_line != window.start_line ||
+	   target.end_line != window.end_line || target.start_byte != window.start_byte ||
+	   len(target.source) != len(window.source) {
+		return false
+	}
+	for index in 0..<len(window.source) {
+		if target.source[index] != window.source[index] { return false }
+	}
+	return true
 }
 
 application_scheduled_wake :: proc(state: rawptr, rt: ^alicorn.Runtime, class: host.Scheduled_Wake_Class) {
@@ -1396,9 +1469,18 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		alicorn.invalidate_root(rt, "Scratchpad history action queued behind pending editor edits")
 		return
 	}
-	if !action_enabled(&app.backend.state, action_id) { return }
 	entry, found := find_action(&app.backend.state, action_id)
-	if !found { return }
+	if !found || !entry.visible { return }
+	selection_command := action_id == ACTION_DOCUMENT_FORMAT ||
+	                     action_id == ACTION_MARKDOWN_TABLE_NEXT ||
+	                     action_id == ACTION_MARKDOWN_TABLE_PREVIOUS ||
+	                     action_id == ACTION_MARKDOWN_TABLE_ENTER
+	if selection_command {
+		document, document_found := find_document(&app.backend.state, app.backend.state.active)
+		if !document_found || document.language != "markdown" { return }
+	} else if !entry.enabled {
+		return
+	}
 	if len(app.editor_edits) > 0 {
 		if !deferred_action_enqueue(app, .Action, value=action_id) {
 			set_error(app, "Could not queue the command behind pending editor edits.")
@@ -2300,18 +2382,25 @@ editor_apply_local_replace_with_wire :: proc(
 		}
 		mem.copy(rawptr(&wire_copy[0]), rawptr(&wire_replacement[0]), len(wire_replacement))
 	}
+	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
+	edit_base_revision := view.authoritative_revision
+	for pending in app.editor_edits {
+		if pending.document_id == document.id && pending.base_editor_revision >= edit_base_revision {
+			edit_base_revision = pending.base_editor_revision+1
+		}
+	}
 	app.editor_edit_sequence += 1
 	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
 	editor_wrap_heights_apply_edit(view, window, start_byte, end_byte, replacement, removed_line_breaks)
 	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
 	view.optimistic_window = new_window
 	view.optimistic_window_ready = true
-	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
 	view.optimistic_pending_edits += 1
 	view.optimistic_line_delta += i64(editor_count_line_breaks(replacement))-i64(removed_line_breaks)
 	append(&app.editor_edits, Editor_Edit_Intent{
 		sequence=app.editor_edit_sequence,
 		document_id=document_id,
+		base_editor_revision=edit_base_revision,
 		start_byte=start_byte,
 		end_byte=end_byte,
 		before_anchor_byte=selection_snapshot.before_anchor_byte,
@@ -2931,6 +3020,11 @@ sync_menu_states :: proc(app: ^App) {
 		item.state = menu_action_state(&app.backend.state, item.command)
 	}
 	active_document, has_document := find_document(&app.backend.state, app.backend.state.active)
+	for &item in app.document_items {
+		if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_FORMAT) {
+			item.state.enabled = has_document && active_document.language == "markdown"
+		}
+	}
 	active_view: ^Editor_View_State
 	active_window: ^Editor_Window
 	window_matches := false

@@ -281,6 +281,7 @@ editor_edit_selection_snapshot :: proc(
 Editor_Edit_Intent :: struct {
 	sequence:          u64,
 	document_id:       string,
+	base_editor_revision: u64,
 	start_byte:        u64,
 	end_byte:          u64,
 	before_anchor_byte: u64,
@@ -1557,13 +1558,14 @@ editor_rebase_presentation_records :: proc(
 		start := i64(record.start_byte)
 		end := i64(record.end_byte)
 		if edit_start == edit_end {
-			if end <= edit_start_i64 {
+			if end < edit_start_i64 {
 				// Insertion after this record; retain its byte range.
-			} else if start >= edit_start_i64 {
+			} else if start > edit_start_i64 {
 				start += delta
 				end += delta
 			} else {
-				// Insertion inside the record extends its stale range.
+				// An insertion at either edge or inside a semantic range inherits
+				// its presentation until the next exact parser projection arrives.
 				end += delta
 			}
 		} else if end <= edit_start_i64 {
@@ -1787,8 +1789,8 @@ editor_line_should_wrap :: proc(language: string, window: ^Editor_Window, line: 
 }
 
 editor_cursor_in_markdown_table :: proc(window: ^Editor_Window, source_byte: u64) -> bool {
-	if window == nil || !window.presentation_ready || window.presentation_stale ||
-	   window.presentation_revision != window.editor_revision {
+	if window == nil || !window.presentation_ready ||
+	   (!window.presentation_stale && window.presentation_revision != window.editor_revision) {
 		return false
 	}
 	for record in window.presentation_blocks {
@@ -1796,6 +1798,12 @@ editor_cursor_in_markdown_table :: proc(window: ^Editor_Window, source_byte: u64
 		start := window.start_byte+u64(record.start_byte)
 		end := window.start_byte+u64(record.end_byte)
 		if source_byte >= start && source_byte < end { return true }
+		// Goldmark includes a final LF in table block ranges. At EOF without an
+		// LF, the caret immediately after the last cell is still in that cell.
+		window_end := window.start_byte+u64(len(window.source))
+		if source_byte == end && end == window_end && len(window.source) > 0 && window.source[len(window.source)-1] != '\n' {
+			return true
+		}
 	}
 	return false
 }
