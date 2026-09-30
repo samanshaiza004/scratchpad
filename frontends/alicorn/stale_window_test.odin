@@ -41,7 +41,7 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 	old_visible := bridge.Visible_Window{
 		document_id="stale-doc",
 		application_rev=1,
-		editor_revision=1,
+		editor_revision=0,
 		start_line=0,
 		end_line=3,
 		start_byte=0,
@@ -61,7 +61,7 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 		id="stale-doc",
 		path="notes.txt",
 		language="text",
-		editor_revision=1,
+		editor_revision=0,
 		line_count=3,
 		byte_length=u64(len(old_source)),
 	})
@@ -97,9 +97,39 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 		"the first authoritative presentation should retain the existing visible source rows")
 	if !old_found_0 || !old_found_1 { return }
 
+	view_index := editor_view_find(app.editor_views[:], "stale-doc")
+	if view_index < 0 { testing.expect(t, false, "the document should have local view state after its first presentation"); return }
+	view := &app.editor_views[view_index]
+	optimistic_source := [?]u8{
+		'd', 'r', 'a', 'f', 't', '\n',
+		'b', 'e', 't', 'a', '\n',
+		'g', 'a', 'm', 'm', 'a',
+	}
+	optimistic_bytes, optimistic_allocation_error := make([]u8, len(optimistic_source), allocator=context.allocator)
+	if optimistic_allocation_error != nil { testing.expect(t, false, "could not allocate the last-presented optimistic source fixture"); return }
+	mem.copy(rawptr(&optimistic_bytes[0]), rawptr(&optimistic_source[0]), len(optimistic_source))
+	optimistic_visible := bridge.Visible_Window{
+		document_id="stale-doc",
+		application_rev=3,
+		editor_revision=3,
+		start_line=0,
+		end_line=3,
+		start_byte=0,
+		line_byte_length=u64(len(optimistic_source)),
+		source=optimistic_bytes,
+	}
+	optimistic_window, optimistic_ok, optimistic_error := editor_window_from_visible(&optimistic_visible, context.allocator)
+	testing.expect(t, optimistic_ok, optimistic_error)
+	if !optimistic_ok { return }
+	view.optimistic_window = optimistic_window
+	view.optimistic_window_ready = true
+	view.optimistic_pending_edits = 0
+	view.authoritative_revision = 3
+
 	// Model the state-publication interval before its matching bounded window
-	// arrives. Keep the old rows visible, but reject all source interaction
-	// until an exact-revision window can be installed.
+	// arrives. Keep the newest optimistic rows visible rather than regressing
+	// to the older backend base, but reject source interaction until an exact
+	// revision window can be installed.
 	app.backend.state.application_rev = 2
 	app.backend.state.documents[0].editor_revision = 2
 	app.backend.state.documents[0].line_count = 8 // the authoritative undo reintroduced several visible rows
@@ -114,8 +144,8 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 			loading_found = true
 		}
 	}
-	testing.expect(t, stale_found_0 && stale_found_1 && stale_text_0 == "alpha" && stale_text_1 == "beta",
-		"a line-count-changing undo should keep the previous visible rows while its new window is unavailable")
+	testing.expect(t, stale_found_0 && stale_found_1 && stale_text_0 == "draft" && stale_text_1 == "beta",
+		"an undo awaiting its new window should keep the latest optimistic presentation instead of flashing the older backend base")
 	testing.expect(t, !loading_found,
 		"the retained viewport should not expose Loading placeholders during stale-while-revalidate")
 	testing.expect(t, stale_line_0 == old_line_0 && stale_line_1 == old_line_1,
@@ -134,15 +164,13 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 		"visible rows beyond the bounded window must not collide on an unkeyed retained identity")
 	testing.expect(t, app.editor_scroll_owner != 0 && alicorn.text_input_target_is_suspended(&rt, app.editor_scroll_owner),
 		"the native text-input target should be suspended while only stale source bytes are available")
-	view_index := editor_view_find(app.editor_views[:], "stale-doc")
-	if view_index < 0 { testing.expect(t, false, "the stale document should still have local view state"); return }
-	view := &app.editor_views[view_index]
 	view.caret_byte = 4
 	view.selection_anchor = 4
 	caret_before := view.caret_byte
 	backspace_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Backspace})
-	testing.expect(t, !backspace_handled && len(app.editor_edits) == 0 && view.caret_byte == caret_before,
-		"a key edit must be rejected while its source window belongs to an older revision")
+	testing.expect(t, !backspace_handled && len(app.editor_edits) == 0 && view.caret_byte == caret_before &&
+		view.optimistic_window_ready && string(view.optimistic_window.source) == string(optimistic_source[:]),
+		"stale presentation must reject edits without destroying the newest optimistic source snapshot")
 
 	new_source := [?]u8{
 		'a', 'l', 'p', 'h', 'a', '!', '\n',
@@ -171,6 +199,11 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 	new_window, new_ok, new_error := editor_window_from_visible(&new_visible, context.allocator)
 	testing.expect(t, new_ok, new_error)
 	if !new_ok { return }
+	if view.optimistic_window_ready {
+		editor_window_destroy(&view.optimistic_window, context.allocator)
+		view.optimistic_window_ready = false
+	}
+	view.authoritative_revision = 2
 	editor_window_destroy(&app.editor_window, context.allocator)
 	app.editor_window = new_window
 	app.editor_window_ready = true

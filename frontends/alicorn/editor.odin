@@ -856,27 +856,23 @@ editor_window_clone :: proc(source: ^Editor_Window, allocator := context.allocat
 	return editor_window_from_visible(&visible, allocator)
 }
 
+// editor_view_window resolves only an exact edit-authoritative window. It is
+// deliberately observational: asking whether the current source is editable
+// must not discard a stale snapshot that still carries the latest visible UI.
 editor_view_window :: proc(
 	view: ^Editor_View_State,
 	base: ^Editor_Window,
 	base_ready: bool,
 	document_id: string,
 	editor_revision: u64,
-	allocator := context.allocator,
 ) -> (window: ^Editor_Window, matches: bool) {
 	if view != nil && view.optimistic_window_ready {
 		if view.optimistic_window.document_id == document_id &&
 		   (view.optimistic_pending_edits > 0 || view.optimistic_window.editor_revision == editor_revision) {
 			return &view.optimistic_window, true
 		}
-		editor_window_destroy(&view.optimistic_window, allocator)
-		view.optimistic_window_ready = false
-		view.optimistic_pending_edits = 0
-		view.optimistic_line_delta = 0
-		view.authoritative_revision = editor_revision
 	}
 	if base_ready && base != nil && base.document_id == document_id && base.editor_revision == editor_revision {
-		if view != nil { view.authoritative_revision = editor_revision }
 		return base, true
 	}
 	return nil, false

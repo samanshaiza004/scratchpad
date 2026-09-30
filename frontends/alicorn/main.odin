@@ -985,8 +985,11 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 						editor_window_destroy(&app.editor_window)
 						app.editor_window = window
 						app.editor_window_ready = true
-						if view_index >= 0 && app.editor_views[view_index].position_reconcile_pending {
-							_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
+						if view_index >= 0 {
+							app.editor_views[view_index].authoritative_revision = window.editor_revision
+							if app.editor_views[view_index].position_reconcile_pending {
+								_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
+							}
 						}
 						if advancing_long_line && app.editor_scroll_owner != 0 {
 							_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
@@ -1361,6 +1364,12 @@ editor_presentation_window :: proc(
 ) -> (window: ^Editor_Window, authoritative: bool) {
 	window, authoritative = editor_view_window(view, base, base_ready, document_id, editor_revision)
 	if authoritative { return }
+	if view != nil && view.optimistic_window_ready && view.optimistic_window.document_id == document_id {
+		// Keep the newest user-visible projection while a fresh authoritative
+		// window is in flight. This snapshot is presentation-only: callers must
+		// continue to use the strict authority result for editing and hit testing.
+		return &view.optimistic_window, false
+	}
 	if base_ready && base != nil && base.document_id == document_id {
 		// Revision mismatch invalidates interaction authority, not immediately
 		// the pixels: this snapshot may remain visible until its replacement is
