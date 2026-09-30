@@ -473,6 +473,64 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 				edit.AppliedReplacement[i] = int(value)
 			}
 		}
+	case "execute_command":
+		documentID := application.DocumentID(request.DocumentID)
+		doc := r.app.Documents[documentID]
+		if doc == nil || doc.Editor == nil {
+			return commandError(request, "unknown_document", errors.New("unknown document"))
+		}
+		if doc.Revision() != request.EditorRevision {
+			return commandError(request, "stale_editor_revision", fmt.Errorf("expected editor revision %d, current %d", request.EditorRevision, doc.Revision()))
+		}
+		anchor, cursor := int(request.EditorAnchorByte), int(request.EditorCursorByte)
+		if anchor > doc.Editor.Buffer.ByteLen() || cursor > doc.Editor.Buffer.ByteLen() {
+			return commandError(request, "invalid_editor_selection", errors.New("editor selection is outside the document"))
+		}
+		doc.Editor.SetSelection(anchor, cursor)
+		commandRequest, err := commands.NewRequest(doc, commands.ID(request.ActionID))
+		if err != nil {
+			return commandError(request, "command_unavailable", err)
+		}
+		outcome := commands.Execute(commandRequest)
+		if outcome.Status == commands.ResultFailed {
+			if outcome.Err == nil {
+				return commandError(request, "command_failed", errors.New("editor command failed"))
+			}
+			return commandError(request, "command_failed", outcome.Err)
+		}
+		if outcome.Status == commands.ResultUnavailable {
+			return commandError(request, "command_unavailable", fmt.Errorf("command %q is unavailable in the current editor context", request.ActionID))
+		}
+		if outcome.Status == commands.ResultExecuted {
+			_, err = r.app.ReplaceDocument(application.PresentationCommand{
+				Kind:              application.PresentationReplaceDocument,
+				DocumentID:        documentID,
+				EditorRevision:    request.EditorRevision,
+				StartByte:         outcome.Start,
+				EndByte:           outcome.End,
+				Replacement:       outcome.Replacement,
+				HasSelectionState: true,
+				BeforeAnchorByte:  anchor,
+				BeforeCursorByte:  cursor,
+				AfterAnchorByte:   outcome.Anchor,
+				AfterCursorByte:   outcome.Cursor,
+			})
+			if err != nil {
+				return commandError(request, "command_failed", err)
+			}
+		}
+		anchor, cursor = doc.Editor.Selection()
+		cursorLine, ok := doc.Editor.Buffer.LineAt(cursor)
+		if !ok {
+			return commandError(request, "command_failed", errors.New("editor command returned a cursor outside the document"))
+		}
+		editorSelection = &EditorSelection{
+			DocumentID:     request.DocumentID,
+			EditorRevision: doc.Revision(),
+			AnchorByte:     uint64(anchor),
+			CursorByte:     uint64(cursor),
+			CursorLine:     uint64(cursorLine),
+		}
 	case string(commands.EditUndo), string(commands.EditRedo):
 		documentID := application.DocumentID(request.DocumentID)
 		var err error

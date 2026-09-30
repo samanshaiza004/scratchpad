@@ -1,4 +1,4 @@
-# Bounded Markdown presentation — first Alicorn slice
+# Source-preserving Markdown presentation — Alicorn
 
 ## Research verdict
 
@@ -10,7 +10,7 @@ The missing integration was the foreign backend's asynchronous projection lifecy
 
 Go owns raw source, Markdown meaning, absolute source-byte ranges, revision validation, and disposable projection workers. Caliber carries immutable bounded resources and wakes; its ABI does not gain Markdown concepts. Scratchpad's Odin frontend maps source ranges through its existing byte-safe display projection. Alicorn paints generic UTF-8 byte spans on one shaped text run, without changing metrics or caret/selection geometry.
 
-Syntax remains visible. Tabs, BOMs, CRLF, invalid bytes, and saved bytes retain their existing source mapping. Styling is disposable and applies only to an exact, authoritative Markdown window. Optimistic edits, stale presentation, and IME preedit render plain text until current metadata arrives.
+Syntax remains visible. Tabs, BOMs, CRLF, invalid bytes, and saved bytes retain their existing source mapping. Styling is disposable. Exact authoritative metadata is used normally; during optimistic edits, Alicorn shifts unaffected ranges and conservatively drops ranges intersected ambiguously by the edit. That rebased metadata keeps presentation visually continuous while remaining presentation-only: semantic commands and source mutations still require current authoritative state. IME preedit remains transient and is not parsed locally.
 
 ## Resource extension
 
@@ -18,17 +18,25 @@ Syntax remains visible. Tabs, BOMs, CRLF, invalid bytes, and saved bytes retain 
 
 The appended little-endian trailer has a 24-byte header: presentation revision (`u64`), flags (`u32`, ready=1 and truncated=2), span count (`u32`), block count (`u32`), and a zero reserved word (`u32`). Span records followed by block records each occupy 16 bytes: explicit wire kind, start, end, and level/flags (`u32` each). The low eight bits hold level; block bits 8 and 9 indicate clipping at the window start and end. Ranges are half-open, relative to the returned source window, and clipped to it. Wire IDs are explicit constants rather than Go enum ordinals.
 
-The source limit remains 64 KiB / 256 logical lines, with 16 KiB anchored long-line chunks. Metadata is capped at 4,096 combined records plus its header. A pathological window may truncate metadata while retaining all its bounded source; the flag makes that degradation explicit. Pending or unsupported presentation produces plain source. Revision/readiness changes trigger a request through the existing latest-wins visible-window lane, not a fourth async lane.
+The source limit remains 64 KiB / 256 logical lines, with 16 KiB anchored long-line chunks. Metadata is capped at 4,096 combined records plus its header. A pathological window may truncate metadata while retaining all its bounded source; the flag makes that degradation explicit. Pending or unsupported presentation without a safe rebased snapshot produces plain source. Revision/readiness changes trigger a request through the existing latest-wins visible-window lane, not a fourth async lane.
 
-## Styling and visual-row geometry
+## Markdown A — bounded semantics and typography
 
-Markdown presentation uses colors, underline/strikethrough, and solid backgrounds for headings, inline code, links, blockquotes, lists, and tasks. Shaping-aware text style spans map strong to bold and emphasis to italic; heading levels use modest font weights without changing font size. These spans use the same source-to-display byte mapping and exact-revision gate as paint spans. Paint spans remain paint-only while typography participates in shaping; the source text stays unchanged. This is not full Shirei appearance parity.
+Markdown A supplies revision-tagged semantic spans and block ranges. Shaping-aware text style spans map strong to bold and emphasis to italic. Paint spans add colors, links, inline-code backgrounds, and strike-through while preserving the source bytes. Presentation metadata applies only to an exact authoritative revision.
+
+## Markdown B — structural source presentation
+
+The visible editor remains a source editor. It keeps Markdown punctuation in place and derives presentation from Goldmark's existing spans and block ranges; the Odin frontend does not parse Markdown or construct a second document model.
+
+All six heading levels have distinct weight and color, with progressively larger measured row spacing for higher-level headings. Blockquote, fenced-code, list, thematic-break, and table meaning is shown through source typography, markers, and spacing; full-width semantic row fills are omitted so selection and text remain visually dominant. List and task markers are emphasized; completed task text is struck through as presentation only. Table headers are bold, delimiters and separators are subdued, and source columns can be aligned with Document > Format Table. Tab/Shift+Tab and Enter use Scratchpad's table navigation commands. Fenced code and tables retain horizontal scrolling; prose continues to wrap.
+
+These treatments change only derived layout and paint. The displayed source, caret/selection coordinates, edit ranges, and saved bytes remain source-mapped. Heading, thematic-break, and table-header spacing is included in sparse row-height measurement, so navigation, selection, and scroll anchoring use the presented geometry.
 
 Soft wrapping now operates on the final shaped typography. One logical Markdown source line can contain multiple Runa visual rows, while Scratchpad continues to own the logical line and source-byte ranges. The bounded Odin frontend measures only the loaded 64 KiB / 256-line window; Alicorn's sparse variable-height list index maps logical rows to scroll geometry without allocating one height entry per document line. Caret navigation, hit testing, selection, and caret geometry use the wrapped run. Home/End remain logical-line boundaries.
 
-Markdown and plain-text prose wrap; exact Markdown fenced-code and table records remain horizontally scrollable, as do ordinary code-language files. Runa's constrained shaping handles long unbroken words at grapheme boundaries. Width changes remeasure the bounded source window and keep the top visible logical line plus its pixel offset stable. Local source edits invalidate and shift the affected sparse row measurements; authoritative Undo/Redo revisions clear stale measurements.
+Markdown and plain-text prose wrap; exact Markdown fenced-code and table records remain horizontally scrollable, as do ordinary code-language files. Wrapped prose does not contribute to intrinsic horizontal extent, so resizing a wider viewport down cannot leave an unnecessary horizontal scrollbar. Runa's constrained shaping handles long unbroken words at grapheme boundaries. Width changes remeasure the bounded source window and keep the top visible logical line plus its pixel offset stable. Local source edits invalidate and shift the affected sparse row measurements; authoritative Undo/Redo revisions clear stale measurements.
 
-Automated coverage verifies styled multi-row shaping, source/display mapping, visual-row Up/Down and Shift selection, no-wrap policy for code/tables, long-word wrapping, line-height identity shifts after edits, and resize anchoring. Native Windows/macOS resizing, scrolling, and IME candidate placement still need manual verification. Heading sizes, richer block geometry, and full Markdown parity remain after this gate. Shirei remains the default/product frontend.
+The recorded Markdown A and soft-wrap coverage verifies exact-revision styling, source/display mapping, wrapped visual-row navigation and selection, no-wrap policy for code/tables, long-word wrapping, sparse height shifts, and resize anchoring. Markdown B's visual appearance still needs a desktop review on Windows and macOS alongside the existing resize, scrolling, and IME candidate-position checks. This pass does not claim full Shirei appearance or Markdown-command parity. Shirei remains the default/product frontend.
 
 ## Validation limits
 

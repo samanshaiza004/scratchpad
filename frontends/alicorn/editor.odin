@@ -13,12 +13,23 @@ EDITOR_TAB_INSERT :: [4]u8{' ', ' ', ' ', ' '}
 EDITOR_LONG_LINE_CHUNK_BYTES :: u64(16 * 1024)
 EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES :: int(bridge.MAX_VISIBLE_BYTES + bridge.MAX_EDIT_BYTES)
 EDITOR_IME_RECOVERY_MAX_BYTES :: int(bridge.MAX_EDIT_BYTES)
+EDITOR_PRESENTATION_HEADING :: u32(2)
+EDITOR_PRESENTATION_STRONG :: u32(3)
+EDITOR_PRESENTATION_EMPHASIS :: u32(4)
+EDITOR_PRESENTATION_INLINE_CODE :: u32(5)
+EDITOR_PRESENTATION_LINK :: u32(6)
+EDITOR_PRESENTATION_STRIKE :: u32(7)
 EDITOR_PRESENTATION_CODE_BLOCK :: u32(8)
+EDITOR_PRESENTATION_LIST_MARKER :: u32(10)
+EDITOR_PRESENTATION_TASK_MARKER :: u32(11)
 EDITOR_PRESENTATION_TABLE :: u32(29)
 EDITOR_PRESENTATION_TABLE_HEADER :: u32(30)
 EDITOR_PRESENTATION_TABLE_DELIMITER :: u32(31)
 EDITOR_PRESENTATION_TABLE_PIPE :: u32(32)
 EDITOR_PRESENTATION_BLOCK_CODE :: u32(0x10001)
+EDITOR_PRESENTATION_BLOCK_QUOTE :: u32(0x10002)
+EDITOR_PRESENTATION_BLOCK_LIST :: u32(0x10003)
+EDITOR_PRESENTATION_BLOCK_THEMATIC :: u32(0x10004)
 EDITOR_PRESENTATION_BLOCK_TABLE :: u32(0x10005)
 
 editor_logical_row_style :: proc() -> alicorn.Layout_Style {
@@ -45,6 +56,7 @@ Editor_Window :: struct {
 	source:          []u8,
 	presentation_revision: u64,
 	presentation_ready: bool,
+	presentation_stale: bool,
 	presentation_truncated: bool,
 	presentation_spans: []bridge.Presentation_Record,
 	presentation_blocks: []bridge.Presentation_Record,
@@ -611,9 +623,9 @@ editor_preedit_display_for_line :: proc(
 	return display, selection_start, selection_end, true
 }
 
-// A bounded source window only provides a lower bound for the document's
-// horizontal extent. Keep the widest observed window for this editor revision
-// so paging through shorter windows cannot make the viewport geometry contract.
+// Keep the widest intrinsic no-wrap content seen for this editor revision.
+// Viewport width is applied separately so a previously wider window cannot
+// leave a bogus horizontal scrollbar after resize.
 editor_view_observe_horizontal_extent :: proc(
 	view: ^Editor_View_State,
 	editor_revision: u64,
@@ -656,7 +668,12 @@ editor_view_sync_scroll :: proc(
 			view.restore_x_pending = false
 		}
 	} else {
-		view.scroll_x = live_x
+		clamped_x := min(max(live_x, 0), max(max_x, 0))
+		view.scroll_x = clamped_x
+		if abs(clamped_x-live_x) > 0.5 {
+			result.horizontal = true
+			result.scroll_x = clamped_x
+		}
 	}
 	return result
 }
@@ -878,21 +895,23 @@ editor_source_range_to_display :: proc(line: ^Editor_Display_Line, start_byte, e
 
 editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, color_set: bool) {
 	switch kind {
-	case 2: // heading
-		return alicorn.Color{0.55, 0.76, 1.0, 1}, true
-	case 3: // strong
+	case EDITOR_PRESENTATION_HEADING:
+		return {}, false
+	case EDITOR_PRESENTATION_STRONG:
 		return alicorn.Color{0.86, 0.9, 1.0, 1}, true
-	case 4: // emphasis
+	case EDITOR_PRESENTATION_EMPHASIS:
 		return alicorn.Color{0.72, 0.79, 0.91, 1}, true
-	case 5: // inline code
+	case EDITOR_PRESENTATION_INLINE_CODE:
 		return alicorn.Color{0.76, 0.84, 1.0, 1}, true
-	case 6: // link
+	case EDITOR_PRESENTATION_LINK:
 		return alicorn.Color{0.38, 0.72, 1.0, 1}, true
-	case 8: // code block
+	case EDITOR_PRESENTATION_CODE_BLOCK:
 		return alicorn.Color{0.73, 0.82, 0.95, 1}, true
-	case 9, 10, 28, 31: // quote, list marker, thematic break, table delimiter
+	case 9, 28, 31: // quote marker, thematic break, table delimiter
 		return alicorn.Color{0.57, 0.63, 0.74, 1}, true
-	case 11: // task marker
+	case EDITOR_PRESENTATION_LIST_MARKER:
+		return alicorn.Color{0.62, 0.75, 0.94, 1}, true
+	case EDITOR_PRESENTATION_TASK_MARKER:
 		return alicorn.Color{0.44, 0.8, 1.0, 1}, true
 	case 12: // code comment
 		return alicorn.Color{0.48, 0.69, 0.57, 1}, true
@@ -917,12 +936,109 @@ editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, co
 	}
 }
 
-// Markdown typography is applied over the same source-derived display bytes as
-// paint spans. It changes glyph shaping but leaves the row's font size and
-// layout bounds fixed.
+Editor_Markdown_Row_Presentation :: struct {
+	heading_level: u32,
+	code_block: bool,
+	blockquote: bool,
+	list_item: bool,
+	thematic_break: bool,
+	table: bool,
+	table_header: bool,
+	table_delimiter: bool,
+	task_marker: bool,
+}
+
+editor_presentation_range_intersects_line :: proc(
+	line: ^Editor_Display_Line,
+	start_byte, end_byte: u64,
+) -> bool {
+	if line == nil || end_byte <= start_byte { return false }
+	if start_byte < line.source_end && end_byte > line.source_start { return true }
+	// Empty Markdown rows still occupy source positions inside block ranges.
+	return line.source_start == line.source_end && line.source_start >= start_byte && line.source_start < end_byte
+}
+
+editor_markdown_row_presentation :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	current: bool,
+) -> Editor_Markdown_Row_Presentation {
+	result: Editor_Markdown_Row_Presentation
+	if window == nil || line == nil || !current || !window.presentation_ready ||
+	   (!window.presentation_stale && window.presentation_revision != window.editor_revision) { return result }
+	window_end := window.start_byte+u64(len(window.source))
+	for record in window.presentation_spans {
+		start_byte := window.start_byte+u64(record.start_byte)
+		end_byte := window.start_byte+u64(record.end_byte)
+		if end_byte > window_end || !editor_presentation_range_intersects_line(line, start_byte, end_byte) { continue }
+		switch record.kind {
+		case EDITOR_PRESENTATION_HEADING:
+			level := record.level_flags & 0xFF
+			if level >= 1 && level <= 6 && level > result.heading_level { result.heading_level = level }
+		case EDITOR_PRESENTATION_TABLE_HEADER:
+			result.table_header = true
+		case EDITOR_PRESENTATION_TABLE_DELIMITER:
+			result.table_delimiter = true
+		case EDITOR_PRESENTATION_TASK_MARKER:
+			result.task_marker = true
+		}
+	}
+	for record in window.presentation_blocks {
+		start_byte := window.start_byte+u64(record.start_byte)
+		end_byte := window.start_byte+u64(record.end_byte)
+		if end_byte > window_end || !editor_presentation_range_intersects_line(line, start_byte, end_byte) { continue }
+		switch record.kind {
+		case EDITOR_PRESENTATION_BLOCK_CODE: result.code_block = true
+		case EDITOR_PRESENTATION_BLOCK_QUOTE: result.blockquote = true
+		case EDITOR_PRESENTATION_BLOCK_LIST: result.list_item = true
+		case EDITOR_PRESENTATION_BLOCK_THEMATIC: result.thematic_break = true
+		case EDITOR_PRESENTATION_BLOCK_TABLE: result.table = true
+		}
+	}
+	return result
+}
+
+editor_markdown_heading_color :: proc(level: u32) -> alicorn.Color {
+	switch level {
+	case 1: return alicorn.Color{0.58, 0.78, 1.0, 1}
+	case 2: return alicorn.Color{0.55, 0.74, 0.96, 1}
+	case 3: return alicorn.Color{0.58, 0.73, 0.91, 1}
+	case 4: return alicorn.Color{0.63, 0.74, 0.88, 1}
+	case 5: return alicorn.Color{0.66, 0.74, 0.85, 1}
+	case 6: return alicorn.Color{0.69, 0.75, 0.84, 1}
+	case: return alicorn.Color{0.55, 0.76, 1.0, 1}
+	}
+}
+
+editor_markdown_row_background :: proc(row: Editor_Markdown_Row_Presentation) -> alicorn.Color {
+	// Keep the source surface calm. Markdown hierarchy comes from typography,
+	// markers, and spacing; full-width semantic bands compete with selection.
+	return alicorn.NO_BACKGROUND_COLOR
+}
+
+editor_markdown_row_extra_height :: proc(row: Editor_Markdown_Row_Presentation) -> f32 {
+	extra: f32 = 0
+	switch row.heading_level {
+	case 1: extra = 20
+	case 2: extra = 14
+	case 3: extra = 9
+	case 4: extra = 6
+	case 5: extra = 4
+	case 6: extra = 3
+	case: extra = 0
+	}
+	if extra > 0 { return extra }
+	if row.thematic_break { return 6 }
+	if row.table_header { return 4 }
+	return 0
+}
+
+// Markdown typography is applied over source-derived display bytes; block
+// hierarchy affects measured row geometry independently of source text.
 editor_presentation_text_styles_for_line :: proc(window: ^Editor_Window, line: ^Editor_Display_Line, allocator := context.temp_allocator) -> []alicorn.Text_Style_Span {
 	result := make([dynamic]alicorn.Text_Style_Span, 0, allocator=allocator)
-	if window == nil || line == nil || !window.presentation_ready || window.presentation_revision != window.editor_revision { return result[:] }
+	if window == nil || line == nil || !window.presentation_ready ||
+	   (!window.presentation_stale && window.presentation_revision != window.editor_revision) { return result[:] }
 	window_end := window.start_byte+u64(len(window.source))
 	for record in window.presentation_spans {
 		weight: f32
@@ -930,20 +1046,32 @@ editor_presentation_text_styles_for_line :: proc(window: ^Editor_Window, line: ^
 		italic := false
 		italic_set := false
 		switch record.kind {
-		case 2: // heading; modest hierarchy without a size change
+		case EDITOR_PRESENTATION_HEADING:
 			switch record.level_flags & 0xFF {
 			case 1: weight = alicorn.FONT_WEIGHT_SEMIBOLD
 			case 2: weight = alicorn.FONT_WEIGHT_MEDIUM
 			case 3: weight = 450
+			case 4: weight = 430
+			case 5: weight = 415
+			case 6: weight = alicorn.FONT_WEIGHT_REGULAR
 			case: continue
 			}
 			weight_set = true
-		case 3: // strong
+		case EDITOR_PRESENTATION_STRONG:
 			weight = alicorn.FONT_WEIGHT_BOLD
 			weight_set = true
-		case 4: // emphasis
+		case EDITOR_PRESENTATION_EMPHASIS:
 			italic = true
 			italic_set = true
+		case EDITOR_PRESENTATION_LIST_MARKER:
+			weight = alicorn.FONT_WEIGHT_SEMIBOLD
+			weight_set = true
+		case EDITOR_PRESENTATION_TASK_MARKER:
+			weight = alicorn.FONT_WEIGHT_BOLD
+			weight_set = true
+		case EDITOR_PRESENTATION_TABLE_HEADER:
+			weight = alicorn.FONT_WEIGHT_BOLD
+			weight_set = true
 		case:
 			continue
 		}
@@ -968,9 +1096,11 @@ editor_presentation_text_styles_for_line :: proc(window: ^Editor_Window, line: ^
 
 editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor_Display_Line, allocator := context.temp_allocator) -> []alicorn.Text_Paint_Span {
 	result := make([dynamic]alicorn.Text_Paint_Span, 0, allocator=allocator)
-	if window == nil || line == nil || !window.presentation_ready || window.presentation_revision != window.editor_revision { return result[:] }
+	if window == nil || line == nil || !window.presentation_ready ||
+	   (!window.presentation_stale && window.presentation_revision != window.editor_revision) { return result[:] }
 	window_end := window.start_byte+u64(len(window.source))
-	// Block backgrounds go first so inline syntax colors remain visible above them.
+	// Keep block treatment behind source characters only; full-width row fills
+	// stay off so selection and the writing surface remain visually quiet.
 	for record in window.presentation_blocks {
 		absolute_start := window.start_byte+u64(record.start_byte)
 		absolute_end := window.start_byte+u64(record.end_byte)
@@ -981,16 +1111,16 @@ editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor
 		if !mapped { continue }
 		paint := alicorn.Text_Paint_Span{start=start, end=end}
 		switch record.kind {
-		case 0x10001: // code block
+		case EDITOR_PRESENTATION_BLOCK_CODE:
 			paint.background = alicorn.Color{0.09, 0.11, 0.16, 0.48}
 			paint.background_set = true
-		case 0x10002: // quote
+		case EDITOR_PRESENTATION_BLOCK_QUOTE:
 			paint.background = alicorn.Color{0.18, 0.22, 0.31, 0.34}
 			paint.background_set = true
-		case 0x10004: // thematic break
+		case EDITOR_PRESENTATION_BLOCK_THEMATIC:
 			paint.background = alicorn.Color{0.22, 0.26, 0.35, 0.32}
 			paint.background_set = true
-		case 0x10005: // table
+		case EDITOR_PRESENTATION_BLOCK_TABLE:
 			paint.background = alicorn.Color{0.18, 0.22, 0.3, 0.38}
 			paint.background_set = true
 		}
@@ -1005,14 +1135,23 @@ editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor
 		start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
 		if !mapped { continue }
 		color, color_set := editor_presentation_record_color(record.kind)
+		if record.kind == EDITOR_PRESENTATION_HEADING {
+			level := record.level_flags & 0xFF
+			if level >= 1 && level <= 6 {
+				color, color_set = editor_markdown_heading_color(level), true
+			}
+		}
 		paint := alicorn.Text_Paint_Span{start=start, end=end, color=color, color_set=color_set}
 		switch record.kind {
-		case 5: // inline code
+		case EDITOR_PRESENTATION_INLINE_CODE:
 			paint.background = alicorn.Color{0.2, 0.24, 0.34, 0.76}
 			paint.background_set = true
-		case 6: // link
+		case EDITOR_PRESENTATION_TASK_MARKER:
+			paint.background = alicorn.Color{0.12, 0.25, 0.38, 0.84}
+			paint.background_set = true
+		case EDITOR_PRESENTATION_LINK:
 			paint.underline = true
-		case 7: // strike
+		case EDITOR_PRESENTATION_STRIKE:
 			paint.strikethrough = true
 		}
 		if paint.color_set || paint.underline || paint.strikethrough || paint.background_set { append(&result, paint) }
@@ -1372,7 +1511,67 @@ editor_window_replace_bytes :: proc(
 	}
 	window, ok, message = editor_window_from_visible(&visible, allocator, EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES)
 	if !ok && len(visible.source) > 0 { delete(visible.source, allocator) }
+	if ok {
+		window.presentation_revision = source.presentation_revision
+		window.presentation_ready = source.presentation_ready
+		window.presentation_truncated = source.presentation_truncated
+		if source.presentation_ready {
+			local_start := int(start_byte-source.start_byte)
+			local_end := int(end_byte-source.start_byte)
+			window.presentation_spans = editor_rebase_presentation_records(
+				source.presentation_spans, local_start, local_end, len(replacement), allocator,
+			)
+			window.presentation_blocks = editor_rebase_presentation_records(
+				source.presentation_blocks, local_start, local_end, len(replacement), allocator,
+			)
+			window.presentation_stale = true
+		}
+	}
 	return
+}
+
+editor_rebase_presentation_records :: proc(
+	records: []bridge.Presentation_Record,
+	edit_start, edit_end, replacement_length: int,
+	allocator := context.allocator,
+) -> []bridge.Presentation_Record {
+	result := make([dynamic]bridge.Presentation_Record, 0, allocator=allocator)
+	delta := i64(replacement_length)-i64(edit_end-edit_start)
+	edit_start_i64 := i64(edit_start)
+	edit_end_i64 := i64(edit_end)
+	for original in records {
+		record := original
+		start := i64(record.start_byte)
+		end := i64(record.end_byte)
+		if edit_start == edit_end {
+			if end <= edit_start_i64 {
+				// Insertion after this record; retain its byte range.
+			} else if start >= edit_start_i64 {
+				start += delta
+				end += delta
+			} else {
+				// Insertion inside the record extends its stale range.
+				end += delta
+			}
+		} else if end <= edit_start_i64 {
+			// Record precedes the edit.
+		} else if start >= edit_end_i64 {
+			start += delta
+			end += delta
+		} else if start <= edit_start_i64 && end >= edit_end_i64 {
+			// Preserve enclosing block/span context until the fresh projection
+			// arrives; the edit acknowledgement never treats it as authority.
+			end += delta
+		} else {
+			// Partially replaced records are too ambiguous to keep.
+			continue
+		}
+		if start < 0 || end < start || end > i64(0xFFFFFFFF) { continue }
+		record.start_byte = u32(start)
+		record.end_byte = u32(end)
+		append(&result, record)
+	}
+	return result[:]
 }
 
 editor_count_line_breaks :: proc(source: []u8) -> u64 {
@@ -1552,7 +1751,7 @@ editor_window_line :: proc(window: ^Editor_Window, logical_line: u64) -> (line: 
 editor_line_should_wrap :: proc(language: string, window: ^Editor_Window, line: ^Editor_Display_Line, presentation_current := true) -> bool {
 	if language != "markdown" && language != "plain-text" { return false }
 	if language != "markdown" || !presentation_current || window == nil || line == nil ||
-	   !window.presentation_ready || window.presentation_revision != window.editor_revision {
+	   !window.presentation_ready || (!window.presentation_stale && window.presentation_revision != window.editor_revision) {
 		return true
 	}
 	for record in window.presentation_spans {
@@ -1574,6 +1773,20 @@ editor_line_should_wrap :: proc(language: string, window: ^Editor_Window, line: 
 	return true
 }
 
+editor_cursor_in_markdown_table :: proc(window: ^Editor_Window, source_byte: u64) -> bool {
+	if window == nil || !window.presentation_ready || window.presentation_stale ||
+	   window.presentation_revision != window.editor_revision {
+		return false
+	}
+	for record in window.presentation_blocks {
+		if record.kind != EDITOR_PRESENTATION_BLOCK_TABLE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if source_byte >= start && source_byte < end { return true }
+	}
+	return false
+}
+
 editor_measure_line_height :: proc(
 	rt: ^alicorn.Runtime,
 	window: ^Editor_Window,
@@ -1591,6 +1804,9 @@ editor_measure_line_height :: proc(
 	if !built { return EDITOR_ROW_HEIGHT, 0, 1, false }
 	defer alicorn.text_run_destroy(&run)
 	height = max(EDITOR_ROW_HEIGHT, run.height)
+	if presentation_current {
+		height += editor_markdown_row_extra_height(editor_markdown_row_presentation(window, line, true))
+	}
 	shaped_width = run.width
 	visual_rows = max(len(run.lines), 1)
 	ok = true
@@ -1616,8 +1832,8 @@ editor_measure_window_wrapping :: proc(
 	return changed
 }
 
-editor_window_content_width :: proc(window: ^Editor_Window, minimum, gutter_width: f32, language := "", presentation_current := true) -> f32 {
-	width := minimum
+editor_window_content_width :: proc(window: ^Editor_Window, gutter_width: f32, language := "", presentation_current := true) -> f32 {
+	width: f32 = 0
 	if window == nil { return width }
 	for &line in window.lines {
 		if editor_line_should_wrap(language, window, &line, presentation_current) { continue }

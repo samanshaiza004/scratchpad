@@ -18,6 +18,10 @@ ACTION_FILE_SAVE       :: "file.save"
 ACTION_DOCUMENT_CLOSE  :: "document.close"
 ACTION_TAB_NEXT        :: "tab.next"
 ACTION_TAB_PREVIOUS    :: "tab.previous"
+ACTION_DOCUMENT_FORMAT :: "document.format"
+ACTION_MARKDOWN_TABLE_NEXT :: "markdown.table-next"
+ACTION_MARKDOWN_TABLE_PREVIOUS :: "markdown.table-previous"
+ACTION_MARKDOWN_TABLE_ENTER :: "markdown.table-enter"
 ACTION_WORKSPACE_REFRESH :: "workspace.refresh"
 ACTION_EDIT_UNDO       :: "edit.undo"
 ACTION_EDIT_REDO       :: "edit.redo"
@@ -104,7 +108,7 @@ App :: struct {
 	file_items:             [5]host.Application_Menu_Item,
 	edit_items:             [8]host.Application_Menu_Item,
 	workspace_items:        [1]host.Application_Menu_Item,
-	document_items:         [2]host.Application_Menu_Item,
+	document_items:         [4]host.Application_Menu_Item,
 	menus:                  [4]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -458,6 +462,13 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		document.editor_revision,
 	)
 	window_available := window != nil
+	format_table_enabled := document.language == "markdown" && window_matches &&
+	                        editor_cursor_in_markdown_table(window, view.caret_byte)
+	for &item in app.document_items {
+		if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_FORMAT) {
+			item.state.enabled = format_table_enabled
+		}
+	}
 	if window_matches {
 		_ = editor_view_resolve_document_edge(view, window, display_line_count)
 		if line, found := editor_line_for_source(window, view.caret_byte); found {
@@ -489,7 +500,10 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
 	                              window.presentation_revision == document.presentation_revision &&
 	                              window.presentation_revision == document.editor_revision
-	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_window_matches
+	presentation_usable := presentation_window_matches ||
+	                       (document.language == "markdown" && window_matches && window.presentation_ready &&
+	                        window.presentation_stale && view.optimistic_pending_edits > 0)
+	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_usable
 	if view.wrap_height_index_ready && window_available {
 		needs_measurement := abs(view.wrap_measurement_width-wrap_width) > 0.5 ||
 		                     view.wrap_measurement_revision != window.editor_revision ||
@@ -504,7 +518,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
 			_ = editor_measure_window_wrapping(
 				rt, view, window, document.language, wrap_width,
-				presentation_window_matches,
+				presentation_usable,
 			)
 			new_anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
 			if !view.restore_y_pending && previous_scroll.id != 0 {
@@ -521,10 +535,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.wrap_measurement_pending_edits = view.optimistic_pending_edits
 		}
 	}
-	content_width := view.horizontal_extent
+	content_width := max(viewport_width, view.horizontal_extent)
 	if window_matches {
-		measured_width := editor_window_content_width(window, viewport_width, gutter_width, document.language, presentation_window_matches)
-		content_width = editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
+		measured_width := editor_window_content_width(window, gutter_width, document.language, presentation_usable)
+		intrinsic_width := editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
+		content_width = max(viewport_width, intrinsic_width)
 	}
 	list := alicorn.virtual_list_begin_variable(
 		ui,
@@ -572,7 +587,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, position)
 		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT }
 		if line, found := editor_window_line(window, line_number); window_available && found {
-			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_window_matches)
+			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_usable)
+			row_presentation_current := document.language == "markdown" && presentation_usable &&
+			                           !view.preedit_active && !view.preedit_recoverable
+			markdown_row := editor_markdown_row_presentation(window, line, row_presentation_current)
+			row_background := editor_markdown_row_background(markdown_row)
 			row_key := alicorn.key_string(fmt.tprintf("scratchpad-row:%s:%d", document.id, line.logical_line))
 			alicorn.container_begin(
 				ui,
@@ -580,6 +599,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				label="scratchpad-editor-logical-line",
 				key=row_key,
 				style=alicorn.layout_style(.Row, height=row_height, gap=8, align=.Center, clip=true),
+				color=row_background,
 			)
 			alicorn.container_begin(
 				ui,
@@ -642,9 +662,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=text_overflow},
 			)
 			paint_spans: []alicorn.Text_Paint_Span
-			paint_current := window_matches && view.optimistic_pending_edits == 0 &&
-			                 document.presentation_ready && document.presentation_revision == document.editor_revision &&
-			                 window.presentation_ready && window.presentation_revision == document.presentation_revision &&
+			paint_current := window_covers_view && presentation_usable &&
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current { paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator) }
 			_ = alicorn.text_paint_spans(ui, line_node, paint_spans)
@@ -1377,6 +1395,29 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
 		}
 		bridge.backend_command_result_destroy(&response, context.allocator)
+	case ACTION_DOCUMENT_FORMAT, ACTION_MARKDOWN_TABLE_NEXT, ACTION_MARKDOWN_TABLE_PREVIOUS, ACTION_MARKDOWN_TABLE_ENTER:
+		document, found := find_document(&app.backend.state, app.backend.state.active)
+		if !found { break }
+		view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+		if !view_ok {
+			set_error(app, "Could not retain the active editor selection for the command.")
+			break
+		}
+		view := &app.editor_views[view_index]
+		response := bridge.backend_command(
+			&app.backend,
+			"execute_command",
+			action_id=action_id,
+			document_id=document.id,
+			editor_revision=document.editor_revision,
+			editor_anchor_byte=view.selection_anchor,
+			editor_cursor_byte=view.caret_byte,
+		)
+		handle_command_result(app, rt, &response)
+		if response.ok && response.editor_selection.document_id != "" {
+			editor_apply_backend_selection(app, rt, response.editor_selection)
+		}
+		bridge.backend_command_result_destroy(&response, context.allocator)
 	case ACTION_DOCUMENT_CLOSE:
 		request_close_document(app, rt, app.backend.state.active)
 	case ACTION_TAB_NEXT:
@@ -1512,6 +1553,16 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return true
 	}
 	if key == .Return && app.editor_scroll_owner != 0 && rt.focused == app.editor_scroll_owner {
+		if document, found := find_document(&app.backend.state, app.backend.state.active); found && document.language == "markdown" {
+			if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
+				view := &app.editor_views[view_index]
+				window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+				if window_matches && editor_cursor_in_markdown_table(window, view.caret_byte) {
+					dispatch_action(app, rt, ACTION_MARKDOWN_TABLE_ENTER)
+					return true
+				}
+			}
+		}
 		return editor_insert_newline(app, rt)
 	}
 	if app.tree_scroll_owner != 0 && rt.focused == app.tree_scroll_owner {
@@ -1553,7 +1604,8 @@ editor_source_at_pointer :: proc(
 	if !window_matches { return }
 	// Choose the realized row containing Y. During a captured drag, clamp into
 	// the nearest realized row so leaving the viewport selects its visible edge
-	// rather than dropping the interaction; autoscroll is a later slice.
+	// rather than dropping the interaction; scheduled autoscroll advances the
+	// viewport and retries from the retained pointer coordinates.
 	best_distance := f32(1e30)
 	best_target: Editor_Row_Target
 	best_y := hit_y
@@ -1765,10 +1817,16 @@ editor_text_key :: proc(
 		view.pending_document_edge_shift = false
 	}
 	if event.key == .Tab {
+		if event.control || event.alt || event.super { return false }
+		table_action := ACTION_MARKDOWN_TABLE_NEXT
+		if event.shift { table_action = ACTION_MARKDOWN_TABLE_PREVIOUS }
+		if document.language == "markdown" && editor_cursor_in_markdown_table(window, view.caret_byte) {
+			dispatch_action(app, rt, table_action)
+			return true
+		}
 		// A collapsed Tab inserts one indentation unit. A non-empty selection
 		// indents every touched logical line as one source replacement; Shift+Tab
 		// outdents every touched line (or the caret's line) in the same way.
-		if event.control || event.alt || event.super { return false }
 		tab_indent := EDITOR_TAB_INSERT
 		if !event.shift {
 			if view.selection_anchor != view.caret_byte {
@@ -2793,6 +2851,16 @@ sync_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	for action in app.backend.state.actions {
 		if action.id == "" || action.title == "" { continue }
 		enabled := action.enabled
+		if action.id == ACTION_DOCUMENT_FORMAT {
+			enabled = false
+			if document, found := find_document(&app.backend.state, app.backend.state.active); found && document.language == "markdown" {
+				if view_index, view_ok := editor_view_ensure(&app.editor_views, document.id); view_ok {
+					view := &app.editor_views[view_index]
+					window, matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+					enabled = matches && editor_cursor_in_markdown_table(window, view.caret_byte)
+				}
+			}
+		}
 		if action.id == ACTION_EDIT_UNDO && editor_has_pending_active_document_edit(app) { enabled = true }
 		if composition_active && (action.id == ACTION_EDIT_UNDO || action.id == ACTION_EDIT_REDO) { enabled = false }
 		accepted := alicorn.action_update(rt,
@@ -3195,9 +3263,11 @@ init_menus :: proc(app: ^App) {
 	app.workspace_items = [1]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_REFRESH), label="Refresh Workspace", shortcut=host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}},
 	}
-	app.document_items = [2]host.Application_Menu_Item{
+	app.document_items = [4]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_TAB_NEXT), label="Next Document"},
 		{kind=.Command, command=action_id_for(ACTION_TAB_PREVIOUS), label="Previous Document"},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_FORMAT), label="Format Table"},
 	}
 	app.menus = [4]host.Application_Menu{
 		{label="File", items=app.file_items[:]},

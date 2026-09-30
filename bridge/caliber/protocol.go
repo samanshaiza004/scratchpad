@@ -49,6 +49,7 @@ type CommandRequest struct {
 	RequestID           uint64 `json:"request_id"`
 	BasedOnRevision     uint64 `json:"based_on_revision"`
 	Command             string `json:"command"`
+	ActionID            string `json:"action_id,omitempty"`
 	Path                string `json:"path,omitempty"`
 	Disposition         string `json:"disposition,omitempty"`
 	Name                string `json:"name,omitempty"`
@@ -63,6 +64,8 @@ type CommandRequest struct {
 	IncludePresentation bool   `json:"include_presentation,omitempty"`
 	IncludeIgnored      bool   `json:"include_ignored,omitempty"`
 	EditorRevision      uint64 `json:"editor_revision,omitempty"`
+	EditorAnchorByte    uint64 `json:"editor_anchor_byte,omitempty"`
+	EditorCursorByte    uint64 `json:"editor_cursor_byte,omitempty"`
 	StartByte           uint64 `json:"start_byte,omitempty"`
 	EndByte             uint64 `json:"end_byte,omitempty"`
 	Replacement         []int  `json:"replacement,omitempty"`
@@ -313,6 +316,19 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 			if value < 0 || value > 255 {
 				return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_bytes", "replacement values must be bytes", false), false
 			}
+		}
+	case "execute_command":
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if request.ActionID == "" || !utf8.ValidString(request.ActionID) || strings.ContainsRune(request.ActionID, 0) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_action_id", "a valid action_id is required", false), false
+		}
+		if request.EditorRevision == 0 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_editor_revision", "editor_revision is required", false), false
+		}
+		if request.EditorAnchorByte > uint64(^uint(0)>>1) || request.EditorCursorByte > uint64(^uint(0)>>1) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_editor_selection", "editor selection does not fit the host word size", false), false
 		}
 	case "read_visible_lines":
 		if request.DocumentID == "" {

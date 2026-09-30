@@ -271,6 +271,7 @@ Backend_Command_Request :: struct {
 	request_id:       u64    `json:"request_id"`,
 	based_on_revision: u64    `json:"based_on_revision"`,
 	command:          string `json:"command"`,
+	action_id:        string `json:"action_id,omitempty"`,
 	path:             string `json:"path,omitempty"`,
 	disposition:      string `json:"disposition,omitempty"`,
 	document_id:      string `json:"document_id,omitempty"`,
@@ -284,6 +285,8 @@ Backend_Command_Request :: struct {
 	include_presentation: bool `json:"include_presentation,omitempty"`,
 	include_ignored: bool `json:"include_ignored,omitempty"`,
 	editor_revision:  u64    `json:"editor_revision,omitempty"`,
+	editor_anchor_byte: u64 `json:"editor_anchor_byte,omitempty"`,
+	editor_cursor_byte: u64 `json:"editor_cursor_byte,omitempty"`,
 	start_byte:         u64    `json:"start_byte,omitempty"`,
 	end_byte:           u64    `json:"end_byte,omitempty"`,
 	replacement:        []int  `json:"replacement,omitempty"`,
@@ -926,6 +929,7 @@ Backend_Command_Result :: struct {
 backend_command :: proc(
 	backend: ^Backend,
 	command: string,
+	action_id := "",
 	path := "",
 	disposition := "",
 	document_id := "",
@@ -936,6 +940,8 @@ backend_command :: proc(
 	max_lines: u64 = 0,
 	max_bytes: u64 = 0,
 	editor_revision: u64 = 0,
+	editor_anchor_byte: u64 = 0,
+	editor_cursor_byte: u64 = 0,
 	start_byte: u64 = 0,
 	end_byte: u64 = 0,
 	replacement: []int = {},
@@ -967,6 +973,7 @@ backend_command :: proc(
 		request_id=backend.request_id,
 		based_on_revision=request_revision,
 		command=command,
+		action_id=action_id,
 		path=path,
 		disposition=disposition,
 		document_id=document_id,
@@ -978,6 +985,8 @@ backend_command :: proc(
 		max_lines=max_lines,
 		max_bytes=max_bytes,
 		editor_revision=editor_revision,
+		editor_anchor_byte=editor_anchor_byte,
+		editor_cursor_byte=editor_cursor_byte,
 		start_byte=start_byte,
 		end_byte=end_byte,
 		replacement=replacement,
@@ -1031,7 +1040,7 @@ backend_command :: proc(
 			result.edit_applied_replacement_owned = true
 		}
 	}
-	if response.ok && (command == "edit.undo" || command == "edit.redo") && response.editor_selection.document_id != "" {
+	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command") && response.editor_selection.document_id != "" {
 		result.editor_selection = response.editor_selection
 		result.editor_selection.document_id, _ = strings.clone(response.editor_selection.document_id, allocator)
 		result.editor_selection_document_id_owned = len(result.editor_selection.document_id) > 0
