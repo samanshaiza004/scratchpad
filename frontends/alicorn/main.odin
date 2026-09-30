@@ -1528,7 +1528,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			editor_cursor_byte=view.caret_byte,
 		)
 		handle_command_result(app, rt, &response)
-		if action_id == ACTION_DOCUMENT_FORMAT && response.ok && !response.state_changed {
+		if action_id == ACTION_DOCUMENT_FORMAT && response.ok && response.command_outcome == "no_op" {
 			set_error(app, "Table is already aligned.")
 			alicorn.invalidate_root(rt, "Scratchpad reported an unchanged table format")
 		}

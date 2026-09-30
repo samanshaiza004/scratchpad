@@ -216,6 +216,7 @@ Backend_Response :: struct {
 	resource:         Resource_Descriptor `json:"resource"`,
 	edit:             Edit_Ack           `json:"edit"`,
 	editor_selection: Editor_Selection   `json:"editor_selection"`,
+	command_outcome:  string             `json:"command_outcome"`,
 }
 
 Editor_Selection :: struct {
@@ -284,7 +285,7 @@ Backend_Command_Request :: struct {
 	max_bytes:        u64    `json:"max_bytes,omitempty"`,
 	include_presentation: bool `json:"include_presentation,omitempty"`,
 	include_ignored: bool `json:"include_ignored,omitempty"`,
-	editor_revision:  u64    `json:"editor_revision,omitempty"`,
+	editor_revision:  u64    `json:"editor_revision"`,
 	editor_anchor_byte: u64 `json:"editor_anchor_byte,omitempty"`,
 	editor_cursor_byte: u64 `json:"editor_cursor_byte,omitempty"`,
 	start_byte:         u64    `json:"start_byte,omitempty"`,
@@ -913,11 +914,13 @@ Backend_Command_Result :: struct {
 	editor_selection: Editor_Selection,
 	code:           string,
 	message:        string,
+	command_outcome: string,
 	directory_listing: Directory_Listing,
 	close_decision: Close_Decision,
 	visible_window:  Visible_Window,
 	code_owned:     bool,
 	message_owned:  bool,
+	command_outcome_owned: bool,
 	directory_listing_owned: bool,
 	close_id_owned: bool,
 	edit_document_id_owned: bool,
@@ -1048,6 +1051,9 @@ backend_command :: proc(
 	code_copy, code_clone_err := strings.clone(response.outcome.code, allocator)
 	result.code = code_copy
 	result.code_owned = code_clone_err == nil && len(result.code) > 0
+	command_outcome_copy, command_outcome_clone_err := strings.clone(response.command_outcome, allocator)
+	result.command_outcome = command_outcome_copy
+	result.command_outcome_owned = command_outcome_clone_err == nil && len(result.command_outcome) > 0
 	message_copy, message_clone_err := strings.clone(response.outcome.message, allocator)
 	result.message = message_copy
 	result.message_owned = message_clone_err == nil && len(result.message) > 0
@@ -1103,6 +1109,7 @@ backend_command :: proc(
 backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocator: mem.Allocator) {
 	if result == nil { return }
 	if result.code_owned { delete(result.code, allocator) }
+	if result.command_outcome_owned { delete(result.command_outcome, allocator) }
 	if result.message_owned { delete(result.message, allocator) }
 	if result.directory_listing_owned { directory_listing_destroy(&result.directory_listing, allocator) }
 	if result.close_id_owned { delete(result.close_decision.document_id, allocator) }

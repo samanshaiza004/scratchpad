@@ -349,6 +349,8 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var editorSelection *EditorSelection
 	var matches []CurrentMatch
 	var matchesTruncated bool
+	var commandOutcome string
+	publishState := true
 	switch request.Command {
 	case "ping", "snapshot":
 	case "refresh_workspace":
@@ -494,14 +496,27 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		outcome := commands.Execute(commandRequest)
 		if outcome.Status == commands.ResultFailed {
 			if outcome.Err == nil {
-				return commandError(request, "command_failed", errors.New("editor command failed"))
+				response := commandError(request, "command_failed", errors.New("editor command failed"))
+				response.CommandOutcome = CommandOutcomeFailed
+				return response
 			}
-			return commandError(request, "command_failed", outcome.Err)
+			response := commandError(request, "command_failed", outcome.Err)
+			response.CommandOutcome = CommandOutcomeFailed
+			return response
 		}
 		if outcome.Status == commands.ResultUnavailable {
-			return commandError(request, "command_unavailable", fmt.Errorf("command %q is unavailable in the current editor context", request.ActionID))
+			message := fmt.Errorf("command %q is unavailable in the current editor context", request.ActionID)
+			if outcome.Err != nil {
+				message = outcome.Err
+			}
+			response := commandError(request, "command_unavailable", message)
+			response.CommandOutcome = CommandOutcomeUnavailable
+			return response
 		}
-		if outcome.Status == commands.ResultExecuted {
+		if outcome.Status == commands.ResultNoOp {
+			commandOutcome = CommandOutcomeNoOp
+			publishState = false
+		} else if outcome.Status == commands.ResultExecuted && outcome.Changed() {
 			_, err = r.app.ReplaceDocument(application.PresentationCommand{
 				Kind:              application.PresentationReplaceDocument,
 				DocumentID:        documentID,
@@ -516,8 +531,15 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 				AfterCursorByte:   outcome.Cursor,
 			})
 			if err != nil {
-				return commandError(request, "command_failed", err)
+				response := commandError(request, "command_failed", err)
+				response.CommandOutcome = CommandOutcomeFailed
+				return response
 			}
+			commandOutcome = CommandOutcomeExecutedEdit
+		} else if outcome.Status == commands.ResultExecuted {
+			doc.Editor.SetSelection(outcome.Anchor, outcome.Cursor)
+			commandOutcome = CommandOutcomeSelectionOnly
+			publishState = false
 		}
 		anchor, cursor = doc.Editor.Selection()
 		cursorLine, ok := doc.Editor.Buffer.LineAt(cursor)
@@ -599,14 +621,17 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	default:
 		return commandError(request, "unknown_command", fmt.Errorf("unknown command %q", request.Command))
 	}
-	if err := r.publishApplicationState(); err != nil {
-		return commandError(request, "caliber_error", err)
+	if publishState {
+		if err := r.publishApplicationState(); err != nil {
+			return commandError(request, "caliber_error", err)
+		}
 	}
 	response := okResponse(request.RequestID, r.lifecycle, r.revision)
 	response.BasedOnRevision = request.BasedOnRevision
 	response.DirectoryListing = listing
 	response.Edit = edit
 	response.EditorSelection = editorSelection
+	response.CommandOutcome = commandOutcome
 	response.CloseDecision = closeDecision
 	response.Matches = matches
 	response.MatchesTruncated = matchesTruncated

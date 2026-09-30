@@ -49,7 +49,7 @@ type Outcome struct {
 }
 
 func (o Outcome) Changed() bool {
-	return o.Status == ResultExecuted && !bytes.Equal(o.Replacement, nil)
+	return o.Status == ResultExecuted && (o.Start != o.End || len(o.Replacement) > 0)
 }
 
 // NewRequest snapshots the current editor bytes and synchronously refreshes a
@@ -980,7 +980,7 @@ func insertLiteral(request Request, start, end int, literal string) Outcome {
 
 func formatTable(request Request) Outcome {
 	if !request.ProjectionsCurrent {
-		return Outcome{Status: ResultUnavailable}
+		return Outcome{Status: ResultUnavailable, Err: errors.New("Markdown table metadata is unavailable")}
 	}
 	for _, table := range request.Projections.Tables {
 		cursorInTable := request.Cursor >= table.StartByte && request.Cursor < table.EndByte
@@ -1011,7 +1011,7 @@ func formatTable(request Request) Outcome {
 		cursor, anchor := remapRange(request.Cursor, request.Anchor, table.StartByte, table.EndByte, formatted)
 		return outcome(request, table.StartByte, table.EndByte, string(formatted), cursor, anchor)
 	}
-	return Outcome{Status: ResultUnavailable}
+	return Outcome{Status: ResultUnavailable, Err: errors.New("caret is not inside a Markdown table")}
 }
 
 func navigateTable(request Request, previous, enter bool) Outcome {

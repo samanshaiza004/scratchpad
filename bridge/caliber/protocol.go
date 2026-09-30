@@ -63,7 +63,7 @@ type CommandRequest struct {
 	MaxBytes            uint64 `json:"max_bytes,omitempty"`
 	IncludePresentation bool   `json:"include_presentation,omitempty"`
 	IncludeIgnored      bool   `json:"include_ignored,omitempty"`
-	EditorRevision      uint64 `json:"editor_revision,omitempty"`
+	EditorRevision      uint64 `json:"editor_revision"`
 	EditorAnchorByte    uint64 `json:"editor_anchor_byte,omitempty"`
 	EditorCursorByte    uint64 `json:"editor_cursor_byte,omitempty"`
 	StartByte           uint64 `json:"start_byte,omitempty"`
@@ -91,11 +91,20 @@ type Response struct {
 	Resource         *ResourceDescriptor `json:"resource,omitempty"`
 	Edit             *EditAck            `json:"edit,omitempty"`
 	EditorSelection  *EditorSelection    `json:"editor_selection,omitempty"`
+	CommandOutcome   string              `json:"command_outcome,omitempty"`
 	CloseDecision    *CloseDecision      `json:"close_decision,omitempty"`
 	Matches          []CurrentMatch      `json:"matches,omitempty"`
 	MatchesTruncated bool                `json:"matches_truncated,omitempty"`
 	Diagnostic       string              `json:"diagnostic,omitempty"`
 }
+
+const (
+	CommandOutcomeExecutedEdit  = "executed_edit"
+	CommandOutcomeSelectionOnly = "selection_only"
+	CommandOutcomeNoOp          = "no_op"
+	CommandOutcomeUnavailable   = "unavailable"
+	CommandOutcomeFailed        = "failed"
+)
 
 type ResourceDescriptor struct {
 	ResourceID      uint64 `json:"resource_id"`
@@ -324,7 +333,7 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.ActionID == "" || !utf8.ValidString(request.ActionID) || strings.ContainsRune(request.ActionID, 0) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_action_id", "a valid action_id is required", false), false
 		}
-		if request.EditorRevision == 0 {
+		if !jsonFieldPresent(input, "editor_revision") {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_editor_revision", "editor_revision is required", false), false
 		}
 		if request.EditorAnchorByte > uint64(^uint(0)>>1) || request.EditorCursorByte > uint64(^uint(0)>>1) {
@@ -373,6 +382,15 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		return request, errorResponse(request.RequestID, lifecycle, "unknown_command", fmt.Sprintf("unknown command %q", request.Command), false), false
 	}
 	return request, Response{}, true
+}
+
+func jsonFieldPresent(input []byte, name string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil {
+		return false
+	}
+	_, present := fields[name]
+	return present
 }
 
 // encodeVisibleSlice is an application-owned binary resource format. It is
@@ -582,6 +600,8 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		if document.ID == snapshot.Active {
 			commandContext.CanUndo = document.CanUndo
 			commandContext.CanRedo = document.CanRedo
+			commandContext.RootLanguage = document.Language
+			commandContext.Markdown = document.Language == "markdown"
 		}
 	}
 	registry := commands.DefaultRegistry()
@@ -616,6 +636,10 @@ var shellActionIDs = []commands.ID{
 	commands.TabNext,
 	commands.TabPrevious,
 	commands.WorkspaceRefresh,
+	commands.DocumentFormat,
+	commands.MarkdownTableNext,
+	commands.MarkdownTablePrevious,
+	commands.MarkdownTableEnter,
 }
 
 func directoryListing(relative string, limit int, entries []workspace.Entry) DirectoryListing {

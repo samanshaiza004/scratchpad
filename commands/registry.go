@@ -105,6 +105,9 @@ func DefaultRegistry() Registry {
 	markdown := func(ctx CommandContext) bool {
 		return ctx.ActiveDocument && ctx.Markdown && ctx.EditorFocused && !ctx.InFence
 	}
+	markdownDocument := func(ctx CommandContext) bool {
+		return ctx.ActiveDocument && ctx.Markdown
+	}
 	markdownSurface := func(ctx CommandContext) bool {
 		return ctx.ActiveDocument && ctx.Markdown && ctx.EditorFocused
 	}
@@ -154,7 +157,7 @@ func DefaultRegistry() Registry {
 		{ID: EditJoinLines, Title: "Join lines", Category: "edit", Visible: editSurface, Enabled: editSurface},
 		{ID: CommentToggle, Title: "Toggle comment", Category: "code", Bindings: []Keybinding{{Key: "primary+/"}}, Visible: func(ctx CommandContext) bool { return ctx.Code }, Enabled: codeComment},
 		{ID: ItemToggle, Title: "Toggle task", Category: "markdown", Visible: markdown, Enabled: markdown},
-		{ID: DocumentFormat, Title: "Format table", Category: "markdown", Visible: markdown, Enabled: func(ctx CommandContext) bool { return markdown(ctx) && ctx.InTable }},
+		{ID: DocumentFormat, Title: "Format table", Category: "markdown", Visible: markdownDocument, Enabled: func(ctx CommandContext) bool { return markdownDocument(ctx) && ctx.InTable }},
 		{ID: MarkdownToggleStrong, Title: "Strong", Category: "markdown", Bindings: []Keybinding{{Key: "primary+b"}}, Visible: markdown, Enabled: markdown},
 		{ID: MarkdownToggleEmphasis, Title: "Emphasis", Category: "markdown", Bindings: []Keybinding{{Key: "primary+i"}}, Visible: markdown, Enabled: markdown},
 		{ID: MarkdownToggleStrike, Title: "Strikethrough", Category: "markdown", Visible: markdown, Enabled: markdown},
@@ -170,9 +173,9 @@ func DefaultRegistry() Registry {
 		{ID: MarkdownInsertCodeBlock, Title: "Code block", Category: "markdown", Visible: markdown, Enabled: markdown},
 		{ID: MarkdownSetFenceLanguage, Title: "Code fence language", Category: "markdown", Visible: markdownSurface, Enabled: func(ctx CommandContext) bool { return markdownSurface(ctx) && ctx.InFence }},
 		{ID: MarkdownInsertTable, Title: "Table", Category: "markdown", Visible: markdown, Enabled: markdown},
-		{ID: MarkdownTableNext, Title: "Next table cell", Category: "markdown", Visible: markdown, Enabled: func(ctx CommandContext) bool { return markdown(ctx) && ctx.InTable }},
-		{ID: MarkdownTablePrevious, Title: "Previous table cell", Category: "markdown", Visible: markdown, Enabled: func(ctx CommandContext) bool { return markdown(ctx) && ctx.InTable }},
-		{ID: MarkdownTableEnter, Title: "Next table row", Category: "markdown", Visible: markdown, Enabled: func(ctx CommandContext) bool { return markdown(ctx) && ctx.InTable }},
+		{ID: MarkdownTableNext, Title: "Next table cell", Category: "markdown", Visible: markdownDocument, Enabled: func(ctx CommandContext) bool { return markdownDocument(ctx) && ctx.InTable }},
+		{ID: MarkdownTablePrevious, Title: "Previous table cell", Category: "markdown", Visible: markdownDocument, Enabled: func(ctx CommandContext) bool { return markdownDocument(ctx) && ctx.InTable }},
+		{ID: MarkdownTableEnter, Title: "Next table row", Category: "markdown", Visible: markdownDocument, Enabled: func(ctx CommandContext) bool { return markdownDocument(ctx) && ctx.InTable }},
 		{ID: MarkdownInsertDivider, Title: "Divider", Category: "markdown", Visible: markdown, Enabled: markdown},
 		{ID: MarkdownSmartPaste, Title: "Paste as link", Category: "markdown", Visible: markdown, Enabled: markdown},
 	} {
