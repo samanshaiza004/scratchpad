@@ -1,6 +1,6 @@
 # Alicorn editing ownership contract
 
-Status: Phase 4D–4F implementation is in place: native clipboard commands, Scratchpad-authoritative Undo/Redo, and frontend-local IME preedit with committed edits sent through the normal edit lane. Automated tests cover the cross-language paths; native Windows/macOS clipboard and IME interaction still needs manual verification. This document records ownership boundaries and invariants for the experimental Alicorn frontend; it is a constitution, not a complete editor specification.
+Status: The ordinary fixed-row editing behaviors in Phase 4 are implemented and headless-tested, including pointer selection, multiline indentation, clipboard, undo/redo, and IME composition. Native Windows/macOS click-count, modifier, drag-autoscroll, clipboard, and IME behavior still needs manual verification. This document records ownership boundaries, invariants, and the ordinary editing contract for the experimental Alicorn frontend.
 
 ## Ownership
 
@@ -30,7 +30,7 @@ Committed source edits are projected locally before dispatch. The frontend retai
 
 ## Phase 4B — interactive read-only substrate
 
-The Alicorn surface gives the durable editor viewport text-input focus, places a caret by hit-testing the retained Runa run for a realized source row, and supports Left/Right, Home/End, Up/Down, Page Up/Down, preferred-X retention, directional Shift selection, and in-viewport captured drag selection over the bounded display projection. Caret and directional anchor remain frontend-local source-byte offsets. Expanded tabs and escaped invalid bytes are treated as indivisible source units, and horizontal movement uses Runa grapheme boundaries.
+The Alicorn surface gives the durable editor viewport text-input focus and places a caret by hit-testing the retained Runa run for a realized source row. It supports grapheme-aware Left/Right, Home/End, Up/Down, Page Up/Down, preferred-X retention, and directional Shift selection over the bounded display projection. Single click places a caret; Shift-click extends from the existing anchor. Double-click selects the Runa UAX #29 segment under the pointer, and double-click-drag extends by whole segments. Triple-click selects logical line content without its line terminator, matching Shirei; triple-click-drag extends by logical lines. Dragging preserves the selection granularity chosen at pointer-down. While a captured drag remains outside the editor viewport, one-shot scheduled wakes scroll vertically or horizontally toward the pointer, stopping at scroll limits and on pointer-up/cancel. Caret and directional anchor remain frontend-local source-byte offsets. Expanded tabs and escaped invalid bytes are treated as indivisible source units, and horizontal movement uses Runa grapheme boundaries.
 
 ## Phase 4C.1 — committed text insertion
 
@@ -44,7 +44,7 @@ Selection replacement and Backspace/Delete use the same local range-replacement 
 
 ## Phase 4C.5 — keyboard ownership and word editing
 
-The native host checks menu/global shortcuts before routing normalized text-key intents to the focused generic text-input owner. That owner gets first refusal on Tab; if it declines, forward/backward focus traversal remains the fallback. Scratchpad inserts four spaces for Tab and removes one indentation unit from the caret's current line for Shift+Tab. The host translates platform-specific Ctrl/Option word keys, line-edge keys, and document-edge keys into semantic intents; Scratchpad applies Runa word boundaries to the bounded display projection and maps them back to source byte offsets. Word deletion and movement stay frontend-local except that deletion uses the existing serial source-replacement lane. Multi-line selection indentation and unsupported paragraph-navigation chords remain deferred.
+The native host checks menu/global shortcuts before routing normalized text-key intents to the focused generic text-input owner. That owner gets first refusal on Tab; if it declines, forward/backward focus traversal remains the fallback. A collapsed Tab inserts four spaces; Tab with a non-empty selection indents every touched logical line; Shift+Tab outdents the touched lines or the caret's current line. Each line-wide operation uses one bounded source replacement and one undo record, preserves selection direction, and refuses when a touched line is incomplete in the authoritative window. The host translates platform-specific Ctrl/Option word keys, line-edge keys, and document-edge keys into semantic intents; Scratchpad applies the same Runa UAX #29 segmentation for word movement, deletion, and pointer selection, mapping display positions back to source byte offsets. Word deletion and movement stay frontend-local except that deletion uses the existing serial source-replacement lane.
 
 ## Phase 4D — clipboard
 
@@ -60,4 +60,4 @@ SDL editing/preedit events update a transient frontend-only projection over the 
 
 ## Phase 4G — closeout boundary
 
-The fixed-row editor remains the Phase 4 scope. Soft wrapping, drag-selection autoscroll, and multiline selection indentation stay deferred because they require separate layout and interaction work. Automated clipboard, history, bounded-edit, and IME recovery/convergence checks pass, and the Windows native startup/publication/wake/presentation/shutdown smoke passes. Manually exercising native clipboard, Japanese composition/conversion/cancellation, candidate placement, and idle-after-edit on Windows and macOS remains part of platform validation.
+The fixed-row editor remains the Phase 4 scope; soft wrapping stays deferred. Pointer selection now supports Shift-click, UAX #29 word double-click/drag, logical-line triple-click/drag, and captured-drag autoscroll on both axes. Tab/Shift+Tab applies one undoable indent/outdent transaction across the touched lines when the complete range is present in the bounded window. Headless tests cover these semantics and the existing clipboard, history, bounded-edit, and IME recovery paths. Native Windows/macOS click-count and modifier delivery, drag autoscroll feel, clipboard, Japanese composition/conversion/cancellation, candidate placement, and idle-after-edit still require manual platform verification.

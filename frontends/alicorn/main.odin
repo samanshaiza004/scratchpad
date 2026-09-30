@@ -1039,6 +1039,22 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	}
 }
 
+application_scheduled_wake :: proc(state: rawptr, rt: ^alicorn.Runtime, class: host.Scheduled_Wake_Class) {
+	if class != .Frequent { return }
+	app := cast(^App)state
+	if app == nil || !app.backend.started { return }
+	if document, found := find_document(&app.backend.state, app.backend.state.active); found {
+		if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
+			view := &app.editor_views[view_index]
+			if view.dragging_selection && view.drag_pointer_valid {
+				_ = editor_update_pointer_selection(app, rt, view)
+				return
+			}
+		}
+	}
+	editor_schedule_selection_autoscroll(app, false)
+}
+
 application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.File_Dialog_Result) {
 	app := cast(^App)state
 	if result == nil { return }
@@ -1352,6 +1368,53 @@ editor_source_at_pointer :: proc(
 	return editor_normalize_source_position(line, editor_display_to_source(line, position.byte)), position.affinity, true
 }
 
+editor_pointer_outside_viewport :: proc(rt: ^alicorn.Runtime, owner_id: alicorn.Node_ID, x, y: f32) -> (outside: bool, dx, dy: f32) {
+	if rt == nil || owner_id == 0 { return }
+	owner, found := rt.nodes[owner_id]
+	if !found || owner.scroll_viewport_width <= 0 || owner.scroll_viewport_height <= 0 { return }
+	left, top := owner.bounds.x, owner.bounds.y
+	right, bottom := left+owner.scroll_viewport_width, top+owner.scroll_viewport_height
+	if x < left { dx = -editor_selection_autoscroll_step(left-x) }
+	if x >= right { dx = editor_selection_autoscroll_step(x-right+0.5) }
+	if y < top { dy = -editor_selection_autoscroll_step(top-y) }
+	if y >= bottom { dy = editor_selection_autoscroll_step(y-bottom+0.5) }
+	return dx != 0 || dy != 0, dx, dy
+}
+
+editor_schedule_selection_autoscroll :: proc(app: ^App, outside: bool) {
+	if app == nil { return }
+	if outside {
+		_ = host.application_schedule_after(app.services.scheduler, .Frequent, EDITOR_SELECTION_AUTOSCROLL_INTERVAL_NS)
+	} else {
+		_ = host.application_cancel_scheduled_wake(app.services.scheduler, .Frequent)
+	}
+}
+
+editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State) -> bool {
+	if app == nil || rt == nil || view == nil || !view.dragging_selection || !view.drag_pointer_valid { return false }
+	document, document_found := find_document(&app.backend.state, view.document_id)
+	if !document_found || document.id != app.backend.state.active { return false }
+	window, authoritative := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !authoritative { return false }
+	old_anchor, old_caret := view.selection_anchor, view.caret_byte
+	old_anchor_affinity, old_caret_affinity := view.anchor_affinity, view.caret_affinity
+	source_byte, affinity, hit := editor_source_at_pointer(app, rt, view.drag_pointer_x, view.drag_pointer_y, true)
+	if hit { _ = editor_extend_pointer_selection(view, window, source_byte, affinity) }
+	outside, dx, dy := editor_pointer_outside_viewport(rt, app.editor_scroll_owner, view.drag_pointer_x, view.drag_pointer_y)
+	scrolled := false
+	if outside {
+		if owner, found := rt.nodes[app.editor_scroll_owner]; found {
+			if dy != 0 { scrolled = alicorn.scroll_region_set_offset(rt, app.editor_scroll_owner, owner.scroll_offset_y+dy, "Scratchpad selection drag autoscrolled vertically") || scrolled }
+			if dx != 0 { scrolled = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, owner.scroll_offset_x+dx, "Scratchpad selection drag autoscrolled horizontally") || scrolled }
+		}
+	}
+	editor_schedule_selection_autoscroll(app, outside && scrolled)
+	changed := old_anchor != view.selection_anchor || old_caret != view.caret_byte ||
+	           old_anchor_affinity != view.anchor_affinity || old_caret_affinity != view.caret_affinity
+	if changed && !scrolled { alicorn.invalidate_root(rt, "Scratchpad editor pointer selection extended") }
+	return changed || scrolled
+}
+
 // editor_presentation_window keeps a last-good projection visible across an
 // authoritative revision change. The bool remains strict: only an exact
 // revision match grants source/edit interaction authority.
@@ -1390,9 +1453,11 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 		for &view in app.editor_views {
 			if view.dragging_selection {
 				view.dragging_selection = false
+				view.drag_pointer_valid = false
 				drag_ended = true
 			}
 		}
+		editor_schedule_selection_autoscroll(app, false)
 		if event.kind == .Up && drag_ended {
 			alicorn.invalidate_root(rt, "Scratchpad editor pointer selection ended")
 		}
@@ -1403,12 +1468,10 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 			if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
 				view := &app.editor_views[view_index]
 				if view.dragging_selection && rt.captured_node == app.editor_scroll_owner {
-					if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y, true); ok {
-						view.caret_byte = source_byte
-						view.caret_affinity = affinity
-						_ = alicorn.focus(rt, app.editor_scroll_owner)
-						alicorn.invalidate_root(rt, "Scratchpad read-only editor drag selection extended")
-					}
+					view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
+					view.drag_pointer_valid = true
+					_ = editor_update_pointer_selection(app, rt, view)
+					_ = alicorn.focus(rt, app.editor_scroll_owner)
 				}
 			}
 		}
@@ -1423,14 +1486,13 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y); ok {
 		view.pending_document_edge = .None
 		view.pending_document_edge_shift = false
-		view.selection_anchor = source_byte
-		view.caret_byte = source_byte
-		view.anchor_affinity = affinity
-		view.caret_affinity = affinity
-		view.preferred_x_set = false
+		window, authoritative := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+		if !authoritative || !editor_apply_pointer_selection(view, window, source_byte, affinity, event.click_count, event.modifiers.shift) { return }
 		view.dragging_selection = true
+		view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
+		view.drag_pointer_valid = true
 		_ = alicorn.focus(rt, app.editor_scroll_owner)
-		alicorn.invalidate_root(rt, "Scratchpad read-only editor caret placed")
+		alicorn.invalidate_root(rt, "Scratchpad editor pointer selection placed")
 	}
 }
 
@@ -1464,42 +1526,57 @@ editor_text_key :: proc(
 		view.pending_document_edge_shift = false
 	}
 	if event.key == .Tab {
-		// A plain Tab inserts one configured indentation unit. Shift+Tab removes
-		// one indentation unit from the caret's current line; selection-wide
-		// indentation is deliberately a later editor behavior.
+		// A collapsed Tab inserts one indentation unit. A non-empty selection
+		// indents every touched logical line as one source replacement; Shift+Tab
+		// outdents every touched line (or the caret's line) in the same way.
 		if event.control || event.alt || event.super { return false }
+		tab_indent := EDITOR_TAB_INSERT
 		if !event.shift {
+			if view.selection_anchor != view.caret_byte {
+				projection := editor_line_indent_projection(
+					window,
+					view.selection_anchor,
+					view.caret_byte,
+					tab_indent[:],
+					false,
+				)
+				defer delete(projection.replacement)
+				if !projection.ok {
+					set_error(app, "The selected lines are not fully present in the bounded editor window; move them into view before indenting.")
+					alicorn.invalidate_root(rt, "Scratchpad deferred indentation outside the authoritative source window")
+					return true
+				}
+				if projection.changed {
+					return editor_apply_local_replace(
+						app, rt, projection.start_byte, projection.end_byte,
+						projection.replacement, projection.anchor_byte, projection.caret_byte,
+					)
+				}
+				return true
+			}
 			start_byte := min(view.selection_anchor, view.caret_byte)
 			end_byte := max(view.selection_anchor, view.caret_byte)
 			caret := start_byte+u64(len(EDITOR_TAB_INSERT))
-		tab_insert := EDITOR_TAB_INSERT
-			return editor_apply_local_replace(app, rt, start_byte, end_byte, tab_insert[:], caret, caret)
+			return editor_apply_local_replace(app, rt, start_byte, end_byte, tab_indent[:], caret, caret)
 		}
-		line, line_found := editor_line_for_source(window, view.caret_byte)
-		if !line_found { return true }
-		indent_start := int(line.source_start-window.start_byte)
-		line_end := int(line.source_end-window.start_byte)
-		if indent_start < 0 || line_end > len(window.source) || line_end < indent_start { return true }
-		// Keep a UTF-8 BOM as the file prefix rather than treating it as
-		// indentation on the first logical row.
-		if line.logical_line == 0 && window.start_byte == 0 && line_end >= indent_start+3 &&
-		   window.source[indent_start] == 0xEF && window.source[indent_start+1] == 0xBB && window.source[indent_start+2] == 0xBF {
-			indent_start += 3
+		projection := editor_line_indent_projection(
+			window,
+			view.selection_anchor,
+			view.caret_byte,
+			tab_indent[:],
+			true,
+		)
+		defer delete(projection.replacement)
+		if !projection.ok {
+			set_error(app, "The selected lines are not fully present in the bounded editor window; move them into view before outdenting.")
+			alicorn.invalidate_root(rt, "Scratchpad deferred outdent outside the authoritative source window")
+			return true
 		}
-		remove_end := indent_start
-		if remove_end < line_end && window.source[remove_end] == '\t' {
-			remove_end += 1
-		} else {
-			for remove_end < line_end && remove_end-indent_start < EDITOR_TAB_WIDTH && window.source[remove_end] == ' ' {
-				remove_end += 1
-			}
-		}
-		if remove_end > indent_start {
-			start_byte := window.start_byte+u64(indent_start)
-			end_byte := window.start_byte+u64(remove_end)
-			anchor := editor_position_after_delete(view.selection_anchor, start_byte, end_byte)
-			caret := editor_position_after_delete(view.caret_byte, start_byte, end_byte)
-			_ = editor_apply_local_replace(app, rt, start_byte, end_byte, {}, anchor, caret)
+		if projection.changed {
+			_ = editor_apply_local_replace(
+				app, rt, projection.start_byte, projection.end_byte,
+				projection.replacement, projection.anchor_byte, projection.caret_byte,
+			)
 		}
 		return true
 	}
@@ -2886,6 +2963,7 @@ main :: proc() {
 		on_start=application_start,
 		on_dialog=application_dialog,
 		on_wake=application_wake,
+		on_scheduled_wake=application_scheduled_wake,
 		on_stop=application_stop,
 		on_menu_command=application_menu_command,
 	}, app.smoke)

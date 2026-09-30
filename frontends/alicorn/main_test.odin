@@ -1293,8 +1293,8 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	second_before_width := second_before.bounds.w
 	start_x := divider.bounds.x + divider.bounds.w/2
 	start_y := divider.bounds.y + divider.bounds.h/2
-	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{.Down, start_x, start_y, 1})
-	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{.Move, start_x+40, start_y, 0})
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Down, x=start_x, y=start_y, button=1})
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Move, x=start_x+40, y=start_y})
 	presentation_ui, presentation_ready := alicorn.begin_presentation_frame(&rt)
 	if presentation_ready { alicorn.end_presentation_frame(&presentation_ui) }
 	workspace_split_after, split_after_found := rt.nodes[workspace_split_id]
@@ -1307,7 +1307,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 		second_after_found && second_after.bounds.w < second_before_width,
 		fmt.tprintf("dragging the Alicorn divider should resize the real tree and editor panes (first %v -> %v; second %v -> %v)",
 			first_before_width, first_after.bounds.w, second_before_width, second_after.bounds.w))
-	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{.Up, start_x+40, start_y, 1})
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=start_x+40, y=start_y, button=1})
 	alicorn.invalidate_root(&rt, "Scratchpad workspace split retention test rebuild")
 	_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
 	workspace_split_id = 0
@@ -1461,10 +1461,10 @@ test_click_workspace_tree_row :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Run
 	if !found { return false }
 	bounds := rt.nodes[id].bounds
 	x, y := bounds.x + bounds.w/2, bounds.y + bounds.h/2
-	_ = alicorn.process_pointer(rt, alicorn.Pointer_Event{.Down, x, y, 1})
+	_ = alicorn.process_pointer(rt, alicorn.Pointer_Event{kind=.Down, x=x, y=y, button=1})
 	alicorn.invalidate_root(rt, "test pointer down")
 	if !test_render_workspace_tree(t, app, rt) { return false }
-	_ = alicorn.process_pointer(rt, alicorn.Pointer_Event{.Up, x, y, 1})
+	_ = alicorn.process_pointer(rt, alicorn.Pointer_Event{kind=.Up, x=x, y=y, button=1})
 	alicorn.invalidate_root(rt, "test pointer release")
 	return test_render_workspace_tree(t, app, rt)
 }

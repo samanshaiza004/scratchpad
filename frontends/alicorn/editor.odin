@@ -68,6 +68,12 @@ Editor_View_State :: struct {
 	pending_document_edge: Editor_Document_Edge,
 	pending_document_edge_shift: bool,
 	dragging_selection: bool,
+	drag_selection_granularity: Editor_Selection_Granularity,
+	drag_selection_start: u64,
+	drag_selection_end: u64,
+	drag_pointer_x: f32,
+	drag_pointer_y: f32,
+	drag_pointer_valid: bool,
 	authoritative_revision: u64,
 	optimistic_window: Editor_Window,
 	optimistic_window_ready: bool,
@@ -77,6 +83,143 @@ Editor_View_State :: struct {
 }
 
 Editor_Document_Edge :: enum { None, Start, End }
+
+// Pointer selection keeps its original granularity for the duration of a
+// captured drag, as native text views do for character/word/line selection.
+Editor_Selection_Granularity :: enum { Character, Word, Line }
+
+EDITOR_SELECTION_AUTOSCROLL_INTERVAL_NS :: u64(16_000_000)
+EDITOR_SELECTION_AUTOSCROLL_MAX_STEP :: f32(32)
+
+editor_selection_autoscroll_step :: proc(distance: f32) -> f32 {
+	if distance <= 0 { return 0 }
+	return min(EDITOR_SELECTION_AUTOSCROLL_MAX_STEP, 2 + distance*0.35)
+}
+
+// Logical-line selection deliberately excludes its line ending, matching the
+// Shirei editor's Buffer.LineRange contract. A drag spanning lines naturally
+// includes intervening terminators between its endpoints.
+editor_line_selection_range :: proc(window: ^Editor_Window, logical_line: u64) -> (start, end: u64, ok: bool) {
+	if window == nil { return }
+	line, found := editor_window_line(window, logical_line)
+	if !found { return }
+	start, end = line.source_start, line.source_end
+	return start, end, true
+}
+
+editor_word_selection_range :: proc(window: ^Editor_Window, source_byte: u64) -> (start, end: u64, ok: bool) {
+	if window == nil { return }
+	line, found := editor_line_for_source(window, source_byte)
+	if !found { return }
+	display_byte := editor_source_to_display(line, source_byte)
+	// Use Runa's UAX #29 word segmentation, matching the runtime's word
+	// navigation policy instead of introducing byte/ASCII heuristics here.
+	ranges := alicorn.text_word_ranges(line.display, context.temp_allocator)
+	defer delete(ranges)
+	selected := -1
+	for range, index in ranges {
+		if display_byte >= range.start && display_byte < range.end {
+			selected = index
+			break
+		}
+	}
+	if selected < 0 && display_byte == len(line.display) && len(ranges) > 0 {
+		selected = len(ranges)-1
+	}
+	if selected < 0 { return }
+	range := ranges[selected]
+	start = editor_normalize_source_position(line, editor_display_to_source(line, range.start))
+	end = editor_normalize_source_position(line, editor_display_to_source(line, range.end))
+	return start, end, end > start
+}
+
+editor_apply_pointer_selection :: proc(
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	source_byte: u64,
+	affinity: alicorn.Text_Affinity,
+	click_count: u8,
+	shift: bool,
+) -> bool {
+	if view == nil || window == nil { return false }
+	normalized_click_count := click_count
+	if normalized_click_count == 0 { normalized_click_count = 1 }
+	view.preferred_x_set = false
+	if normalized_click_count >= 3 {
+		line, found := editor_line_for_source(window, source_byte)
+		if !found { return false }
+		start, end, range_ok := editor_line_selection_range(window, line.logical_line)
+		if !range_ok { return false }
+		view.selection_anchor, view.caret_byte = start, end
+		view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+		view.drag_selection_granularity = .Line
+		view.drag_selection_start, view.drag_selection_end = start, end
+		return true
+	}
+	if normalized_click_count == 2 {
+		start, end, range_ok := editor_word_selection_range(window, source_byte)
+		if !range_ok {
+			view.selection_anchor, view.caret_byte = source_byte, source_byte
+			view.anchor_affinity, view.caret_affinity = affinity, affinity
+			view.drag_selection_granularity = .Character
+			view.drag_selection_start, view.drag_selection_end = source_byte, source_byte
+			return true
+		}
+		view.selection_anchor, view.caret_byte = start, end
+		view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+		view.drag_selection_granularity = .Word
+		view.drag_selection_start, view.drag_selection_end = start, end
+		return true
+	}
+	view.drag_selection_granularity = .Character
+	view.drag_selection_start, view.drag_selection_end = source_byte, source_byte
+	if !shift { view.selection_anchor = source_byte; view.anchor_affinity = affinity }
+	view.caret_byte, view.caret_affinity = source_byte, affinity
+	return true
+}
+
+editor_extend_pointer_selection :: proc(
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	source_byte: u64,
+	affinity: alicorn.Text_Affinity,
+) -> bool {
+	if view == nil || window == nil { return false }
+	switch view.drag_selection_granularity {
+	case .Word:
+		start, end, range_ok := editor_word_selection_range(window, source_byte)
+		if !range_ok { return false }
+		if end <= view.drag_selection_start {
+			view.selection_anchor, view.anchor_affinity = view.drag_selection_end, .Trailing
+			view.caret_byte, view.caret_affinity = start, .Leading
+		} else if start >= view.drag_selection_end {
+			view.selection_anchor, view.anchor_affinity = view.drag_selection_start, .Leading
+			view.caret_byte, view.caret_affinity = end, .Trailing
+		} else {
+			view.selection_anchor, view.caret_byte = view.drag_selection_start, view.drag_selection_end
+			view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+		}
+	case .Line:
+		line, found := editor_line_for_source(window, source_byte)
+		if !found { return false }
+		start, end, range_ok := editor_line_selection_range(window, line.logical_line)
+		if !range_ok { return false }
+		if end <= view.drag_selection_start {
+			view.selection_anchor, view.anchor_affinity = view.drag_selection_end, .Trailing
+			view.caret_byte, view.caret_affinity = start, .Leading
+		} else if start >= view.drag_selection_end {
+			view.selection_anchor, view.anchor_affinity = view.drag_selection_start, .Leading
+			view.caret_byte, view.caret_affinity = end, .Trailing
+		} else {
+			view.selection_anchor, view.caret_byte = view.drag_selection_start, view.drag_selection_end
+			view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+		}
+	case .Character:
+		view.caret_byte, view.caret_affinity = source_byte, affinity
+	}
+	view.preferred_x_set = false
+	return true
+}
 
 Editor_Edit_Selection_Snapshot :: struct {
 	before_anchor_byte: u64,
