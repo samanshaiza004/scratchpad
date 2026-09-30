@@ -983,11 +983,29 @@ func formatTable(request Request) Outcome {
 		return Outcome{Status: ResultUnavailable}
 	}
 	for _, table := range request.Projections.Tables {
-		if request.Cursor < table.StartByte || request.Cursor >= table.EndByte {
+		cursorInTable := request.Cursor >= table.StartByte && request.Cursor < table.EndByte
+		// Include EOF when an unterminated final table ends exactly at the
+		// cursor. EndByte is otherwise exclusive, including after a final LF.
+		if !cursorInTable && table.EndByte == len(request.Source) && table.EndByte > table.StartByte &&
+			request.Source[table.EndByte-1] != '\n' && request.Cursor == table.EndByte {
+			cursorInTable = true
+		}
+		if !cursorInTable {
 			continue
 		}
 		formatted, ok := md.FormatTable(request.Source, table)
-		if !ok || bytes.Equal(formatted, request.Source[table.StartByte:table.EndByte]) {
+		if !ok {
+			for _, row := range table.Rows {
+				if !row.Header && !row.Delimiter && len(row.Cells) > len(table.Columns) {
+					return Outcome{
+						Status: ResultFailed,
+						Err:    errors.New("table has more cells than its header; escape literal pipe characters as \\| before formatting"),
+					}
+				}
+			}
+			return Outcome{Status: ResultFailed, Err: errors.New("table could not be formatted safely")}
+		}
+		if bytes.Equal(formatted, request.Source[table.StartByte:table.EndByte]) {
 			return Outcome{Status: ResultNoOp, Cursor: request.Cursor, Anchor: request.Anchor}
 		}
 		cursor, anchor := remapRange(request.Cursor, request.Anchor, table.StartByte, table.EndByte, formatted)

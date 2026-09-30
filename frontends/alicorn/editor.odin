@@ -69,6 +69,7 @@ Editor_View_State :: struct {
 	scroll_x:          f32,
 	horizontal_extent: f32,
 	extent_revision:    u64,
+	horizontal_scroll_suspended: bool,
 	restore_y_pending: bool,
 	restore_x_pending: bool,
 	selection_anchor:  u64,
@@ -666,7 +667,19 @@ editor_view_sync_scroll :: proc(
 			result.scroll_x = min(max(view.scroll_x, 0), max(max_x, 0))
 			view.scroll_x = result.scroll_x
 			view.restore_x_pending = false
+			view.horizontal_scroll_suspended = false
 		}
+	} else if !horizontal_ready {
+		// Keep the last horizontal position while the current viewport contains
+		// only wrapped rows. Alicorn's shared scroll region clamps its live X to
+		// zero when its horizontal lane is inactive; that temporary clamp must
+		// not erase this document's position for a later no-wrap row.
+		view.horizontal_scroll_suspended = true
+	} else if view.horizontal_scroll_suspended {
+		result.horizontal = true
+		result.scroll_x = min(max(view.scroll_x, 0), max(max_x, 0))
+		view.scroll_x = result.scroll_x
+		view.horizontal_scroll_suspended = false
 	} else {
 		clamped_x := min(max(live_x, 0), max(max_x, 0))
 		view.scroll_x = clamped_x
@@ -1840,6 +1853,38 @@ editor_window_content_width :: proc(window: ^Editor_Window, gutter_width: f32, l
 		// Deliberately conservative for multi-byte glyphs: the frontier is based
 		// only on the bounded window, never a scan of the full document.
 		width = max(width, f32(len(line.display))*10 + gutter_width + 8)
+	}
+	return width
+}
+
+// Measure only the visible no-wrap rows (with half a viewport of vertical
+// overscan on each side). A distant table or code line should not leave a horizontal bar
+// over an otherwise wrapped prose viewport. The width remains a bounded-window
+// estimate, just like the text surface itself.
+editor_visible_window_content_width :: proc(
+	window: ^Editor_Window,
+	index: ^alicorn.Virtual_List_Height_Index,
+	scroll_y, viewport_height: f32,
+	gutter_width: f32,
+	language: string,
+	presentation_current: bool,
+) -> f32 {
+	if window == nil || index == nil || viewport_height <= 0 { return 0 }
+	overscan_y := max(viewport_height*0.5, EDITOR_ROW_HEIGHT)
+	metrics := alicorn.virtual_list_variable_metrics(
+		index,
+		max(scroll_y-overscan_y, 0),
+		viewport_height+overscan_y*2,
+	)
+	width: f32 = 0
+	for position := metrics.first; position < metrics.last; position += 1 {
+		line, found := editor_window_line(window, u64(position))
+		if !found || editor_line_should_wrap(language, window, line, presentation_current) { continue }
+		// Deliberately conservative for multi-byte glyphs. The frontier is
+		// limited to rows near the viewport, never the full document.
+		// The lane leaves the gutter and its inner text padding outside the
+		// source run, so include that full inset in the shared scroll extent.
+		width = max(width, f32(len(line.display))*10+gutter_width+16)
 	}
 	return width
 }

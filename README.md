@@ -29,7 +29,7 @@ go test ./...
 
 The Go and Shirei application is the working product path.
 
-### Alicorn
+## Alicorn
 
 Alicorn explores a separate native shell over the same Scratchpad application and document model. It has a bounded editing viewport; clipboard, undo and redo, IME composition, and soft wrapping are still in progress.
 
@@ -41,7 +41,7 @@ From the repository root:
 
 See [Alicorn setup and status](frontends/alicorn/README.md) for prerequisites and platform details.
 
-### GPUI
+## GPUI
 
 GPUI is an integration experiment, not a full editor port. It demonstrates a Rust/GPUI shell using Scratchpad's Go application through the Caliber boundary, with a bounded viewport and a small editing spike. See [the GPUI experiment notes](frontends/gpui/README.md) for its scope and build instructions.
 

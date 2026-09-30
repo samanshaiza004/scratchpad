@@ -31,6 +31,7 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
 - Slice 1 — overflow lane (UI-only, no buffer/document-text change):
   - `scrollX` lives in document view state alongside `ScrollY` (per-document, session-disposable like `ScrollY`, not part of `Document` text authority).
   - Applies only to lines resolved as unwrapped (`NoWrapLine` true — tables — or code mode unwrapped). Wrapped prose always renders at x=0 and ignores `scrollX`.
+  - Alicorn keeps the scroll owner on its variable-height list. Scratchpad counter-shifts the line-number gutter and wrapped prose so only no-wrap row content moves. The horizontal bar follows no-wrap rows near the viewport and can disappear over wrapped-only sections without discarding the saved per-document X position.
   - Caret-follow: when caret enters a wide row, adjust `scrollX` just enough to keep caret visible (with small padding); when caret returns to wrapped prose, reset/ignore it. Mouse click into overflow maps through `scrollX`. Gutter stays fixed.
   - No generic sideways shift of wrapped prose. No vertical behavior change. No new dependencies.
 - Slice 2 — table projection (parser-owned, UI-agnostic):

@@ -462,8 +462,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		document.editor_revision,
 	)
 	window_available := window != nil
-	format_table_enabled := document.language == "markdown" && window_matches &&
-	                        editor_cursor_in_markdown_table(window, view.caret_byte)
+	// The backend rebuilds the Markdown table projection synchronously when a
+	// semantic command arrives. Do not make the menu depend on an asynchronous,
+	// bounded presentation window; the command reports when the caret is outside
+	// a formattable table.
+	format_table_enabled := document.language == "markdown"
 	for &item in app.document_items {
 		if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_FORMAT) {
 			item.state.enabled = format_table_enabled
@@ -500,10 +503,13 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
 	                              window.presentation_revision == document.presentation_revision &&
 	                              window.presentation_revision == document.editor_revision
-	presentation_usable := presentation_window_matches ||
+	// Exact parser metadata is authoritative. A locally rebased presentation is
+	// also safe for visual continuity after the edit ACK; it stays presentation-
+	// only until the exact projection for the accepted source revision arrives.
+	presentation_visual := presentation_window_matches ||
 	                       (document.language == "markdown" && window_matches && window.presentation_ready &&
-	                        window.presentation_stale && view.optimistic_pending_edits > 0)
-	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_usable
+	                        window.presentation_stale)
+	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_visual
 	if view.wrap_height_index_ready && window_available {
 		needs_measurement := abs(view.wrap_measurement_width-wrap_width) > 0.5 ||
 		                     view.wrap_measurement_revision != window.editor_revision ||
@@ -518,7 +524,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
 			_ = editor_measure_window_wrapping(
 				rt, view, window, document.language, wrap_width,
-				presentation_usable,
+				presentation_visual,
 			)
 			new_anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
 			if !view.restore_y_pending && previous_scroll.id != 0 {
@@ -535,12 +541,19 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.wrap_measurement_pending_edits = view.optimistic_pending_edits
 		}
 	}
-	content_width := max(viewport_width, view.horizontal_extent)
+	visible_intrinsic_width: f32 = 0
 	if window_matches {
-		measured_width := editor_window_content_width(window, gutter_width, document.language, presentation_usable)
-		intrinsic_width := editor_view_observe_horizontal_extent(view, document.editor_revision, measured_width)
-		content_width = max(viewport_width, intrinsic_width)
+		visible_intrinsic_width = editor_visible_window_content_width(
+			window,
+			&view.wrap_height_index,
+			scroll_y,
+			viewport_height,
+			gutter_width,
+			document.language,
+			presentation_visual,
+		)
 	}
+	content_width := max(viewport_width, visible_intrinsic_width)
 	list := alicorn.virtual_list_begin_variable(
 		ui,
 		&view.wrap_height_index,
@@ -551,6 +564,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		axes=.Both,
 		focusable=true,
 	)
+	horizontal_ready := window_matches && list.scroll.max_scroll_x > 0.5
 	_ = editor_register_text_input_target(ui, list.scroll.id, view)
 	if rt != nil {
 		// Keep native text input away from stale source bytes. The editor input
@@ -567,7 +581,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		list.scroll.offset_x,
 		list.scroll.max_scroll_y,
 		list.scroll.max_scroll_x,
-		window_matches,
+		horizontal_ready,
 	)
 	if restore.vertical || restore.horizontal {
 		app.editor_restore_scroll = true
@@ -587,8 +601,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, position)
 		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT }
 		if line, found := editor_window_line(window, line_number); window_available && found {
-			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_usable)
-			row_presentation_current := document.language == "markdown" && presentation_usable &&
+			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_visual)
+			row_presentation_current := document.language == "markdown" && presentation_visual &&
 			                           !view.preedit_active && !view.preedit_recoverable
 			markdown_row := editor_markdown_row_presentation(window, line, row_presentation_current)
 			row_background := editor_markdown_row_background(markdown_row)
@@ -601,11 +615,17 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				style=alicorn.layout_style(.Row, height=row_height, gap=8, align=.Center, clip=true),
 				color=row_background,
 			)
-			alicorn.container_begin(
+			// The parent virtual list shifts the whole row for horizontal scroll.
+			// Counter-shift fixed chrome and wrapped prose; no-wrap text stays in
+			// the parent's scrolling lane.
+			alicorn.container_begin_ex(
 				ui,
-				.Container,
+				.Virtual_List,
 				label="scratchpad-editor-line-number-gutter",
+				key=fmt.tprintf("scratchpad-gutter-lane:%s:%d", document.id, line.logical_line),
 				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center),
+				scroll_offset_x=-list.scroll.offset_x,
+				layout_scroll_offset_x=-list.scroll.offset_x,
 			)
 			alicorn.container_begin(ui, .Container, label="scratchpad-editor-line-number-spacer", style=alicorn.layout_style(.Row, grow=1))
 			alicorn.container_end(ui)
@@ -616,6 +636,17 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				font=.Monospace,
 			)
 			alicorn.container_end(ui)
+			if line_wraps {
+				alicorn.container_begin_ex(
+					ui,
+					.Virtual_List,
+					label="scratchpad-stationary-prose-lane",
+					key=fmt.tprintf("scratchpad-prose-lane:%s:%d", document.id, line.logical_line),
+					style=alicorn.layout_style(.Row, width=wrap_width, height=row_height),
+					scroll_offset_x=-list.scroll.offset_x,
+					layout_scroll_offset_x=-list.scroll.offset_x,
+				)
+			}
 			anchor_source := min(max(view.selection_anchor, line.source_start), line.source_end)
 			caret_source := min(max(view.caret_byte, line.source_start), line.source_end)
 			display_text := line.display
@@ -662,7 +693,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=text_overflow},
 			)
 			paint_spans: []alicorn.Text_Paint_Span
-			paint_current := window_covers_view && presentation_usable &&
+			paint_current := window_covers_view && presentation_visual &&
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current { paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator) }
 			_ = alicorn.text_paint_spans(ui, line_node, paint_spans)
@@ -688,6 +719,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
 				show_caret,
 			)
+			if line_wraps { alicorn.container_end(ui) }
 			alicorn.container_end(ui)
 		} else if window_matches || !window_available {
 			label := fmt.tprintf("Loading line %d…", line_number+1)
@@ -1414,6 +1446,10 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			editor_cursor_byte=view.caret_byte,
 		)
 		handle_command_result(app, rt, &response)
+		if action_id == ACTION_DOCUMENT_FORMAT && response.ok && !response.state_changed {
+			set_error(app, "Table is already aligned.")
+			alicorn.invalidate_root(rt, "Scratchpad reported an unchanged table format")
+		}
 		if response.ok && response.editor_selection.document_id != "" {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
 		}
@@ -2039,9 +2075,11 @@ editor_text_key :: proc(
 			gutter_width := editor_line_number_gutter_width(document.line_count)
 			wrap_width := f32(0)
 			if owner_found { wrap_width = max(owner_node.scroll_viewport_width-gutter_width-16, 80) }
-			presentation_current := window.presentation_ready && window.presentation_revision == window.editor_revision &&
-			                       document.presentation_ready && document.presentation_revision == window.presentation_revision &&
-			                       view.optimistic_pending_edits == 0
+			presentation_current := window.presentation_ready &&
+			                       (window.presentation_stale ||
+			                        (window.presentation_revision == window.editor_revision &&
+			                         document.presentation_ready &&
+			                         document.presentation_revision == window.presentation_revision))
 			current_node := editor_row_node_for_line(app.editor_row_targets[:], current_line)
 			current_geometry, current_visual_rows, _, current_measured := editor_line_visual_caret_metrics(
 				rt, window, line, document.language, wrap_width, presentation_current,
@@ -2853,12 +2891,8 @@ sync_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		enabled := action.enabled
 		if action.id == ACTION_DOCUMENT_FORMAT {
 			enabled = false
-			if document, found := find_document(&app.backend.state, app.backend.state.active); found && document.language == "markdown" {
-				if view_index, view_ok := editor_view_ensure(&app.editor_views, document.id); view_ok {
-					view := &app.editor_views[view_index]
-					window, matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
-					enabled = matches && editor_cursor_in_markdown_table(window, view.caret_byte)
-				}
+			if document, found := find_document(&app.backend.state, app.backend.state.active); found {
+				enabled = document.language == "markdown"
 			}
 		}
 		if action.id == ACTION_EDIT_UNDO && editor_has_pending_active_document_edit(app) { enabled = true }
