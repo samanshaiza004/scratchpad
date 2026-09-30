@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"scratchpad/document"
@@ -86,7 +87,10 @@ type Application struct {
 	derived               map[DocumentID]*projectionState
 	derivedResults        chan projectionResult
 	derivedRunning        int
+	derivedWakeMu         sync.RWMutex
 	derivedWake           func()
+	derivedWorkers        sync.WaitGroup
+	derivedClosed         bool
 	derivedAfterFunc      func(time.Duration, func())
 	derivedWakeScheduled  int32
 	recent                []string

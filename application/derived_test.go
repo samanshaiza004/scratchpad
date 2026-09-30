@@ -16,6 +16,7 @@ type slowDerivedAnalyzer struct {
 	started chan struct{}
 	release chan struct{}
 	calls   atomic.Int32
+	closed  atomic.Int32
 }
 
 func (a *slowDerivedAnalyzer) Analyze(_ []byte, revision uint64, _ []editor.SourceEdit) (document.CodeProjection, error) {
@@ -28,7 +29,49 @@ func (a *slowDerivedAnalyzer) Analyze(_ []byte, revision uint64, _ []editor.Sour
 	return document.NewCodeProjection(revision, "go", nil, nil, nil), nil
 }
 
-func (*slowDerivedAnalyzer) Close() {}
+func (a *slowDerivedAnalyzer) Close() { a.closed.Add(1) }
+
+func TestCloseDerivedJoinsWorkersAndPreventsRescheduling(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/main.go"
+	if err := writeTestFile(path, []byte("package main\n")); err != nil {
+		t.Fatal(err)
+	}
+	a := New(workspace.NewOSFileStore())
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	analyzer := &slowDerivedAnalyzer{started: make(chan struct{}, 1), release: make(chan struct{})}
+	a.ensureDerivedState()
+	a.derived[a.Active] = &projectionState{runtime: analyzer}
+	a.PollDerived(time.Now())
+	select {
+	case <-analyzer.started:
+	case <-time.After(time.Second):
+		t.Fatal("slow analyzer did not start")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		a.CloseDerived()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("CloseDerived returned while the parser worker was active")
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(analyzer.release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("CloseDerived did not join the parser worker")
+	}
+	a.PollDerived(time.Now())
+	if analyzer.calls.Load() != 1 || analyzer.closed.Load() != 1 || len(a.derived) != 0 || a.derivedRunning != 0 {
+		t.Fatalf("after close: calls=%d closes=%d states=%d running=%d", analyzer.calls.Load(), analyzer.closed.Load(), len(a.derived), a.derivedRunning)
+	}
+}
 
 func TestDerivedProjectionDoesNotReanalyzeUnchangedRunningRevision(t *testing.T) {
 	dir := t.TempDir()

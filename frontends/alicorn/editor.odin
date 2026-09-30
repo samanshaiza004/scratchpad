@@ -36,6 +36,11 @@ Editor_Window :: struct {
 	line_byte_length: u64,
 	truncated:       bool,
 	source:          []u8,
+	presentation_revision: u64,
+	presentation_ready: bool,
+	presentation_truncated: bool,
+	presentation_spans: []bridge.Presentation_Record,
+	presentation_blocks: []bridge.Presentation_Record,
 	lines:           [dynamic]Editor_Display_Line,
 }
 
@@ -779,6 +784,126 @@ editor_normalize_source_position :: proc(line: ^Editor_Display_Line, source_byte
 	return editor_display_to_source(line, editor_source_to_display(line, source_byte))
 }
 
+// Source spans remain the only coordinate authority. This mapper converts
+// source-byte coverage into display-byte coverage, including every repeated
+// boundary used to spell tabs and malformed bytes visibly.
+editor_source_range_to_display :: proc(line: ^Editor_Display_Line, start_byte, end_byte: u64) -> (start, end: int, ok: bool) {
+	if line == nil || end_byte <= start_byte || len(line.display_bytes) < 2 { return }
+	first := len(line.display)
+	last := 0
+	for index in 0..<len(line.display_bytes)-1 {
+		left := line.display_bytes[index]
+		right := line.display_bytes[index+1]
+		covered := false
+		if left == right {
+			covered = left >= start_byte && left < end_byte
+		} else {
+			covered = min(left, right) < end_byte && max(left, right) > start_byte
+		}
+		if covered {
+			first = min(first, index)
+			last = max(last, index+1)
+		}
+	}
+	if first >= last { return }
+	return first, last, true
+}
+
+editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, color_set: bool) {
+	switch kind {
+	case 2: // heading
+		return alicorn.Color{0.55, 0.76, 1.0, 1}, true
+	case 3: // strong
+		return alicorn.Color{0.86, 0.9, 1.0, 1}, true
+	case 4: // emphasis
+		return alicorn.Color{0.72, 0.79, 0.91, 1}, true
+	case 5: // inline code
+		return alicorn.Color{0.76, 0.84, 1.0, 1}, true
+	case 6: // link
+		return alicorn.Color{0.38, 0.72, 1.0, 1}, true
+	case 8: // code block
+		return alicorn.Color{0.73, 0.82, 0.95, 1}, true
+	case 9, 10, 28, 31: // quote, list marker, thematic break, table delimiter
+		return alicorn.Color{0.57, 0.63, 0.74, 1}, true
+	case 11: // task marker
+		return alicorn.Color{0.44, 0.8, 1.0, 1}, true
+	case 12: // code comment
+		return alicorn.Color{0.48, 0.69, 0.57, 1}, true
+	case 13: // code keyword
+		return alicorn.Color{0.78, 0.62, 1.0, 1}, true
+	case 14: // code string
+		return alicorn.Color{0.86, 0.72, 0.49, 1}, true
+	case 15: // code number
+		return alicorn.Color{0.54, 0.78, 0.9, 1}, true
+	case 16: // code type
+		return alicorn.Color{0.42, 0.8, 0.76, 1}, true
+	case 17, 18: // function and method
+		return alicorn.Color{0.48, 0.72, 0.98, 1}, true
+	case 29: // table
+		return alicorn.Color{0.76, 0.81, 0.9, 1}, true
+	case 30: // table header
+		return alicorn.Color{0.87, 0.9, 1.0, 1}, true
+	case 32: // table pipe
+		return alicorn.Color{0.43, 0.5, 0.63, 1}, true
+	case:
+		return {}, false
+	}
+}
+
+editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor_Display_Line, allocator := context.temp_allocator) -> []alicorn.Text_Paint_Span {
+	result := make([dynamic]alicorn.Text_Paint_Span, 0, allocator=allocator)
+	if window == nil || line == nil || !window.presentation_ready || window.presentation_revision != window.editor_revision { return result[:] }
+	window_end := window.start_byte+u64(len(window.source))
+	// Block backgrounds go first so inline syntax colors remain visible above them.
+	for record in window.presentation_blocks {
+		absolute_start := window.start_byte+u64(record.start_byte)
+		absolute_end := window.start_byte+u64(record.end_byte)
+		start_byte := max(absolute_start, line.source_start)
+		end_byte := min(absolute_end, line.source_end)
+		if absolute_end > window_end || end_byte <= start_byte { continue }
+		start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
+		if !mapped { continue }
+		paint := alicorn.Text_Paint_Span{start=start, end=end}
+		switch record.kind {
+		case 0x10001: // code block
+			paint.background = alicorn.Color{0.09, 0.11, 0.16, 0.48}
+			paint.background_set = true
+		case 0x10002: // quote
+			paint.background = alicorn.Color{0.18, 0.22, 0.31, 0.34}
+			paint.background_set = true
+		case 0x10004: // thematic break
+			paint.background = alicorn.Color{0.22, 0.26, 0.35, 0.32}
+			paint.background_set = true
+		case 0x10005: // table
+			paint.background = alicorn.Color{0.18, 0.22, 0.3, 0.38}
+			paint.background_set = true
+		}
+		if paint.background_set { append(&result, paint) }
+	}
+	for record in window.presentation_spans {
+		absolute_start := window.start_byte+u64(record.start_byte)
+		absolute_end := window.start_byte+u64(record.end_byte)
+		start_byte := max(absolute_start, line.source_start)
+		end_byte := min(absolute_end, line.source_end)
+		if absolute_end > window_end || end_byte <= start_byte { continue }
+		start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
+		if !mapped { continue }
+		color, color_set := editor_presentation_record_color(record.kind)
+		paint := alicorn.Text_Paint_Span{start=start, end=end, color=color, color_set=color_set}
+		switch record.kind {
+		case 5: // inline code
+			paint.background = alicorn.Color{0.2, 0.24, 0.34, 0.76}
+			paint.background_set = true
+		case 6: // link
+			paint.underline = true
+		case 7: // strike
+			paint.strikethrough = true
+		}
+		if paint.color_set || paint.underline || paint.strikethrough || paint.background_set { append(&result, paint) }
+	}
+	return result[:]
+}
+
 editor_line_for_source :: proc(window: ^Editor_Window, source_byte: u64) -> (line: ^Editor_Display_Line, found: bool) {
 	if window == nil { return nil, false }
 	for &candidate in window.lines {
@@ -974,6 +1099,8 @@ editor_window_destroy :: proc(window: ^Editor_Window, allocator := context.alloc
 		if len(line.display) > 0 { delete(line.display, allocator) }
 		delete(line.display_bytes, allocator)
 	}
+	delete(window.presentation_spans, allocator)
+	delete(window.presentation_blocks, allocator)
 	delete(window.lines)
 	window^ = {}
 }
@@ -1197,9 +1324,16 @@ editor_window_from_visible :: proc(
 		line_byte_length=source.line_byte_length,
 		truncated=source.truncated,
 		source=source.source,
+		presentation_revision=source.presentation_revision,
+		presentation_ready=source.presentation_ready,
+		presentation_truncated=source.presentation_truncated,
+		presentation_spans=source.presentation_spans,
+		presentation_blocks=source.presentation_blocks,
 		lines=make([dynamic]Editor_Display_Line, 0, allocator=allocator),
 	}
 	source.source = {}
+	source.presentation_spans = {}
+	source.presentation_blocks = {}
 	line_start := 0
 	logical_line := window.start_line
 	for index in 0..<len(window.source) {

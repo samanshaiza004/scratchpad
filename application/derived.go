@@ -58,7 +58,9 @@ type languageAnalyzer interface {
 // than a Shirei dependency: the application can be tested without a window
 // and workers never touch UI state.
 func (a *Application) SetWake(wake func()) {
+	a.derivedWakeMu.Lock()
 	a.derivedWake = wake
+	a.derivedWakeMu.Unlock()
 }
 
 // PollDerived advances debouncing, bounded worker scheduling, and publication
@@ -121,6 +123,15 @@ func (a *Application) PollDerived(now time.Time) {
 		}
 	}
 drained:
+	if a.derivedClosed {
+		for id, state := range a.derived {
+			if state.runtime != nil {
+				state.runtime.Close()
+			}
+			delete(a.derived, id)
+		}
+		return
+	}
 	for id, doc := range a.Documents {
 		if doc == nil || analysisLanguage(language.ID(doc.RootLanguage)) == "" {
 			continue
@@ -172,6 +183,7 @@ drained:
 		}
 		runtime := state.runtime
 		rootLanguage := language.ID(doc.RootLanguage)
+		a.derivedWorkers.Add(1)
 		go func(id DocumentID, revision uint64, snapshot document.DocumentSnapshot, rootLanguage language.ID, edits []editor.SourceEdit, runtime languageAnalyzer) {
 			data := snapshot.Materialize()
 			var result projectionResult
@@ -193,13 +205,14 @@ drained:
 				}
 			}
 			a.derivedResults <- result
+			a.derivedWorkers.Done()
 			a.wakeDerived()
 		}(id, revision, snapshot, rootLanguage, edits, runtime)
 		state.desiredRevision = 0
 		state.hasDesired = false
 	}
 
-	if a.derivedWake != nil {
+	if a.hasDerivedWake() {
 		var nextDue time.Time
 		for _, state := range a.derived {
 			if !state.closed && state.hasDesired && state.due.After(now) &&
@@ -332,7 +345,33 @@ func (a *Application) scheduleDerivedWake(delay time.Duration) {
 }
 
 func (a *Application) wakeDerived() {
-	if a.derivedWake != nil {
-		a.derivedWake()
+	a.derivedWakeMu.RLock()
+	wake := a.derivedWake
+	a.derivedWakeMu.RUnlock()
+	if wake != nil {
+		wake()
 	}
+}
+
+func (a *Application) hasDerivedWake() bool {
+	a.derivedWakeMu.RLock()
+	present := a.derivedWake != nil
+	a.derivedWakeMu.RUnlock()
+	return present
+}
+
+// CloseDerived stops accepting new projection work, waits for active workers,
+// and closes parser runtimes. The caller must first stop concurrent calls to
+// PollDerived; bridge runtimes do that while holding their lifecycle mutex.
+func (a *Application) CloseDerived() {
+	if a == nil {
+		return
+	}
+	a.SetWake(nil)
+	a.derivedClosed = true
+	for _, state := range a.derived {
+		state.closed = true
+	}
+	a.derivedWorkers.Wait()
+	a.PollDerived(time.Now())
 }

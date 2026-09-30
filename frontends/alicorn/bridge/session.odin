@@ -26,6 +26,7 @@ Caliber_Status :: enum i32 {
 
 VISIBLE_SLICE_HEADER_BYTES :: 48
 VISIBLE_SLICE_SCHEMA_V1   :: u32(1)
+VISIBLE_SLICE_SCHEMA_V2   :: u32(2)
 MAX_VISIBLE_LINES         :: u64(256)
 MAX_VISIBLE_BYTES         :: u64(64 * 1024)
 MAX_EDIT_BYTES            :: u64(128 * 1024)
@@ -128,6 +129,8 @@ State_Document :: struct {
 	can_undo:        bool   `json:"can_undo"`,
 	can_redo:        bool   `json:"can_redo"`,
 	language:        string `json:"language"`,
+	presentation_revision: u64 `json:"presentation_revision"`,
+	presentation_ready: bool `json:"presentation_ready"`,
 }
 
 Resource_Descriptor :: struct {
@@ -142,6 +145,20 @@ Resource_Descriptor :: struct {
 	truncated:       bool   `json:"truncated"`,
 	start_byte:      u64    `json:"start_byte"`,
 	line_byte_length: u64   `json:"line_byte_length"`,
+	metadata_byte_len: u64 `json:"metadata_byte_len"`,
+}
+
+PRESENTATION_MAX_RECORDS :: 4096
+PRESENTATION_TRAILER_BYTES :: 24
+PRESENTATION_RECORD_BYTES :: 16
+PRESENTATION_READY_FLAG :: u32(1)
+PRESENTATION_TRUNCATED_FLAG :: u32(2)
+
+Presentation_Record :: struct {
+	kind: u32,
+	start_byte: u32,
+	end_byte: u32,
+	level_flags: u32,
 }
 
 Visible_Window :: struct {
@@ -154,6 +171,11 @@ Visible_Window :: struct {
 	line_byte_length: u64,
 	truncated:       bool,
 	source:          []u8,
+	presentation_revision: u64,
+	presentation_ready: bool,
+	presentation_truncated: bool,
+	presentation_spans: []Presentation_Record,
+	presentation_blocks: []Presentation_Record,
 }
 
 Action_State :: struct {
@@ -259,6 +281,7 @@ Backend_Command_Request :: struct {
 	anchor_byte:      u64    `json:"anchor_byte,omitempty"`,
 	max_lines:        u64    `json:"max_lines,omitempty"`,
 	max_bytes:        u64    `json:"max_bytes,omitempty"`,
+	include_presentation: bool `json:"include_presentation,omitempty"`,
 	editor_revision:  u64    `json:"editor_revision,omitempty"`,
 	start_byte:         u64    `json:"start_byte,omitempty"`,
 	end_byte:           u64    `json:"end_byte,omitempty"`,
@@ -689,6 +712,7 @@ visible_window_decode :: proc(
 	data: []u8,
 	descriptor: Resource_Descriptor,
 	expected_document_id: string,
+	include_presentation := false,
 	allocator := context.allocator,
 ) -> (window: Visible_Window, ok: bool, message: string) {
 	if descriptor.resource_id == 0 || descriptor.generation == 0 || descriptor.document_id != expected_document_id {
@@ -697,6 +721,9 @@ visible_window_decode :: proc(
 	if descriptor.byte_len > MAX_VISIBLE_BYTES || descriptor.end_line < descriptor.start_line || descriptor.end_line-descriptor.start_line > MAX_VISIBLE_LINES {
 		return {}, false, "visible resource descriptor exceeds the bounded window limits"
 	}
+	if descriptor.start_byte > max(u64)-descriptor.byte_len {
+		return {}, false, "visible source byte range overflows its absolute coordinate"
+	}
 	if descriptor.line_byte_length > 0 &&
 	   (descriptor.end_line != descriptor.start_line+1 || descriptor.byte_len > descriptor.line_byte_length) {
 		return {}, false, "visible line-chunk metadata is inconsistent with the bounded resource"
@@ -704,7 +731,8 @@ visible_window_decode :: proc(
 	if len(data) < VISIBLE_SLICE_HEADER_BYTES || string(data[:4]) != "SPVS" {
 		return {}, false, "visible resource has a truncated or invalid SPVS header"
 	}
-	if visible_slice_read_u32(data, 4) != VISIBLE_SLICE_SCHEMA_V1 {
+	schema := visible_slice_read_u32(data, 4)
+	if schema != VISIBLE_SLICE_SCHEMA_V1 && schema != VISIBLE_SLICE_SCHEMA_V2 {
 		return {}, false, "visible resource uses an unsupported SPVS schema"
 	}
 	application_revision := visible_slice_read_u64(data, 8)
@@ -716,12 +744,21 @@ visible_window_decode :: proc(
 	if flags > 1 || ((flags & 1) != 0) != descriptor.truncated {
 		return {}, false, "visible resource flags do not match its descriptor"
 	}
-	if u64(byte_len) != descriptor.byte_len || len(data) != VISIBLE_SLICE_HEADER_BYTES+int(byte_len) {
+	if u64(byte_len) != descriptor.byte_len || u64(len(data)) != u64(VISIBLE_SLICE_HEADER_BYTES)+descriptor.byte_len+descriptor.metadata_byte_len {
 		return {}, false, "visible resource payload length does not match its descriptor"
 	}
 	if application_revision != descriptor.application_rev || editor_revision != descriptor.editor_revision ||
 	   start_line != descriptor.start_line || end_line != descriptor.end_line {
 		return {}, false, "SPVS revisions or line bounds do not match the resource descriptor"
+	}
+	if include_presentation != (schema == VISIBLE_SLICE_SCHEMA_V2) {
+		return {}, false, "visible resource schema does not match presentation request mode"
+	}
+	if schema == VISIBLE_SLICE_SCHEMA_V1 && descriptor.metadata_byte_len != 0 {
+		return {}, false, "SPVS v1 descriptor unexpectedly includes metadata bytes"
+	}
+	if schema == VISIBLE_SLICE_SCHEMA_V2 && !presentation_metadata_valid(data, descriptor.byte_len, descriptor.metadata_byte_len) {
+		return {}, false, "SPVS v2 presentation metadata is malformed or exceeds its bounds"
 	}
 	document_id, clone_error := strings.clone(descriptor.document_id, allocator)
 	if clone_error != nil { return {}, false, "could not retain visible resource document identity" }
@@ -731,7 +768,7 @@ visible_window_decode :: proc(
 		return {}, false, "could not retain bounded visible source bytes"
 	}
 	if byte_len > 0 { mem.copy(rawptr(&source[0]), rawptr(&data[VISIBLE_SLICE_HEADER_BYTES]), int(byte_len)) }
-	return Visible_Window{
+	window = Visible_Window{
 		document_id=document_id,
 		application_rev=application_revision,
 		editor_revision=editor_revision,
@@ -741,13 +778,83 @@ visible_window_decode :: proc(
 		line_byte_length=descriptor.line_byte_length,
 		truncated=descriptor.truncated,
 		source=source,
-	}, true, ""
+	}
+	if schema == VISIBLE_SLICE_SCHEMA_V2 {
+		if !visible_window_copy_presentation(&window, data, descriptor.byte_len, allocator) {
+			visible_window_destroy(&window, allocator)
+			return {}, false, "could not retain bounded Markdown presentation metadata"
+		}
+	}
+	return window, true, ""
+}
+
+presentation_metadata_valid :: proc(data: []u8, source_byte_len, metadata_byte_len: u64) -> bool {
+	if metadata_byte_len < PRESENTATION_TRAILER_BYTES || metadata_byte_len > PRESENTATION_TRAILER_BYTES+PRESENTATION_MAX_RECORDS*PRESENTATION_RECORD_BYTES {
+		return false
+	}
+	metadata_start := VISIBLE_SLICE_HEADER_BYTES+int(source_byte_len)
+	if metadata_start < VISIBLE_SLICE_HEADER_BYTES || metadata_start+int(metadata_byte_len) != len(data) { return false }
+	trailer := data[metadata_start:metadata_start+PRESENTATION_TRAILER_BYTES]
+	flags := visible_slice_read_u32(trailer, 8)
+	span_count := visible_slice_read_u32(trailer, 12)
+	block_count := visible_slice_read_u32(trailer, 16)
+	reserved := visible_slice_read_u32(trailer, 20)
+	record_count := u64(span_count)+u64(block_count)
+	if flags & ~(PRESENTATION_READY_FLAG|PRESENTATION_TRUNCATED_FLAG) != 0 || reserved != 0 ||
+	   record_count > PRESENTATION_MAX_RECORDS ||
+	   u64(PRESENTATION_TRAILER_BYTES)+record_count*PRESENTATION_RECORD_BYTES != metadata_byte_len {
+		return false
+	}
+	for index in 0..<int(record_count) {
+		record_offset := metadata_start+PRESENTATION_TRAILER_BYTES+index*PRESENTATION_RECORD_BYTES
+		kind := visible_slice_read_u32(data, record_offset)
+		start := visible_slice_read_u32(data, record_offset+4)
+		end := visible_slice_read_u32(data, record_offset+8)
+		level_flags := visible_slice_read_u32(data, record_offset+12)
+		is_span := kind >= 1 && kind <= 32
+		is_block := kind >= 0x10001 && kind <= 0x10005
+		if !is_span && !is_block || (index < int(span_count)) != is_span || end <= start || u64(end) > source_byte_len { return false }
+		if is_span && level_flags > 255 { return false }
+		if is_block && level_flags & ~u32(0x3FF) != 0 { return false }
+	}
+	return true
+}
+
+visible_window_copy_presentation :: proc(window: ^Visible_Window, data: []u8, source_byte_len: u64, allocator: mem.Allocator) -> bool {
+	if window == nil { return false }
+	metadata_start := VISIBLE_SLICE_HEADER_BYTES+int(source_byte_len)
+	trailer := data[metadata_start:metadata_start+PRESENTATION_TRAILER_BYTES]
+	window.presentation_revision = visible_slice_read_u64(trailer, 0)
+	flags := visible_slice_read_u32(trailer, 8)
+	span_count := int(visible_slice_read_u32(trailer, 12))
+	block_count := int(visible_slice_read_u32(trailer, 16))
+	window.presentation_ready = flags & PRESENTATION_READY_FLAG != 0
+	window.presentation_truncated = flags & PRESENTATION_TRUNCATED_FLAG != 0
+	if window.presentation_ready && window.presentation_revision != window.editor_revision { return false }
+	spans, span_err := make([]Presentation_Record, span_count, allocator)
+	if span_err != nil { return false }
+	blocks, block_err := make([]Presentation_Record, block_count, allocator)
+	if block_err != nil { delete(spans, allocator); return false }
+	for index in 0..<span_count+block_count {
+		record_offset := metadata_start+PRESENTATION_TRAILER_BYTES+index*PRESENTATION_RECORD_BYTES
+		record := Presentation_Record{
+			kind=visible_slice_read_u32(data, record_offset),
+			start_byte=visible_slice_read_u32(data, record_offset+4),
+			end_byte=visible_slice_read_u32(data, record_offset+8),
+			level_flags=visible_slice_read_u32(data, record_offset+12),
+		}
+		if index < span_count { spans[index] = record } else { blocks[index-span_count] = record }
+	}
+	window.presentation_spans = spans
+	window.presentation_blocks = blocks
+	return true
 }
 
 backend_copy_visible_resource :: proc(
 	backend: ^Backend,
 	descriptor: Resource_Descriptor,
 	expected_document_id: string,
+	include_presentation := false,
 	allocator := context.allocator,
 ) -> (window: Visible_Window, ok: bool, message: string) {
 	if backend == nil || backend.api == nil || backend.caliber_context == nil {
@@ -771,7 +878,8 @@ backend_copy_visible_resource :: proc(
 	if view.resource_id != descriptor.resource_id || view.generation != descriptor.generation {
 		return {}, false, "Caliber returned a mismatched resource handle"
 	}
-	if view.len < VISIBLE_SLICE_HEADER_BYTES || view.len > uintptr(VISIBLE_SLICE_HEADER_BYTES)+uintptr(MAX_VISIBLE_BYTES) {
+	max_metadata := PRESENTATION_TRAILER_BYTES+PRESENTATION_MAX_RECORDS*PRESENTATION_RECORD_BYTES
+	if view.len < VISIBLE_SLICE_HEADER_BYTES || view.len > uintptr(VISIBLE_SLICE_HEADER_BYTES)+uintptr(MAX_VISIBLE_BYTES)+uintptr(max_metadata) {
 		return {}, false, "Caliber visible resource exceeds the SPVS byte limit"
 	}
 	if view.data == nil { return {}, false, "Caliber returned a null visible resource payload" }
@@ -779,7 +887,7 @@ backend_copy_visible_resource :: proc(
 	if allocation_error != nil { return {}, false, "could not copy Caliber visible resource" }
 	defer delete(data, allocator)
 	mem.copy(rawptr(&data[0]), rawptr(view.data), int(view.len))
-	return visible_window_decode(data, descriptor, expected_document_id, allocator)
+	return visible_window_decode(data, descriptor, expected_document_id, include_presentation, allocator)
 }
 
 backend_consume_wake :: proc(backend: ^Backend, allocator := context.allocator) -> (changed: bool, ok: bool, message: string) {
@@ -835,6 +943,7 @@ backend_command :: proc(
 	before_cursor_byte: u64 = 0,
 	after_anchor_byte: u64 = 0,
 	after_cursor_byte: u64 = 0,
+	include_presentation := false,
 	based_on_revision: u64 = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
@@ -875,6 +984,7 @@ backend_command :: proc(
 		before_cursor_byte=before_cursor_byte,
 		after_anchor_byte=after_anchor_byte,
 		after_cursor_byte=after_cursor_byte,
+		include_presentation=include_presentation,
 	}
 	request_bytes, marshal_err := json.marshal(request, allocator=allocator)
 	if marshal_err != nil { return Backend_Command_Result{code="encode_failed", message="could not encode Scratchpad command"} }
@@ -946,7 +1056,7 @@ backend_command :: proc(
 		result.directory_listing_owned = true
 	}
 	if response.ok && command == "read_visible_lines" {
-		window, window_ok, window_message := backend_copy_visible_resource(backend, response.resource, document_id, allocator)
+		window, window_ok, window_message := backend_copy_visible_resource(backend, response.resource, document_id, include_presentation, allocator)
 		if !window_ok {
 			backend_response_destroy(&response, allocator)
 			backend_command_result_destroy(&result, allocator)
@@ -995,6 +1105,8 @@ visible_window_destroy :: proc(window: ^Visible_Window, allocator: mem.Allocator
 	if window == nil { return }
 	if len(window.document_id) > 0 { delete(window.document_id, allocator) }
 	delete(window.source, allocator)
+	delete(window.presentation_spans, allocator)
+	delete(window.presentation_blocks, allocator)
 	window^ = {}
 }
 
@@ -1006,6 +1118,9 @@ Visible_Window_Request :: struct {
 	anchor_byte:       u64,
 	max_lines:         u64,
 	max_bytes:         u64,
+	include_presentation: bool,
+	presentation_revision: u64,
+	presentation_ready: bool,
 	generation:        u64,
 }
 
@@ -1047,7 +1162,10 @@ visible_window_request_equal :: proc(a, b: Visible_Window_Request) -> bool {
 	       a.start_line == b.start_line &&
 	       a.anchor_byte == b.anchor_byte &&
 	       a.max_lines == b.max_lines &&
-	       a.max_bytes == b.max_bytes
+	       a.max_bytes == b.max_bytes &&
+	       a.include_presentation == b.include_presentation &&
+	       a.presentation_revision == b.presentation_revision &&
+	       a.presentation_ready == b.presentation_ready
 }
 
 visible_window_result_is_current :: proc(stopping: u32, result_generation, latest_generation: u64) -> bool {
@@ -1084,6 +1202,7 @@ visible_window_lane_worker :: proc(t: ^thread.Thread) {
 			anchor_byte=request.anchor_byte,
 			max_lines=request.max_lines,
 			max_bytes=request.max_bytes,
+			include_presentation=request.include_presentation,
 			based_on_revision=request.application_rev,
 			allocator=lane.allocator,
 		)
@@ -1160,6 +1279,9 @@ visible_window_lane_request :: proc(
 	document_id: string,
 	application_rev, editor_revision, start_line, max_lines, max_bytes: u64,
 	anchor_byte: u64 = 0,
+	include_presentation := false,
+	presentation_revision: u64 = 0,
+	presentation_ready := false,
 ) -> (generation: u64, accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 {
 		return 0, false, "visible-window lane is not running or document identity is empty"
@@ -1176,6 +1298,8 @@ visible_window_lane_request :: proc(
 	if lane.pending && visible_window_request_equal(lane.pending_request, Visible_Window_Request{
 		document_id=document_id, application_rev=application_rev, editor_revision=editor_revision,
 		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
+		include_presentation=include_presentation, presentation_revision=presentation_revision,
+		presentation_ready=presentation_ready,
 	}) {
 		generation = lane.pending_request.generation
 		sync.mutex_unlock(&lane.mutex)
@@ -1184,6 +1308,8 @@ visible_window_lane_request :: proc(
 	if lane.active && !lane.pending && visible_window_request_equal(lane.active_request, Visible_Window_Request{
 		document_id=document_id, application_rev=application_rev, editor_revision=editor_revision,
 		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
+		include_presentation=include_presentation, presentation_revision=presentation_revision,
+		presentation_ready=presentation_ready,
 	}) {
 		generation = lane.active_request.generation
 		sync.mutex_unlock(&lane.mutex)
@@ -1211,6 +1337,9 @@ visible_window_lane_request :: proc(
 		anchor_byte=anchor_byte,
 		max_lines=max_lines,
 		max_bytes=max_bytes,
+		include_presentation=include_presentation,
+		presentation_revision=presentation_revision,
+		presentation_ready=presentation_ready,
 		generation=generation,
 	}
 	lane.pending = true

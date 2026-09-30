@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unicode/utf8"
 	"unsafe"
 
@@ -28,6 +29,9 @@ type Runtime struct {
 	state               StateEnvelope
 	stateLeases         int
 	resourceLeases      int
+	presentationEnabled bool
+	generation          uint64
+	asyncError          string
 }
 
 func NewRuntime() *Runtime {
@@ -64,6 +68,9 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.state = StateEnvelope{}
 	r.stateLeases = 0
 	r.resourceLeases = 0
+	r.presentationEnabled = false
+	r.generation++
+	r.asyncError = ""
 	if err := r.publishApplicationState(); err != nil {
 		r.caliber.close()
 		r.caliber = nil
@@ -92,6 +99,10 @@ func (r *Runtime) Stop(input []byte) []byte {
 	if r.resourceLeases != 0 {
 		return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "outstanding_resource_leases", fmt.Sprintf("cannot stop with %d outstanding resource lease(s)", r.resourceLeases), false))
 	}
+	r.generation++
+	if r.app != nil {
+		r.app.CloseDerived()
+	}
 	r.caliber.close()
 	r.caliber = nil
 	r.app = nil
@@ -101,6 +112,8 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.state = StateEnvelope{}
 	r.stateLeases = 0
 	r.resourceLeases = 0
+	r.presentationEnabled = false
+	r.asyncError = ""
 	return marshalResponse(Response{
 		Version:   ProtocolVersion,
 		RequestID: request.RequestID,
@@ -199,10 +212,17 @@ func (r *Runtime) Pump() []byte {
 	if r.lifecycle != lifecycleRunning {
 		return marshalResponse(errorResponse(0, lifecycleStopped, "not_running", "backend is not running", false))
 	}
+	if r.presentationEnabled && r.asyncError == "" {
+		if err := r.pollDerivedLocked(); err != nil {
+			r.asyncError = err.Error()
+		}
+	}
 	commandBytes, err := r.caliber.takeCommand()
 	if err != nil {
 		if errors.Is(err, errNoCommand) {
-			return marshalResponse(errorResponse(0, r.lifecycle, "no_command", "no pending Caliber command", true))
+			response := errorResponse(0, r.lifecycle, "no_command", "no pending Caliber command", true)
+			response.Diagnostic = r.asyncError
+			return marshalResponse(response)
 		}
 		return marshalResponse(errorResponse(0, r.lifecycle, "caliber_error", err.Error(), true))
 	}
@@ -217,8 +237,90 @@ func (r *Runtime) Pump() []byte {
 		response.Revision = r.revision
 		return marshalResponse(response)
 	}
+	if request.IncludePresentation {
+		if err := r.enablePresentationLocked(request.DocumentID); err != nil {
+			return marshalResponse(commandError(request, "caliber_error", err))
+		}
+	}
 	response = r.applyCommand(request)
+	if r.presentationEnabled {
+		r.app.PollDerived(time.Now())
+		if err := r.publishPresentationReadinessIfChanged(); err != nil {
+			r.asyncError = err.Error()
+		}
+	}
+	if r.asyncError != "" {
+		response.Diagnostic = r.asyncError
+		r.asyncError = ""
+	}
 	return marshalResponse(response)
+}
+
+func (r *Runtime) enablePresentationLocked(documentID string) error {
+	if r.presentationEnabled || r.app == nil {
+		return nil
+	}
+	doc := r.app.Documents[application.DocumentID(documentID)]
+	if doc == nil || doc.RootLanguage != "markdown" {
+		return nil
+	}
+	r.presentationEnabled = true
+	generation, app := r.generation, r.app
+	app.SetWake(func() {
+		r.handleDerivedWake(generation, app)
+	})
+	return nil
+}
+
+func (r *Runtime) handleDerivedWake(generation uint64, app *application.Application) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lifecycle != lifecycleRunning || r.generation != generation || r.app != app || !r.presentationEnabled {
+		return
+	}
+	if err := r.pollDerivedLocked(); err != nil {
+		r.asyncError = err.Error()
+	}
+}
+
+// pollDerivedLocked is called only while the runtime lifecycle mutex is held.
+// Projection results can update shell presentation state, but they never
+// advance ApplicationRev, so an editor command based on the source remains
+// valid while a derived result arrives.
+func (r *Runtime) pollDerivedLocked() error {
+	if r.app == nil || !r.presentationEnabled {
+		return nil
+	}
+	r.app.PollDerived(time.Now())
+	return r.publishPresentationReadinessIfChanged()
+}
+
+func (r *Runtime) publishPresentationReadinessIfChanged() error {
+	if r.app == nil || !r.presentationEnabled {
+		return nil
+	}
+	next := stateFromApplication(r.revision+1, r.app.Snapshot(), true)
+	if samePresentationReadiness(r.state, next) {
+		return nil
+	}
+	return r.publishApplicationState()
+}
+
+func samePresentationReadiness(left, right StateEnvelope) bool {
+	if len(left.Documents) != len(right.Documents) {
+		return false
+	}
+	byID := make(map[string]StateDocument, len(left.Documents))
+	for _, doc := range left.Documents {
+		byID[doc.ID] = doc
+	}
+	for _, doc := range right.Documents {
+		previous, ok := byID[doc.ID]
+		if !ok || previous.PresentationReady != doc.PresentationReady || previous.PresentationRevision != doc.PresentationRevision {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runtime) CaliberAPIPointer() unsafe.Pointer {
@@ -503,7 +605,22 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	payload, err := encodeVisibleSlice(r.applicationRevision, doc.Revision(), request.StartLine, uint64(endLine), truncated, lines)
+	var payload []byte
+	var metadataByteLen uint64
+	if request.IncludePresentation {
+		var presentationRevision uint64
+		var ready, metadataTruncated bool
+		var spans, blocks []presentationWireRecord
+		if doc.RootLanguage == "markdown" {
+			presentationRevision, ready, metadataTruncated, spans, blocks = windowPresentation(doc, startByte, lines)
+		} else {
+			presentationRevision, ready = doc.Revision(), true
+		}
+		payload, err = encodeVisibleSliceV2(r.applicationRevision, doc.Revision(), request.StartLine, uint64(endLine), truncated, lines, presentationRevision, ready, metadataTruncated, spans, blocks)
+		metadataByteLen = uint64(presentationTrailerHeaderBytes + (len(spans)+len(blocks))*presentationRecordBytes)
+	} else {
+		payload, err = encodeVisibleSlice(r.applicationRevision, doc.Revision(), request.StartLine, uint64(endLine), truncated, lines)
+	}
 	if err != nil {
 		return Response{}, err
 	}
@@ -514,17 +631,18 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	response := okResponse(request.RequestID, r.lifecycle, r.revision)
 	response.BasedOnRevision = request.BasedOnRevision
 	response.Resource = &ResourceDescriptor{
-		ResourceID:     resourceID,
-		Generation:     generation,
-		DocumentID:     request.DocumentID,
-		ApplicationRev: r.applicationRevision,
-		EditorRevision: doc.Revision(),
-		StartLine:      request.StartLine,
-		EndLine:        uint64(endLine),
-		ByteLen:        uint64(len(lines)),
-		Truncated:      truncated,
-		StartByte:      uint64(startByte),
-		LineByteLength: uint64(describedLineByteLength),
+		ResourceID:      resourceID,
+		Generation:      generation,
+		DocumentID:      request.DocumentID,
+		ApplicationRev:  r.applicationRevision,
+		EditorRevision:  doc.Revision(),
+		StartLine:       request.StartLine,
+		EndLine:         uint64(endLine),
+		ByteLen:         uint64(len(lines)),
+		Truncated:       truncated,
+		StartByte:       uint64(startByte),
+		LineByteLength:  uint64(describedLineByteLength),
+		MetadataByteLen: metadataByteLen,
 	}
 	return response, nil
 }
@@ -537,7 +655,7 @@ func commandError(request CommandRequest, code string, err error) Response {
 
 func (r *Runtime) publishApplicationState() error {
 	snapshot := r.app.Snapshot()
-	state := stateFromApplication(r.revision+1, snapshot)
+	state := stateFromApplication(r.revision+1, snapshot, r.presentationEnabled)
 	if err := validateStatePaths(state); err != nil {
 		return err
 	}

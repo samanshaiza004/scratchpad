@@ -9,7 +9,7 @@ import "core:time"
 
 @(test)
 test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
- json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"line_count":42,"language":"markdown"}]}`
+ json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"line_count":42,"language":"markdown","presentation_revision":3,"presentation_ready":true}]}`
 	data := transmute([]u8)json_text
 	state, ok, message := decode_state_envelope(data, context.temp_allocator)
 	testing.expect(t, ok, message)
@@ -21,6 +21,8 @@ test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
 		testing.expect(t, doc.path == "C:/work/readme.md" && doc.language == "markdown", "document identity fields should decode")
 		testing.expect(t, doc.line_count == 42, "logical line count should decode from shared document state")
 		testing.expect(t, doc.preview, "preview tab state should decode from the shared StateEnvelope")
+		testing.expect(t, doc.presentation_revision == 3 && doc.presentation_ready,
+			"Markdown readiness publication should decode alongside source revision state")
 	}
 }
 
@@ -56,9 +58,12 @@ test_visible_window_requests_deduplicate_and_reject_stale_results :: proc(t: ^te
 	other_line.start_line += 1
 	other_chunk := base
 	other_chunk.anchor_byte = 4096
+	metadata_request := base
+	metadata_request.include_presentation = true
 	testing.expect(t, visible_window_request_equal(base, duplicate), "request identity ignores its assigned generation")
 	testing.expect(t, !visible_window_request_equal(base, other_line), "a different logical window must not deduplicate")
 	testing.expect(t, !visible_window_request_equal(base, other_chunk), "a different long-line byte anchor must not deduplicate")
+	testing.expect(t, !visible_window_request_equal(base, metadata_request), "plain and metadata requests must not deduplicate each other")
 	testing.expect(t, visible_window_result_is_current(0, 7, 7), "latest completed request should be installable")
 	testing.expect(t, !visible_window_result_is_current(0, 6, 7), "stale completion must be rejected")
 	testing.expect(t, !visible_window_result_is_current(1, 7, 7), "completion after lane stop must be rejected")
@@ -97,7 +102,7 @@ test_visible_window_decode_validates_bounded_raw_spvs :: proc(t: ^testing.T) {
 		application_rev=17, editor_revision=9, start_line=12, end_line=13,
 		byte_len=u64(len(payload)), truncated=true, start_byte=88, line_byte_length=4096,
 	}
-	window, ok, message := visible_window_decode(encoded, descriptor, "doc-1", context.temp_allocator)
+	window, ok, message := visible_window_decode(encoded, descriptor, "doc-1", allocator=context.temp_allocator)
 	testing.expect(t, ok, message)
 	if ok {
 		defer visible_window_destroy(&window, context.temp_allocator)
@@ -116,21 +121,105 @@ test_visible_window_decode_validates_bounded_raw_spvs :: proc(t: ^testing.T) {
 
 	bad_schema := encoded[:]
 	visible_slice_write_u32(bad_schema, 4, 99)
-	_, ok, _ = visible_window_decode(bad_schema, descriptor, "doc-1", context.temp_allocator)
+	_, ok, _ = visible_window_decode(bad_schema, descriptor, "doc-1", allocator=context.temp_allocator)
 	testing.expect(t, !ok, "unknown SPVS schema must be rejected")
 	visible_slice_write_u32(encoded, 4, VISIBLE_SLICE_SCHEMA_V1)
 	wrong_revision := descriptor
 	wrong_revision.editor_revision += 1
-	_, ok, _ = visible_window_decode(encoded, wrong_revision, "doc-1", context.temp_allocator)
+	_, ok, _ = visible_window_decode(encoded, wrong_revision, "doc-1", allocator=context.temp_allocator)
 	testing.expect(t, !ok, "SPVS revision mismatch must be rejected")
 	wrong_length := descriptor
 	wrong_length.byte_len += 1
-	_, ok, _ = visible_window_decode(encoded, wrong_length, "doc-1", context.temp_allocator)
+	_, ok, _ = visible_window_decode(encoded, wrong_length, "doc-1", allocator=context.temp_allocator)
 	testing.expect(t, !ok, "descriptor/payload length mismatch must be rejected")
-	_, ok, _ = visible_window_decode(encoded, descriptor, "other-doc", context.temp_allocator)
+	_, ok, _ = visible_window_decode(encoded, descriptor, "other-doc", allocator=context.temp_allocator)
 	testing.expect(t, !ok, "resource for another document must be rejected")
-	_, ok, _ = visible_window_decode(encoded[:VISIBLE_SLICE_HEADER_BYTES-1], descriptor, "doc-1", context.temp_allocator)
+	_, ok, _ = visible_window_decode(encoded[:VISIBLE_SLICE_HEADER_BYTES-1], descriptor, "doc-1", allocator=context.temp_allocator)
 	testing.expect(t, !ok, "truncated SPVS header must be rejected")
+}
+
+@(test)
+test_spvs_v2_decodes_bounded_revision_matched_presentation :: proc(t: ^testing.T) {
+	payload := [?]u8{'#', ' ', 0xFF, '\n'}
+	metadata_len := PRESENTATION_TRAILER_BYTES+2*PRESENTATION_RECORD_BYTES
+	encoded, alloc_err := make([]u8, VISIBLE_SLICE_HEADER_BYTES+len(payload)+metadata_len, context.temp_allocator)
+	testing.expect(t, alloc_err == nil, "SPVS v2 fixture allocation should succeed")
+	if alloc_err != nil { return }
+	defer delete(encoded, context.temp_allocator)
+	encoded[0] = 'S'; encoded[1] = 'P'; encoded[2] = 'V'; encoded[3] = 'S'
+	visible_slice_write_u32(encoded, 4, VISIBLE_SLICE_SCHEMA_V2)
+	visible_slice_write_u64(encoded, 8, 17)
+	visible_slice_write_u64(encoded, 16, 9)
+	visible_slice_write_u64(encoded, 24, 12)
+	visible_slice_write_u64(encoded, 32, 13)
+	visible_slice_write_u32(encoded, 40, 0)
+	visible_slice_write_u32(encoded, 44, u32(len(payload)))
+	for i in 0..<len(payload) { encoded[VISIBLE_SLICE_HEADER_BYTES+i] = payload[i] }
+	metadata_start := VISIBLE_SLICE_HEADER_BYTES+len(payload)
+	visible_slice_write_u64(encoded, metadata_start, 9)
+	visible_slice_write_u32(encoded, metadata_start+8, PRESENTATION_READY_FLAG)
+	visible_slice_write_u32(encoded, metadata_start+12, 1)
+	visible_slice_write_u32(encoded, metadata_start+16, 1)
+	visible_slice_write_u32(encoded, metadata_start+20, 0)
+	record := metadata_start+PRESENTATION_TRAILER_BYTES
+	visible_slice_write_u32(encoded, record, 2) // heading
+	visible_slice_write_u32(encoded, record+4, 0)
+	visible_slice_write_u32(encoded, record+8, 3)
+	visible_slice_write_u32(encoded, record+12, 1)
+	record += PRESENTATION_RECORD_BYTES
+	visible_slice_write_u32(encoded, record, 0x10002) // quote block
+	visible_slice_write_u32(encoded, record+4, 0)
+	visible_slice_write_u32(encoded, record+8, 4)
+	visible_slice_write_u32(encoded, record+12, 0)
+	descriptor := Resource_Descriptor{
+		resource_id=4, generation=2, document_id="doc-1",
+		application_rev=17, editor_revision=9, start_line=12, end_line=13,
+		byte_len=u64(len(payload)), metadata_byte_len=u64(metadata_len), start_byte=88,
+	}
+	window, ok, message := visible_window_decode(encoded, descriptor, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, ok, message)
+	if ok {
+		defer visible_window_destroy(&window, context.temp_allocator)
+		testing.expect(t, string(window.source) == string(payload[:]), "SPVS v2 must retain raw source bytes including malformed UTF-8 unchanged")
+		testing.expect(t, window.presentation_ready && window.presentation_revision == 9 && !window.presentation_truncated,
+			"presentation readiness must be tied to the authoritative editor revision")
+		testing.expect(t, len(window.presentation_spans) == 1 && window.presentation_spans[0].kind == 2 &&
+			window.presentation_spans[0].start_byte == 0 && window.presentation_spans[0].end_byte == 3 &&
+			window.presentation_spans[0].level_flags == 1, "span record should retain kind, relative byte range, and heading level")
+		testing.expect(t, len(window.presentation_blocks) == 1 && window.presentation_blocks[0].kind == 0x10002,
+			"block records should be retained separately from spans")
+	}
+	_, ok, _ = visible_window_decode(encoded, descriptor, "doc-1", allocator=context.temp_allocator)
+	testing.expect(t, !ok, "SPVS v2 must be rejected when the caller did not opt into presentation metadata")
+
+	wrong_metadata_length := descriptor
+	wrong_metadata_length.metadata_byte_len -= 1
+	_, ok, _ = visible_window_decode(encoded, wrong_metadata_length, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, !ok, "descriptor metadata byte length must match the encoded trailer and records")
+	wrong_source_range := encoded[:]
+	visible_slice_write_u32(wrong_source_range, record+8, u32(len(payload))+1)
+	_, ok, _ = visible_window_decode(wrong_source_range, descriptor, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, !ok, "records extending past the bounded visible source must be rejected")
+	wrong_ready_revision := encoded[:]
+	visible_slice_write_u64(wrong_ready_revision, metadata_start, 8)
+	_, ok, _ = visible_window_decode(wrong_ready_revision, descriptor, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, !ok, "ready metadata for a different source revision must be rejected")
+	unknown_flags := encoded[:]
+	visible_slice_write_u32(unknown_flags, metadata_start+8, 0x4)
+	_, ok, _ = visible_window_decode(unknown_flags, descriptor, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, !ok, "unknown presentation trailer flags must be rejected")
+	unknown_kind := encoded[:]
+	visible_slice_write_u32(unknown_kind, metadata_start+PRESENTATION_TRAILER_BYTES, 0x40)
+	_, ok, _ = visible_window_decode(unknown_kind, descriptor, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, !ok, "unknown presentation record kinds must be rejected")
+	too_many_records := encoded[:]
+	visible_slice_write_u32(too_many_records, metadata_start+12, 0xFFFFFFFF)
+	_, ok, _ = visible_window_decode(too_many_records, descriptor, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, !ok, "record counts beyond the bounded cap must be rejected without overflow")
+	trailing_metadata := descriptor
+	trailing_metadata.metadata_byte_len += 1
+	_, ok, _ = visible_window_decode(encoded, trailing_metadata, "doc-1", include_presentation=true, allocator=context.temp_allocator)
+	testing.expect(t, !ok, "unaccounted trailing metadata bytes must be rejected")
 }
 
 @(test)

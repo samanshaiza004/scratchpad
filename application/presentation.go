@@ -46,17 +46,19 @@ type PresentationCommand struct {
 // Document bytes and editor mechanics are deliberately absent: the scalable
 // editor remains local to Scratchpad's existing application/editor path.
 type PresentationDocument struct {
-	ID             DocumentID
-	Path           string
-	Status         DocumentStatus
-	Dirty          bool
-	Preview        bool
-	EditorRevision uint64
-	ByteLength     uint64
-	LineCount      uint64
-	CanUndo        bool
-	CanRedo        bool
-	Language       string
+	ID                   DocumentID
+	Path                 string
+	Status               DocumentStatus
+	Dirty                bool
+	Preview              bool
+	EditorRevision       uint64
+	ByteLength           uint64
+	LineCount            uint64
+	CanUndo              bool
+	CanRedo              bool
+	Language             string
+	PresentationRevision uint64
+	PresentationReady    bool
 }
 
 // PresentationState is a bounded, UI-independent snapshot for a shell. The
@@ -109,17 +111,19 @@ func (a *Application) Snapshot() PresentationState {
 			continue
 		}
 		state.Documents = append(state.Documents, PresentationDocument{
-			ID:             id,
-			Path:           doc.Path,
-			Status:         a.Status(id),
-			Dirty:          doc.Dirty(),
-			Preview:        a.Preview == id && !doc.Dirty(),
-			EditorRevision: doc.Revision(),
-			ByteLength:     uint64(doc.Editor.Buffer.ByteLen()),
-			LineCount:      uint64(doc.Editor.Buffer.LineCount()),
-			CanUndo:        doc.Editor.CanUndo(),
-			CanRedo:        doc.Editor.CanRedo(),
-			Language:       doc.RootLanguage,
+			ID:                   id,
+			Path:                 doc.Path,
+			Status:               a.Status(id),
+			Dirty:                doc.Dirty(),
+			Preview:              a.Preview == id && !doc.Dirty(),
+			EditorRevision:       doc.Revision(),
+			ByteLength:           uint64(doc.Editor.Buffer.ByteLen()),
+			LineCount:            uint64(doc.Editor.Buffer.LineCount()),
+			CanUndo:              doc.Editor.CanUndo(),
+			CanRedo:              doc.Editor.CanRedo(),
+			Language:             doc.RootLanguage,
+			PresentationRevision: doc.Revision(),
+			PresentationReady:    doc.RootLanguage == "markdown" && doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision(),
 		})
 	}
 	return state

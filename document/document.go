@@ -60,17 +60,91 @@ type InjectedRegion struct {
 // Projections are derived views. They are not authoritative document data and
 // can be discarded and rebuilt after a revision changes.
 type Projections struct {
-	Revision uint64
-	Valid    bool
-	Injected []InjectedRegion
-	Headings []Heading
-	Folds    []Fold
-	Tasks    []Task
-	Links    []Link
-	Blocks   []BlockPresentation
-	Markdown MarkdownPresentation
-	Tables   []TableProjection
-	Code     CodeProjection
+	Revision      uint64
+	Valid         bool
+	Injected      []InjectedRegion
+	Headings      []Heading
+	Folds         []Fold
+	Tasks         []Task
+	Links         []Link
+	Blocks        []BlockPresentation
+	blockTreeMax  []int
+	blockTreeSize int
+	Markdown      MarkdownPresentation
+	Tables        []TableProjection
+	Code          CodeProjection
+}
+
+// IndexBlocks prepares parser-produced blocks for bounded viewport queries.
+// It is called once when a projection is built, never from a paint/request
+// path. Blocks may nest, so subtree maximum ends prune disjoint query ranges.
+func (p *Projections) IndexBlocks() {
+	if p == nil {
+		return
+	}
+	sort.SliceStable(p.Blocks, func(i, j int) bool {
+		return p.Blocks[i].StartByte < p.Blocks[j].StartByte
+	})
+	p.blockTreeSize = 1
+	for p.blockTreeSize < len(p.Blocks) {
+		p.blockTreeSize <<= 1
+	}
+	p.blockTreeMax = make([]int, 2*p.blockTreeSize)
+	for i := range p.blockTreeMax {
+		p.blockTreeMax[i] = -1
+	}
+	for i, block := range p.Blocks {
+		p.blockTreeMax[p.blockTreeSize+i] = block.EndByte
+	}
+	for i := p.blockTreeSize - 1; i > 0; i-- {
+		p.blockTreeMax[i] = max(p.blockTreeMax[i*2], p.blockTreeMax[i*2+1])
+	}
+}
+
+// BlocksIn returns at most limit blocks intersecting [startByte,endByte).
+// The bool reports that additional matching blocks were omitted.
+func (p Projections) BlocksIn(startByte, endByte, limit int) ([]BlockPresentation, bool) {
+	if endByte <= startByte || limit <= 0 || len(p.Blocks) == 0 {
+		return nil, false
+	}
+	if p.blockTreeSize <= 0 || len(p.blockTreeMax) != 2*p.blockTreeSize {
+		result := make([]BlockPresentation, 0, min(limit, len(p.Blocks)))
+		for _, block := range p.Blocks {
+			if block.EndByte <= startByte || block.StartByte >= endByte {
+				continue
+			}
+			if len(result) == limit {
+				return result, true
+			}
+			result = append(result, block)
+		}
+		return result, false
+	}
+	endIndex := sort.Search(len(p.Blocks), func(i int) bool { return p.Blocks[i].StartByte >= endByte })
+	result := make([]BlockPresentation, 0, min(limit, 64))
+	truncated := false
+	var visit func(node, left, right int)
+	visit = func(node, left, right int) {
+		if truncated || left >= endIndex || p.blockTreeMax[node] <= startByte {
+			return
+		}
+		if right-left == 1 {
+			block := p.Blocks[left]
+			if block.StartByte < endByte && block.EndByte > startByte {
+				if len(result) == limit {
+					truncated = true
+					return
+				}
+				result = append(result, block)
+			}
+			return
+		}
+		middle := left + (right-left)/2
+		visit(node*2, left, middle)
+		visit(node*2+1, middle, right)
+	}
+	visit(1, 0, p.blockTreeSize)
+	return result, truncated
 }
 
 // HighlightKind is a parser-neutral semantic token category. It contains no
@@ -240,9 +314,10 @@ type PresentationSpan struct {
 // for one source revision. Its index keeps visible-row range queries bounded
 // by the matching spans rather than requiring a document-wide scan.
 type MarkdownPresentation struct {
-	Revision uint64
-	Spans    []PresentationSpan
-	maxEnds  []int
+	Revision    uint64
+	Spans       []PresentationSpan
+	treeMaxEnds []int
+	treeSize    int
 }
 
 // NewMarkdownPresentation normalizes and indexes source spans produced by the
@@ -268,40 +343,80 @@ func NewMarkdownPresentation(revision uint64, spans []PresentationSpan) Markdown
 		}
 		return filtered[i].StartByte < filtered[j].StartByte
 	})
-	maxEnds := make([]int, len(filtered))
-	for i, span := range filtered {
-		maxEnds[i] = span.EndByte
-		if i > 0 && maxEnds[i-1] > maxEnds[i] {
-			maxEnds[i] = maxEnds[i-1]
-		}
+	treeSize := 1
+	for treeSize < len(filtered) {
+		treeSize <<= 1
 	}
-	return MarkdownPresentation{Revision: revision, Spans: filtered, maxEnds: maxEnds}
+	treeMaxEnds := make([]int, 2*treeSize)
+	for i := range treeMaxEnds {
+		treeMaxEnds[i] = -1
+	}
+	for i, span := range filtered {
+		treeMaxEnds[treeSize+i] = span.EndByte
+	}
+	for i := treeSize - 1; i > 0; i-- {
+		treeMaxEnds[i] = max(treeMaxEnds[i*2], treeMaxEnds[i*2+1])
+	}
+	return MarkdownPresentation{Revision: revision, Spans: filtered, treeMaxEnds: treeMaxEnds, treeSize: treeSize}
 }
 
 // SpansIn returns source spans intersecting [startByte, endByte). The returned
 // slice is independent so callers can clip or reorder it for one visible row.
 func (p MarkdownPresentation) SpansIn(startByte, endByte int) []PresentationSpan {
+	spans, _ := p.SpansInLimit(startByte, endByte, int(^uint(0)>>1))
+	return spans
+}
+
+// SpansInLimit is the bounded counterpart to SpansIn. The bool reports that
+// additional matching spans were omitted.
+func (p MarkdownPresentation) SpansInLimit(startByte, endByte, limit int) ([]PresentationSpan, bool) {
 	if startByte < 0 {
 		startByte = 0
 	}
-	if endByte <= startByte || len(p.Spans) == 0 {
-		return nil
+	if endByte <= startByte || len(p.Spans) == 0 || limit <= 0 {
+		return nil, false
 	}
 	endIndex := sort.Search(len(p.Spans), func(i int) bool { return p.Spans[i].StartByte >= endByte })
-	startIndex := 0
-	if len(p.maxEnds) == len(p.Spans) {
-		startIndex = sort.Search(endIndex, func(i int) bool { return p.maxEnds[i] > startByte })
-	}
-	result := make([]PresentationSpan, 0, endIndex-startIndex)
-	for _, span := range p.Spans[startIndex:endIndex] {
-		if span.EndByte > startByte && span.StartByte < endByte {
+	result := make([]PresentationSpan, 0, min(limit, 64))
+	truncated := false
+	if p.treeSize > 0 && len(p.treeMaxEnds) == 2*p.treeSize {
+		var visit func(node, left, right int)
+		visit = func(node, left, right int) {
+			if truncated || left >= endIndex || p.treeMaxEnds[node] <= startByte {
+				return
+			}
+			if right-left == 1 {
+				span := p.Spans[left]
+				if span.StartByte < endByte && span.EndByte > startByte {
+					if len(result) == limit {
+						truncated = true
+						return
+					}
+					result = append(result, span)
+				}
+				return
+			}
+			middle := left + (right-left)/2
+			visit(node*2, left, middle)
+			visit(node*2+1, middle, right)
+		}
+		visit(1, 0, p.treeSize)
+	} else {
+		for _, span := range p.Spans[:endIndex] {
+			if span.EndByte <= startByte || span.StartByte >= endByte {
+				continue
+			}
+			if len(result) == limit {
+				truncated = true
+				break
+			}
 			result = append(result, span)
 		}
 	}
 	if len(result) == 0 {
-		return nil
+		return nil, false
 	}
-	return result
+	return result, truncated
 }
 
 type Heading struct {

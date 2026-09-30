@@ -50,6 +50,7 @@ func Project(source []byte, revision uint64) document.Projections {
 			projection.Folds = append(projection.Folds, document.Fold{HeadingStart: heading.StartByte, StartByte: start, EndByte: end})
 		}
 	}
+	projection.IndexBlocks()
 	return projection
 }
 

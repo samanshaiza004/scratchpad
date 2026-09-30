@@ -119,6 +119,37 @@ test_rejected_editor_window_request_does_not_repeat_until_request_changes :: pro
 	other_document.document_id = "doc-2"
 	testing.expect(t, !editor_window_request_is_rejected(&app, other_document),
 		"switching documents should permit a fresh request")
+	ready_tuple := request
+	ready_tuple.include_presentation = true
+	ready_tuple.presentation_revision = 3
+	ready_tuple.presentation_ready = true
+	testing.expect(t, !editor_window_request_is_rejected(&app, ready_tuple),
+		"a ready metadata publication should make the pending request identity eligible again")
+}
+
+@(test)
+test_pending_presentation_response_deduplicates_only_its_readiness_tuple :: proc(t: ^testing.T) {
+	request := bridge.Visible_Window_Request{
+		document_id="doc-md", editor_revision=7, include_presentation=true,
+		presentation_revision=6, presentation_ready=false,
+	}
+	document := bridge.State_Document{
+		id="doc-md", language="markdown", editor_revision=7,
+		presentation_revision=6, presentation_ready=false,
+	}
+	pending_window := bridge.Visible_Window{document_id="doc-md", editor_revision=7, presentation_revision=6}
+	testing.expect(t, editor_metadata_result_should_suppress_retry(request, document, pending_window),
+		"an unchanged pending presentation tuple should not request metadata on every wake")
+	document.presentation_revision = 7
+	document.presentation_ready = true
+	testing.expect(t, !editor_metadata_result_should_suppress_retry(request, document, pending_window),
+		"a pending result delivered after the matching readiness publication must not suppress its refresh")
+	ready_request := request
+	ready_request.presentation_revision = 7
+	ready_request.presentation_ready = true
+	ready_window := bridge.Visible_Window{document_id="doc-md", editor_revision=7, presentation_revision=7, presentation_ready=true}
+	testing.expect(t, !editor_metadata_result_should_suppress_retry(ready_request, document, ready_window),
+		"an exact ready metadata result should not be marked as pending")
 }
 
 @(test)

@@ -14,18 +14,23 @@ import (
 )
 
 const (
-	ProtocolVersion          uint32 = 1
-	StateSchemaV1            uint32 = 1
-	MaxInputBytes                   = 1 << 20
-	DefaultListLimit                = 200
-	MaxListLimit                    = 1000
-	MaxVisibleLines                 = 256
-	MaxVisibleBytes                 = 64 * 1024
-	MaxVisibleLineChunkBytes        = 16 * 1024
-	MaxEditBytes                    = 128 * 1024
-	MaxFindMatches                  = 1000
-	VisibleSliceSchemaV1            = 1
-	visibleSliceHeaderBytes         = 48
+	ProtocolVersion                uint32 = 1
+	StateSchemaV1                  uint32 = 1
+	MaxInputBytes                         = 1 << 20
+	DefaultListLimit                      = 200
+	MaxListLimit                          = 1000
+	MaxVisibleLines                       = 256
+	MaxVisibleBytes                       = 64 * 1024
+	MaxVisibleLineChunkBytes              = 16 * 1024
+	MaxEditBytes                          = 128 * 1024
+	MaxFindMatches                        = 1000
+	VisibleSliceSchemaV1                  = 1
+	VisibleSliceSchemaV2                  = 2
+	visibleSliceHeaderBytes               = 48
+	presentationTrailerHeaderBytes        = 24
+	presentationRecordBytes               = 16
+	MaxPresentationRecords                = 4096
+	maxPresentationMetadataBytes          = presentationTrailerHeaderBytes + MaxPresentationRecords*presentationRecordBytes
 )
 
 type StartRequest struct {
@@ -40,32 +45,33 @@ type StopRequest struct {
 }
 
 type CommandRequest struct {
-	Version           uint32 `json:"version"`
-	RequestID         uint64 `json:"request_id"`
-	BasedOnRevision   uint64 `json:"based_on_revision"`
-	Command           string `json:"command"`
-	Path              string `json:"path,omitempty"`
-	Disposition       string `json:"disposition,omitempty"`
-	Name              string `json:"name,omitempty"`
-	DocumentID        string `json:"document_id,omitempty"`
-	Discard           bool   `json:"discard,omitempty"`
-	RelativePath      string `json:"relative_path,omitempty"`
-	Limit             int    `json:"limit,omitempty"`
-	StartLine         uint64 `json:"start_line,omitempty"`
-	AnchorByte        uint64 `json:"anchor_byte,omitempty"`
-	MaxLines          uint64 `json:"max_lines,omitempty"`
-	MaxBytes          uint64 `json:"max_bytes,omitempty"`
-	EditorRevision    uint64 `json:"editor_revision,omitempty"`
-	StartByte         uint64 `json:"start_byte,omitempty"`
-	EndByte           uint64 `json:"end_byte,omitempty"`
-	Replacement       []int  `json:"replacement,omitempty"`
-	HasSelectionState bool   `json:"has_selection_state,omitempty"`
-	BeforeAnchorByte  uint64 `json:"before_anchor_byte,omitempty"`
-	BeforeCursorByte  uint64 `json:"before_cursor_byte,omitempty"`
-	AfterAnchorByte   uint64 `json:"after_anchor_byte,omitempty"`
-	AfterCursorByte   uint64 `json:"after_cursor_byte,omitempty"`
-	Query             string `json:"query,omitempty"`
-	MaxMatches        int    `json:"max_matches,omitempty"`
+	Version             uint32 `json:"version"`
+	RequestID           uint64 `json:"request_id"`
+	BasedOnRevision     uint64 `json:"based_on_revision"`
+	Command             string `json:"command"`
+	Path                string `json:"path,omitempty"`
+	Disposition         string `json:"disposition,omitempty"`
+	Name                string `json:"name,omitempty"`
+	DocumentID          string `json:"document_id,omitempty"`
+	Discard             bool   `json:"discard,omitempty"`
+	RelativePath        string `json:"relative_path,omitempty"`
+	Limit               int    `json:"limit,omitempty"`
+	StartLine           uint64 `json:"start_line,omitempty"`
+	AnchorByte          uint64 `json:"anchor_byte,omitempty"`
+	MaxLines            uint64 `json:"max_lines,omitempty"`
+	MaxBytes            uint64 `json:"max_bytes,omitempty"`
+	IncludePresentation bool   `json:"include_presentation,omitempty"`
+	EditorRevision      uint64 `json:"editor_revision,omitempty"`
+	StartByte           uint64 `json:"start_byte,omitempty"`
+	EndByte             uint64 `json:"end_byte,omitempty"`
+	Replacement         []int  `json:"replacement,omitempty"`
+	HasSelectionState   bool   `json:"has_selection_state,omitempty"`
+	BeforeAnchorByte    uint64 `json:"before_anchor_byte,omitempty"`
+	BeforeCursorByte    uint64 `json:"before_cursor_byte,omitempty"`
+	AfterAnchorByte     uint64 `json:"after_anchor_byte,omitempty"`
+	AfterCursorByte     uint64 `json:"after_cursor_byte,omitempty"`
+	Query               string `json:"query,omitempty"`
+	MaxMatches          int    `json:"max_matches,omitempty"`
 }
 
 type Response struct {
@@ -84,20 +90,22 @@ type Response struct {
 	CloseDecision    *CloseDecision      `json:"close_decision,omitempty"`
 	Matches          []CurrentMatch      `json:"matches,omitempty"`
 	MatchesTruncated bool                `json:"matches_truncated,omitempty"`
+	Diagnostic       string              `json:"diagnostic,omitempty"`
 }
 
 type ResourceDescriptor struct {
-	ResourceID     uint64 `json:"resource_id"`
-	Generation     uint64 `json:"generation"`
-	DocumentID     string `json:"document_id"`
-	ApplicationRev uint64 `json:"application_revision"`
-	EditorRevision uint64 `json:"editor_revision"`
-	StartLine      uint64 `json:"start_line"`
-	EndLine        uint64 `json:"end_line"`
-	ByteLen        uint64 `json:"byte_len"`
-	Truncated      bool   `json:"truncated"`
-	StartByte      uint64 `json:"start_byte"`
-	LineByteLength uint64 `json:"line_byte_length,omitempty"`
+	ResourceID      uint64 `json:"resource_id"`
+	Generation      uint64 `json:"generation"`
+	DocumentID      string `json:"document_id"`
+	ApplicationRev  uint64 `json:"application_revision"`
+	EditorRevision  uint64 `json:"editor_revision"`
+	StartLine       uint64 `json:"start_line"`
+	EndLine         uint64 `json:"end_line"`
+	ByteLen         uint64 `json:"byte_len"`
+	Truncated       bool   `json:"truncated"`
+	StartByte       uint64 `json:"start_byte"`
+	LineByteLength  uint64 `json:"line_byte_length,omitempty"`
+	MetadataByteLen uint64 `json:"metadata_byte_len,omitempty"`
 }
 
 type EditAck struct {
@@ -172,17 +180,19 @@ type ActionState struct {
 }
 
 type StateDocument struct {
-	ID             string `json:"id"`
-	Path           string `json:"path"`
-	Status         string `json:"status"`
-	Dirty          bool   `json:"dirty"`
-	Preview        bool   `json:"preview,omitempty"`
-	EditorRevision uint64 `json:"editor_revision"`
-	ByteLength     uint64 `json:"byte_length"`
-	LineCount      uint64 `json:"line_count"`
-	CanUndo        bool   `json:"can_undo"`
-	CanRedo        bool   `json:"can_redo"`
-	Language       string `json:"language,omitempty"`
+	ID                   string `json:"id"`
+	Path                 string `json:"path"`
+	Status               string `json:"status"`
+	Dirty                bool   `json:"dirty"`
+	Preview              bool   `json:"preview,omitempty"`
+	EditorRevision       uint64 `json:"editor_revision"`
+	ByteLength           uint64 `json:"byte_length"`
+	LineCount            uint64 `json:"line_count"`
+	CanUndo              bool   `json:"can_undo"`
+	CanRedo              bool   `json:"can_redo"`
+	Language             string `json:"language,omitempty"`
+	PresentationRevision uint64 `json:"presentation_revision,omitempty"`
+	PresentationReady    bool   `json:"presentation_ready,omitempty"`
 }
 
 type DirectoryListing struct {
@@ -374,6 +384,87 @@ func encodeVisibleSlice(applicationRevision, editorRevision, startLine, endLine 
 	return payload, nil
 }
 
+type presentationWireRecord struct {
+	kind       uint32
+	start, end uint32
+	levelFlags uint32
+}
+
+const (
+	presentationReadyFlag     uint32 = 1
+	presentationTruncatedFlag uint32 = 2
+	blockClippedStartFlag     uint32 = 1 << 8
+	blockClippedEndFlag       uint32 = 1 << 9
+	blockWireKindBase         uint32 = 0x10000
+)
+
+func encodeVisibleSliceV2(applicationRevision, editorRevision, startLine, endLine uint64, truncated bool, lines []byte, presentationRevision uint64, ready, metadataTruncated bool, spans, blocks []presentationWireRecord) ([]byte, error) {
+	if len(lines) > MaxVisibleBytes {
+		return nil, fmt.Errorf("visible slice exceeds %d byte limit", MaxVisibleBytes)
+	}
+	if len(spans)+len(blocks) > MaxPresentationRecords {
+		return nil, fmt.Errorf("presentation metadata exceeds %d record limit", MaxPresentationRecords)
+	}
+	if ready && presentationRevision != editorRevision {
+		return nil, errors.New("ready presentation revision does not match editor revision")
+	}
+	for _, record := range spans {
+		if record.kind < 1 || record.kind > 32 || record.start >= record.end || uint64(record.end) > uint64(len(lines)) || record.levelFlags > 0xff {
+			return nil, errors.New("invalid presentation span record")
+		}
+	}
+	for _, record := range blocks {
+		if record.kind < blockWireKindBase+1 || record.kind > blockWireKindBase+5 || record.start >= record.end || uint64(record.end) > uint64(len(lines)) || record.levelFlags & ^uint32(0x3ff) != 0 {
+			return nil, errors.New("invalid presentation block record")
+		}
+	}
+	if !ready && (len(spans) != 0 || len(blocks) != 0) {
+		return nil, errors.New("pending presentation cannot contain records")
+	}
+	metadataLen := presentationTrailerHeaderBytes + (len(spans)+len(blocks))*presentationRecordBytes
+	if metadataLen > maxPresentationMetadataBytes {
+		return nil, fmt.Errorf("presentation metadata exceeds %d byte limit", maxPresentationMetadataBytes)
+	}
+	payload := make([]byte, visibleSliceHeaderBytes+len(lines)+metadataLen)
+	copy(payload[:4], []byte("SPVS"))
+	binary.LittleEndian.PutUint32(payload[4:8], VisibleSliceSchemaV2)
+	binary.LittleEndian.PutUint64(payload[8:16], applicationRevision)
+	binary.LittleEndian.PutUint64(payload[16:24], editorRevision)
+	binary.LittleEndian.PutUint64(payload[24:32], startLine)
+	binary.LittleEndian.PutUint64(payload[32:40], endLine)
+	var flags uint32
+	if truncated {
+		flags = 1
+	}
+	binary.LittleEndian.PutUint32(payload[40:44], flags)
+	binary.LittleEndian.PutUint32(payload[44:48], uint32(len(lines)))
+	copy(payload[visibleSliceHeaderBytes:], lines)
+	trailer := payload[visibleSliceHeaderBytes+len(lines):]
+	binary.LittleEndian.PutUint64(trailer[0:8], presentationRevision)
+	var presentationFlags uint32
+	if ready {
+		presentationFlags |= presentationReadyFlag
+	}
+	if metadataTruncated {
+		presentationFlags |= presentationTruncatedFlag
+	}
+	binary.LittleEndian.PutUint32(trailer[8:12], presentationFlags)
+	binary.LittleEndian.PutUint32(trailer[12:16], uint32(len(spans)))
+	binary.LittleEndian.PutUint32(trailer[16:20], uint32(len(blocks)))
+	// trailer[20:24] is reserved and remains zero.
+	at := presentationTrailerHeaderBytes
+	for _, group := range [][]presentationWireRecord{spans, blocks} {
+		for _, record := range group {
+			binary.LittleEndian.PutUint32(trailer[at:at+4], record.kind)
+			binary.LittleEndian.PutUint32(trailer[at+4:at+8], record.start)
+			binary.LittleEndian.PutUint32(trailer[at+8:at+12], record.end)
+			binary.LittleEndian.PutUint32(trailer[at+12:at+16], record.levelFlags)
+			at += presentationRecordBytes
+		}
+	}
+	return payload, nil
+}
+
 func validateWireInput(input []byte, lifecycle string) (Response, bool) {
 	if len(input) > MaxInputBytes {
 		return errorResponse(0, lifecycle, "input_too_large", fmt.Sprintf("input exceeds %d byte limit", MaxInputBytes), false), false
@@ -435,7 +526,8 @@ func errorResponse(requestID uint64, lifecycle, code, message string, retryable 
 	}
 }
 
-func stateFromApplication(revision uint64, snapshot application.PresentationState) StateEnvelope {
+func stateFromApplication(revision uint64, snapshot application.PresentationState, includePresentation ...bool) StateEnvelope {
+	presentationEnabled := len(includePresentation) > 0 && includePresentation[0]
 	commandContext := commands.CommandContext{
 		ActiveDocument: snapshot.Active != "",
 		HasWorkspace:   snapshot.HasWorkspace,
@@ -452,7 +544,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		Actions:        make([]ActionState, 0, len(shellActionIDs)),
 	}
 	for _, document := range snapshot.Documents {
-		state.Documents = append(state.Documents, StateDocument{
+		stateDocument := StateDocument{
 			ID:             string(document.ID),
 			Path:           document.Path,
 			Status:         documentStatusString(document.Status),
@@ -464,7 +556,12 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			CanUndo:        document.CanUndo,
 			CanRedo:        document.CanRedo,
 			Language:       document.Language,
-		})
+		}
+		if presentationEnabled && document.Language == "markdown" {
+			stateDocument.PresentationRevision = document.PresentationRevision
+			stateDocument.PresentationReady = document.PresentationReady
+		}
+		state.Documents = append(state.Documents, stateDocument)
 		if document.ID == snapshot.Active {
 			commandContext.CanUndo = document.CanUndo
 			commandContext.CanRedo = document.CanRedo

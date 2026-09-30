@@ -136,6 +136,18 @@ editor_window_rejection_set :: proc(app: ^App, request: bridge.Visible_Window_Re
 	return true
 }
 
+editor_metadata_result_should_suppress_retry :: proc(
+	request: bridge.Visible_Window_Request,
+	document: bridge.State_Document,
+	window: bridge.Visible_Window,
+) -> bool {
+	return request.include_presentation &&
+	       request.editor_revision == document.editor_revision &&
+	       request.presentation_revision == document.presentation_revision &&
+	       request.presentation_ready == document.presentation_ready &&
+	       !window.presentation_ready
+}
+
 build_app :: proc(
 	state: rawptr,
 	rt: ^alicorn.Runtime,
@@ -458,6 +470,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	window_covers_view := window_matches &&
 	                      window.start_line <= visible_start &&
 	                      window.end_line >= visible_end
+	request_presentation := document.language == "markdown"
+	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
+	                              window.presentation_revision == document.presentation_revision &&
+	                              window.presentation_revision == document.editor_revision
+	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_window_matches
+	if metadata_refresh_needed { window_covers_view = false }
 	for position := list.first; position < list.last; position += 1 {
 		line_number := u64(position)
 		if line, found := editor_window_line(window, line_number); window_available && found {
@@ -523,6 +541,13 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				font=.Monospace,
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Clip},
 			)
+			paint_spans: []alicorn.Text_Paint_Span
+			paint_current := window_matches && view.optimistic_pending_edits == 0 &&
+			                 document.presentation_ready && document.presentation_revision == document.editor_revision &&
+			                 window.presentation_ready && window.presentation_revision == document.presentation_revision &&
+			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
+			if paint_current { paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator) }
+			_ = alicorn.text_paint_spans(ui, line_node, paint_spans)
 			append(&app.editor_row_targets, Editor_Row_Target{node=line_node, logical_line=line.logical_line})
 			composition_row := false
 			if window_matches && view.preedit_active {
@@ -590,6 +615,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			anchor_byte=request_anchor,
 			max_lines=request_lines,
 			max_bytes=bridge.MAX_VISIBLE_BYTES,
+			include_presentation=request_presentation,
+			presentation_revision=document.presentation_revision,
+			presentation_ready=document.presentation_ready,
 		}
 		if !editor_window_request_is_rejected(app, request) {
 			generation, accepted, request_error := bridge.visible_window_lane_request(
@@ -601,6 +629,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				request_lines,
 				bridge.MAX_VISIBLE_BYTES,
 				request_anchor,
+				request_presentation,
+				document.presentation_revision,
+				document.presentation_ready,
 			)
 			if accepted {
 				app.editor_request_generation = generation
@@ -995,6 +1026,12 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 							_ = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, 0, "advance bounded long-line chunk")
 						}
 						editor_window_rejection_clear(app)
+						if editor_metadata_result_should_suppress_retry(window_result.request, active, window_result.window) {
+							// Prevent an unchanged not-ready result from causing a request on
+							// every retained frame. A later state publication clears this
+							// request identity and allows the exact revision to be retried.
+							_ = editor_window_rejection_set(app, window_result.request)
+						}
 						if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 						app.editor_window_error = ""
 						installed = true

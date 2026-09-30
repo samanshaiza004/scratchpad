@@ -1,6 +1,6 @@
 # Scratchpad to Alicorn parity contract
 
-Status: Phase 1 lifecycle/state, Phase 2 workbench shell, Phase 3 bounded-source presentation, and Phase 4A–4F editing are implemented in the experimental frontend. Phase 4 includes clipboard, authoritative Undo/Redo, and frontend-local IME composition. The current closeout adds automated convergence and boundary regressions; native Windows/macOS clipboard and IME behavior still requires hands-on verification. Soft wrapping and full product parity remain deferred. Shirei remains the default and production frontend.
+Status: Phase 1 lifecycle/state, Phase 2 workbench shell, Phase 3 bounded-source presentation, and Phase 4A–4F editing are implemented in the experimental frontend. Phase 4 includes clipboard, authoritative Undo/Redo, and frontend-local IME composition. The current closeout adds automated convergence and boundary regressions; native Windows/macOS clipboard and IME behavior still requires hands-on verification. Markdown A adds bounded, revision-tagged source-preserving paint metadata; soft wrapping and full Markdown/product parity remain deferred. Shirei remains the default and production frontend.
 
 ## Purpose
 
@@ -22,6 +22,7 @@ Parity means matching useful behavior and state transitions. It does not require
 | Phase 4E — authoritative Undo/Redo | Implemented; automated | Scratchpad's Go editor owns history. Semantic Undo/Redo waits behind pending optimistic edits and returns the restored selection and logical line for local viewport reveal. Tests verify authoritative bytes/revisions and selection restoration through Undo/Redo; Scratchpad remains the history authority. |
 | Phase 4F — IME composition | Implemented; automated, native manual check pending | Preedit remains a transient Alicorn projection and never crosses Caliber; commit uses the normal optimistic edit command. Rejected committed text survives terminal cancellation and tab switches; new preedit cannot overwrite it, and subsequent commits append without replacing prior bytes. A commit crossing the 128 KiB recovery threshold is retained with one exact-size growth before text input is suspended. Copy clears only after success, and close offers Copy Recovery / Discard Recovery / Cancel. Native Japanese composition/conversion/candidate placement still needs Windows/macOS verification. |
 | Phase 4G — closeout | Automated editor behavior checks pass; native pointer behavior pending | Alicorn and Scratchpad headless checks cover click-selection semantics, bounded multi-line indentation, captured drag autoscroll, and existing editing/convergence paths. Windows native startup/publication/wake/presentation/shutdown smoke passes. GPUI unit/foreign smoke/Clippy validation is recorded separately; its wrapper check still has a pre-existing formatting difference in `frontends/gpui/src/scheduler.rs`. Native Windows/macOS click-count, modifier, autoscroll feel, clipboard, Japanese IME/candidate positioning, and idle-after-edit remain manual checks; soft wrapping remains deferred. |
+| Markdown A — bounded semantics | Implemented; automated, native appearance pending | Opt-in SPVS v2 carries exact-revision source spans and block metadata through the existing visible-window lane. Go/Goldmark owns semantics; Odin maps source bytes; generic Alicorn paint spans preserve shaping/caret geometry. GPUI retains SPVS v1. Optimistic/stale/IME source renders plain until exact metadata arrives. Windows tests, race checks, GPUI compatibility, and native lifecycle smoke pass; wrap and full Markdown parity remain separate gates. See [design and validation](MARKDOWN.md). |
 
 Status labels:
 
@@ -50,7 +51,7 @@ Status labels:
 
 ## Deferred product scope
 
-The current project explicitly defers LSP, plugins, sync/collaboration, autocomplete, diagnostics, debugging, and rich-text/Markdown presentation. Do not add these to the first Alicorn parity gate. A later product decision can promote a deferred row with a concrete user need and tests.
+The current project explicitly defers LSP, plugins, sync/collaboration, autocomplete, diagnostics, and debugging. Markdown A is now an active v0.1 slice: bounded semantic spans and metric-stable source presentation. Soft wrapping/visual rows and full Markdown presentation remain separate gates. See [bounded Markdown design](MARKDOWN.md).
 
 ## Gate rule
 

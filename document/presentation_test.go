@@ -27,6 +27,50 @@ func TestMarkdownPresentationSpansInDoesNotReturnDisjointRanges(t *testing.T) {
 	}
 }
 
+func TestMarkdownPresentationBoundedQueryPrunesOldRangesAndReportsTruncation(t *testing.T) {
+	spans := []PresentationSpan{{StartByte: 0, EndByte: 100000, Kind: PresentationCodeBlock}}
+	for i := 0; i < 10000; i++ {
+		start := 2 + i*2
+		spans = append(spans, PresentationSpan{StartByte: start, EndByte: start + 1, Kind: PresentationEmphasis})
+	}
+	presentation := NewMarkdownPresentation(4, spans)
+	got, truncated := presentation.SpansInLimit(19000, 19002, 1)
+	if !truncated || len(got) != 1 || got[0].Kind != PresentationCodeBlock {
+		t.Fatalf("bounded query = %+v, truncated=%v", got, truncated)
+	}
+	all, truncated := presentation.SpansInLimit(19000, 19002, 8)
+	if truncated || len(all) != 2 || all[0].Kind != PresentationCodeBlock || all[1].Kind != PresentationEmphasis {
+		t.Fatalf("complete query = %+v, truncated=%v", all, truncated)
+	}
+}
+
+func TestBlockPresentationIndexHandlesNestedAndDenseRanges(t *testing.T) {
+	projection := Projections{Blocks: []BlockPresentation{{Kind: BlockQuote, StartByte: 0, EndByte: 100000}}}
+	for i := 0; i < 10000; i++ {
+		start := 2 + i*2
+		projection.Blocks = append(projection.Blocks, BlockPresentation{Kind: BlockList, StartByte: start, EndByte: start + 1})
+	}
+	projection.IndexBlocks()
+	got, truncated := projection.BlocksIn(19000, 19002, 1)
+	if !truncated || len(got) != 1 || got[0].Kind != BlockQuote {
+		t.Fatalf("bounded block query = %+v, truncated=%v", got, truncated)
+	}
+	all, truncated := projection.BlocksIn(19000, 19002, 8)
+	if truncated || len(all) != 2 || all[0].Kind != BlockQuote || all[1].Kind != BlockList {
+		t.Fatalf("complete block query = %+v, truncated=%v", all, truncated)
+	}
+
+	// A literal projection without an index remains correct for compatibility.
+	legacy := Projections{Blocks: []BlockPresentation{
+		{Kind: BlockList, StartByte: 50, EndByte: 51},
+		{Kind: BlockQuote, StartByte: 0, EndByte: 100},
+	}}
+	legacyBlocks, _ := legacy.BlocksIn(0, 2, 8)
+	if len(legacyBlocks) != 1 || legacyBlocks[0].Kind != BlockQuote {
+		t.Fatalf("unindexed legacy projection query = %+v", legacyBlocks)
+	}
+}
+
 func TestDisplayCodeRebasesOnlySafeHighlightSpans(t *testing.T) {
 	doc := New("main.go", []byte("package main\nfunc main() {}\n"), "go")
 	doc.SetDerived(nil, Projections{
@@ -78,5 +122,19 @@ func BenchmarkMarkdownPresentationSpansIn(b *testing.B) {
 				_ = presentation.SpansIn((i%count)*4, (i%count)*4+3)
 			}
 		})
+	}
+}
+
+func BenchmarkMarkdownPresentationLateViewportWithEnclosingSpan(b *testing.B) {
+	spans := make([]PresentationSpan, 100001)
+	spans[0] = PresentationSpan{StartByte: 0, EndByte: 200002, Kind: PresentationCodeBlock}
+	for i := 0; i < 100000; i++ {
+		start := 2 + i*2
+		spans[i+1] = PresentationSpan{StartByte: start, EndByte: start + 1, Kind: PresentationEmphasis}
+	}
+	presentation := NewMarkdownPresentation(1, spans)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = presentation.SpansInLimit(199900, 199940, 256)
 	}
 }
