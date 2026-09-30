@@ -61,6 +61,7 @@ type CommandRequest struct {
 	MaxLines            uint64 `json:"max_lines,omitempty"`
 	MaxBytes            uint64 `json:"max_bytes,omitempty"`
 	IncludePresentation bool   `json:"include_presentation,omitempty"`
+	IncludeIgnored      bool   `json:"include_ignored,omitempty"`
 	EditorRevision      uint64 `json:"editor_revision,omitempty"`
 	StartByte           uint64 `json:"start_byte,omitempty"`
 	EndByte             uint64 `json:"end_byte,omitempty"`

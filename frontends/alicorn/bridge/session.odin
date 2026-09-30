@@ -282,6 +282,7 @@ Backend_Command_Request :: struct {
 	max_lines:        u64    `json:"max_lines,omitempty"`,
 	max_bytes:        u64    `json:"max_bytes,omitempty"`,
 	include_presentation: bool `json:"include_presentation,omitempty"`,
+	include_ignored: bool `json:"include_ignored,omitempty"`,
 	editor_revision:  u64    `json:"editor_revision,omitempty"`,
 	start_byte:         u64    `json:"start_byte,omitempty"`,
 	end_byte:           u64    `json:"end_byte,omitempty"`,
@@ -944,6 +945,7 @@ backend_command :: proc(
 	after_anchor_byte: u64 = 0,
 	after_cursor_byte: u64 = 0,
 	include_presentation := false,
+	include_ignored := false,
 	based_on_revision: u64 = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
@@ -985,6 +987,7 @@ backend_command :: proc(
 		after_anchor_byte=after_anchor_byte,
 		after_cursor_byte=after_cursor_byte,
 		include_presentation=include_presentation,
+		include_ignored=include_ignored,
 	}
 	request_bytes, marshal_err := json.marshal(request, allocator=allocator)
 	if marshal_err != nil { return Backend_Command_Result{code="encode_failed", message="could not encode Scratchpad command"} }

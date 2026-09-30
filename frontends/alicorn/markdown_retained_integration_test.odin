@@ -319,5 +319,46 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 		testing.expect(t, before_metrics.first == int(wrapped_line.logical_line) &&
 			after_metrics.first == before_metrics.first && abs(after_metrics.leading_offset_y-before_metrics.leading_offset_y) < 1,
 			"width reflow should preserve the visible logical source anchor and its intra-row offset")
+		// Return to the wider editor, then drag the workspace splitter so the
+		// file tree expands and the editor narrows. This exercises the retained
+		// drag callback path rather than a completed-window-resize rebuild.
+		rt.viewport.w = 1000
+		alicorn.invalidate_root(&rt, "soft-wrap split drag setup")
+		_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+		view = &app.editor_views[wrapped_view_index]
+		wide_split_wrap_width := view.wrap_measurement_width
+		wide_split_row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, int(wrapped_line.logical_line))
+		split_handle_id: alicorn.Node_ID
+		for node_id in rt.order {
+			candidate, candidate_found := rt.nodes[node_id]
+			if !candidate_found || candidate.kind != .Split_Handle { continue }
+			owner, owner_found := rt.nodes[candidate.split_owner]
+			if owner_found && owner.label == "scratchpad-workspace-editor-split" {
+				split_handle_id = node_id
+				break
+			}
+		}
+		split_handle, split_handle_found := rt.nodes[split_handle_id]
+		if split_handle_found {
+			split_x := split_handle.hit_bounds.x+split_handle.hit_bounds.w/2
+			split_y := split_handle.hit_bounds.y+split_handle.hit_bounds.h/2
+			down := alicorn.Pointer_Event{kind=.Down, x=split_x, y=split_y, button=1}
+			down_target := alicorn.process_pointer(&rt, down)
+			editor_pointer(rawptr(&app), &rt, down, down_target)
+			move := alicorn.Pointer_Event{kind=.Move, x=split_x+150, y=split_y}
+			move_target := alicorn.process_pointer(&rt, move)
+			editor_pointer(rawptr(&app), &rt, move, move_target)
+			pending_split_reflow := rt.invalidated && rt.layout_pending
+			_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+			narrow_split_row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, int(wrapped_line.logical_line))
+			testing.expect(t, pending_split_reflow && view.wrap_measurement_width < wide_split_wrap_width*0.9 &&
+				narrow_split_row_height > wide_split_row_height,
+				"expanding the file tree during a drag should remeasure visible prose rows and grow wrapped row heights immediately")
+			up := alicorn.Pointer_Event{kind=.Up, x=split_x+150, y=split_y, button=1}
+			up_target := alicorn.process_pointer(&rt, up)
+			editor_pointer(rawptr(&app), &rt, up, up_target)
+		} else {
+			testing.expect(t, false, "the editor workspace splitter should remain present for live-width reflow")
+		}
 	}
 }

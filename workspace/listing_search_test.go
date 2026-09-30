@@ -188,12 +188,46 @@ func TestWorkspaceTraversalHonorsRootAndNestedGitignoreRules(t *testing.T) {
 	if len(rootEntries) != 3 || rootEntries[0].Name != "src" || rootEntries[1].Name != ".gitignore" || rootEntries[2].Name != "visible.txt" {
 		t.Fatalf("root entries = %+v, want visible ignored-aware entries", rootEntries)
 	}
+	rootEntries, err = ws.ListWithOptions("", ListOptions{IncludeIgnored: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	containsEntry := func(entries []Entry, name string) bool {
+		for _, entry := range entries {
+			if entry.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	for _, name := range []string{"node_modules", "generated.generated", ".gitignore", "src", "visible.txt"} {
+		if !containsEntry(rootEntries, name) {
+			t.Errorf("include-ignored root listing omitted %q: %+v", name, rootEntries)
+		}
+	}
+	if containsEntry(rootEntries, ".git") || containsEntry(rootEntries, ".scratchpad") {
+		t.Fatalf("include-ignored listing exposed private metadata: %+v", rootEntries)
+	}
+	nodeModulesEntries, err := ws.ListWithOptions("node_modules", ListOptions{IncludeIgnored: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodeModulesEntries) != 1 || nodeModulesEntries[0].Name != "pkg" || !nodeModulesEntries[0].Dir {
+		t.Fatalf("include-ignored nested listing = %+v, want pkg directory", nodeModulesEntries)
+	}
 	srcEntries, err := ws.List("src")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(srcEntries) != 2 || srcEntries[0].Name != ".gitignore" || srcEntries[1].Name != "keep.txt" {
 		t.Fatalf("src entries = %+v, want nested ignore applied", srcEntries)
+	}
+	ignoredSrcEntries, err := ws.ListWithOptions("src", ListOptions{IncludeIgnored: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsEntry(ignoredSrcEntries, "generated") {
+		t.Fatalf("include-ignored nested listing omitted generated directory: %+v", ignoredSrcEntries)
 	}
 
 	var searched []string

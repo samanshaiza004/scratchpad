@@ -398,7 +398,12 @@ editor_wrap_viewport_size :: proc(
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
 		if !found || node.kind != .Split || node.label != "scratchpad-workspace-editor-split" { continue }
-		if view.wrap_last_split_position_valid {
+		// If retained layout has already applied the drag, the scroll region
+		// width includes the split movement. While layout is pending, its saved
+		// viewport is still from the previous split position, so apply the delta
+		// exactly once. This avoids both stale row heights and double-counting
+		// when the editor narrows during a drag.
+		if view.wrap_last_split_position_valid && (!node.split_dragging || rt.layout_pending) {
 			width -= node.split_position-view.wrap_last_split_position
 		}
 		view.wrap_last_split_position = node.split_position
@@ -840,23 +845,32 @@ tree_load_directory :: proc(app: ^App, relative_path: string, expanded := true) 
 	return stored
 }
 
-// Changing ignore visibility reloads each expanded listing under the new
-// policy while keeping the expanded paths and semantic tree focus intact.
+// Changing ignore visibility reloads expanded directories that remain visible
+// under the new policy. Expanded subtrees hidden by the toggle keep their last
+// listing so they can be restored when ignored entries become visible again.
 tree_set_show_ignored_files :: proc(app: ^App, rt: ^alicorn.Runtime, enabled: bool) {
 	if app == nil || app.show_ignored_files == enabled { return }
-	expanded_paths := make([dynamic]string, 0, allocator=context.temp_allocator)
-	defer delete(expanded_paths)
-	for directory in app.tree_directories {
-		if directory.expanded {
-			path_copy, err := strings.clone(directory.path, context.temp_allocator)
-			if err == nil { append(&expanded_paths, path_copy) }
+	old_directories := app.tree_directories
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.show_ignored_files = enabled
+	_ = tree_load_directory(app, "", true)
+	preserved_hidden_paths := make([dynamic]string, 0, allocator=context.temp_allocator)
+	defer delete(preserved_hidden_paths)
+	for old_directory, old_index in old_directories {
+		if !old_directory.expanded || old_directory.path == "" { continue }
+		parent_path := tree_parent_relative_path(old_directory.path)
+		parent_hidden := tree_path_in_list(preserved_hidden_paths[:], parent_path)
+		parent_visible := tree_directory_has_entry(app, parent_path, old_directory.path)
+		if parent_hidden || !parent_visible {
+			append(&app.tree_directories, old_directory)
+			old_directories[old_index] = {}
+			append(&preserved_hidden_paths, old_directory.path)
+		} else {
+			_ = tree_load_directory(app, old_directory.path, true)
 		}
 	}
-	app.show_ignored_files = enabled
-	tree_clear_directories(app)
-	for path in expanded_paths {
-		_ = tree_load_directory(app, path, true)
-	}
+	for &directory in old_directories { tree_directory_destroy(&directory) }
+	delete(old_directories)
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)
@@ -873,6 +887,29 @@ tree_set_show_ignored_files :: proc(app: ^App, rt: ^alicorn.Runtime, enabled: bo
 		_ = alicorn.semantic_focus_clear(rt)
 	}
 	alicorn.invalidate_root(rt, "Scratchpad ignored-file visibility changed")
+}
+
+tree_parent_relative_path :: proc(path: string) -> string {
+	last_separator := -1
+	for index in 0..<len(path) {
+		if path[index] == '/' || path[index] == '\\' { last_separator = index }
+	}
+	if last_separator < 0 { return "" }
+	return path[:last_separator]
+}
+
+tree_path_in_list :: proc(paths: []string, target: string) -> bool {
+	for path in paths { if path == target { return true } }
+	return false
+}
+
+tree_directory_has_entry :: proc(app: ^App, directory_path, entry_path: string) -> bool {
+	index := tree_directory_index(app, directory_path)
+	if index < 0 { return false }
+	for entry in app.tree_directories[index].entries {
+		if entry.path == entry_path { return true }
+	}
+	return false
 }
 
 tree_store_listing :: proc(app: ^App, listing: bridge.Directory_Listing, expanded: bool) -> bool {
@@ -1638,6 +1675,18 @@ editor_presentation_window :: proc(
 editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
 	app := cast(^App)state
 	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 { return }
+	if event.kind == .Move {
+		if captured, found := rt.nodes[rt.captured_node]; found && captured.kind == .Split_Handle {
+			if owner, owner_found := rt.nodes[captured.split_owner]; owner_found && owner.label == "scratchpad-workspace-editor-split" {
+				// Alicorn marks retained layout dirty immediately, but Scratchpad's
+				// sparse wrapped-row heights are application-owned and must be
+				// remeasured for the new editor width. That measurement visits only
+				// the bounded visible source window.
+				alicorn.invalidate_root(rt, "Scratchpad editor width changed during split resize")
+				return
+			}
+		}
+	}
 	if event.kind == .Cancel || event.kind == .Up {
 		drag_ended := false
 		for &view in app.editor_views {

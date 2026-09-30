@@ -14,9 +14,22 @@ type Entry struct {
 	Dir  bool
 }
 
+// ListOptions controls which filesystem entries a one-level directory listing
+// exposes. Search and recursive workspace traversal continue to honor ignore
+// rules regardless of this presentation option.
+type ListOptions struct {
+	IncludeIgnored bool
+}
+
 // List returns one visible directory level. User dotfiles remain visible;
 // repository metadata is omitted from the product tree.
 func (w Workspace) List(relative string) ([]Entry, error) {
+	return w.ListWithOptions(relative, ListOptions{})
+}
+
+// ListWithOptions returns one directory level using an explicit visibility
+// policy. Private Scratchpad and Git metadata remain hidden in every mode.
+func (w Workspace) ListWithOptions(relative string, options ListOptions) ([]Entry, error) {
 	dir := w.Root
 	if relative != "" {
 		var err error
@@ -27,7 +40,10 @@ func (w Workspace) List(relative string) ([]Entry, error) {
 	}
 	walker := w.Walker()
 	cleanRelative := filepath.Clean(relative)
-	if cleanRelative != "." && cleanRelative != "" && walker.matchPath(cleanRelative, true) {
+	if cleanRelative != "." && cleanRelative != "" && isPrivateWorkspacePath(cleanRelative) {
+		return nil, nil
+	}
+	if !options.IncludeIgnored && cleanRelative != "." && cleanRelative != "" && walker.matchPath(cleanRelative, true) {
 		return nil, nil
 	}
 	entries, err := os.ReadDir(dir)
@@ -37,8 +53,8 @@ func (w Workspace) List(relative string) ([]Entry, error) {
 	result := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		relativePath := filepath.Join(relative, entry.Name())
-		if entry.Name() == ".git" || entry.Name() == ".scratchpad" ||
-			walker.matchPath(relativePath, entry.IsDir()) {
+		if isPrivateWorkspacePath(relativePath) ||
+			(!options.IncludeIgnored && walker.matchPath(relativePath, entry.IsDir())) {
 			continue
 		}
 		result = append(result, Entry{Name: entry.Name(), Path: relativePath, Dir: entry.IsDir()})

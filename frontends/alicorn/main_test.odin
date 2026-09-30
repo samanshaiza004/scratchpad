@@ -1442,6 +1442,11 @@ test_workspace_tree_ignore_toggle_preserves_expansion_and_focus :: proc(t: ^test
 	focused_path_preserved := tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "ordinary/keep.txt")
 	testing.expect(t, focus_after.id == focus_before.id && focused_path_preserved,
 		"toggling ignored-file visibility should preserve semantic focus")
+	_ = tree_load_directory(&app, "ignored", true)
+	alicorn.invalidate_root(&rt, "expand ignored test subtree")
+	if !test_render_workspace_tree(t, &app, &rt) { return }
+	_, generated_visible := test_workspace_tree_row(&rt, "ignored/generated.txt")
+	testing.expect(t, generated_visible, "the expanded ignored folder should show its file")
 
 	tree_set_show_ignored_files(&app, &rt, false)
 	if !test_render_workspace_tree(t, &app, &rt) { return }
@@ -1449,6 +1454,13 @@ test_workspace_tree_ignore_toggle_preserves_expansion_and_focus :: proc(t: ^test
 	_, keep_visible = test_workspace_tree_row(&rt, "ordinary/keep.txt")
 	testing.expect(t, !ignored_hidden && keep_visible,
 		"turning ignored-file visibility off should hide ignored entries and retain ordinary expansions")
+
+	tree_set_show_ignored_files(&app, &rt, true)
+	if !test_render_workspace_tree(t, &app, &rt) { return }
+	_, ignored_visible = test_workspace_tree_row(&rt, "ignored")
+	_, generated_visible = test_workspace_tree_row(&rt, "ignored/generated.txt")
+	testing.expect(t, ignored_visible && generated_visible,
+		"turning ignored-file visibility back on should restore the hidden expanded subtree")
 }
 
 @(test)

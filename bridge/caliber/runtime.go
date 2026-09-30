@@ -12,6 +12,7 @@ import (
 
 	"scratchpad/application"
 	"scratchpad/commands"
+	"scratchpad/workspace"
 )
 
 const (
@@ -359,7 +360,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		// fresh bounded root listing. Tree focus/selection remains frontend-local.
 		r.app.PollWatcher()
 		r.app.ReconcileStale()
-		entries, err := r.app.Workspace.List("")
+		entries, err := r.app.Workspace.ListWithOptions("", workspace.ListOptions{IncludeIgnored: request.IncludeIgnored})
 		if err != nil {
 			return commandError(request, "application_error", err)
 		}
@@ -522,7 +523,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if !r.app.HasWorkspace {
 			return commandError(request, "no_workspace", errors.New("no workspace is open"))
 		}
-		entries, err := r.app.Workspace.List(request.RelativePath)
+		entries, err := r.app.Workspace.ListWithOptions(request.RelativePath, workspace.ListOptions{IncludeIgnored: request.IncludeIgnored})
 		if err != nil {
 			return commandError(request, "application_error", err)
 		}

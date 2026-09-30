@@ -88,7 +88,7 @@ func (w Walker) matchPath(relative string, isDir bool) bool {
 
 func isPrivateWorkspacePath(relative string) bool {
 	for _, part := range strings.Split(filepath.ToSlash(filepath.Clean(relative)), "/") {
-		if part == ".scratchpad" {
+		if part == ".scratchpad" || part == ".git" {
 			return true
 		}
 	}

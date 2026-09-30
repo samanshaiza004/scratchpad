@@ -1022,6 +1022,45 @@ func TestReplaceDocumentRejectsInvalidPackets(t *testing.T) {
 	}
 }
 
+func TestDirectoryListingCanIncludeIgnoredFilesWithoutPrivateMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".gitignore"), "out/\n")
+	writeFile(t, filepath.Join(root, "out", "compiled.txt"), "generated")
+	writeFile(t, filepath.Join(root, ".git", "internal"), "metadata")
+	writeFile(t, filepath.Join(root, ".scratchpad", "recovery.txt"), "metadata")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+
+	list := func(requestID uint64, relative string, includeIgnored bool) *Response {
+		t.Helper()
+		dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+			Version: ProtocolVersion, RequestID: requestID,
+			BasedOnRevision: state.ApplicationRev,
+			Command:         "list_directory", RelativePath: relative, IncludeIgnored: includeIgnored,
+		}))
+		response := decodeResponse(t, runtime.Pump())
+		if !response.OK || response.DirectoryListing == nil {
+			t.Fatalf("list %q (include ignored %t) = %+v", relative, includeIgnored, response)
+		}
+		state = latestStateForTest(t, runtime)
+		return &response
+	}
+
+	visible := list(1, "", false).DirectoryListing.Entries
+	if len(visible) != 1 || visible[0].Name != ".gitignore" {
+		t.Fatalf("default listing = %+v, want only .gitignore", visible)
+	}
+	withIgnored := list(2, "", true).DirectoryListing.Entries
+	if len(withIgnored) != 2 || withIgnored[0].Name != "out" || withIgnored[1].Name != ".gitignore" {
+		t.Fatalf("include-ignored listing = %+v, want out and .gitignore", withIgnored)
+	}
+	ignoredChildren := list(3, "out", true).DirectoryListing.Entries
+	if len(ignoredChildren) != 1 || ignoredChildren[0].Name != "compiled.txt" {
+		t.Fatalf("ignored directory listing = %+v, want compiled.txt", ignoredChildren)
+	}
+}
+
 func TestSmokeRoundTrip(t *testing.T) {
 	workspace := t.TempDir()
 	writeFile(t, filepath.Join(workspace, "b.txt"), "b")
