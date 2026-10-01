@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +54,9 @@ func TestSearchStreamsRawByteMatchesAndHonorsCancellation(t *testing.T) {
 	if len(results) != 2 || results[0].Line != 0 || results[1].Line != 2 || results[1].Column != 0 {
 		t.Fatalf("results = %+v", results)
 	}
+	if results[0].StartByte != 4 || results[0].EndByte != 10 || results[1].StartByte != 15 || results[1].EndByte != 21 {
+		t.Fatalf("absolute result byte offsets = %+v", results)
+	}
 	if err := ws.Search(context.Background(), []byte("needle"), func(SearchResult) bool { return false }); !errors.Is(err, errSearchStopped) {
 		t.Fatalf("stop error = %v", err)
 	}
@@ -83,6 +87,76 @@ func TestSearchPreservesByteOffsetsForRawMatchesAcrossLines(t *testing.T) {
 	}
 	if len(results) != 2 || results[0].Line != 1 || results[0].Column != 0 || results[1].Line != 2 || results[1].Column != 0 {
 		t.Fatalf("results = %+v", results)
+	}
+}
+
+func TestSearchSkipsBinaryAndOversizedFiles(t *testing.T) {
+	dir := t.TempDir()
+	textPath := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(textPath, []byte("needle in text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, contents := range map[string][]byte{
+		".DS_Store":  []byte("Bud1 needle\x00metadata"),
+		"image.ppm":  []byte("P6\n1 1\n255\nneedle\x00payload"),
+		"binary.dat": []byte("needle\x00payload"),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	largePath := filepath.Join(dir, "large.txt")
+	large, err := os.Create(largePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := large.Truncate(MaxSearchFileBytes + 1); err != nil {
+		_ = large.Close()
+		t.Fatal(err)
+	}
+	if err := large.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	if err := ws.Search(context.Background(), []byte("needle"), func(result SearchResult) bool {
+		paths = append(paths, filepath.Base(result.Path))
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(paths, []string{"note.txt"}) {
+		t.Fatalf("search results = %v, want only the ordinary text file", paths)
+	}
+}
+
+func TestSearchBoundsLongLineContextAroundMatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "long.txt")
+	line := strings.Repeat("x", 400) + "needle" + strings.Repeat("y", 400)
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result SearchResult
+	if err := ws.Search(context.Background(), []byte("needle"), func(found SearchResult) bool {
+		result = found
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !result.TextTruncated || len(result.Text) > SearchContextMaxBytes {
+		t.Fatalf("context length/truncation = %d/%v", len(result.Text), result.TextTruncated)
+	}
+	if result.StartByte != 400 || result.EndByte != 406 || !strings.Contains(result.Text, "needle") {
+		t.Fatalf("bounded context or exact range = %+v", result)
 	}
 }
 

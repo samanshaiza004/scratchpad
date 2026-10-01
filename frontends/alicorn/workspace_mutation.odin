@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 Workspace_Mutation_Kind :: enum {
@@ -64,6 +65,10 @@ workspace_mutation_open_selected :: proc(app: ^App, rt: ^alicorn.Runtime, kind: 
 workspace_mutation_begin :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspace_Mutation_Kind, source: string, source_is_dir: bool) {
 	if app == nil || rt == nil { return }
 	workspace_mutation_clear(app)
+	app.workspace_mutation_restore_pending = false
+	app.workspace_mutation_restore_editor = false
+	app.workspace_mutation_restore_node = rt.focused
+	app.workspace_mutation_restore_semantic = alicorn.semantic_focus_state(rt)
 	source_copy, source_error := strings.clone(source, context.allocator)
 	if source_error != nil {
 		set_error(app, "Could not retain the selected workspace path.")
@@ -76,7 +81,83 @@ workspace_mutation_begin :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspac
 	if kind == .Trash {
 		app.workspace_mutation_dirty = false
 	}
+	app.workspace_mutation_focus_pending = true
 	alicorn.invalidate_root(rt, "Scratchpad workspace operation opened")
+}
+
+workspace_mutation_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
+	if app == nil || rt == nil || app.workspace_mutation_kind == .None { return false }
+	#partial switch key {
+	case .Escape:
+		workspace_mutation_cancel(app, rt)
+		return true
+	case .Return:
+		if app.workspace_mutation_kind != .Trash && !app.workspace_mutation_queued &&
+		   app.workspace_mutation_name_node != 0 && rt.focused == app.workspace_mutation_name_node {
+			workspace_mutation_submit(app, rt, false)
+			return true
+		}
+		// A trash choice is always an explicit focused button, never a default
+		// destructive action. Other dialog buttons keep normal Enter activation.
+		return false
+	case:
+		// While the modal is open, mapped navigation/search/tree commands do not
+		// leak through to the obscured editor or workspace tree. Tab traversal is
+		// still handled by Alicorn's modal-scoped focus traversal.
+		return true
+	}
+}
+
+workspace_mutation_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil { return }
+	if app.workspace_mutation_kind != .None && app.workspace_mutation_focus_pending {
+		if app.workspace_mutation_queued || app.workspace_mutation_kind == .Trash {
+			key := "workspace-mutation-cancel"
+			if app.workspace_mutation_kind == .Trash { key = "workspace-trash-cancel" }
+			for id, node in rt.nodes {
+				if node.active && node.kind == .Button && node.key == key && alicorn.focus(rt, id) {
+					app.workspace_mutation_focus_pending = false
+					return
+				}
+			}
+		} else if app.workspace_mutation_name_node != 0 && alicorn.focus(rt, app.workspace_mutation_name_node) {
+			if app.workspace_mutation_kind == .Rename {
+				if node, found := rt.nodes[app.workspace_mutation_name_node]; found {
+					_ = alicorn.set_text_selection(rt, app.workspace_mutation_name_node, 0, workspace_mutation_stem_end(node.text))
+				}
+			}
+			app.workspace_mutation_focus_pending = false
+			return
+		}
+		return
+	}
+	if !app.workspace_mutation_restore_pending || app.workspace_mutation_kind != .None { return }
+	target := app.workspace_mutation_restore_node
+	semantic := app.workspace_mutation_restore_semantic
+	if app.workspace_mutation_restore_editor {
+		target = app.editor_scroll_owner
+		semantic = {}
+	} else if semantic.id.namespace != 0 && semantic.owner != 0 {
+		target = semantic.owner
+	}
+	if target != 0 {
+		if node, found := rt.nodes[target]; !found || !node.active { return }
+		if !alicorn.focus(rt, target) { return }
+	}
+	if semantic.id.namespace != 0 && semantic.owner != 0 {
+		_ = alicorn.semantic_focus_set(rt, semantic.id, semantic.owner)
+	}
+	app.workspace_mutation_restore_pending = false
+	app.workspace_mutation_restore_editor = false
+	app.workspace_mutation_restore_node = 0
+	app.workspace_mutation_restore_semantic = {}
+}
+
+workspace_mutation_stem_end :: proc(name: string) -> int {
+	last_dot := -1
+	for index in 0..<len(name) { if name[index] == '.' { last_dot = index } }
+	if last_dot > 0 { return last_dot }
+	return len(name)
 }
 
 workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
@@ -162,6 +243,8 @@ workspace_mutation_cancel :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		}
 	}
 	workspace_mutation_clear(app)
+	app.workspace_mutation_restore_pending = true
+	app.workspace_mutation_restore_editor = false
 	deferred_actions_run(app, rt)
 	alicorn.invalidate_root(rt, "Scratchpad workspace operation cancelled")
 }
@@ -175,6 +258,7 @@ workspace_mutation_clear :: proc(app: ^App) {
 	app.workspace_mutation_name = ""
 	app.workspace_mutation_error = ""
 	app.workspace_mutation_name_node = 0
+	app.workspace_mutation_focus_pending = false
 	app.workspace_mutation_kind = .None
 	app.workspace_mutation_source_is_dir = false
 	app.workspace_mutation_dirty = false
@@ -205,6 +289,7 @@ workspace_mutation_submit :: proc(app: ^App, rt: ^alicorn.Runtime, discard: bool
 	if app.workspace_mutation_queued { return }
 	if app.workspace_mutation_kind != .Trash && app.workspace_mutation_name == "" {
 		workspace_mutation_set_error(app, "Enter a name or destination path.")
+		app.workspace_mutation_focus_pending = true
 		alicorn.invalidate_root(rt, "Scratchpad workspace operation needs a value")
 		return
 	}
@@ -222,10 +307,12 @@ workspace_mutation_submit :: proc(app: ^App, rt: ^alicorn.Runtime, discard: bool
 		)
 		if !queued {
 			workspace_mutation_set_error(app, "Could not queue this operation behind pending editor changes.")
+			app.workspace_mutation_focus_pending = true
 			alicorn.invalidate_root(rt, "Scratchpad workspace operation queue is full")
 			return
 		}
 		app.workspace_mutation_queued = true
+		app.workspace_mutation_focus_pending = true
 		workspace_mutation_set_error(app, "")
 		alicorn.invalidate_root(rt, "Scratchpad workspace operation queued behind editor edits")
 		return
@@ -254,8 +341,7 @@ workspace_mutation_execute :: proc(
 	if app == nil || rt == nil || kind == .None || !app.backend.started { return }
 	if workspace_root != app.backend.state.workspace_root {
 		workspace_mutation_set_error(app, "The workspace changed before this operation could run. Reopen it and try again.")
-		set_error(app, app.workspace_mutation_error)
-		workspace_mutation_clear(app)
+		app.workspace_mutation_focus_pending = true
 		alicorn.invalidate_root(rt, "Scratchpad discarded a workspace operation from an old root")
 		return
 	}
@@ -307,10 +393,12 @@ workspace_mutation_execute :: proc(
 			}
 			app.workspace_mutation_dirty = true
 			app.workspace_mutation_queued = false
+			app.workspace_mutation_focus_pending = true
 			workspace_mutation_set_error(app, "")
 			alicorn.invalidate_root(rt, "Scratchpad requires a dirty-document trash decision")
 		} else {
 			workspace_mutation_set_error(app, response.message if response.message != "" else "The workspace operation failed.")
+			app.workspace_mutation_focus_pending = true
 			alicorn.invalidate_root(rt, "Scratchpad workspace operation failed")
 		}
 		bridge.backend_command_result_destroy(&response, context.allocator)
@@ -322,6 +410,14 @@ workspace_mutation_execute :: proc(
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
 	refresh_ok := workspace_mutation_refresh_tree(app, rt, kind, source, dest, source_is_dir)
+	app.workspace_mutation_restore_pending = true
+	app.workspace_mutation_restore_editor = kind == .Create_File
+	app.workspace_mutation_restore_node = app.tree_scroll_owner
+	app.workspace_mutation_restore_semantic = alicorn.semantic_focus_state(rt)
+	if app.workspace_mutation_restore_editor {
+		app.workspace_mutation_restore_node = 0
+		app.workspace_mutation_restore_semantic = {}
+	}
 	workspace_mutation_clear(app)
 	if refresh_ok { set_error(app, "") }
 	alicorn.invalidate_root(rt, "Scratchpad workspace operation committed")
@@ -468,6 +564,48 @@ tree_restore_mutation_focus :: proc(app: ^App, rt: ^alicorn.Runtime, path: strin
 	}
 	tree_clear_focused_path(app)
 	_ = alicorn.semantic_focus_clear(rt)
+}
+
+tree_move_horizontal_focus :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
+	if app == nil || rt == nil || (key != .Left && key != .Right) { return false }
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	defer delete(rows)
+	tree_flatten_directory(app, "", 0, &rows)
+	current := -1
+	for row, index in rows {
+		if row.path == app.tree_focused_path && row.is_dir == app.tree_focused_is_dir { current = index; break }
+	}
+	if current < 0 { return true }
+	row := rows[current]
+	if key == .Left {
+		if row.is_dir && row.expanded {
+			if index := tree_directory_index(app, row.path); index >= 0 { app.tree_directories[index].expanded = false }
+			alicorn.invalidate_root(rt, "Scratchpad workspace directory collapsed by Left")
+			return true
+		}
+		parent := tree_parent_relative_path(row.path)
+		for candidate, index in rows {
+			if candidate.is_dir && candidate.path == parent {
+				tree_set_focused_row(app, rt, candidate, index)
+				alicorn.invalidate_root(rt, "Scratchpad workspace tree moved to parent")
+				return true
+			}
+		}
+		return true
+	}
+	if row.is_dir {
+		if !row.expanded {
+			if tree_load_directory(app, row.path, true) {
+				alicorn.invalidate_root(rt, "Scratchpad workspace directory expanded by Right")
+			}
+			return true
+		}
+		if current+1 < len(rows) && rows[current+1].depth == row.depth+1 {
+			tree_set_focused_row(app, rt, rows[current+1], current+1)
+			alicorn.invalidate_root(rt, "Scratchpad workspace tree moved to child")
+		}
+	}
+	return true
 }
 
 tree_expand_ancestors :: proc(app: ^App, path: string) {

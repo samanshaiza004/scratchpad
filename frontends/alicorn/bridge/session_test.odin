@@ -9,13 +9,16 @@ import "core:time"
 
 @(test)
 test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
- json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"line_count":42,"language":"markdown","presentation_revision":3,"presentation_ready":true}]}`
+ json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","workspace_search_generation":5,"workspace_search_sequence":2,"workspace_search_count":33,"workspace_search_page_available":true,"workspace_search_done":false,"workspace_search_truncated":false,"documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"line_count":42,"language":"markdown","presentation_revision":3,"presentation_ready":true}]}`
 	data := transmute([]u8)json_text
 	state, ok, message := decode_state_envelope(data, context.temp_allocator)
 	testing.expect(t, ok, message)
 	testing.expect(t, state.revision == 7 && state.application_rev == 6, "transport and application revisions should decode separately")
 	testing.expect(t, state.has_workspace && state.workspace_root == "C:/work", "workspace fields should decode")
 	testing.expect(t, state.active == "doc-1" && len(state.documents) == 1, "active document and document count should decode")
+	testing.expect(t, state.workspace_search_generation == 5 && state.workspace_search_sequence == 2 &&
+	               state.workspace_search_count == 33 && state.workspace_search_page_available,
+	               "workspace search status should decode independently of document state")
 	if len(state.documents) == 1 {
 		doc := state.documents[0]
 		testing.expect(t, doc.path == "C:/work/readme.md" && doc.language == "markdown", "document identity fields should decode")
@@ -540,4 +543,29 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 	testing.expect(t, backend.resource_leases == 0, "long-line Caliber windows must release every resource lease")
 	stopped, stop_message := backend_stop(backend, context.temp_allocator)
 	testing.expect(t, stopped, stop_message)
+}
+
+
+@(test)
+test_find_and_workspace_search_responses_decode_bounded_results :: proc(t: ^testing.T) {
+	json_text := `{"version":1,"request_id":9,"lifecycle":"running","ok":true,"outcome":{"code":"ok"},"matches":[{"start":12,"end":17,"line":1,"column":2}],"matches_truncated":true,"workspace_search_page":{"generation":4,"sequence":1,"count":1,"done":false,"truncated":false,"results":[{"path":"docs/guide.md","line":3,"column":7,"start_byte":40,"end_byte":45,"text":"a needle here","text_truncated":false}]}}`
+	data := transmute([]u8)json_text
+	response, ok := decode_backend_response_bytes(data, context.temp_allocator)
+	testing.expect(t, ok, "bounded search response should decode")
+	if !ok { return }
+	testing.expect(t, len(response.matches) == 1 && response.matches[0].start == 12 && response.matches_truncated,
+	               "current-file match byte ranges and truncation should decode")
+	page := response.workspace_search_page
+	testing.expect(t, page.generation == 4 && page.sequence == 1 && len(page.results) == 1,
+	               "workspace page identity and bounded result count should decode")
+	if len(page.results) == 1 {
+		hit := page.results[0]
+		testing.expect(t, hit.path == "docs/guide.md" && hit.line == 3 && hit.start_byte == 40 && hit.end_byte == 45,
+		               "workspace hit path and exact source offsets should decode")
+	}
+	copy, copied := workspace_search_page_clone(page, context.temp_allocator)
+	testing.expect(t, copied && len(copy.results) == 1 && copy.results[0].text == "a needle here",
+	               "workspace result pages should be independently owned after cloning")
+	workspace_search_page_destroy(&copy, context.temp_allocator)
+	backend_response_destroy(&response, context.temp_allocator)
 }

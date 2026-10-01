@@ -1117,9 +1117,17 @@ func TestFindCurrentAndSearchWorkspace(t *testing.T) {
 	if err := a.OpenPath(path); err != nil {
 		t.Fatal(err)
 	}
+	doc := a.Documents[a.Active]
+	if err := doc.Insert([]byte("unsaved needle\n")); err != nil {
+		t.Fatal(err)
+	}
 	matches := a.FindCurrent(a.Active, []byte("needle"))
-	if len(matches) != 2 || matches[1].Line != 1 || matches[1].Column != 6 {
+	if len(matches) != 3 || matches[0].Start != 8 || matches[0].Line != 0 || matches[0].Column != 8 || matches[1].Line != 1 || matches[1].Column != 0 || matches[2].Line != 2 || matches[2].Column != 6 {
 		t.Fatalf("matches = %+v", matches)
+	}
+	limited := a.FindCurrentLimited(a.Active, []byte("needle"), 2)
+	if len(limited) != 2 || limited[0] != matches[0] || limited[1] != matches[1] {
+		t.Fatalf("limited unsaved find = %+v, want first two matches %+v", limited, matches[:2])
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1129,6 +1137,13 @@ func TestFindCurrentAndSearchWorkspace(t *testing.T) {
 	}
 	if results != 2 {
 		t.Fatalf("workspace results = %d", results)
+	}
+	before := append([]byte(nil), doc.Editor.Buffer.Text()...)
+	if empty := a.FindCurrent(a.Active, nil); len(empty) != 0 {
+		t.Fatalf("empty find query returned matches: %+v", empty)
+	}
+	if got := doc.Editor.Buffer.Text(); string(got) != string(before) {
+		t.Fatalf("empty find query mutated source: %q -> %q", before, got)
 	}
 }
 

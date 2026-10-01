@@ -259,18 +259,25 @@ func TestTableCommandsUseCurrentSourceWhenProjectionIsStale(t *testing.T) {
 	}
 }
 
-func TestTableNavigationRefusesOverlongBodyRows(t *testing.T) {
+func TestTableNavigationTraversesOverlongBodyRowsWithoutRewritingSource(t *testing.T) {
 	source := []byte("| a | b |\n| --- | --- |\n| x | y | z |\n")
 	doc := document.New("notes.md", source, "markdown")
 	if !doc.SetDerived(nil, markdown.Project(source, doc.Revision())) {
 		t.Fatal("SetDerived rejected current table projection")
 	}
 	doc.Editor.SetCursor(bytes.Index(source, []byte("x")))
-	if navigateTableAtCursor(doc, false, false) {
-		t.Fatal("navigation accepted a body row with cells beyond the GFM schema")
+	beforeRevision := doc.Revision()
+	if !navigateTableAtCursor(doc, false, false) {
+		t.Fatal("navigation should remain available when formatting refuses an overlong body row")
 	}
 	if !bytes.Equal(doc.Editor.Buffer.Text(), source) {
 		t.Fatalf("navigation rewrote overlong table: %q", doc.Editor.Buffer.Text())
+	}
+	if doc.Revision() != beforeRevision {
+		t.Fatalf("selection-only navigation changed revision: before=%d after=%d", beforeRevision, doc.Revision())
+	}
+	if want := bytes.Index(source, []byte("y")); doc.Editor.Cursor != want {
+		t.Fatalf("Tab moved cursor to %d, want next semantic cell at %d", doc.Editor.Cursor, want)
 	}
 }
 

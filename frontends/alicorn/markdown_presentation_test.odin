@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:testing"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
@@ -274,4 +275,175 @@ test_markdown_paint_spans_use_projected_bytes_without_metric_styles :: proc(t: ^
 			"inline-code paint should map after the expanded tab using display byte coordinates")
 	}
 	testing.expect(t, line.display == "#   X", "styling metadata must not alter source-derived display bytes")
+}
+
+test_table_window :: proc(source: string) -> (window: Editor_Window, ok: bool) {
+	bytes, allocation_error := make([]u8, len(source), context.temp_allocator)
+	if allocation_error != nil { return }
+	for index in 0..<len(source) { bytes[index] = source[index] }
+	window = Editor_Window{
+		editor_revision=11,
+		start_line=0,
+		start_byte=0,
+		source=bytes,
+		presentation_revision=11,
+		presentation_ready=true,
+		lines=make([dynamic]Editor_Display_Line, 0, allocator=context.temp_allocator),
+	}
+	spans := make([dynamic]bridge.Presentation_Record, 0, allocator=context.temp_allocator)
+	blocks := make([dynamic]bridge.Presentation_Record, 0, allocator=context.temp_allocator)
+	line_start := 0
+	logical_line: u64 = 0
+	for index in 0..<len(bytes) {
+		if bytes[index] != '\n' { continue }
+		line_end := index
+		if line_end > line_start && bytes[line_end-1] == '\r' { line_end -= 1 }
+		line, line_ok := editor_project_line(bytes[line_start:line_end], u64(line_start), logical_line, context.temp_allocator)
+		if !line_ok { editor_window_destroy(&window, context.temp_allocator); return {}, false }
+		append(&window.lines, line)
+		logical_line += 1
+		line_start = index+1
+	}
+	if line_start < len(bytes) {
+		line_end := len(bytes)
+		if line_end > line_start && bytes[line_end-1] == '\r' { line_end -= 1 }
+		line, line_ok := editor_project_line(bytes[line_start:line_end], u64(line_start), logical_line, context.temp_allocator)
+		if !line_ok { editor_window_destroy(&window, context.temp_allocator); return {}, false }
+		append(&window.lines, line)
+		logical_line += 1
+	}
+	window.end_line = logical_line
+	for index in 0..<len(bytes) {
+		if bytes[index] == '|' {
+			append(&spans, bridge.Presentation_Record{
+				kind=EDITOR_PRESENTATION_TABLE_PIPE,
+				start_byte=u32(index),
+				end_byte=u32(index+1),
+			})
+		}
+	}
+	if len(window.lines) > 1 {
+		delimiter := &window.lines[1]
+		append(&spans, bridge.Presentation_Record{
+			kind=EDITOR_PRESENTATION_TABLE_DELIMITER,
+			start_byte=u32(delimiter.source_start),
+			end_byte=u32(delimiter.source_end),
+		})
+	}
+	append(&blocks, bridge.Presentation_Record{
+		kind=EDITOR_PRESENTATION_BLOCK_TABLE,
+		start_byte=0,
+		end_byte=u32(len(bytes)),
+		level_flags=2,
+	})
+	window.presentation_spans = spans[:]
+	window.presentation_blocks = blocks[:]
+	return window, true
+}
+
+@(test)
+test_table_block_layout_shares_wrap_mode_and_columns_across_rows :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 480, 300})
+	defer alicorn.destroy_runtime(&rt)
+	if !alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA) {
+		testing.expect(t, false, "table wrap regression should load the bundled monospace face")
+		return
+	}
+	long_summary := "A long description that should wrap within the shared summary column while the page column stays aligned across every table row."
+	long_dashes := "----------------------------------------------------------------------------------------------------"
+	source := fmt.tprintf("| Page | Summary |\n| %s | %s |\n| [[overview]] | %s |\n", long_dashes, long_dashes, long_summary)
+	window, window_ok := test_table_window(source)
+	testing.expect(t, window_ok, "test table source should project into logical editor lines")
+	if !window_ok { return }
+	defer editor_window_destroy(&window, context.temp_allocator)
+	header, header_ok := editor_window_line(&window, 0)
+	delimiter, delimiter_ok := editor_window_line(&window, 1)
+	body, body_ok := editor_window_line(&window, 2)
+	if !header_ok || !delimiter_ok || !body_ok {
+		testing.expect(t, false, "all table rows should be present in the bounded window")
+		return
+	}
+	available_width := f32(480)
+	header_layout := editor_table_row_layout(&window, header, available_width, context.temp_allocator)
+	delimiter_layout := editor_table_row_layout(&window, delimiter, available_width, context.temp_allocator)
+	body_layout := editor_table_row_layout(&window, body, available_width, context.temp_allocator)
+	testing.expect(t, header_layout.wraps && delimiter_layout.wraps && body_layout.wraps,
+		"every row in a fitting table must use the shared cell-wrap mode")
+	if len(header_layout.widths) < 2 || len(delimiter_layout.widths) < 2 || len(body_layout.widths) < 2 ||
+	   len(header_layout.cells) < 2 || len(body_layout.cells) < 2 {
+		testing.expect(t, false, "a fitting two-column table should expose two shared cells and widths")
+		return
+	}
+	testing.expect(t, header_layout.delimiter == false && delimiter_layout.delimiter && !body_layout.delimiter,
+		"only the parser-marked delimiter row should use structural delimiter treatment")
+	for column in 0..<2 {
+		testing.expect(t,
+			header_layout.widths[column] == delimiter_layout.widths[column] &&
+				header_layout.widths[column] == body_layout.widths[column],
+			"all rows in one table must share an identical column-width vector")
+	}
+	testing.expect(t, header_layout.cells[0].display == "Page" && header_layout.cells[1].display == "Summary",
+		"cell shaping should use trimmed semantic content instead of alignment padding")
+	testing.expect(t, body_layout.cells[0].display == "[[overview]]" && body_layout.cells[1].display == long_summary,
+		"wrapped body cells should preserve exact source content without source padding")
+	testing.expect(t, body_layout.cells[0].source_start > body.source_start && body_layout.cells[1].source_end < body.source_end,
+		"semantic cell byte ranges should exclude whitespace padding around source cells")
+	testing.expect(t, editor_table_cell_for_x(body_layout, body_layout.origins[1]+1) == 1,
+		"hit-testing within the shared second-column geometry should identify that semantic cell")
+	break_source := editor_display_to_source(&body_layout.cells[1], 4)
+	testing.expect(t, break_source >= body_layout.cells[1].source_start && break_source <= body_layout.cells[1].source_end,
+		"cell display hit-testing must map back into the trimmed source range")
+	_, _, delimiter_rows, delimiter_height_ok := editor_measure_line_height(&rt, &window, delimiter, available_width, true, true)
+	_, _, body_rows, body_height_ok := editor_measure_line_height(&rt, &window, body, available_width, true, true)
+	testing.expect(t, delimiter_height_ok && delimiter_rows == 1,
+		"long delimiter dashes must use shared table geometry without creating extra wrapped rows")
+	testing.expect(t, body_height_ok && body_rows > 1,
+		"long semantic cell content should wrap into multiple visual rows")
+	index: alicorn.Virtual_List_Height_Index
+	if !alicorn.virtual_list_height_index_init(&index, len(window.lines), EDITOR_ROW_HEIGHT, context.allocator) {
+		testing.expect(t, false, "table wrap test should initialize a variable-height index")
+		return
+	}
+	defer alicorn.virtual_list_height_index_destroy(&index)
+	content_width := editor_visible_window_content_width(&window, &index, 0, 250, 48, "markdown", true, available_width)
+	testing.expect(t, content_width == 0,
+		"a cell-wrapped table must not establish horizontal overflow extent")
+	narrow_body_layout := editor_table_row_layout(&window, body, 300, context.temp_allocator)
+	narrow_height, _, narrow_rows, narrow_height_ok := editor_measure_line_height(&rt, &window, body, 300, true, true)
+	_ = narrow_height
+	testing.expect(t, narrow_body_layout.wraps && narrow_height_ok && narrow_rows > body_rows,
+		"resizing a fitting table narrower should reflow cell content into more visual rows")
+	narrow_content_width := editor_visible_window_content_width(&window, &index, 0, 250, 48, "markdown", true, 300)
+	testing.expect(t, narrow_content_width == 0,
+		"a resized cell-wrapped table must continue to have no horizontal overflow")
+	unchanged := len(window.source) == len(source)
+	for index in 0..<min(len(window.source), len(source)) {
+		unchanged = unchanged && window.source[index] == source[index]
+	}
+	testing.expect(t, unchanged, "table layout and resizing must not rewrite Markdown source bytes")
+}
+
+@(test)
+test_table_block_layout_overflows_as_one_shared_mode_when_columns_do_not_fit :: proc(t: ^testing.T) {
+	long_token := "unbreakabletokenwithenoughcharactersfortestingoverflow"
+	source := fmt.tprintf("| Page | Summary |\n| ---------------- | ---------------- |\n| [[overview]] | %s |\n", long_token)
+	window, window_ok := test_table_window(source)
+	testing.expect(t, window_ok, "overflow table source should project into logical editor lines")
+	if !window_ok { return }
+	defer editor_window_destroy(&window, context.temp_allocator)
+	for line_index in 0..<len(window.lines) {
+		line := &window.lines[line_index]
+		layout := editor_table_row_layout(&window, line, 300, context.temp_allocator)
+		testing.expect(t, layout.ok && !layout.wraps,
+			"a table whose minimum column widths exceed the viewport must overflow consistently in every row")
+	}
+	index: alicorn.Virtual_List_Height_Index
+	if !alicorn.virtual_list_height_index_init(&index, len(window.lines), EDITOR_ROW_HEIGHT, context.allocator) {
+		testing.expect(t, false, "table overflow test should initialize a variable-height index")
+		return
+	}
+	defer alicorn.virtual_list_height_index_destroy(&index)
+	content_width := editor_visible_window_content_width(&window, &index, 0, 250, 48, "markdown", true, 300)
+	testing.expect(t, content_width > 300,
+		"an overflow-mode table should expose one shared horizontal lane for its rows")
 }

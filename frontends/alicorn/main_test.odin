@@ -1644,6 +1644,39 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	stable_id, stable_found := test_workspace_tree_row(&rt, "stable.txt")
 	testing.expect(t, stable_found, "unaffected root sibling should be present before the move")
 	tree_scroll_owner := app.tree_scroll_owner
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	tree_flatten_directory(&app, "", 0, &rows)
+	for row, index in rows {
+		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "src/nested") && row.is_dir {
+			tree_set_focused_row(&app, &rt, row, index)
+			break
+		}
+	}
+	delete(rows)
+	_ = application_key(rawptr(&app), &rt, .Right)
+	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "src/nested/first.txt"), "Right on an expanded folder should focus its first child")
+	_ = application_key(rawptr(&app), &rt, .Left)
+	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "src/nested"), "Left on a child should focus its parent folder")
+	_ = application_key(rawptr(&app), &rt, .Left)
+	navigation_nested_index := tree_directory_index(&app, nested_source_path)
+	testing.expect(t, navigation_nested_index >= 0 && !app.tree_directories[navigation_nested_index].expanded, "Left on an expanded folder should collapse it")
+	_ = application_key(rawptr(&app), &rt, .Right)
+	navigation_nested_index = tree_directory_index(&app, nested_source_path)
+	testing.expect(t, navigation_nested_index >= 0 && app.tree_directories[navigation_nested_index].expanded, "Right on a collapsed folder should expand it")
+	rows = make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	tree_flatten_directory(&app, "", 0, &rows)
+	for row, index in rows {
+		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "src/nested/first.txt") {
+			tree_set_focused_row(&app, &rt, row, index)
+			break
+		}
+	}
+	delete(rows)
+	_ = application_key(rawptr(&app), &rt, .Workspace_Rename)
+	testing.expect(t, app.workspace_mutation_kind == .Rename && app.workspace_mutation_name == "first.txt",
+		"F2 on the focused workspace item should open Rename with its current basename")
+	workspace_mutation_cancel(&app, &rt)
+	workspace_mutation_focus_after_frame(&app, &rt)
 	for document in app.backend.state.documents {
 		index, ok := editor_view_ensure(&app.editor_views, document.id)
 		if !ok { testing.expect(t, false, "could not allocate a per-document editor view"); return }
@@ -1654,7 +1687,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 			view.caret_byte, view.selection_anchor, view.scroll_y = 5, 3, 91
 		}
 	}
-	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	rows = make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	tree_flatten_directory(&app, "", 0, &rows)
 	for row, index in rows {
 		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "src/nested/first.txt") {

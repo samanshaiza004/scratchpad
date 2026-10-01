@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 
 	"scratchpad/document"
@@ -94,6 +95,34 @@ func TestProjectTablesEmitSemanticPresentationSpans(t *testing.T) {
 		for _, pipe := range row.Pipes {
 			if !hasPresentationRange(got.Markdown.Spans, document.PresentationTablePipe, pipe.StartByte, pipe.EndByte) {
 				t.Errorf("missing pipe span for %+v", pipe)
+			}
+		}
+	}
+}
+
+func TestProjectTableCellSpansUseTrimmedSourceRangesAndColumnIdentity(t *testing.T) {
+	source := []byte("| Page       | Summary                           |\n| ---------- | --------------------------------- |\n| [[goals]]  | A longer summary for the goals.   |\n")
+	got := Project(source, 11)
+	if len(got.Tables) != 1 {
+		t.Fatalf("tables = %+v", got.Tables)
+	}
+	for rowIndex, row := range got.Tables[0].Rows {
+		for _, cell := range row.Cells {
+			found := false
+			for _, span := range got.Markdown.Spans {
+				if span.Kind != document.PresentationTableCell || span.Level != cell.Column ||
+					span.StartByte != cell.StartByte || span.EndByte != cell.EndByte {
+					continue
+				}
+				found = true
+				text := string(source[span.StartByte:span.EndByte])
+				if text != strings.TrimSpace(text) {
+					t.Errorf("row %d column %d cell span includes padding: %q", rowIndex, cell.Column, text)
+				}
+				break
+			}
+			if !found {
+				t.Errorf("missing parser-owned cell span for row %d column %d: %+v", rowIndex, cell.Column, cell)
 			}
 		}
 	}

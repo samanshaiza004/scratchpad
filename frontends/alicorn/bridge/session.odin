@@ -30,6 +30,11 @@ VISIBLE_SLICE_SCHEMA_V2   :: u32(2)
 MAX_VISIBLE_LINES         :: u64(256)
 MAX_VISIBLE_BYTES         :: u64(64 * 1024)
 MAX_EDIT_BYTES            :: u64(128 * 1024)
+MAX_FIND_MATCHES           :: 1000
+MAX_FIND_QUERY_BYTES       :: 4096
+MAX_WORKSPACE_SEARCH_QUERY_BYTES :: 4096
+MAX_WORKSPACE_SEARCH_PAGE_SIZE :: 32
+MAX_WORKSPACE_SEARCH_RESULTS :: 5000
 
 // Mirrors .deps/caliber/include/caliber.h. That header remains authoritative;
 // these declarations bind only the ABI surface this frontend actually uses.
@@ -197,6 +202,12 @@ State_Envelope :: struct {
 	active:          string           `json:"active"`,
 	documents:       []State_Document `json:"documents"`,
 	actions:         []Action_State   `json:"actions"`,
+	workspace_search_generation: u64 `json:"workspace_search_generation"`,
+	workspace_search_sequence:   u64 `json:"workspace_search_sequence"`,
+	workspace_search_count:      u64 `json:"workspace_search_count"`,
+	workspace_search_page_available: bool `json:"workspace_search_page_available"`,
+	workspace_search_done:       bool `json:"workspace_search_done"`,
+	workspace_search_truncated:  bool `json:"workspace_search_truncated"`,
 }
 
 Backend_Outcome :: struct {
@@ -217,6 +228,9 @@ Backend_Response :: struct {
 	edit:             Edit_Ack           `json:"edit"`,
 	editor_selection: Editor_Selection   `json:"editor_selection"`,
 	command_outcome:  string             `json:"command_outcome"`,
+	matches:          []Current_Match    `json:"matches"`,
+	matches_truncated: bool               `json:"matches_truncated"`,
+	workspace_search_page: Workspace_Search_Page `json:"workspace_search_page"`,
 }
 
 Editor_Selection :: struct {
@@ -256,6 +270,32 @@ Close_Decision :: struct {
 	can_discard: bool   `json:"can_discard"`,
 }
 
+Current_Match :: struct {
+	start:  int `json:"start"`,
+	end:    int `json:"end"`,
+	line:   int `json:"line"`,
+	column: int `json:"column"`,
+}
+
+Workspace_Search_Result :: struct {
+	path:           string `json:"path"`,
+	line:           int    `json:"line"`,
+	column:         int    `json:"column"`,
+	start_byte:     int    `json:"start_byte"`,
+	end_byte:       int    `json:"end_byte"`,
+	text:           string `json:"text"`,
+	text_truncated: bool   `json:"text_truncated"`,
+}
+
+Workspace_Search_Page :: struct {
+	generation: u64 `json:"generation"`,
+	sequence:   u64 `json:"sequence"`,
+	count:      u64 `json:"count"`,
+	done:       bool `json:"done"`,
+	truncated:  bool `json:"truncated"`,
+	results:    []Workspace_Search_Result `json:"results"`,
+}
+
 Backend_Start_Request :: struct {
 	version:        u32    `json:"version"`,
 	request_id:     u64    `json:"request_id"`,
@@ -286,6 +326,11 @@ Backend_Command_Request :: struct {
 	max_bytes:        u64    `json:"max_bytes,omitempty"`,
 	include_presentation: bool `json:"include_presentation,omitempty"`,
 	include_ignored: bool `json:"include_ignored,omitempty"`,
+	query:            string `json:"query,omitempty"`,
+	max_matches:      int    `json:"max_matches,omitempty"`,
+	search_generation: u64   `json:"search_generation,omitempty"`,
+	has_target_byte:  bool   `json:"has_target_byte,omitempty"`,
+	target_byte:      u64    `json:"target_byte,omitempty"`,
 	editor_revision:  u64    `json:"editor_revision"`,
 	editor_anchor_byte: u64 `json:"editor_anchor_byte,omitempty"`,
 	editor_cursor_byte: u64 `json:"editor_cursor_byte,omitempty"`,
@@ -913,6 +958,9 @@ Backend_Command_Result :: struct {
 	revision:       u64,
 	edit:           Edit_Ack,
 	editor_selection: Editor_Selection,
+	matches:        []Current_Match,
+	matches_truncated: bool,
+	workspace_search_page: Workspace_Search_Page,
 	code:           string,
 	message:        string,
 	command_outcome: string,
@@ -928,6 +976,8 @@ Backend_Command_Result :: struct {
 	edit_applied_replacement_owned: bool,
 	editor_selection_document_id_owned: bool,
 	visible_window_owned: bool,
+	matches_owned: bool,
+	search_page_owned: bool,
 }
 
 backend_command :: proc(
@@ -957,6 +1007,11 @@ backend_command :: proc(
 	after_cursor_byte: u64 = 0,
 	include_presentation := false,
 	include_ignored := false,
+	query := "",
+	max_matches: int = 0,
+	search_generation: u64 = 0,
+	has_target_byte := false,
+	target_byte: u64 = 0,
 	based_on_revision: u64 = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
@@ -1003,6 +1058,11 @@ backend_command :: proc(
 		after_cursor_byte=after_cursor_byte,
 		include_presentation=include_presentation,
 		include_ignored=include_ignored,
+		query=query,
+		max_matches=max_matches,
+		search_generation=search_generation,
+		has_target_byte=has_target_byte,
+		target_byte=target_byte,
 	}
 	request_bytes, marshal_err := json.marshal(request, allocator=allocator)
 	if marshal_err != nil { return Backend_Command_Result{code="encode_failed", message="could not encode Scratchpad command"} }
@@ -1046,7 +1106,7 @@ backend_command :: proc(
 			result.edit_applied_replacement_owned = true
 		}
 	}
-	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command") && response.editor_selection.document_id != "" {
+	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command" || command == "open_path") && response.editor_selection.document_id != "" {
 		result.editor_selection = response.editor_selection
 		result.editor_selection.document_id, _ = strings.clone(response.editor_selection.document_id, allocator)
 		result.editor_selection_document_id_owned = len(result.editor_selection.document_id) > 0
@@ -1075,6 +1135,22 @@ backend_command :: proc(
 		}
 		result.directory_listing = listing
 		result.directory_listing_owned = true
+	}
+	if response.ok && command == "find_current" && len(response.matches) > 0 {
+		result.matches = make([]Current_Match, len(response.matches), allocator=allocator)
+		copy(result.matches[:], response.matches[:])
+		result.matches_truncated = response.matches_truncated
+		result.matches_owned = true
+	}
+	if response.ok && command == "workspace_search_take_page" && response.workspace_search_page.generation != 0 {
+		page, page_ok := workspace_search_page_clone(response.workspace_search_page, allocator)
+		if !page_ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="allocation_failed", message="could not retain workspace search results"}
+		}
+		result.workspace_search_page = page
+		result.search_page_owned = true
 	}
 	if response.ok && command == "read_visible_lines" {
 		window, window_ok, window_message := backend_copy_visible_resource(backend, response.resource, document_id, include_presentation, allocator)
@@ -1120,6 +1196,8 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.edit_applied_replacement_owned { delete(result.edit.applied_replacement, allocator) }
 	if result.editor_selection_document_id_owned { delete(result.editor_selection.document_id, allocator) }
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
+	if result.matches_owned { delete(result.matches, allocator) }
+	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
 	result^ = {}
 }
 
@@ -1703,6 +1781,31 @@ directory_listing_destroy :: proc(listing: ^Directory_Listing, allocator: mem.Al
 	listing^ = {}
 }
 
+workspace_search_page_clone :: proc(source: Workspace_Search_Page, allocator: mem.Allocator) -> (copy: Workspace_Search_Page, ok: bool) {
+	copy = source
+	copy.results = make([]Workspace_Search_Result, len(source.results), allocator=allocator)
+	for result, index in source.results {
+		copy.results[index] = result
+		path_copy, err := strings.clone(result.path, allocator)
+		if err != nil { workspace_search_page_destroy(&copy, allocator); return {}, false }
+		copy.results[index].path = path_copy
+		text_copy, text_err := strings.clone(result.text, allocator)
+		if text_err != nil { workspace_search_page_destroy(&copy, allocator); return {}, false }
+		copy.results[index].text = text_copy
+	}
+	return copy, true
+}
+
+workspace_search_page_destroy :: proc(page: ^Workspace_Search_Page, allocator: mem.Allocator) {
+	if page == nil { return }
+	for &result in page.results {
+		delete(result.path, allocator)
+		delete(result.text, allocator)
+	}
+	delete(page.results, allocator)
+	page^ = {}
+}
+
 backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.Allocator) {
 	if response == nil { return }
 	delete(response.lifecycle, allocator)
@@ -1713,6 +1816,8 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.resource.document_id, allocator)
 	delete(response.edit.document_id, allocator)
 	delete(response.edit.applied_replacement, allocator)
+	delete(response.matches, allocator)
+	workspace_search_page_destroy(&response.workspace_search_page, allocator)
 	directory_listing_destroy(&response.directory_listing, allocator)
 	response^ = {}
 }

@@ -24,6 +24,10 @@ const (
 	MaxVisibleLineChunkBytes              = 16 * 1024
 	MaxEditBytes                          = 128 * 1024
 	MaxFindMatches                        = 1000
+	MaxFindQueryBytes                     = 4096
+	WorkspaceSearchQueryMaxBytes          = 4096
+	WorkspaceSearchPageSize               = 32
+	WorkspaceSearchMaxResults             = 5000
 	VisibleSliceSchemaV1                  = 1
 	VisibleSliceSchemaV2                  = 2
 	visibleSliceHeaderBytes               = 48
@@ -76,26 +80,30 @@ type CommandRequest struct {
 	AfterCursorByte     uint64 `json:"after_cursor_byte,omitempty"`
 	Query               string `json:"query,omitempty"`
 	MaxMatches          int    `json:"max_matches,omitempty"`
+	SearchGeneration    uint64 `json:"search_generation,omitempty"`
+	HasTargetByte       bool   `json:"has_target_byte,omitempty"`
+	TargetByte          uint64 `json:"target_byte,omitempty"`
 }
 
 type Response struct {
-	Version          uint32              `json:"version"`
-	RequestID        uint64              `json:"request_id,omitempty"`
-	Lifecycle        string              `json:"lifecycle"`
-	OK               bool                `json:"ok"`
-	Outcome          Outcome             `json:"outcome"`
-	Revision         uint64              `json:"revision,omitempty"`
-	BasedOnRevision  uint64              `json:"based_on_revision,omitempty"`
-	State            *StateEnvelope      `json:"state,omitempty"`
-	DirectoryListing *DirectoryListing   `json:"directory_listing,omitempty"`
-	Resource         *ResourceDescriptor `json:"resource,omitempty"`
-	Edit             *EditAck            `json:"edit,omitempty"`
-	EditorSelection  *EditorSelection    `json:"editor_selection,omitempty"`
-	CommandOutcome   string              `json:"command_outcome,omitempty"`
-	CloseDecision    *CloseDecision      `json:"close_decision,omitempty"`
-	Matches          []CurrentMatch      `json:"matches,omitempty"`
-	MatchesTruncated bool                `json:"matches_truncated,omitempty"`
-	Diagnostic       string              `json:"diagnostic,omitempty"`
+	Version             uint32               `json:"version"`
+	RequestID           uint64               `json:"request_id,omitempty"`
+	Lifecycle           string               `json:"lifecycle"`
+	OK                  bool                 `json:"ok"`
+	Outcome             Outcome              `json:"outcome"`
+	Revision            uint64               `json:"revision,omitempty"`
+	BasedOnRevision     uint64               `json:"based_on_revision,omitempty"`
+	State               *StateEnvelope       `json:"state,omitempty"`
+	DirectoryListing    *DirectoryListing    `json:"directory_listing,omitempty"`
+	Resource            *ResourceDescriptor  `json:"resource,omitempty"`
+	Edit                *EditAck             `json:"edit,omitempty"`
+	EditorSelection     *EditorSelection     `json:"editor_selection,omitempty"`
+	CommandOutcome      string               `json:"command_outcome,omitempty"`
+	CloseDecision       *CloseDecision       `json:"close_decision,omitempty"`
+	Matches             []CurrentMatch       `json:"matches,omitempty"`
+	MatchesTruncated    bool                 `json:"matches_truncated,omitempty"`
+	WorkspaceSearchPage *WorkspaceSearchPage `json:"workspace_search_page,omitempty"`
+	Diagnostic          string               `json:"diagnostic,omitempty"`
 }
 
 const (
@@ -162,6 +170,25 @@ type CurrentMatch struct {
 	Column int `json:"column"`
 }
 
+type WorkspaceSearchResult struct {
+	Path          string `json:"path"`
+	Line          int    `json:"line"`
+	Column        int    `json:"column"`
+	StartByte     int    `json:"start_byte"`
+	EndByte       int    `json:"end_byte"`
+	Text          string `json:"text"`
+	TextTruncated bool   `json:"text_truncated,omitempty"`
+}
+
+type WorkspaceSearchPage struct {
+	Generation uint64                  `json:"generation"`
+	Sequence   uint64                  `json:"sequence"`
+	Count      uint64                  `json:"count"`
+	Done       bool                    `json:"done"`
+	Truncated  bool                    `json:"truncated"`
+	Results    []WorkspaceSearchResult `json:"results"`
+}
+
 type Outcome struct {
 	Code      string `json:"code"`
 	Message   string `json:"message,omitempty"`
@@ -169,14 +196,20 @@ type Outcome struct {
 }
 
 type StateEnvelope struct {
-	Schema         uint32          `json:"schema"`
-	Revision       uint64          `json:"revision"`
-	ApplicationRev uint64          `json:"application_revision"`
-	HasWorkspace   bool            `json:"has_workspace"`
-	WorkspaceRoot  string          `json:"workspace_root,omitempty"`
-	Active         string          `json:"active,omitempty"`
-	Documents      []StateDocument `json:"documents"`
-	Actions        []ActionState   `json:"actions,omitempty"`
+	Schema                       uint32          `json:"schema"`
+	Revision                     uint64          `json:"revision"`
+	ApplicationRev               uint64          `json:"application_revision"`
+	HasWorkspace                 bool            `json:"has_workspace"`
+	WorkspaceRoot                string          `json:"workspace_root,omitempty"`
+	Active                       string          `json:"active,omitempty"`
+	Documents                    []StateDocument `json:"documents"`
+	Actions                      []ActionState   `json:"actions,omitempty"`
+	WorkspaceSearchGeneration    uint64          `json:"workspace_search_generation,omitempty"`
+	WorkspaceSearchSequence      uint64          `json:"workspace_search_sequence,omitempty"`
+	WorkspaceSearchCount         uint64          `json:"workspace_search_count,omitempty"`
+	WorkspaceSearchPageAvailable bool            `json:"workspace_search_page_available,omitempty"`
+	WorkspaceSearchDone          bool            `json:"workspace_search_done,omitempty"`
+	WorkspaceSearchTruncated     bool            `json:"workspace_search_truncated,omitempty"`
 }
 
 // ActionState publishes the canonical Scratchpad command vocabulary to any
@@ -295,6 +328,9 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if err := validateRequiredPath(request.Path, "path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
 		}
+		if request.HasTargetByte && request.TargetByte > uint64(^uint(0)>>1) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_target_byte", "target_byte does not fit the host word size", false), false
+		}
 		if request.Disposition != "" && request.Disposition != "preview" {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "open_path disposition must be empty or preview", false), false
 		}
@@ -363,20 +399,34 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_limit", fmt.Sprintf("limit must be between 0 and %d", MaxListLimit), false), false
 		}
 	case "find_current":
+		if len(request.Query) > MaxFindQueryBytes {
+			return request, errorResponse(request.RequestID, lifecycle, "query_too_large", fmt.Sprintf("query exceeds %d bytes", MaxFindQueryBytes), false), false
+		}
 		if request.DocumentID == "" {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id is required", false), false
 		}
 		if !utf8.ValidString(request.DocumentID) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
 		}
-		if request.Query == "" {
-			return request, errorResponse(request.RequestID, lifecycle, "invalid_query", "query is required", false), false
-		}
 		if strings.ContainsRune(request.Query, 0) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_query", "query must not contain NUL", false), false
 		}
 		if request.MaxMatches < 0 || request.MaxMatches > MaxFindMatches {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_limit", fmt.Sprintf("max_matches must be between 0 and %d", MaxFindMatches), false), false
+		}
+	case "workspace_search_start":
+		if request.SearchGeneration == 0 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_search_generation", "search_generation must be nonzero", false), false
+		}
+		if len(request.Query) > WorkspaceSearchQueryMaxBytes {
+			return request, errorResponse(request.RequestID, lifecycle, "query_too_large", fmt.Sprintf("query exceeds %d bytes", WorkspaceSearchQueryMaxBytes), false), false
+		}
+		if strings.ContainsRune(request.Query, 0) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_query", "query must not contain NUL", false), false
+		}
+	case "workspace_search_cancel", "workspace_search_take_page":
+		if request.SearchGeneration == 0 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_search_generation", "search_generation must be nonzero", false), false
 		}
 	default:
 		return request, errorResponse(request.RequestID, lifecycle, "unknown_command", fmt.Sprintf("unknown command %q", request.Command), false), false
