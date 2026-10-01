@@ -72,6 +72,8 @@ func wirePresentationKind(kind document.PresentationKind) uint32 {
 		return 31
 	case document.PresentationTablePipe:
 		return 32
+	case document.PresentationTableCell:
+		return 33
 	default:
 		return 0
 	}

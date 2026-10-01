@@ -816,7 +816,7 @@ presentation_metadata_valid :: proc(data: []u8, source_byte_len, metadata_byte_l
 		start := visible_slice_read_u32(data, record_offset+4)
 		end := visible_slice_read_u32(data, record_offset+8)
 		level_flags := visible_slice_read_u32(data, record_offset+12)
-		is_span := kind >= 1 && kind <= 32
+		is_span := kind >= 1 && kind <= 33
 		is_block := kind >= 0x10001 && kind <= 0x10005
 		if !is_span && !is_block || (index < int(span_count)) != is_span || end <= start || u64(end) > source_byte_len { return false }
 		if is_span && level_flags > 255 { return false }

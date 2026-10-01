@@ -26,6 +26,7 @@ EDITOR_PRESENTATION_TABLE :: u32(29)
 EDITOR_PRESENTATION_TABLE_HEADER :: u32(30)
 EDITOR_PRESENTATION_TABLE_DELIMITER :: u32(31)
 EDITOR_PRESENTATION_TABLE_PIPE :: u32(32)
+EDITOR_PRESENTATION_TABLE_CELL :: u32(33)
 EDITOR_PRESENTATION_BLOCK_CODE :: u32(0x10001)
 EDITOR_PRESENTATION_BLOCK_QUOTE :: u32(0x10002)
 EDITOR_PRESENTATION_BLOCK_LIST :: u32(0x10003)
@@ -62,6 +63,16 @@ Editor_Window :: struct {
 	presentation_truncated: bool,
 	presentation_spans: []bridge.Presentation_Record,
 	presentation_blocks: []bridge.Presentation_Record,
+	table_plan_cache_valid: bool,
+	table_plan_cache_start: u64,
+	table_plan_cache_end: u64,
+	table_plan_cache_revision: u64,
+	table_plan_cache_presentation_revision: u64,
+	table_plan_cache_width: f32,
+	table_plan_cache_stale: bool,
+	table_plan_cache_wraps: bool,
+	table_plan_cache_width_count: int,
+	table_plan_cache_widths: [255]f32,
 	lines:           [dynamic]Editor_Display_Line,
 }
 
@@ -312,8 +323,15 @@ Editor_Table_Row_Layout :: struct {
 	origins:       [dynamic]f32,
 	leading_pipe:  bool,
 	trailing_pipe: bool,
+	delimiter:     bool,
 	wraps:         bool,
 	ok:             bool,
+}
+
+Editor_Table_Block_Layout :: struct {
+	widths: [dynamic]f32,
+	wraps:  bool,
+	ok:     bool,
 }
 
 Editor_Source_Range :: struct {
@@ -985,6 +1003,174 @@ editor_table_line_cell_ranges :: proc(
 	return
 }
 
+editor_table_cell_content_range :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	slot: Editor_Source_Range,
+	column: int,
+) -> Editor_Source_Range {
+	if window == nil || line == nil { return slot }
+	for record in window.presentation_spans {
+		if record.kind != EDITOR_PRESENTATION_TABLE_CELL || int(record.level_flags & 0xFF) != column { continue }
+		start := window.start_byte+u64(record.start_byte)
+	end := window.start_byte+u64(record.end_byte)
+		if start >= slot.start_byte && end <= slot.end_byte && start <= end {
+			return Editor_Source_Range{start, end}
+		}
+	}
+	// During a rebased/stale presentation window a newly formed cell may not
+	// have a parser cell span yet. Trimming the parser-delimited slot preserves
+	// the same source range contract until Goldmark publishes the exact range.
+	start := int(max(slot.start_byte, window.start_byte)-window.start_byte)
+	end := int(min(slot.end_byte, window.start_byte+u64(len(window.source)))-window.start_byte)
+	for start < end && editor_table_source_is_whitespace(window.source[start:start+1]) { start += 1 }
+	for end > start && editor_table_source_is_whitespace(window.source[end-1:end]) { end -= 1 }
+	return Editor_Source_Range{window.start_byte+u64(start), window.start_byte+u64(end)}
+}
+
+editor_table_line_is_delimiter :: proc(window: ^Editor_Window, line: ^Editor_Display_Line) -> bool {
+	if window == nil || line == nil { return false }
+	for record in window.presentation_spans {
+		if record.kind != EDITOR_PRESENTATION_TABLE_DELIMITER { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if editor_presentation_range_intersects_line(line, start, end) { return true }
+	}
+	return false
+}
+
+editor_table_cell_widths :: proc(text: string) -> (minimum, preferred: f32) {
+	longest_word: f32 = 0
+	word_width: f32 = 0
+	preferred = 0
+	byte_index := 0
+	for byte_index < len(text) {
+		rune_value, sequence_length := utf8.decode_rune_in_string(text[byte_index:])
+		if sequence_length <= 0 { sequence_length = 1 }
+		glyph_width := f32(9.5)
+		if rune_value >= 0x1100 { glyph_width = 16 }
+		preferred += glyph_width
+		if rune_value == ' ' || rune_value == '\t' || rune_value == '\r' {
+			longest_word = max(longest_word, word_width)
+			word_width = 0
+		} else {
+			word_width += glyph_width
+		}
+		byte_index += sequence_length
+	}
+	longest_word = max(longest_word, word_width)
+	minimum = longest_word+20
+	preferred += 20
+	return
+}
+
+editor_table_block_layout :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	width: f32,
+	allocator := context.temp_allocator,
+) -> (layout: Editor_Table_Block_Layout) {
+	if window == nil || line == nil || width <= 0 { return }
+	table_start, table_end: u64
+	column_count := 0
+	for record in window.presentation_blocks {
+		if record.kind != EDITOR_PRESENTATION_BLOCK_TABLE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if editor_presentation_range_intersects_line(line, start, end) {
+			table_start, table_end = start, end
+			column_count = int(record.level_flags & 0xFF)
+			break
+		}
+	}
+	if column_count <= 0 || table_end <= table_start { return }
+	if window.table_plan_cache_valid &&
+	   window.table_plan_cache_start == table_start && window.table_plan_cache_end == table_end &&
+	   window.table_plan_cache_revision == window.editor_revision &&
+	   window.table_plan_cache_presentation_revision == window.presentation_revision &&
+	   window.table_plan_cache_stale == window.presentation_stale &&
+	   window.table_plan_cache_width == width {
+		layout.widths = make([dynamic]f32, 0, window.table_plan_cache_width_count, allocator=allocator)
+		for column in 0..<window.table_plan_cache_width_count {
+			append(&layout.widths, window.table_plan_cache_widths[column])
+		}
+		layout.wraps = window.table_plan_cache_wraps
+		layout.ok = true
+		return
+	}
+
+	window.table_plan_cache_valid = true
+	window.table_plan_cache_start = table_start
+	window.table_plan_cache_end = table_end
+	window.table_plan_cache_revision = window.editor_revision
+	window.table_plan_cache_presentation_revision = window.presentation_revision
+	window.table_plan_cache_width = width
+	window.table_plan_cache_stale = window.presentation_stale
+	window.table_plan_cache_wraps = false
+	window.table_plan_cache_width_count = 0
+
+	minimums := make([dynamic]f32, 0, column_count, allocator=allocator)
+	preferreds := make([dynamic]f32, 0, column_count, allocator=allocator)
+	for _ in 0..<column_count {
+		append(&minimums, 72)
+		append(&preferreds, 72)
+	}
+	max_pipe_count := 0
+	for &candidate in window.lines {
+		if candidate.source_start >= table_end || candidate.source_end < table_start { continue }
+		if !editor_table_line_is_projected(window, &candidate) { continue }
+		slots, pipes, _, _ := editor_table_line_cell_ranges(window, &candidate, allocator)
+		max_pipe_count = max(max_pipe_count, len(pipes))
+		// A row with cells beyond the delimiter schema cannot share a coherent
+		// wrapped column plan, so keep the complete table in overflow mode.
+		if len(slots) > column_count { return }
+		// The delimiter row describes alignment syntax, not column content.
+		if editor_table_line_is_delimiter(window, &candidate) { continue }
+		for column in 0..<min(column_count, len(slots)) {
+			content := editor_table_cell_content_range(window, &candidate, slots[column], column)
+			start := int(content.start_byte-window.start_byte)
+			end := int(content.end_byte-window.start_byte)
+			if start < 0 || end < start || end > len(window.source) { continue }
+			cell, projected := editor_project_line(window.source[start:end], content.start_byte, candidate.logical_line, allocator)
+			if !projected { continue }
+			minimum, preferred := editor_table_cell_widths(cell.display)
+			minimums[column] = max(minimums[column], minimum)
+			preferreds[column] = max(preferreds[column], preferred)
+		}
+	}
+	if max_pipe_count < column_count-1 { max_pipe_count = column_count-1 }
+	cell_space := width-f32(max_pipe_count)*10
+	minimum_total: f32 = 0
+	for minimum in minimums { minimum_total += minimum }
+	if cell_space < minimum_total { return }
+
+	layout.widths = make([dynamic]f32, 0, column_count, allocator=allocator)
+	remaining := cell_space-minimum_total
+	for column in 0..<column_count {
+		column_minimum := minimums[column]
+		column_preferred := preferreds[column]
+		// Let early columns grow only to a content-derived preferred width.
+		// The final column absorbs spare viewport width, which gives the common
+		// Page/Summary shape a compact key column and a generous prose column.
+		if column+1 < column_count {
+			column_preferred = min(column_preferred, max(column_minimum, width*0.45))
+			growth := min(remaining, max(column_preferred-column_minimum, 0))
+			column_minimum += growth
+			remaining -= growth
+		}
+		append(&layout.widths, column_minimum)
+	}
+	if len(layout.widths) > 0 { layout.widths[len(layout.widths)-1] += remaining }
+	layout.wraps = true
+	layout.ok = true
+	window.table_plan_cache_wraps = true
+	window.table_plan_cache_width_count = min(len(layout.widths), len(window.table_plan_cache_widths))
+	for column in 0..<window.table_plan_cache_width_count {
+		window.table_plan_cache_widths[column] = layout.widths[column]
+	}
+	return
+}
+
 editor_table_row_layout :: proc(
 	window: ^Editor_Window,
 	line: ^Editor_Display_Line,
@@ -992,13 +1178,15 @@ editor_table_row_layout :: proc(
 	allocator := context.temp_allocator,
 ) -> (layout: Editor_Table_Row_Layout) {
 	if !editor_table_line_is_projected(window, line) { return }
-	ranges, pipes, leading, trailing := editor_table_line_cell_ranges(window, line, allocator)
+	slots, pipes, leading, trailing := editor_table_line_cell_ranges(window, line, allocator)
 	layout.pipes = pipes
 	layout.leading_pipe, layout.trailing_pipe = leading, trailing
 	layout.cells = make([dynamic]Editor_Display_Line, 0, allocator=allocator)
 	layout.widths = make([dynamic]f32, 0, allocator=allocator)
 	layout.origins = make([dynamic]f32, 0, allocator=allocator)
-	for range in ranges {
+	layout.delimiter = editor_table_line_is_delimiter(window, line)
+	for slot, cell_index in slots {
+		range := editor_table_cell_content_range(window, line, slot, cell_index)
 		start, end := range.start_byte, range.end_byte
 		if start < line.source_start || end > line.source_end || end < start { return }
 		relative_start := int(start-window.start_byte)
@@ -1010,44 +1198,9 @@ editor_table_row_layout :: proc(
 		append(&layout.cells, cell)
 	}
 	if len(layout.cells) == 0 { return }
-	pipe_count := len(layout.pipes)
-	minimum_cell_width := f32(104)
-	cell_space := max(width-f32(pipe_count)*10, 0)
-	if width <= 0 || f32(len(layout.cells))*minimum_cell_width > cell_space { return }
-	// A single token wider than the complete lane is more useful in the
-	// horizontal overflow lane than broken into many one-word fragments.
-	for &cell in layout.cells {
-		longest_word_width: f32 = 0
-		word_width: f32 = 0
-		byte_index := 0
-		for byte_index < len(cell.display) {
-			if cell.display[byte_index] == ' ' || cell.display[byte_index] == '\t' || cell.display[byte_index] == '\r' {
-				longest_word_width = max(longest_word_width, word_width)
-				word_width = 0
-				byte_index += 1
-				continue
-			}
-			rune_value, sequence_length := utf8.decode_rune_in_string(cell.display[byte_index:])
-			if sequence_length <= 0 { sequence_length = 1 }
-			glyph_width := f32(9.5)
-			if rune_value >= 0x1100 { glyph_width = 16 }
-			word_width += glyph_width
-			byte_index += sequence_length
-		}
-		longest_word_width = max(longest_word_width, word_width)
-		if longest_word_width+16 > width { return }
-	}
-	column_count := len(layout.cells)
-	weights := make([dynamic]f32, 0, column_count, allocator=allocator)
-	if column_count == 2 {
-		append(&weights, 0.28, 0.72)
-	} else if column_count == 3 {
-		append(&weights, 0.20, 0.30, 0.50)
-	} else {
-		for _ in 0..<column_count { append(&weights, 1/f32(column_count)) }
-	}
-	extra := cell_space-f32(column_count)*minimum_cell_width
-	for weight in weights { append(&layout.widths, minimum_cell_width+extra*weight) }
+	plan := editor_table_block_layout(window, line, width, allocator)
+	if !plan.ok || len(plan.widths) < len(layout.cells) { layout.ok = true; return }
+	layout.widths = plan.widths
 	origin_x := f32(0)
 	if layout.leading_pipe { origin_x += 10 }
 	for cell_width, width_index in layout.widths {
@@ -1055,7 +1208,7 @@ editor_table_row_layout :: proc(
 		origin_x += cell_width
 		if width_index+1 < len(layout.widths) { origin_x += 10 }
 	}
-	layout.wraps = true
+	layout.wraps = plan.wraps
 	layout.ok = true
 	return
 }
@@ -1407,9 +1560,6 @@ editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor
 			paint.background_set = true
 		case EDITOR_PRESENTATION_BLOCK_THEMATIC:
 			paint.background = alicorn.Color{0.22, 0.26, 0.35, 0.32}
-			paint.background_set = true
-		case EDITOR_PRESENTATION_BLOCK_TABLE:
-			paint.background = alicorn.Color{0.18, 0.22, 0.3, 0.38}
 			paint.background_set = true
 		}
 		if paint.background_set { append(&result, paint) }
@@ -2094,6 +2244,7 @@ editor_measure_line_height :: proc(
 	if wrap && editor_table_line_is_projected(window, line) {
 		layout := editor_table_row_layout(window, line, width)
 		if layout.ok && layout.wraps {
+			if layout.delimiter { return EDITOR_ROW_HEIGHT, width, 1, true }
 			tallest: f32 = EDITOR_ROW_HEIGHT
 			visual_rows := 1
 			for &cell, cell_index in layout.cells {

@@ -444,7 +444,7 @@ func encodeVisibleSliceV2(applicationRevision, editorRevision, startLine, endLin
 		return nil, errors.New("ready presentation revision does not match editor revision")
 	}
 	for _, record := range spans {
-		if record.kind < 1 || record.kind > 32 || record.start >= record.end || uint64(record.end) > uint64(len(lines)) || record.levelFlags > 0xff {
+		if record.kind < 1 || record.kind > 33 || record.start >= record.end || uint64(record.end) > uint64(len(lines)) || record.levelFlags > 0xff {
 			return nil, errors.New("invalid presentation span record")
 		}
 	}

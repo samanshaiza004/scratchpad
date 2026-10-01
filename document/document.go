@@ -205,7 +205,7 @@ type BlockPresentation struct {
 	StartByte, EndByte int
 	// Level carries small block-specific metadata. For BlockTable it is the
 	// parser-declared column count; other block kinds currently leave it zero.
-	Level              int
+	Level int
 }
 
 // CodeProjection is disposable language-derived data. Its spans are indexed
@@ -301,6 +301,7 @@ const (
 	PresentationTableHeader
 	PresentationTableDelimiter
 	PresentationTablePipe
+	PresentationTableCell
 )
 
 // PresentationSpan is a half-open source-byte range. Spans may overlap when
@@ -309,7 +310,9 @@ type PresentationSpan struct {
 	StartByte int
 	EndByte   int
 	Kind      PresentationKind
-	Level     int
+	// Level is heading depth for headings and zero-based column identity for
+	// PresentationTableCell; other kinds leave it zero.
+	Level int
 }
 
 // MarkdownPresentation is a disposable, immutable-by-convention projection

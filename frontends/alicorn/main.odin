@@ -191,13 +191,15 @@ editor_render_table_cells :: proc(
 		pipe_index += 1
 	}
 	for &cell, cell_index in table.cells {
+		cell_overflow := alicorn.Text_Overflow.Wrap
+		if table.delimiter { cell_overflow = .Clip }
 		cell_node := alicorn.text(
 			ui,
 			cell.display,
 			key=alicorn.key_string(fmt.tprintf("scratchpad-table-cell:%s:%d:%d", document_id, line.logical_line, cell_index)),
 			style=alicorn.layout_style(.Row, width=table.widths[cell_index], height=row_height, align=.Start, clip=true),
 			font=.Monospace,
-			text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Wrap},
+			text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=cell_overflow},
 		)
 		paint_spans: []alicorn.Text_Paint_Span
 		text_style_spans: []alicorn.Text_Style_Span

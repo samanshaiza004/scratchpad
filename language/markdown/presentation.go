@@ -27,6 +27,22 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 			spans = append(spans, document.PresentationSpan{StartByte: start, EndByte: end, Kind: kind})
 		}
 	}
+	addTableCell := func(start, end, column int) {
+		if start < 0 {
+			start = 0
+		}
+		if end > len(source) {
+			end = len(source)
+		}
+		if start < end {
+			spans = append(spans, document.PresentationSpan{
+				StartByte: start,
+				EndByte:   end,
+				Kind:      document.PresentationTableCell,
+				Level:     column,
+			})
+		}
+	}
 
 	stack := make([]presentationNodeRange, 0, 8)
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -98,18 +114,25 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 		}
 		return ast.WalkContinue, nil
 	})
-	appendTablePresentation(add, projection.Tables)
+	appendTablePresentation(add, addTableCell, projection.Tables)
 	return document.NewMarkdownPresentation(revision, spans)
 }
 
 // appendTablePresentation adds the table-specific source spans that the UI
 // needs for styling. Cell and pipe ranges come from the parser-owned table
 // projection, so the presentation layer never re-parses table syntax.
-func appendTablePresentation(add func(int, int, document.PresentationKind), tables []document.TableProjection) {
+func appendTablePresentation(
+	add func(int, int, document.PresentationKind),
+	addCell func(int, int, int),
+	tables []document.TableProjection,
+) {
 	for _, table := range tables {
 		for _, row := range table.Rows {
 			for _, pipe := range row.Pipes {
 				add(pipe.StartByte, pipe.EndByte, document.PresentationTablePipe)
+			}
+			for _, cell := range row.Cells {
+				addCell(cell.StartByte, cell.EndByte, cell.Column)
 			}
 			kind := document.PresentationKind(0)
 			switch {

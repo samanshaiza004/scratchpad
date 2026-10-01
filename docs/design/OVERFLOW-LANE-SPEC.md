@@ -30,7 +30,7 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
 - Original slices 1–6 (overflow lane, row/cell/pipe projection, table visuals, `Format Table`, cell navigation, and task toggle) are implemented. Cell-aware visual rows are a follow-on presentation slice: parser-owned cell boundaries feed bounded width measurement, per-cell shaping, source-mapped hit testing, and sparse logical-row height updates. Manual table selection/resize/IME checks remain a release-hardening follow-up.
 - Slice 1 — overflow lane (UI-only, no buffer/document-text change):
   - `scrollX` lives in document view state alongside `ScrollY` (per-document, session-disposable like `ScrollY`, not part of `Document` text authority).
-  - Applies only to no-wrap code rows and table rows that fail the cell-width fit rule. Wrapped prose and cell-wrapped table rows stay at x=0 and ignore `scrollX`.
+  - Applies only to no-wrap code rows and complete table blocks whose shared column minimums do not fit. Wrapped prose and cell-wrapped table blocks stay at x=0 and ignore `scrollX`.
   - Alicorn keeps the scroll owner on its variable-height list. Scratchpad counter-shifts the line-number gutter and wrapped prose so only no-wrap row content moves. The horizontal bar follows no-wrap rows near the viewport and can disappear over wrapped-only sections without discarding the saved per-document X position.
   - Caret-follow: when caret enters a wide row, adjust `scrollX` just enough to keep caret visible (with small padding); when caret returns to wrapped prose, reset/ignore it. Mouse click into overflow maps through `scrollX`. Gutter stays fixed.
   - No generic sideways shift of wrapped prose. No vertical behavior change. No new dependencies.
@@ -43,12 +43,12 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
     - `TableCell { StartByte, EndByte, Column }`
   - Explicit pipe ranges required so UI never re-parses syntax (preserves parser/UI split).
   - Hard cases owned by the projection/aligner: escaped `\|` (the only way to keep a pipe inside inline content), unescaped pipes inside code spans split like any other GFM delimiter, optional leading/trailing pipes, inline markup (`**`, links), Unicode/CJK/emoji display width measured from source-aware visible content, uneven rows.
-  - Existing whole-block `BlockTable`/`PresentationTable` remains the block/source styling seam; the row/cell/pipe projection is additive, revision-tagged + disposable like current projections.
-- Slice 3 — visuals only: faint cool well (block), stronger header surface + bold cell content, very muted delimiter + real 1px rule, muted cool pipes, regular ink cells. No zebra, no virtual boxes.
+  - Existing whole-block `BlockTable`/`PresentationTable` remains the block/source styling seam. Revision-tagged cell-content and pipe spans carry trimmed content ranges and structural/navigation positions separately; both remain disposable like current projections.
+- Slice 3 — source visuals only: bold header content, very muted delimiter, muted structural pipes, regular ink cells. No table/body fill, zebra, or virtual boxes.
 - Slice 4 — aligner is one undoable whole-table edit preserving meaning; explicit command only, never on open.
 - Slice 5 — navigation reuses aligner (`Tab` = align + next, `Shift+Tab` = prev, `Enter` = same-column next/create). Must intercept `Tab` before it inserts `\t`.
 - Slice 6 — caret toggle mirrors Outline logic (`[ ]`↔`[x]`, accept `[X]` as checked).
-- Cell-aware visual rows — each table source row remains one physical line. When the column minimums fit, cell contents wrap independently, column widths remain stable across rows, and row height follows the tallest cell. When the fit rule fails, the source row uses the existing horizontal overflow lane. Resizing changes only this disposable layout; it never reformats or dirties the document.
+- Cell-aware visual rows — each table source row remains one physical line. A single table-wide plan measures parser-trimmed cell contents across the available table rows, ignores delimiter syntax when sizing, and selects one wrap/overflow mode plus one shared column-width vector. Wrapped row height follows the tallest cell. If the shared minimums do not fit, every row in the table uses the horizontal overflow lane. Resizing changes only this disposable layout; it never reformats or dirties the document.
 - Contracts: `ScrollY` pattern in `application.ViewState` + `ui` wiring is the prior art for `scrollX`; `document.NewMarkdownPresentation`/`SpansIn` + `visualLineCache` epoch pattern is prior art for revision-tagged projections.
 
 ## Testing Decisions
