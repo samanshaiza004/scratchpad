@@ -64,6 +64,8 @@ Deferred_Action :: struct {
 	disposition: string,
 }
 
+Shutdown_Intent :: enum {None, Quit_Application, Stop_Backend}
+
 MAX_DEFERRED_ACTIONS :: 64
 
 App :: struct {
@@ -97,6 +99,8 @@ App :: struct {
 	backend_library:        string,
 	error_message:          string,
 	close_document_id:      string,
+	shutdown_intent:        Shutdown_Intent,
+	shutdown_edit_failed:   bool,
 	tree_root_path:         string,
 	tree_directories:       [dynamic]Tree_Directory,
 	tree_focused_path:      string,
@@ -187,11 +191,7 @@ build_app :: proc(
 	alicorn.text(&ui, status)
 	if app.backend.started {
 		if alicorn.button(&ui, "Stop", key=alicorn.key_string("backend-stop"), style=alicorn.layout_style(.Row, width=76, height=32)) {
-			disable_runtime_actions(app, rt)
-			stopped, message := stop_backend(app)
-			sync_menu_states(app)
-			if stopped { set_error(app, "") } else { set_error(app, message) }
-			alicorn.invalidate_root(rt, "Scratchpad backend stopped from diagnostic control")
+			request_backend_stop(app, rt)
 		}
 	} else {
 		if alicorn.button(&ui, "Start", key=alicorn.key_string("backend-start"), style=alicorn.layout_style(.Row, width=76, height=32)) {
@@ -298,7 +298,9 @@ build_app :: proc(
 	}
 	alicorn.container_end(&ui)
 
-	if app.close_document_id != "" {
+	if app.shutdown_intent != .None {
+		build_shutdown_dialog(app, &ui, rt)
+	} else if app.close_document_id != "" {
 		alicorn.modal_overlay_begin(&ui, alicorn.key_string("dirty-close-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 		alicorn.container_begin(&ui, .Container, label="dirty-close-dialog", style=alicorn.layout_style(.Column, width=440, height=190, padding=22, gap=14, align=.Start, clip=true), color=COLOR_PANEL)
 		recovery_pending := editor_document_has_recoverable_preedit(app, app.close_document_id)
@@ -379,6 +381,196 @@ build_app :: proc(
 	}
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	return root
+}
+
+shutdown_has_uncommitted_work :: proc(app: ^App) -> bool {
+	if app == nil { return false }
+	if len(app.editor_edits) > 0 { return true }
+	for document in app.backend.state.documents { if document.dirty { return true } }
+	for view in app.editor_views {
+		if view.preedit_active && view.preedit_recoverable { return true }
+	}
+	return false
+}
+
+shutdown_dirty_document_count :: proc(app: ^App) -> int {
+	if app == nil { return 0 }
+	count := 0
+	for document in app.backend.state.documents { if document.dirty { count += 1 } }
+	return count
+}
+
+shutdown_recoverable_document :: proc(app: ^App) -> string {
+	if app == nil { return "" }
+	for view in app.editor_views {
+		if view.preedit_active && view.preedit_recoverable { return view.document_id }
+	}
+	return ""
+}
+
+shutdown_begin :: proc(app: ^App, rt: ^alicorn.Runtime, intent: Shutdown_Intent) {
+	if app == nil || intent == .None { return }
+	app.shutdown_intent = intent
+	app.shutdown_edit_failed = false
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad deferred shutdown for unsaved editor work") }
+}
+
+application_close_requested :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host.Application_Close_Result {
+	app := cast(^App)state
+	if app == nil || !app.backend.started { return .Allow }
+	if app.shutdown_intent != .None { return .Defer }
+	if !shutdown_has_uncommitted_work(app) { return .Allow }
+	shutdown_begin(app, rt, .Quit_Application)
+	return .Defer
+}
+
+request_backend_stop :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || !app.backend.started { return }
+	if app.shutdown_intent != .None { return }
+	if shutdown_has_uncommitted_work(app) {
+		shutdown_begin(app, rt, .Stop_Backend)
+		return
+	}
+	disable_runtime_actions(app, rt)
+	stopped, message := stop_backend(app)
+	sync_menu_states(app)
+	if stopped { set_error(app, "") } else { set_error(app, message) }
+	alicorn.invalidate_root(rt, "Scratchpad backend stopped from diagnostic control")
+}
+
+shutdown_cancel :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil { return }
+	app.shutdown_intent = .None
+	app.shutdown_edit_failed = false
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad shutdown request cancelled") }
+}
+
+shutdown_finish :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil { return }
+	intent := app.shutdown_intent
+	app.shutdown_intent = .None
+	app.shutdown_edit_failed = false
+	if intent == .Quit_Application {
+		host.application_request_quit(app.services.quit)
+	} else if intent == .Stop_Backend {
+		clear_close_prompt(app)
+		disable_runtime_actions(app, rt)
+		stopped, message := stop_backend(app)
+		sync_menu_states(app)
+		if stopped { set_error(app, "") } else { set_error(app, message) }
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad backend stopped after explicit dirty-state decision") }
+	}
+}
+
+shutdown_advance :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || app.shutdown_intent == .None || app.shutdown_edit_failed || len(app.editor_edits) > 0 { return }
+	if shutdown_dirty_document_count(app) > 0 || shutdown_recoverable_document(app) != "" { return }
+	shutdown_finish(app, rt)
+}
+
+shutdown_save_all :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || !app.backend.started || len(app.editor_edits) > 0 { return }
+	document_ids := make([dynamic]string, 0, allocator=context.allocator)
+	for document in app.backend.state.documents {
+		if !document.dirty { continue }
+		id, clone_error := strings.clone(document.id, context.allocator)
+		if clone_error != nil {
+			for owned_id in document_ids { delete(owned_id, context.allocator) }
+			delete(document_ids)
+			set_error(app, "Could not retain document identities while saving before shutdown.")
+			if rt != nil { alicorn.invalidate_root(rt, "Scratchpad could not prepare save-all shutdown") }
+			return
+		}
+		append(&document_ids, id)
+	}
+	for id in document_ids {
+		response := bridge.backend_command(&app.backend, "save_document", document_id=id)
+		if !response.ok { handle_command_result(app, rt, &response) }
+		ok := response.ok
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		if !ok {
+			for owned_id in document_ids { delete(owned_id, context.allocator) }
+			delete(document_ids)
+			return
+		}
+	}
+	for owned_id in document_ids { delete(owned_id, context.allocator) }
+	delete(document_ids)
+	set_error(app, "")
+	shutdown_advance(app, rt)
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad saved modified documents before shutdown") }
+}
+
+shutdown_discard_all :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || len(app.editor_edits) > 0 { return }
+	for &view in app.editor_views {
+		if view.preedit_active && view.preedit_recoverable {
+			editor_preedit_clear(&view)
+		}
+	}
+	shutdown_finish(app, rt)
+}
+
+build_shutdown_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+	if app == nil || ui == nil { return }
+	intent_text := "stopping the backend"
+	if app.shutdown_intent == .Quit_Application { intent_text = "closing Scratchpad" }
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("shutdown-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+	alicorn.container_begin(ui, .Container, label="shutdown-dialog", style=alicorn.layout_style(.Column, width=540, height=320, padding=22, gap=12, align=.Start, clip=true), color=COLOR_PANEL)
+	alicorn.text(ui, fmt.tprintf("Save changes before %s?", intent_text))
+	if len(app.editor_edits) > 0 {
+		alicorn.text(ui, fmt.tprintf("Waiting for %d pending editor change(s) to finish.", len(app.editor_edits)))
+	} else {
+		dirty_count := shutdown_dirty_document_count(app)
+		if dirty_count > 0 {
+			alicorn.text(ui, fmt.tprintf("%d modified document(s) have unsaved changes.", dirty_count))
+		}
+		if app.shutdown_edit_failed {
+			alicorn.text(ui, "An editor change could not be saved. Review the error above or explicitly discard it.")
+		}
+		recoverable_id := shutdown_recoverable_document(app)
+		if recoverable_id != "" {
+			if document, found := find_document(&app.backend.state, recoverable_id); found {
+				alicorn.text(ui, fmt.tprintf("Committed input in %s is waiting to be copied or discarded.", document_title(document.path)))
+			} else {
+				alicorn.text(ui, "Committed input is waiting to be copied or discarded.")
+			}
+			alicorn.container_begin(ui, .Container, label="shutdown-recovery-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
+			if alicorn.button(ui, "Copy Recovery", key=alicorn.key_string("shutdown-copy-recovery"), style=alicorn.layout_style(.Row, width=135, height=34)) {
+				_ = editor_copy_recoverable_preedit(app, rt, recoverable_id)
+				shutdown_advance(app, rt)
+			}
+			if alicorn.button(ui, "Discard Recovery", key=alicorn.key_string("shutdown-discard-recovery"), style=alicorn.layout_style(.Row, width=145, height=34)) {
+				_ = editor_discard_recoverable_preedit(app, rt, recoverable_id)
+				shutdown_advance(app, rt)
+			}
+			alicorn.container_end(ui)
+		}
+		if dirty_count > 0 {
+			alicorn.container_begin(ui, .Container, label="shutdown-document-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
+			if alicorn.button(ui, "Save All", key=alicorn.key_string("shutdown-save-all"), style=alicorn.layout_style(.Row, width=115, height=34)) {
+				shutdown_save_all(app, rt)
+			}
+			if alicorn.button(ui, "Discard All", key=alicorn.key_string("shutdown-discard-all"), style=alicorn.layout_style(.Row, width=115, height=34)) {
+				shutdown_discard_all(app, rt)
+			}
+			alicorn.container_end(ui)
+		}
+		if app.shutdown_edit_failed && dirty_count == 0 {
+			label := "Close Anyway"
+			if app.shutdown_intent == .Stop_Backend { label = "Stop Anyway" }
+			if alicorn.button(ui, label, key=alicorn.key_string("shutdown-edit-failure-discard"), style=alicorn.layout_style(.Row, width=135, height=34)) {
+				shutdown_discard_all(app, rt)
+			}
+		}
+	}
+	alicorn.container_begin(ui, .Container, label="shutdown-cancel-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.End))
+	if alicorn.button(ui, "Cancel", key=alicorn.key_string("shutdown-cancel"), style=alicorn.layout_style(.Row, width=90, height=34)) {
+		shutdown_cancel(app, rt)
+	}
+	alicorn.container_end(ui)
+	alicorn.container_end(ui)
+	alicorn.modal_overlay_end(ui)
 }
 
 editor_wrap_viewport_size :: proc(
@@ -1334,6 +1526,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		bridge.editor_edit_lane_result_destroy(&edit_result, app.editor_edit_lane.allocator)
 		alicorn.invalidate_root(rt, "Scratchpad optimistic editor edit acknowledged")
 	}
+	shutdown_advance(app, rt)
 }
 
 // Apply every still-unacknowledged local edit that follows an authoritative
@@ -1533,7 +1726,8 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			alicorn.invalidate_root(rt, "Scratchpad reported an unchanged table format")
 		}
 		if response.ok && response.editor_selection.document_id != "" {
-			editor_apply_backend_selection(app, rt, response.editor_selection)
+			selection_only := response.command_outcome == "selection_only"
+			editor_apply_backend_selection(app, rt, response.editor_selection, selection_only)
 		}
 		bridge.backend_command_result_destroy(&response, context.allocator)
 	case ACTION_DOCUMENT_CLOSE:
@@ -2579,11 +2773,13 @@ editor_reconcile_applied_replacement :: proc(
 editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Editor_Edit_Lane_Result) {
 	if app == nil || result == nil { return }
 	if len(app.editor_edits) == 0 {
+		shutdown_note_edit_failure(app)
 		set_error(app, "Scratchpad returned an editor acknowledgement that did not match the queued edit.")
 		return
 	}
 	if app.editor_edits[0].sequence != result.sequence {
 		failed_document, _ := strings.clone(app.editor_edits[0].document_id, context.allocator)
+		shutdown_note_edit_failure(app)
 		set_error(app, "Scratchpad returned an out-of-order editor acknowledgement; reloading authoritative text.")
 		editor_discard_document_edits(app, failed_document)
 		delete(failed_document, context.allocator)
@@ -2605,6 +2801,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		               result.command.edit.new_end_byte == result.command.edit.start_byte+u64(acknowledged_length)
 		if !ack_matches {
 			failed_document, _ := strings.clone(intent.document_id, context.allocator)
+			shutdown_note_edit_failure(app)
 			set_error(app, "Scratchpad returned an edit acknowledgement with inconsistent source ranges; reloading authoritative text.")
 			editor_discard_document_edits(app, failed_document)
 			delete(failed_document, context.allocator)
@@ -2619,6 +2816,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			if len(result.command.edit.applied_replacement) > 0 &&
 			   !editor_reconcile_applied_replacement(app, view, &app.editor_edits[0], result.command.edit.applied_replacement) {
 				failed_document, _ := strings.clone(intent.document_id, context.allocator)
+				shutdown_note_edit_failure(app)
 				set_error(app, "Could not reconcile Scratchpad's canonical Enter text; reloading authoritative text.")
 				editor_discard_document_edits(app, failed_document)
 				delete(failed_document, context.allocator)
@@ -2661,6 +2859,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			message = fmt.tprintf("%s (latest state refresh failed: %s)", message, refresh_message)
 		}
 	}
+	shutdown_note_edit_failure(app)
 	set_error(app, fmt.tprintf("Edit was not accepted; reloading authoritative text: %s", message))
 	editor_discard_document_edits(app, failed_document)
 	if stale_revision && app.editor_window_ready && app.editor_window.document_id == failed_document {
@@ -2675,6 +2874,10 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 	_, _ = editor_dispatch_next_edit(app)
 	if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad rejected an optimistic document edit") }
+}
+
+shutdown_note_edit_failure :: proc(app: ^App) {
+	if app != nil && app.shutdown_intent != .None { app.shutdown_edit_failed = true }
 }
 
 editor_flush_pending_edits :: proc(app: ^App) -> bool {
@@ -3213,16 +3416,23 @@ editor_current_byte_length :: proc(app: ^App, document: bridge.State_Document) -
 	return length
 }
 
-editor_apply_backend_selection :: proc(app: ^App, rt: ^alicorn.Runtime, selection: bridge.Editor_Selection) {
+editor_apply_backend_selection :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	selection: bridge.Editor_Selection,
+	selection_only := false,
+) {
 	if app == nil || selection.document_id == "" { return }
 	document, found := find_document(&app.backend.state, selection.document_id)
 	if !found || selection.anchor_byte > document.byte_length || selection.cursor_byte > document.byte_length { return }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, selection.document_id)
-	if !view_ok { set_error(app, "Could not restore the document selection after Undo/Redo."); return }
+	if !view_ok { set_error(app, "Could not restore the document selection after a command."); return }
 	view := &app.editor_views[view_index]
-	editor_preedit_clear(view)
-	editor_wrap_heights_reset(view, int(document.line_count))
-	view.authoritative_revision = selection.editor_revision
+	if !selection_only {
+		editor_preedit_clear(view)
+		editor_wrap_heights_reset(view, int(document.line_count))
+		view.authoritative_revision = selection.editor_revision
+	}
 	view.selection_anchor = selection.anchor_byte
 	view.caret_byte = selection.cursor_byte
 	view.anchor_affinity = .Leading
@@ -3230,16 +3440,41 @@ editor_apply_backend_selection :: proc(app: ^App, rt: ^alicorn.Runtime, selectio
 	view.preferred_x_set = false
 	view.pending_document_edge = .None
 	view.pending_document_edge_shift = false
-	if app.editor_scroll_owner != 0 && selection.cursor_line <= u64(0x7FFF_FFFF_FFFF_FFFF) {
+	line_needs_reveal := !selection_only || !editor_line_fully_visible(
+		rt, app.editor_scroll_owner, app.editor_row_targets[:], selection.cursor_line,
+	)
+	if line_needs_reveal && app.editor_scroll_owner != 0 && selection.cursor_line <= u64(0x7FFF_FFFF_FFFF_FFFF) {
 		_ = editor_ensure_line_visible(
 			rt,
 			&app.editor_views[view_index],
 			app.editor_scroll_owner,
 			int(selection.cursor_line),
-			"Scratchpad restored the Undo/Redo caret line",
+			"Scratchpad revealed the authoritative command caret line",
 		)
 	}
-	alicorn.invalidate_root(rt, "Scratchpad restored selection after Undo/Redo")
+	reason := "Scratchpad restored selection after Undo/Redo" if !selection_only else "Scratchpad applied selection-only command result"
+	alicorn.invalidate_root(rt, reason)
+}
+
+editor_line_fully_visible :: proc(
+	rt: ^alicorn.Runtime,
+	owner: alicorn.Node_ID,
+	rows: []Editor_Row_Target,
+	logical_line: u64,
+) -> bool {
+	if rt == nil || owner == 0 { return false }
+	viewport, viewport_found := rt.nodes[owner]
+	if !viewport_found || viewport.scroll_viewport_height <= 0 { return false }
+	top := viewport.bounds.y
+	bottom := top+viewport.scroll_viewport_height
+	for target in rows {
+		if target.logical_line != logical_line { continue }
+		row, row_found := rt.nodes[target.node]
+		if row_found && row.bounds.h > 0 && row.bounds.y >= top && row.bounds.y+row.bounds.h <= bottom {
+			return true
+		}
+	}
+	return false
 }
 
 menu_action_state :: proc(state: ^bridge.State_Envelope, id: host.Application_Command_ID) -> alicorn.Action_State {
@@ -3460,6 +3695,7 @@ main :: proc() {
 		on_text_input=editor_text_input,
 		on_services=application_services,
 		on_start=application_start,
+		on_close_requested=application_close_requested,
 		on_dialog=application_dialog,
 		on_wake=application_wake,
 		on_scheduled_wake=application_scheduled_wake,
