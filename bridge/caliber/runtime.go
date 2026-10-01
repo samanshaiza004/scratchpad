@@ -33,6 +33,7 @@ type Runtime struct {
 	presentationEnabled bool
 	generation          uint64
 	asyncError          string
+	workspaceSearch     *workspaceSearchSession
 }
 
 func NewRuntime() *Runtime {
@@ -73,6 +74,7 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.presentationEnabled = false
 	r.generation++
 	r.asyncError = ""
+	r.workspaceSearch = nil
 	if err := r.publishApplicationState(); err != nil {
 		r.caliber.close()
 		r.caliber = nil
@@ -102,6 +104,7 @@ func (r *Runtime) Stop(input []byte) []byte {
 		return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "outstanding_resource_leases", fmt.Sprintf("cannot stop with %d outstanding resource lease(s)", r.resourceLeases), false))
 	}
 	r.generation++
+	r.cancelWorkspaceSearchLocked()
 	if r.app != nil {
 		r.app.CloseDerived()
 	}
@@ -350,6 +353,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var editorSelection *EditorSelection
 	var matches []CurrentMatch
 	var matchesTruncated bool
+	var searchPage *WorkspaceSearchPage
 	var commandOutcome string
 	publishState := true
 	switch request.Command {
@@ -402,6 +406,24 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			Preview: request.Disposition == "preview",
 		}); err != nil {
 			return commandError(request, "application_error", err)
+		}
+		if request.HasTargetByte {
+			doc := r.app.Documents[r.app.Active]
+			if doc != nil && doc.Editor != nil {
+				targetByte := int(request.TargetByte)
+				if targetByte > doc.Editor.Buffer.ByteLen() {
+					targetByte = doc.Editor.Buffer.ByteLen()
+				}
+				doc.Editor.SetSelection(targetByte, targetByte)
+				cursorLine, _ := doc.Editor.Buffer.LineAt(targetByte)
+				editorSelection = &EditorSelection{
+					DocumentID:     string(r.app.Active),
+					EditorRevision: doc.Revision(),
+					AnchorByte:     uint64(targetByte),
+					CursorByte:     uint64(targetByte),
+					CursorLine:     uint64(cursorLine),
+				}
+			}
 		}
 	case "select_document":
 		if err := r.app.Dispatch(application.PresentationCommand{
@@ -585,11 +607,12 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			CursorLine:     uint64(cursorLine),
 		}
 	case "find_current":
-		found := r.app.FindCurrent(application.DocumentID(request.DocumentID), []byte(request.Query))
+		publishState = false
 		limit := request.MaxMatches
 		if limit == 0 {
 			limit = MaxFindMatches
 		}
+		found := r.app.FindCurrentLimited(application.DocumentID(request.DocumentID), []byte(request.Query), limit+1)
 		if len(found) > limit {
 			matchesTruncated = true
 			found = found[:limit]
@@ -602,6 +625,19 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 				Line:   match.Line,
 				Column: match.Column,
 			})
+		}
+	case "workspace_search_start":
+		if err := r.startWorkspaceSearch(request.SearchGeneration, request.Query); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "workspace_search_cancel":
+		publishState = r.cancelWorkspaceSearchGeneration(request.SearchGeneration)
+	case "workspace_search_take_page":
+		publishState = false
+		var err error
+		searchPage, err = r.takeWorkspaceSearchPage(request.SearchGeneration)
+		if err != nil {
+			return commandError(request, "stale_search_generation", err)
 		}
 	case "list_directory":
 		if !r.app.HasWorkspace {
@@ -639,6 +675,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response.CloseDecision = closeDecision
 	response.Matches = matches
 	response.MatchesTruncated = matchesTruncated
+	response.WorkspaceSearchPage = searchPage
 	return response
 }
 
@@ -744,6 +781,14 @@ func commandError(request CommandRequest, code string, err error) Response {
 func (r *Runtime) publishApplicationState() error {
 	snapshot := r.app.Snapshot()
 	state := stateFromApplication(r.revision+1, snapshot, r.presentationEnabled)
+	if search := r.workspaceSearch; search != nil {
+		state.WorkspaceSearchGeneration = search.generation
+		state.WorkspaceSearchSequence = search.sequence
+		state.WorkspaceSearchCount = search.count
+		state.WorkspaceSearchPageAvailable = search.page != nil
+		state.WorkspaceSearchDone = search.done
+		state.WorkspaceSearchTruncated = search.truncated
+	}
 	if err := validateStatePaths(state); err != nil {
 		return err
 	}

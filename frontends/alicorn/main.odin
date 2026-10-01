@@ -121,6 +121,32 @@ App :: struct {
 	workspace_mutation_dirty: bool,
 	workspace_mutation_queued: bool,
 	show_ignored_files:     bool,
+	workspace_search_mode:  bool,
+	workspace_search_query: string,
+	workspace_search_started_query: string,
+	workspace_search_started_root: string,
+	workspace_search_query_node: alicorn.Node_ID,
+	workspace_search_focus_pending: bool,
+	workspace_search_generation: u64,
+	workspace_search_view: Workspace_Search_View,
+	workspace_search_error: string,
+	workspace_search_selected: int,
+	workspace_search_results_owner: alicorn.Node_ID,
+	find_open:              bool,
+	find_query:             string,
+	find_query_node:        alicorn.Node_ID,
+	find_focus_pending:     bool,
+	find_select_query_pending: bool,
+	find_restore_pending:   bool,
+	find_restore_valid:     bool,
+	find_restore_document_id: string,
+	find_restore_anchor:    u64,
+	find_restore_caret:     u64,
+	find_restore_anchor_affinity: alicorn.Text_Affinity,
+	find_restore_caret_affinity: alicorn.Text_Affinity,
+	editor_focus_pending:   bool,
+	find_presentation:      Find_Presentation,
+	find_error:             string,
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
 	dialog_action:          string,
@@ -220,6 +246,7 @@ editor_render_table_cells :: proc(
 		text_style_spans: []alicorn.Text_Style_Span
 		if paint_current {
 			paint_spans = editor_presentation_spans_for_line(window, &cell, rt.scratch_allocator)
+			if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, rt.scratch_allocator) }
 			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, rt.scratch_allocator)
 		}
 		_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
@@ -285,6 +312,11 @@ build_app :: proc(
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
+	_ = find_capture_text_field(rt, app.find_query_node, &app.find_query)
+	_ = find_capture_text_field(rt, app.workspace_search_query_node, &app.workspace_search_query)
+	app.workspace_search_results_owner = 0
+	if app.find_open { find_refresh_if_needed(app, rt) }
+	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
 	clear(&app.editor_row_targets)
 	app.editor_input_anchor_node = 0
 	if app.backend.started {
@@ -356,8 +388,50 @@ build_app :: proc(
 		)
 		alicorn.split_first_begin(&ui, workspace_split)
 		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=COLOR_PANEL)
-		alicorn.text(&ui, "FILES")
-		ignored_change := alicorn.checkbox(
+		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=32, gap=6))
+		if alicorn.button(&ui, "Files", key=alicorn.key_string("workspace-panel-files"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{selected=!app.workspace_search_mode}) {
+			workspace_search_cancel_active(app)
+			app.workspace_search_mode = false
+			app.workspace_search_query_node = 0
+			app.editor_focus_pending = true
+		}
+		if alicorn.button(&ui, "Search", key=alicorn.key_string("workspace-panel-search"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{selected=app.workspace_search_mode}) {
+			app.workspace_search_mode = true
+			app.workspace_search_focus_pending = true
+		}
+		alicorn.container_end(&ui)
+		if app.workspace_search_mode {
+			alicorn.text(&ui, "WORKSPACE SEARCH")
+			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=34))
+			app.workspace_search_query_node = query_node
+			if app.workspace_search_error != "" { alicorn.text(&ui, app.workspace_search_error) }
+			else if !state.has_workspace { alicorn.text(&ui, "Open a workspace to search.") }
+			else if app.workspace_search_query == "" { alicorn.text(&ui, "Type to search workspace files.") }
+			else if app.workspace_search_view.done && app.workspace_search_view.count == 0 { alicorn.text(&ui, "No matches") }
+			else if app.workspace_search_view.done {
+				count_text := fmt.tprintf("%d matches", app.workspace_search_view.count)
+				if app.workspace_search_view.truncated { count_text = fmt.tprintf("%s · result limit reached", count_text) }
+				alicorn.text(&ui, count_text)
+			} else {
+				alicorn.text(&ui, fmt.tprintf("Searching… %d matches", app.workspace_search_view.count))
+			}
+			if len(app.workspace_search_view.results) > 0 {
+				search_list := alicorn.virtual_list_begin(&ui, len(app.workspace_search_view.results), 48, key=alicorn.key_string("scratchpad-workspace-search-results"), style=alicorn.layout_style(grow=1, clip=true), label="scratchpad-workspace-search-results", focusable=true)
+				app.workspace_search_results_owner = search_list.scroll.id
+				for position := search_list.first; position < search_list.last; position += 1 {
+					result := app.workspace_search_view.results[position]
+					label := fmt.tprintf("%s:%d\n%s", result.path, result.line+1, result.text)
+					if result.text_truncated { label = fmt.tprintf("%s…", label) }
+					if alicorn.button(&ui, label, key=alicorn.key_string(fmt.tprintf("workspace-search-result:%d:%d", app.workspace_search_view.generation, position)), style=alicorn.layout_style(.Row, height=46), state=alicorn.Button_State{selected=app.workspace_search_selected == position}, content_style=alicorn.button_content_style(.Start, padding_x=7)) {
+						app.workspace_search_selected = position
+						_ = workspace_search_activate_result(app, rt, position)
+					}
+				}
+				alicorn.virtual_list_end(&ui, search_list)
+			}
+		} else {
+			alicorn.text(&ui, "FILES")
+			ignored_change := alicorn.checkbox(
 			&ui,
 			"Show ignored files",
 			app.show_ignored_files,
@@ -376,6 +450,7 @@ build_app :: proc(
 		}
 		workspace_mutation_controls(app, &ui, rt)
 		build_workspace_tree(app, &ui, rt)
+		}
 		alicorn.container_end(&ui)
 		alicorn.split_first_end(&ui, workspace_split)
 		alicorn.split_divider(&ui, workspace_split)
@@ -399,6 +474,25 @@ build_app :: proc(
 			alicorn.text(&ui, "No documents open")
 		}
 		alicorn.container_end(&ui)
+		if app.find_open {
+			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=42, gap=8, padding=5, align=.Center), color=COLOR_SUBTLE)
+			alicorn.text(&ui, "Find")
+			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=32))
+			app.find_query_node = find_node
+			find_status := ""
+			if app.find_query == "" { find_status = "Type to find" }
+			else if app.find_error != "" { find_status = app.find_error }
+			else if len(app.find_presentation.matches) == 0 { find_status = "No matches" }
+			else {
+				find_status = fmt.tprintf("%d of %d", app.find_presentation.active_match+1, len(app.find_presentation.matches))
+				if app.find_presentation.truncated { find_status = fmt.tprintf("%s+", find_status) }
+			}
+			alicorn.text(&ui, find_status)
+			if alicorn.button(&ui, "↑", key=alicorn.key_string("find-previous"), style=alicorn.layout_style(.Row, width=36, height=30)) { _ = find_move_match(app, rt, -1) }
+			if alicorn.button(&ui, "↓", key=alicorn.key_string("find-next"), style=alicorn.layout_style(.Row, width=36, height=30)) { _ = find_move_match(app, rt, 1) }
+			if alicorn.button(&ui, "×", key=alicorn.key_string("find-close"), style=alicorn.layout_style(.Row, width=32, height=30)) { find_close_surface(app) }
+			alicorn.container_end(&ui)
+		}
 
 		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=COLOR_PANEL)
 		if active, found := find_document(state, state.active); found {
@@ -476,6 +570,7 @@ build_app :: proc(
 	}
 
 	alicorn.end_frame(&ui)
+	find_restore_after_frame(app, rt)
 	if app.editor_restore_scroll && app.editor_scroll_owner != 0 {
 		if app.editor_restore_vertical {
 			_ = alicorn.scroll_region_set_offset(rt, app.editor_scroll_owner, app.editor_restore_y, "restore per-document vertical view")
@@ -1029,7 +1124,10 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			paint_spans: []alicorn.Text_Paint_Span
 			paint_current := window_covers_view && presentation_visual &&
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
-			if paint_current { paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator) }
+			if paint_current {
+				paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator)
+				if app.find_open { paint_spans = find_merge_paint_spans(window, line, &app.find_presentation, paint_spans, rt.scratch_allocator) }
+			}
 			_ = alicorn.text_paint_spans(ui, line_node, paint_spans)
 			text_style_spans: []alicorn.Text_Style_Span
 			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, rt.scratch_allocator) }
@@ -1554,6 +1652,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 			alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
 		}
 	}
+	_ = workspace_search_sync_wake(app, rt)
 	window_result, window_found := bridge.visible_window_lane_take(&app.visible_window_lane)
 	if window_found {
 		installed := false
@@ -2033,10 +2132,63 @@ request_file_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, kind: host.File_Dia
 
 application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
 	app := cast(^App)state
+	if key == .Find {
+		find_open_surface(app)
+		alicorn.invalidate_root(rt, "Scratchpad Find opened")
+		return true
+	}
+	if key == .Workspace_Search {
+		if app.find_open { find_close_surface(app) }
+		app.workspace_search_mode = true
+		app.workspace_search_focus_pending = true
+		app.editor_focus_pending = false
+		alicorn.invalidate_root(rt, "Scratchpad Workspace Search opened")
+		return true
+	}
+	if app.workspace_search_mode && rt.focused == app.workspace_search_query_node {
+		#partial switch key {
+		case .Up:
+			return workspace_search_move_selection(app, rt, -1)
+		case .Down:
+			return workspace_search_move_selection(app, rt, 1)
+		case:
+		}
+	}
+	if key == .Find_Next {
+		return find_move_match(app, rt, 1)
+	}
+	if key == .Find_Previous {
+		return find_move_match(app, rt, -1)
+	}
 	if key == .Escape && app.close_document_id != "" {
 		clear_close_prompt(app)
 		deferred_actions_run(app, rt)
 		alicorn.invalidate_root(rt, "dirty close cancelled by Escape")
+		return true
+	}
+	if key == .Escape && app.find_open {
+		find_close_surface(app)
+		alicorn.invalidate_root(rt, "Scratchpad Find closed")
+		return true
+	}
+	if key == .Escape && app.workspace_search_mode {
+		workspace_search_cancel_active(app)
+		app.workspace_search_mode = false
+		app.workspace_search_query_node = 0
+		app.editor_focus_pending = true
+		alicorn.invalidate_root(rt, "Scratchpad Workspace Search closed")
+		return true
+	}
+	if key == .Return && app.find_open && rt.focused == app.find_query_node {
+		return find_move_match(app, rt, 1)
+	}
+	if key == .Return && app.workspace_search_mode && rt.focused == app.workspace_search_query_node {
+		if len(app.workspace_search_view.results) > 0 {
+			index := app.workspace_search_selected
+			if index < 0 || index >= len(app.workspace_search_view.results) { index = 0 }
+			return workspace_search_activate_result(app, rt, index)
+		}
+		if !app.workspace_search_view.done { workspace_search_start_query(app, rt) }
 		return true
 	}
 	if key == .Return && app.editor_scroll_owner != 0 && rt.focused == app.editor_scroll_owner {
@@ -3913,11 +4065,21 @@ application_stop :: proc(state: rawptr) {
 	app.editor_window_error = ""
 	editor_window_rejection_clear(app)
 	workspace_mutation_clear(app)
+	find_presentation_destroy(&app.find_presentation, context.allocator)
+	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
+	find_discard_saved_selection(app)
+	find_set_message(&app.find_query, "")
+	find_set_message(&app.find_error, "")
+	find_set_message(&app.workspace_search_query, "")
+	find_set_message(&app.workspace_search_started_query, "")
+	find_set_message(&app.workspace_search_started_root, "")
+	find_set_message(&app.workspace_search_error, "")
 }
 
 main :: proc() {
 	app: App
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.workspace_search_selected = -1
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)

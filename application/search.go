@@ -15,6 +15,19 @@ type CurrentMatch struct {
 }
 
 func (a *Application) FindCurrent(id DocumentID, query []byte) []CurrentMatch {
+	return a.findCurrent(id, query, 0)
+}
+
+// FindCurrentLimited searches the authoritative open-document buffer and
+// retains at most limit source-byte matches for interactive Find.
+func (a *Application) FindCurrentLimited(id DocumentID, query []byte, limit int) []CurrentMatch {
+	if limit <= 0 {
+		return nil
+	}
+	return a.findCurrent(id, query, limit)
+}
+
+func (a *Application) findCurrent(id DocumentID, query []byte, limit int) []CurrentMatch {
 	doc := a.Documents[id]
 	if doc == nil || len(query) == 0 {
 		return nil
@@ -42,6 +55,9 @@ func (a *Application) FindCurrent(id DocumentID, query []byte) []CurrentMatch {
 			Start: at, End: at + len(query),
 			Line: line, Column: at - lineStart,
 		})
+		if limit > 0 && len(matches) >= limit {
+			break
+		}
 		consumed = at + len(query)
 		for i := at; i < consumed; i++ {
 			if data[i] == '\n' {
@@ -60,9 +76,13 @@ func (a *Application) SearchWorkspace(ctx context.Context, query []byte) <-chan 
 		close(results)
 		return results
 	}
+	// Capture the workspace value before starting the worker. Opening a
+	// different workspace may replace Application.Workspace while this
+	// cancellable search is still draining.
+	workspaceSnapshot := a.Workspace
 	go func() {
 		defer close(results)
-		_ = a.Workspace.Search(ctx, query, func(result workspace.SearchResult) bool {
+		_ = workspaceSnapshot.Search(ctx, query, func(result workspace.SearchResult) bool {
 			select {
 			case results <- result:
 				return true
