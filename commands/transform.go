@@ -1027,12 +1027,16 @@ func navigateTable(request Request, previous, enter bool) Outcome {
 		return Outcome{Status: ResultUnavailable}
 	}
 	tableSource := append([]byte(nil), request.Source[table.StartByte:table.EndByte]...)
-	formatted, ok := md.FormatTable(request.Source, table)
-	if !ok {
-		return Outcome{Status: ResultUnavailable}
+	// Formatting is a separate, stricter operation: it refuses tables whose
+	// rows contain more cells than the header schema. Navigation can still use
+	// the parser's source ranges for those tables, so keep the original bytes
+	// and continue traversing instead of turning a formatting refusal into an
+	// unavailable Tab command.
+	formatted, formatOK := md.FormatTable(request.Source, table)
+	formatChanged := formatOK && !bytes.Equal(formatted, tableSource)
+	if formatOK {
+		tableSource = formatted
 	}
-	formatChanged := !bytes.Equal(formatted, tableSource)
-	tableSource = formatted
 	local := md.Project(tableSource, 1)
 	if len(local.Tables) == 0 {
 		return Outcome{Status: ResultUnavailable}
