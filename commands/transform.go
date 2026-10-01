@@ -1022,7 +1022,7 @@ func navigateTable(request Request, previous, enter bool) Outcome {
 	if !ok {
 		return Outcome{Status: ResultUnavailable}
 	}
-	row, column, ok := projectedTableCell(table, request.Cursor)
+	row, column, ok := projectedTableNavigationCell(request.Source, table, request.Cursor)
 	if !ok {
 		return Outcome{Status: ResultUnavailable}
 	}
@@ -1098,20 +1098,91 @@ func projectedTableAt(tables []document.TableProjection, cursor int) (document.T
 	return document.TableProjection{}, false
 }
 
-func projectedTableCell(table document.TableProjection, cursor int) (int, int, bool) {
+func projectedTableNavigationCell(source []byte, table document.TableProjection, cursor int) (int, int, bool) {
 	rowNumber := 0
 	for _, row := range table.Rows {
 		if row.Delimiter {
 			continue
 		}
-		for column, cell := range row.Cells {
-			if cursor >= cell.StartByte && cursor <= cell.EndByte {
+		if cursor < row.StartByte || cursor > row.EndByte || len(row.Cells) == 0 {
+			rowNumber++
+			continue
+		}
+
+		leadingPipe := len(row.Pipes) > 0 && tableNavigationWhitespace(source, row.StartByte, row.Pipes[0].StartByte)
+		trailingPipe := len(row.Pipes) > 0 && tableNavigationWhitespace(source, row.Pipes[len(row.Pipes)-1].EndByte, row.EndByte)
+		for pipeIndex, pipe := range row.Pipes {
+			if cursor != pipe.StartByte {
+				continue
+			}
+			if leadingPipe && pipeIndex == 0 {
+				return rowNumber, 0, true
+			}
+			if trailingPipe && pipeIndex == len(row.Pipes)-1 {
+				return rowNumber, len(row.Cells) - 1, true
+			}
+			// A caret on an interior separator belongs to the cell on its right.
+			column := pipeIndex
+			if !leadingPipe {
+				column++
+			}
+			if column >= len(row.Cells) {
+				column = len(row.Cells) - 1
+			}
+			return rowNumber, column, true
+		}
+
+		// Cell ranges intentionally trim padding for semantic consumers. For
+		// caret navigation, use the wider pipe-delimited slots so spaces around
+		// the text still belong to their visible cell.
+		for column := range row.Cells {
+			slotStart := row.StartByte
+			if leadingPipe {
+				if column < len(row.Pipes) {
+					slotStart = row.Pipes[column].EndByte
+				}
+			} else if column > 0 {
+				pipeIndex := column - 1
+				if pipeIndex < len(row.Pipes) {
+					slotStart = row.Pipes[pipeIndex].EndByte
+				}
+			}
+
+			slotEnd := row.EndByte
+			pipeIndex := column
+			if leadingPipe {
+				pipeIndex++
+			}
+			if pipeIndex < len(row.Pipes) {
+				slotEnd = row.Pipes[pipeIndex].StartByte
+			}
+			if cursor >= slotStart && cursor < slotEnd {
 				return rowNumber, column, true
 			}
+		}
+		if cursor == row.EndByte || (trailingPipe && cursor >= row.Pipes[len(row.Pipes)-1].EndByte) {
+			return rowNumber, len(row.Cells) - 1, true
+		}
+		if leadingPipe && cursor < row.Pipes[0].EndByte {
+			return rowNumber, 0, true
 		}
 		rowNumber++
 	}
 	return 0, 0, false
+}
+
+func tableNavigationWhitespace(source []byte, start, end int) bool {
+	if start < 0 || end < start || end > len(source) {
+		return false
+	}
+	for _, value := range source[start:end] {
+		switch value {
+		case ' ', '\t', '\n', '\v', '\f', '\r':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func navigationRows(table document.TableProjection) []document.TableRow {
