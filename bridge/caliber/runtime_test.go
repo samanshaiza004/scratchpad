@@ -15,6 +15,16 @@ import (
 	"scratchpad/workspace"
 )
 
+type runtimeTestTrasher struct {
+	paths []string
+	err   error
+}
+
+func (t *runtimeTestTrasher) Trash(path string) error {
+	t.paths = append(t.paths, path)
+	return t.err
+}
+
 func TestLifecycleDeterminism(t *testing.T) {
 	runtime := newStartedRuntime(t, "")
 
@@ -70,6 +80,60 @@ func TestLifecycleDeterminism(t *testing.T) {
 	afterStop := decodeResponse(t, runtime.Pump())
 	if afterStop.OK || afterStop.Outcome.Code != "not_running" || afterStop.Lifecycle != lifecycleStopped {
 		t.Fatalf("call after stop response = %+v", afterStop)
+	}
+}
+
+func TestTrashDirtyUsesTypedDecisionWithoutChangingFilesystemOrDocuments(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.txt")
+	writeFile(t, path, "note")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+	trasher := &runtimeTestTrasher{}
+	runtime.app.SetTrasher(trasher)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 2, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	document := state.Documents[0]
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 3, BasedOnRevision: state.ApplicationRev,
+		Command: "replace_document", DocumentID: document.ID, EditorRevision: document.EditorRevision,
+		StartByte: 4, EndByte: 4, Replacement: []int{'!'},
+	}))
+	edited := decodeResponse(t, runtime.Pump())
+	if !edited.OK {
+		t.Fatalf("edit response = %+v", edited)
+	}
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 4, BasedOnRevision: state.ApplicationRev,
+		Command: "trash_path", Path: "note.txt",
+	}))
+	trash := decodeResponse(t, runtime.Pump())
+	if trash.OK || trash.Outcome.Code != "trash_requires_decision" {
+		t.Fatalf("dirty trash response = %+v, want typed trash_requires_decision", trash)
+	}
+	if len(trasher.paths) != 0 || runtime.app.Documents[runtime.app.Active] == nil {
+		t.Fatal("dirty trash decision must not invoke the trash adapter or close the open document")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("dirty trash decision changed the file: %v", err)
+	}
+}
+
+func TestRuntimeStartsWithPlatformTrashAdapter(t *testing.T) {
+	runtime := newStartedRuntime(t, "")
+	defer stopRuntime(t, runtime)
+	if runtime.app.Trasher == nil {
+		t.Fatal("Caliber runtime must install the platform trash adapter")
 	}
 }
 

@@ -55,6 +55,7 @@ func (r *Runtime) Start(input []byte) []byte {
 		return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "caliber_unavailable", err.Error(), true))
 	}
 	app := application.New(nil)
+	app.SetTrasher(workspace.NewOSTrasher())
 	if request.WorkspacePath != "" {
 		if err := app.OpenWorkspace(request.WorkspacePath); err != nil {
 			caliber.close()
@@ -389,6 +390,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 	case "trash_path":
 		if err := r.app.TrashPath(request.Path, request.Discard); err != nil {
+			if errors.Is(err, application.ErrDirty) {
+				return commandError(request, "trash_requires_decision", err)
+			}
 			return commandError(request, "application_error", err)
 		}
 	case "open_path":

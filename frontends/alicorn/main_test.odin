@@ -1586,6 +1586,204 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	testing.expect(t, active_found && strings.contains(active.path, "avar.odin"), "the shared Go backend should publish avar as the active document")
 }
 
+@(test)
+test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus :: proc(t: ^testing.T) {
+	sync.mutex_lock(&backend_integration_test_mutex)
+	defer sync.mutex_unlock(&backend_integration_test_mutex)
+	workspace, workspace_error := os.make_directory_temp("", "scratchpad-alicorn-move-*", context.temp_allocator)
+	if workspace_error != nil { testing.expect(t, false, "could not create a temporary workspace for mutation migration"); return }
+	defer _ = os.remove_all(workspace)
+	fixture_directories := [?]string{"src", "src/nested", "archive"}
+	for directory in fixture_directories {
+		if err := os.make_directory(fmt.tprintf("%s/%s", workspace, directory)); err != nil {
+			testing.expect(t, false, fmt.tprintf("could not create mutation fixture directory %s", directory))
+			return
+		}
+	}
+	first_path := fmt.tprintf("%s/src/nested/first.txt", workspace)
+	second_path := fmt.tprintf("%s/src/nested/second.txt", workspace)
+	stable_path := fmt.tprintf("%s/stable.txt", workspace)
+	if err := os.write_entire_file_from_string(first_path, "first\n"); err != nil { testing.expect(t, false, "could not create first open fixture"); return }
+	if err := os.write_entire_file_from_string(second_path, "second\n"); err != nil { testing.expect(t, false, "could not create second open fixture"); return }
+	if err := os.write_entire_file_from_string(stable_path, "stable\n"); err != nil { testing.expect(t, false, "could not create unaffected sibling fixture"); return }
+	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
+	if !found_library { testing.expect(t, false, "workspace mutation integration test requires the staged shared backend"); return }
+	defer delete(backend_library, context.temp_allocator)
+	app: App
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		deferred_actions_clear(&app)
+		delete(app.deferred_actions)
+	}
+	loaded, load_message := bridge.backend_load(&app.backend, backend_library)
+	testing.expect(t, loaded, fmt.tprintf("shared backend should load for workspace mutation: %s", load_message))
+	if !loaded { return }
+	started, start_message := bridge.backend_start(&app.backend, workspace, tree_test_wake, nil, context.allocator)
+	testing.expect(t, started, fmt.tprintf("shared backend should start for workspace mutation: %s", start_message))
+	if !started { return }
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 600})
+	defer tree_test_cleanup(t, &app, &rt)
+	defer editor_views_destroy(&app.editor_views)
+	tree_sync_workspace(&app, &rt)
+	fixture_files := [?]string{first_path, second_path}
+	for path in fixture_files {
+		response := bridge.backend_command(&app.backend, "open_path", path=path)
+		if !response.ok { testing.expect(t, false, fmt.tprintf("open mutation fixture failed: %s", response.message)) }
+		bridge.backend_command_result_destroy(&response, context.allocator)
+	}
+	_ = tree_load_directory(&app, "src", true)
+	nested_source_path := tree_normalize_separators("src/nested", tree_preferred_separator(&app))
+	_ = tree_load_directory(&app, nested_source_path, true)
+	alicorn.invalidate_root(&rt, "describe workspace before path mutation")
+	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "workspace tree should build before path mutation"); return }
+	stable_id, stable_found := test_workspace_tree_row(&rt, "stable.txt")
+	testing.expect(t, stable_found, "unaffected root sibling should be present before the move")
+	tree_scroll_owner := app.tree_scroll_owner
+	for document in app.backend.state.documents {
+		index, ok := editor_view_ensure(&app.editor_views, document.id)
+		if !ok { testing.expect(t, false, "could not allocate a per-document editor view"); return }
+		view := &app.editor_views[index]
+		if strings.contains(document.path, "first.txt") {
+			view.caret_byte, view.selection_anchor, view.scroll_y = 2, 1, 37
+		} else {
+			view.caret_byte, view.selection_anchor, view.scroll_y = 5, 3, 91
+		}
+	}
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	tree_flatten_directory(&app, "", 0, &rows)
+	for row, index in rows {
+		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "src/nested/first.txt") {
+			tree_set_focused_row(&app, &rt, row, index)
+			break
+		}
+	}
+	delete(rows)
+	old_ids := make([dynamic]string, 0, allocator=context.temp_allocator)
+	for document in app.backend.state.documents {
+		id, clone_error := strings.clone(document.id, context.temp_allocator)
+		if clone_error == nil { append(&old_ids, id) }
+	}
+	workspace_mutation_execute(&app, &rt, .Move, "src", "", "archive/src", true, false, app.backend.state.workspace_root)
+	for id in old_ids {
+		testing.expect(t, editor_view_find(app.editor_views[:], id) < 0, "old backend document identity should be replaced after a successful directory move")
+	}
+	for document in app.backend.state.documents {
+		view_index := editor_view_find(app.editor_views[:], document.id)
+		testing.expect(t, view_index >= 0, "each open descendant must retain its Alicorn view under the backend-assigned new document ID")
+		if view_index < 0 { continue }
+		view := app.editor_views[view_index]
+		if strings.contains(document.path, "first.txt") {
+			testing.expect(t, view.caret_byte == 2 && view.selection_anchor == 1 && view.scroll_y == 37, fmt.tprintf("the first document's independent caret, selection, and scroll state should migrate (caret=%d anchor=%d y=%v)", view.caret_byte, view.selection_anchor, view.scroll_y))
+		} else if strings.contains(document.path, "second.txt") {
+			testing.expect(t, view.caret_byte == 5 && view.selection_anchor == 3 && view.scroll_y == 91, "the second document's independent caret, selection, and scroll state should migrate")
+		} else {
+			testing.expect(t, false, fmt.tprintf("unexpected moved document path %s", document.path))
+		}
+	}
+	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "archive/src/nested/first.txt"), fmt.tprintf("tree focus should follow a moved descendant by component-aware path remapping (got %s)", app.tree_focused_path))
+	archive_path := tree_normalize_separators("archive/src", tree_preferred_separator(&app))
+	nested_path := tree_normalize_separators("archive/src/nested", tree_preferred_separator(&app))
+	archive_index := tree_directory_index(&app, archive_path)
+	nested_index := tree_directory_index(&app, nested_path)
+	testing.expect(t, archive_index >= 0 && app.tree_directories[archive_index].expanded, "the moved directory's expanded state should be preserved")
+	testing.expect(t, nested_index >= 0 && app.tree_directories[nested_index].expanded, "the moved nested directory's expanded state should be preserved")
+	testing.expect(t, app.tree_scroll_owner == tree_scroll_owner, "path mutation should preserve the durable workspace-tree scroll owner")
+	alicorn.invalidate_root(&rt, "render migrated workspace tree")
+	if test_render_workspace_tree(t, &app, &rt) {
+		new_stable_id, still_found := test_workspace_tree_row(&rt, "stable.txt")
+		testing.expect(t, stable_found && still_found && new_stable_id == stable_id, "unaffected sibling retained identity should survive path mutation")
+		_, moved_file_visible := test_workspace_tree_row(&rt, "archive/src/nested/first.txt")
+		testing.expect(t, moved_file_visible, "moved descendant should remain visible after expansion and focus restoration")
+	}
+	workspace_mutation_execute(&app, &rt, .Create_Folder, "", "notes", "", false, false, app.backend.state.workspace_root)
+	testing.expect(t, tree_directory_has_entry(&app, "", "notes"), "new folder should appear after refreshing its parent listing")
+	notes_path := tree_normalize_separators("notes", tree_preferred_separator(&app))
+	workspace_mutation_execute(&app, &rt, .Create_File, notes_path, "new.txt", "", false, false, app.backend.state.workspace_root)
+	created_document: ^bridge.State_Document
+	for &document in app.backend.state.documents {
+		if strings.contains(document.path, "notes") && strings.contains(document.path, "new.txt") { created_document = &document; break }
+	}
+	testing.expect(t, created_document != nil, "new file should use the normal create-and-open document flow")
+	if created_document != nil {
+		view_index, view_ok := editor_view_ensure(&app.editor_views, created_document.id)
+		testing.expect(t, view_ok, "created document should get frontend-local view state")
+		if view_ok {
+			app.editor_views[view_index].caret_byte = 3
+			app.editor_views[view_index].selection_anchor = 1
+			app.editor_views[view_index].scroll_y = 23
+		}
+		old_created_id, id_clone_error := strings.clone(created_document.id, context.temp_allocator)
+		new_file_path := tree_join_relative_path(notes_path, "new.txt")
+		workspace_mutation_execute(&app, &rt, .Rename, new_file_path, "renamed.txt", "", false, false, app.backend.state.workspace_root)
+		renamed_document: ^bridge.State_Document
+		for &document in app.backend.state.documents {
+			if strings.contains(document.path, "notes") && strings.contains(document.path, "renamed.txt") { renamed_document = &document; break }
+		}
+		testing.expect(t, renamed_document != nil, "rename should publish the new backend-owned document identity")
+		if renamed_document != nil {
+			renamed_view_index := editor_view_find(app.editor_views[:], renamed_document.id)
+			testing.expect(t, renamed_view_index >= 0, "rename should migrate the created file's Alicorn view before pruning")
+			if renamed_view_index >= 0 {
+				renamed_view := app.editor_views[renamed_view_index]
+				testing.expect(t, renamed_view.caret_byte == 3 && renamed_view.selection_anchor == 1 && renamed_view.scroll_y == 23, "rename should preserve the created file's local caret, selection, and scroll state")
+			}
+		}
+		if id_clone_error == nil { delete(old_created_id, context.temp_allocator) }
+	}
+	workspace_mutation_begin(&app, &rt, .Create_File, notes_path, false)
+	workspace_mutation_set_name(&app, "renamed.txt")
+	workspace_mutation_submit(&app, &rt, false)
+	testing.expect(t, app.workspace_mutation_kind == .Create_File && app.workspace_mutation_error != "", "a destination collision should keep the operation UI open with a useful error")
+	workspace_mutation_cancel(&app, &rt)
+	workspace_mutation_begin(&app, &rt, .Create_File, notes_path, false)
+	workspace_mutation_set_name(&app, "renamed.txt")
+	append(&app.editor_edits, Editor_Edit_Intent{})
+	workspace_mutation_submit(&app, &rt, false)
+	testing.expect(t, app.workspace_mutation_queued && app.workspace_mutation_kind == .Create_File && len(app.deferred_actions) == 1,
+		"a workspace mutation should remain visible and cancellable while it waits behind pending editor edits")
+	editor_remove_edit(&app, 0)
+	deferred_actions_run(&app, &rt)
+	testing.expect(t, !app.workspace_mutation_queued && app.workspace_mutation_kind == .Create_File && app.workspace_mutation_error != "",
+		"a queued filesystem failure should return to its still-open form with a useful error")
+	workspace_mutation_cancel(&app, &rt)
+	trash_document: ^bridge.State_Document
+	for &document in app.backend.state.documents {
+		if strings.contains(document.path, "renamed.txt") { trash_document = &document; break }
+	}
+	if trash_document != nil {
+		dirty_edit := bridge.backend_command(
+			&app.backend,
+			"replace_document",
+			document_id=trash_document.id,
+			editor_revision=trash_document.editor_revision,
+			start_byte=0,
+			end_byte=0,
+			replacement=[]int{'x'},
+		)
+		testing.expect(t, dirty_edit.ok, "a temporary open document should become dirty for the queued-trash decision test")
+		bridge.backend_command_result_destroy(&dirty_edit, context.allocator)
+		trash_relative := tree_join_relative_path(notes_path, "renamed.txt")
+		append(&app.editor_edits, Editor_Edit_Intent{})
+		workspace_mutation_begin(&app, &rt, .Trash, trash_relative, false)
+		workspace_mutation_submit(&app, &rt, false)
+		editor_remove_edit(&app, 0)
+		deferred_actions_run(&app, &rt)
+		testing.expect(t, app.workspace_mutation_kind == .Trash && app.workspace_mutation_dirty && !app.workspace_mutation_queued &&
+			workspace_mutation_dirty_document_count(&app) == 1,
+			"a deferred dirty-trash rejection should restore the correct path and offer the explicit save/discard/cancel decision")
+		workspace_mutation_cancel(&app, &rt)
+	} else {
+		testing.expect(t, false, "renamed fixture should remain open for the dirty-trash decision test")
+	}
+	for &id in old_ids { delete(id, context.temp_allocator) }
+	delete(old_ids)
+}
+
 test_render_workspace_tree :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return false }

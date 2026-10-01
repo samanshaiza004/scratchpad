@@ -53,6 +53,7 @@ Deferred_Action_Kind :: enum {
 	Select_Document,
 	Close_Document,
 	Open_Path,
+	Workspace_Mutation,
 	Close_After_Save,
 	Close_With_Discard,
 }
@@ -61,7 +62,13 @@ Deferred_Action :: struct {
 	kind:        Deferred_Action_Kind,
 	value:       string,
 	path:        string,
+	relative_path: string,
+	name:        string,
 	disposition: string,
+	workspace_root: string,
+	workspace_mutation_kind: Workspace_Mutation_Kind,
+	source_is_dir: bool,
+	discard:     bool,
 }
 
 Shutdown_Intent :: enum {None, Quit_Application, Stop_Backend}
@@ -105,6 +112,14 @@ App :: struct {
 	tree_directories:       [dynamic]Tree_Directory,
 	tree_focused_path:      string,
 	tree_focused_is_dir:    bool,
+	workspace_mutation_kind: Workspace_Mutation_Kind,
+	workspace_mutation_source: string,
+	workspace_mutation_name: string,
+	workspace_mutation_error: string,
+	workspace_mutation_name_node: alicorn.Node_ID,
+	workspace_mutation_source_is_dir: bool,
+	workspace_mutation_dirty: bool,
+	workspace_mutation_queued: bool,
 	show_ignored_files:     bool,
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
@@ -269,6 +284,7 @@ build_app :: proc(
 	app := cast(^App)state
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
+	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
 	clear(&app.editor_row_targets)
 	app.editor_input_anchor_node = 0
 	if app.backend.started {
@@ -358,6 +374,7 @@ build_app :: proc(
 		if alicorn.button(&ui, "Refresh Workspace", key=alicorn.key_string("sidebar-refresh"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=!action_enabled(state, ACTION_WORKSPACE_REFRESH)}) {
 			dispatch_action(app, rt, ACTION_WORKSPACE_REFRESH)
 		}
+		workspace_mutation_controls(app, &ui, rt)
 		build_workspace_tree(app, &ui, rt)
 		alicorn.container_end(&ui)
 		alicorn.split_first_end(&ui, workspace_split)
@@ -454,6 +471,8 @@ build_app :: proc(
 		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
 		alicorn.modal_overlay_end(&ui)
+	} else if app.workspace_mutation_kind != .None {
+		workspace_mutation_build_dialog(app, &ui, rt)
 	}
 
 	alicorn.end_frame(&ui)
@@ -1881,6 +1900,12 @@ deferred_action_enqueue :: proc(
 	value: string = "",
 	path: string = "",
 	disposition: string = "",
+	relative_path: string = "",
+	name: string = "",
+	workspace_mutation_kind: Workspace_Mutation_Kind = .None,
+	source_is_dir := false,
+	discard := false,
+	workspace_root := "",
 ) -> bool {
 	if app == nil || len(app.deferred_actions) >= MAX_DEFERRED_ACTIONS { return false }
 	action := Deferred_Action{kind=kind}
@@ -1894,6 +1919,24 @@ deferred_action_enqueue :: proc(
 		if err != nil { deferred_action_destroy(&action); return false }
 		action.path = path_copy
 	}
+	if len(relative_path) > 0 {
+		path_copy, err := strings.clone(relative_path, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.relative_path = path_copy
+	}
+	if len(name) > 0 {
+		name_copy, err := strings.clone(name, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.name = name_copy
+	}
+	if len(workspace_root) > 0 {
+		root_copy, err := strings.clone(workspace_root, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.workspace_root = root_copy
+	}
+	action.workspace_mutation_kind = workspace_mutation_kind
+	action.source_is_dir = source_is_dir
+	action.discard = discard
 	if len(disposition) > 0 {
 		disposition_copy, err := strings.clone(disposition, context.allocator)
 		if err != nil { deferred_action_destroy(&action); return false }
@@ -1907,7 +1950,10 @@ deferred_action_destroy :: proc(action: ^Deferred_Action) {
 	if action == nil { return }
 	if len(action.value) > 0 { delete(action.value, context.allocator) }
 	if len(action.path) > 0 { delete(action.path, context.allocator) }
+	if len(action.relative_path) > 0 { delete(action.relative_path, context.allocator) }
+	if len(action.name) > 0 { delete(action.name, context.allocator) }
 	if len(action.disposition) > 0 { delete(action.disposition, context.allocator) }
+	if len(action.workspace_root) > 0 { delete(action.workspace_root, context.allocator) }
 	action^ = Deferred_Action{}
 }
 
@@ -1944,13 +1990,26 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 				handle_command_result(app, rt, &response)
 				bridge.backend_command_result_destroy(&response, context.allocator)
 			}
+		case .Workspace_Mutation:
+			app.workspace_mutation_queued = false
+			workspace_mutation_execute(
+				app,
+				rt,
+				action.workspace_mutation_kind,
+				action.path,
+				action.name,
+				action.relative_path,
+				action.source_is_dir,
+				action.discard,
+				action.workspace_root,
+			)
 		case .Close_After_Save:
 			close_after_save(app, rt)
 		case .Close_With_Discard:
 			close_with_discard(app, rt)
 		}
 		deferred_action_destroy(&action)
-		if app.dialog_action != "" || app.close_document_id != "" { break }
+		if app.dialog_action != "" || app.close_document_id != "" || app.workspace_mutation_kind != .None { break }
 	}
 }
 
@@ -3853,6 +3912,7 @@ application_stop :: proc(state: rawptr) {
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 	app.editor_window_error = ""
 	editor_window_rejection_clear(app)
+	workspace_mutation_clear(app)
 }
 
 main :: proc() {
