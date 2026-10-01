@@ -145,6 +145,107 @@ editor_window_rejection_set :: proc(app: ^App, request: bridge.Visible_Window_Re
 	return true
 }
 
+editor_render_table_pipe :: proc(ui: ^alicorn.UI, document_id: string, logical_line: u64, pipe_index: int, row_height: f32) {
+	if ui == nil { return }
+	pipe := alicorn.text(
+		ui,
+		"|",
+		key=alicorn.key_string(fmt.tprintf("scratchpad-table-pipe:%s:%d:%d", document_id, logical_line, pipe_index)),
+		style=alicorn.layout_style(.Row, width=10, height=row_height, align=.Start),
+		font=.Monospace,
+		text_style=alicorn.Text_Style{overflow=.Clip},
+	)
+	paint := [?]alicorn.Text_Paint_Span{{
+		start=0,
+		end=1,
+		color=alicorn.Color{0.57, 0.63, 0.74, 1},
+		color_set=true,
+	}}
+	_ = alicorn.text_paint_spans(ui, pipe, paint[:])
+}
+
+editor_render_table_cells :: proc(
+	ui: ^alicorn.UI,
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	document_id: string,
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	table: Editor_Table_Row_Layout,
+	row_height, wrap_width: f32,
+	scroll_owner: alicorn.Node_ID,
+	window_matches, paint_current: bool,
+) {
+	if ui == nil || app == nil || rt == nil || view == nil || window == nil || line == nil || !table.ok || !table.wraps { return }
+	alicorn.container_begin(
+		ui,
+		.Container,
+		label="scratchpad-table-visual-row",
+		key=alicorn.key_string(fmt.tprintf("scratchpad-table-row:%s:%d", document_id, line.logical_line)),
+		style=alicorn.layout_style(.Row, width=wrap_width, height=row_height, gap=0, align=.Start, clip=true),
+	)
+	pipe_index := 0
+	if table.leading_pipe && pipe_index < len(table.pipes) {
+		editor_render_table_pipe(ui, document_id, line.logical_line, pipe_index, row_height)
+		pipe_index += 1
+	}
+	for &cell, cell_index in table.cells {
+		cell_node := alicorn.text(
+			ui,
+			cell.display,
+			key=alicorn.key_string(fmt.tprintf("scratchpad-table-cell:%s:%d:%d", document_id, line.logical_line, cell_index)),
+			style=alicorn.layout_style(.Row, width=table.widths[cell_index], height=row_height, align=.Start, clip=true),
+			font=.Monospace,
+			text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Wrap},
+		)
+		paint_spans: []alicorn.Text_Paint_Span
+		text_style_spans: []alicorn.Text_Style_Span
+		if paint_current {
+			paint_spans = editor_presentation_spans_for_line(window, &cell, rt.scratch_allocator)
+			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, rt.scratch_allocator)
+		}
+		_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
+		_ = alicorn.text_style_spans(ui, cell_node, text_style_spans)
+		anchor_source := min(max(view.selection_anchor, cell.source_start), cell.source_end)
+		caret_source := min(max(view.caret_byte, cell.source_start), cell.source_end)
+		anchor_display := editor_source_to_display(&cell, anchor_source)
+		caret_display := editor_source_to_display(&cell, caret_source)
+		show_caret := window_matches && rt.focused == scroll_owner && view.caret_byte >= cell.source_start && view.caret_byte <= cell.source_end
+		if !window_matches { anchor_display = caret_display }
+		_ = alicorn.text_interaction(
+			ui,
+			cell_node,
+			alicorn.Text_Position{byte=anchor_display, affinity=view.anchor_affinity},
+			alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
+			show_caret,
+		)
+		append(&app.editor_row_targets, Editor_Row_Target{
+			node=cell_node,
+			logical_line=line.logical_line,
+			cell_start=cell.source_start,
+			cell_end=cell.source_end,
+			cell_index=cell_index,
+			cell_width=table.widths[cell_index],
+			cell_origin_x=table.origins[cell_index],
+			is_cell=true,
+		})
+		if window_matches && rt.focused == scroll_owner && show_caret {
+			app.editor_input_anchor_node = cell_node
+			app.editor_input_anchor_byte = caret_display
+			app.editor_input_anchor_affinity = view.caret_affinity
+		}
+		if cell_index+1 < len(table.cells) && pipe_index < len(table.pipes) {
+			editor_render_table_pipe(ui, document_id, line.logical_line, pipe_index, row_height)
+			pipe_index += 1
+		}
+	}
+	if table.trailing_pipe && pipe_index < len(table.pipes) {
+		editor_render_table_pipe(ui, document_id, line.logical_line, pipe_index, row_height)
+	}
+	alicorn.container_end(ui)
+}
+
 editor_metadata_result_should_suppress_retry :: proc(
 	request: bridge.Visible_Window_Request,
 	document: bridge.State_Document,
@@ -751,6 +852,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			gutter_width,
 			document.language,
 			presentation_visual,
+			wrap_width,
 		)
 	}
 	content_width := max(viewport_width, visible_intrinsic_width)
@@ -801,7 +903,10 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, position)
 		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT }
 		if line, found := editor_window_line(window, line_number); window_available && found {
-			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_visual)
+			table_row := editor_table_row_layout(window, line, wrap_width)
+			table_wrap_active := table_row.ok && table_row.wraps && !view.preedit_active && !view.preedit_recoverable
+			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_visual, wrap_width)
+			if editor_table_line_is_projected(window, line) && !table_wrap_active { line_wraps = false }
 			row_presentation_current := document.language == "markdown" && presentation_visual &&
 			                           !view.preedit_active && !view.preedit_recoverable
 			markdown_row := editor_markdown_row_presentation(window, line, row_presentation_current)
@@ -847,6 +952,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 					layout_scroll_offset_x=-list.scroll.offset_x,
 				)
 			}
+			if table_wrap_active {
+				paint_table := window_covers_view && presentation_visual &&
+				               window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
+				editor_render_table_cells(
+					ui, app, rt, document.id, view, window, line, table_row,
+					row_height, wrap_width, list.scroll.id, window_matches, paint_table,
+				)
+			} else {
 			anchor_source := min(max(view.selection_anchor, line.source_start), line.source_end)
 			caret_source := min(max(view.caret_byte, line.source_start), line.source_end)
 			display_text := line.display
@@ -919,6 +1032,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
 				show_caret,
 			)
+			}
 			if line_wraps { alicorn.container_end(ui) }
 			alicorn.container_end(ui)
 		} else if window_matches || !window_available {
@@ -1919,13 +2033,13 @@ editor_source_at_pointer :: proc(
 	// rather than dropping the interaction; scheduled autoscroll advances the
 	// viewport and retries from the retained pointer coordinates.
 	best_distance := f32(1e30)
-	best_target: Editor_Row_Target
+	best_line: u64
 	best_y := hit_y
 	for row_target in app.editor_row_targets {
 		row_node, row_found := rt.nodes[row_target.node]
 		if !row_found || row_node.bounds.h <= 0 { continue }
 		if hit_y >= row_node.bounds.y && hit_y < row_node.bounds.y+row_node.bounds.h {
-			best_target, best_y = row_target, hit_y
+			best_line, best_y = row_target.logical_line, hit_y
 			best_distance = 0
 			break
 		}
@@ -1933,15 +2047,34 @@ editor_source_at_pointer :: proc(
 		distance := abs(hit_y-row_y)
 		if distance < best_distance {
 			best_distance = distance
-			best_target, best_y = row_target, row_y
+			best_line, best_y = row_target.logical_line, row_y
 		}
 	}
 	if best_distance == 1e30 || (!clamp_to_viewport && best_distance > EDITOR_ROW_HEIGHT) { return }
-	line, line_found := editor_window_line(window, best_target.logical_line)
+	best_target: Editor_Row_Target
+	best_x_distance := f32(1e30)
+	best_hit_x := hit_x
+	for target in app.editor_row_targets {
+		if target.logical_line != best_line { continue }
+		node, node_found := rt.nodes[target.node]
+		if !node_found { continue }
+		distance: f32 = 0
+		if hit_x < node.bounds.x { distance = node.bounds.x-hit_x }
+		else if hit_x >= node.bounds.x+node.bounds.w { distance = hit_x-(node.bounds.x+node.bounds.w) }
+		if distance < best_x_distance {
+			best_x_distance = distance
+			best_target = target
+			best_hit_x = min(max(hit_x, node.bounds.x), node.bounds.x+node.bounds.w-0.5)
+		}
+	}
+	if best_x_distance == 1e30 { return }
+	line, line_found := editor_window_line(window, best_line)
 	if !line_found { return }
-	position, hit := alicorn.text_node_hit_test(rt, best_target.node, hit_x, best_y)
+	position, hit := alicorn.text_node_hit_test(rt, best_target.node, best_hit_x, best_y)
 	if !hit { return }
-	return editor_normalize_source_position(line, editor_display_to_source(line, position.byte)), position.affinity, true
+	display_line, display_found := editor_display_line_for_target(window, line, best_target)
+	if !display_found { return }
+	return editor_normalize_source_position(&display_line, editor_display_to_source(&display_line, position.byte)), position.affinity, true
 }
 
 editor_ensure_line_visible :: proc(
@@ -2356,14 +2489,25 @@ editor_text_key :: proc(
 			                        (window.presentation_revision == window.editor_revision &&
 			                         document.presentation_ready &&
 			                         document.presentation_revision == window.presentation_revision))
-			current_node := editor_row_node_for_line(app.editor_row_targets[:], current_line)
+			current_target, current_target_found := editor_row_target_for_source(app.editor_row_targets[:], current_line, old_caret)
+			current_display_line := line^
+			current_node := alicorn.Node_ID(0)
+			current_width := wrap_width
+			if current_target_found {
+				current_node = current_target.node
+				if current_target.is_cell { current_width = current_target.cell_width }
+				if target_display, target_display_ok := editor_display_line_for_target(window, line, current_target); target_display_ok {
+					current_display_line = target_display
+				}
+			}
 			current_geometry, current_visual_rows, _, current_measured := editor_line_visual_caret_metrics(
-				rt, window, line, document.language, wrap_width, presentation_current,
+				rt, window, &current_display_line, document.language, current_width, presentation_current,
 				current_node, old_caret, old_affinity,
 			)
 			if !current_measured || !current_geometry.valid { return true }
 			if !view.preferred_x_set {
 				view.preferred_x = current_geometry.rect.x
+				if current_target_found && current_target.is_cell { view.preferred_x += current_target.cell_origin_x }
 				view.preferred_x_set = true
 			}
 			target_line := current_line
@@ -2417,12 +2561,44 @@ editor_text_key :: proc(
 				alicorn.invalidate_root(rt, "Scratchpad vertical editor navigation reached the bounded source window edge")
 				return true
 			}
-			target_node := editor_row_node_for_line(app.editor_row_targets[:], target_line)
+			target_node := alicorn.Node_ID(0)
+			target_width := wrap_width
+			target_display_line := target^
+			target_target: Editor_Row_Target
+			target_target_found := false
+			target_origin_x: f32 = 0
+			if editor_table_line_is_projected(window, target) && editor_table_line_fit(window, target, wrap_width) {
+				target_layout := editor_table_row_layout(window, target, wrap_width)
+				target_cell_index := editor_table_cell_for_x(target_layout, view.preferred_x)
+				if current_target_found && current_target.is_cell { target_cell_index = current_target.cell_index }
+				if target_cell_index >= 0 && target_cell_index < len(target_layout.cells) {
+					target_display_line = target_layout.cells[target_cell_index]
+					target_width = target_layout.widths[target_cell_index]
+					target_origin_x = target_layout.origins[target_cell_index]
+					for candidate in app.editor_row_targets {
+						if candidate.logical_line == target_line && candidate.is_cell && candidate.cell_index == target_cell_index {
+							target_target, target_target_found = candidate, true
+							break
+						}
+					}
+				}
+			}
+			if !target_target_found && (!current_target_found || !current_target.is_cell || !editor_table_line_is_projected(window, target)) {
+				target_target, target_target_found = editor_row_target_for_source(app.editor_row_targets[:], target_line, target.source_start)
+				if target_target_found { target_display_line, _ = editor_display_line_for_target(window, target, target_target) }
+			}
+			if target_target_found {
+				target_node = target_target.node
+				if target_target.is_cell {
+					target_width = target_target.cell_width
+					target_origin_x = target_target.cell_origin_x
+				}
+			}
 			mapped_visual_row := -1
 			if event.key == .Up || event.key == .Down {
 				if target_line != current_line {
 					_, target_visual_rows, _, target_measured := editor_line_visual_caret_metrics(
-						rt, window, target, document.language, wrap_width, presentation_current,
+						rt, window, &target_display_line, document.language, target_width, presentation_current,
 						target_node, 0, .Leading, false,
 					)
 					if !target_measured { return true }
@@ -2431,9 +2607,13 @@ editor_text_key :: proc(
 					mapped_visual_row = target_visual_row
 				}
 			}
+			target_visual_x := view.preferred_x
+			if target_target_found && target_target.is_cell || target_origin_x > 0 {
+				target_visual_x -= target_origin_x
+			}
 			mapped_caret, mapped_affinity, moved := editor_source_at_visual_point(
-				rt, window, target, document.language, wrap_width, presentation_current,
-				target_node, view.preferred_x, target_visual_y, mapped_visual_row,
+				rt, window, &target_display_line, document.language, target_width, presentation_current,
+				target_node, target_visual_x, target_visual_y, mapped_visual_row,
 			)
 			if !moved { return true }
 			next_caret, next_affinity = mapped_caret, mapped_affinity
@@ -2460,8 +2640,9 @@ editor_text_key :: proc(
 	view.caret_affinity = next_affinity
 	if target_line, target_found := editor_line_for_source(window, next_caret); target_found {
 		_ = editor_ensure_line_visible(rt, view, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
-		if text_node := editor_row_node_for_line(app.editor_row_targets[:], target_line.logical_line); text_node != 0 {
-			if geometry := alicorn.text_node_caret_geometry(rt, text_node, alicorn.Text_Position{byte=editor_source_to_display(target_line, next_caret), affinity=next_affinity}); geometry.valid {
+		if caret_target, target_available := editor_row_target_for_source(app.editor_row_targets[:], target_line.logical_line, next_caret); target_available {
+			if display_line, display_ok := editor_display_line_for_target(window, target_line, caret_target); display_ok {
+			if geometry := alicorn.text_node_caret_geometry(rt, caret_target.node, alicorn.Text_Position{byte=editor_source_to_display(&display_line, next_caret), affinity=next_affinity}); geometry.valid {
 				if owner_node, owner_found := rt.nodes[owner]; owner_found {
 					top, bottom := owner_node.scroll_viewport_bounds.y, owner_node.scroll_viewport_bounds.y+owner_node.scroll_viewport_height
 					next_y := owner_node.scroll_offset_y
@@ -2474,6 +2655,7 @@ editor_text_key :: proc(
 					if geometry.rect.x+geometry.rect.w > right { next_x += geometry.rect.x+geometry.rect.w-right }
 					_ = alicorn.scroll_region_set_offset_x(rt, owner, next_x, "Scratchpad editor caret followed horizontally")
 				}
+			}
 			}
 		}
 	}

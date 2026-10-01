@@ -42,6 +42,8 @@ Editor_Display_Line :: struct {
 	source_end:    u64,
 	display:       string,
 	display_bytes: []u64,
+	is_table_cell: bool,
+	table_cell_index: int,
 }
 
 Editor_Window :: struct {
@@ -295,6 +297,28 @@ Editor_Edit_Intent :: struct {
 Editor_Row_Target :: struct {
 	node:         alicorn.Node_ID,
 	logical_line: u64,
+	cell_start:   u64,
+	cell_end:     u64,
+	cell_index:   int,
+	cell_width:   f32,
+	cell_origin_x: f32,
+	is_cell:      bool,
+}
+
+Editor_Table_Row_Layout :: struct {
+	cells:         [dynamic]Editor_Display_Line,
+	pipes:         [dynamic]u64,
+	widths:        [dynamic]f32,
+	origins:       [dynamic]f32,
+	leading_pipe:  bool,
+	trailing_pipe: bool,
+	wraps:         bool,
+	ok:             bool,
+}
+
+Editor_Source_Range :: struct {
+	start_byte: u64,
+	end_byte:   u64,
 }
 
 editor_row_node_for_line :: proc(rows: []Editor_Row_Target, logical_line: u64) -> alicorn.Node_ID {
@@ -302,6 +326,28 @@ editor_row_node_for_line :: proc(rows: []Editor_Row_Target, logical_line: u64) -
 		if row.logical_line == logical_line { return row.node }
 	}
 	return 0
+}
+
+editor_row_target_for_source :: proc(
+	rows: []Editor_Row_Target,
+	logical_line: u64,
+	source_byte: u64,
+) -> (target: Editor_Row_Target, found: bool) {
+	best_distance := u64(0xFFFF_FFFF_FFFF_FFFF)
+	for row in rows {
+		if row.logical_line != logical_line { continue }
+		if !row.is_cell { return row, true }
+		distance := u64(0)
+		if source_byte < row.cell_start { distance = row.cell_start-source_byte }
+		else if source_byte > row.cell_end { distance = source_byte-row.cell_end }
+		if distance == 0 { return row, true }
+		if distance < best_distance {
+			best_distance = distance
+			target = row
+			found = true
+		}
+	}
+	return
 }
 
 editor_temporary_text_run :: proc(
@@ -338,7 +384,7 @@ editor_navigation_text_run :: proc(
 	if line == nil { return }
 	style_spans: []alicorn.Text_Style_Span
 	if presentation_current { style_spans = editor_presentation_text_styles_for_line(window, line, context.temp_allocator) }
-	wrap := editor_line_should_wrap(language, window, line, presentation_current)
+	wrap := editor_line_should_wrap(language, window, line, presentation_current, width)
 	overflow := alicorn.Text_Overflow.Clip
 	max_width: f32 = 0
 	if wrap {
@@ -832,6 +878,234 @@ editor_project_line :: proc(
 		display=display,
 		display_bytes=offsets[:],
 	}, true
+}
+
+editor_table_source_is_whitespace :: proc(source: []u8) -> bool {
+	for value in source {
+		if value != ' ' && value != '\t' && value != '\r' { return false }
+	}
+	return true
+}
+
+editor_table_pipe_positions :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	allocator := context.temp_allocator,
+) -> [dynamic]u64 {
+	pipes := make([dynamic]u64, 0, allocator=allocator)
+	if window == nil || line == nil { return pipes }
+	for record in window.presentation_spans {
+		if record.kind != EDITOR_PRESENTATION_TABLE_PIPE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		if start < line.source_start || start >= line.source_end { continue }
+		append(&pipes, start)
+	}
+	// Presentation spans are sorted today, but keeping this local operation
+	// robust makes table geometry independent of that transport detail.
+	for index in 1..<len(pipes) {
+		value := pipes[index]
+		cursor := index
+		for cursor > 0 && pipes[cursor-1] > value {
+			pipes[cursor] = pipes[cursor-1]
+			cursor -= 1
+		}
+		pipes[cursor] = value
+	}
+	return pipes
+}
+
+editor_table_line_is_projected :: proc(window: ^Editor_Window, line: ^Editor_Display_Line) -> bool {
+	if window == nil || line == nil || line.is_table_cell || !window.presentation_ready ||
+	   (!window.presentation_stale && window.presentation_revision != window.editor_revision) { return false }
+	for record in window.presentation_blocks {
+		if record.kind != EDITOR_PRESENTATION_BLOCK_TABLE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if start < line.source_end && end > line.source_start { return true }
+	}
+	for record in window.presentation_spans {
+		if record.kind != EDITOR_PRESENTATION_TABLE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if start < line.source_end && end > line.source_start { return true }
+	}
+	return false
+}
+
+editor_table_line_cell_ranges :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	allocator := context.temp_allocator,
+) -> (ranges: [dynamic]Editor_Source_Range, pipes: [dynamic]u64, leading_pipe, trailing_pipe: bool) {
+	ranges = make([dynamic]Editor_Source_Range, 0, allocator=allocator)
+	pipes = editor_table_pipe_positions(window, line, allocator)
+	if window == nil || line == nil { return }
+	line_start := int(line.source_start-window.start_byte)
+	line_end := int(line.source_end-window.start_byte)
+	if line_start < 0 || line_end > len(window.source) || line_end < line_start { return }
+	if len(pipes) > 0 {
+		first_pipe := int(pipes[0]-window.start_byte)
+		leading_pipe = editor_table_source_is_whitespace(window.source[line_start:first_pipe])
+	}
+	expected_columns := 0
+	for record in window.presentation_blocks {
+		if record.kind != EDITOR_PRESENTATION_BLOCK_TABLE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if start < line.source_end && end > line.source_start {
+			expected_columns = int(record.level_flags & 0xFF)
+			break
+		}
+	}
+	if len(pipes) > 0 {
+		last_pipe := int(pipes[len(pipes)-1]-window.start_byte)
+		trailing_pipe = editor_table_source_is_whitespace(window.source[last_pipe+1:line_end])
+		if expected_columns > 0 {
+			edge_pipe_count := len(pipes)-(expected_columns-1)
+			if leading_pipe { edge_pipe_count -= 1 }
+			if edge_pipe_count <= 0 { trailing_pipe = false }
+			else { trailing_pipe = true }
+		}
+	}
+	cell_start := line.source_start
+	for pipe, pipe_index in pipes {
+		if pipe_index == 0 && leading_pipe {
+			cell_start = pipe+1
+			continue
+		}
+		append(&ranges, Editor_Source_Range{cell_start, pipe})
+		cell_start = pipe+1
+	}
+	if !trailing_pipe && cell_start <= line.source_end {
+		append(&ranges, Editor_Source_Range{cell_start, line.source_end})
+	}
+	for expected_columns > 0 && len(ranges) < expected_columns {
+		append(&ranges, Editor_Source_Range{line.source_end, line.source_end})
+	}
+	return
+}
+
+editor_table_row_layout :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	width: f32,
+	allocator := context.temp_allocator,
+) -> (layout: Editor_Table_Row_Layout) {
+	if !editor_table_line_is_projected(window, line) { return }
+	ranges, pipes, leading, trailing := editor_table_line_cell_ranges(window, line, allocator)
+	layout.pipes = pipes
+	layout.leading_pipe, layout.trailing_pipe = leading, trailing
+	layout.cells = make([dynamic]Editor_Display_Line, 0, allocator=allocator)
+	layout.widths = make([dynamic]f32, 0, allocator=allocator)
+	layout.origins = make([dynamic]f32, 0, allocator=allocator)
+	for range in ranges {
+		start, end := range.start_byte, range.end_byte
+		if start < line.source_start || end > line.source_end || end < start { return }
+		relative_start := int(start-window.start_byte)
+		relative_end := int(end-window.start_byte)
+		cell, projected := editor_project_line(window.source[relative_start:relative_end], start, line.logical_line, allocator)
+		if !projected { return }
+		cell.is_table_cell = true
+		cell.table_cell_index = len(layout.cells)
+		append(&layout.cells, cell)
+	}
+	if len(layout.cells) == 0 { return }
+	pipe_count := len(layout.pipes)
+	minimum_cell_width := f32(104)
+	cell_space := max(width-f32(pipe_count)*10, 0)
+	if width <= 0 || f32(len(layout.cells))*minimum_cell_width > cell_space { return }
+	// A single token wider than the complete lane is more useful in the
+	// horizontal overflow lane than broken into many one-word fragments.
+	for &cell in layout.cells {
+		longest_word_width: f32 = 0
+		word_width: f32 = 0
+		byte_index := 0
+		for byte_index < len(cell.display) {
+			if cell.display[byte_index] == ' ' || cell.display[byte_index] == '\t' || cell.display[byte_index] == '\r' {
+				longest_word_width = max(longest_word_width, word_width)
+				word_width = 0
+				byte_index += 1
+				continue
+			}
+			rune_value, sequence_length := utf8.decode_rune_in_string(cell.display[byte_index:])
+			if sequence_length <= 0 { sequence_length = 1 }
+			glyph_width := f32(9.5)
+			if rune_value >= 0x1100 { glyph_width = 16 }
+			word_width += glyph_width
+			byte_index += sequence_length
+		}
+		longest_word_width = max(longest_word_width, word_width)
+		if longest_word_width+16 > width { return }
+	}
+	column_count := len(layout.cells)
+	weights := make([dynamic]f32, 0, column_count, allocator=allocator)
+	if column_count == 2 {
+		append(&weights, 0.28, 0.72)
+	} else if column_count == 3 {
+		append(&weights, 0.20, 0.30, 0.50)
+	} else {
+		for _ in 0..<column_count { append(&weights, 1/f32(column_count)) }
+	}
+	extra := cell_space-f32(column_count)*minimum_cell_width
+	for weight in weights { append(&layout.widths, minimum_cell_width+extra*weight) }
+	origin_x := f32(0)
+	if layout.leading_pipe { origin_x += 10 }
+	for cell_width, width_index in layout.widths {
+		append(&layout.origins, origin_x)
+		origin_x += cell_width
+		if width_index+1 < len(layout.widths) { origin_x += 10 }
+	}
+	layout.wraps = true
+	layout.ok = true
+	return
+}
+
+editor_table_cell_line :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	cell_index: int,
+	allocator := context.temp_allocator,
+) -> (cell: Editor_Display_Line, found: bool) {
+	layout := editor_table_row_layout(window, line, 0, allocator)
+	if cell_index < 0 || cell_index >= len(layout.cells) { return }
+	return layout.cells[cell_index], true
+}
+
+editor_project_source_segment :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	start_byte, end_byte: u64,
+	allocator := context.temp_allocator,
+) -> (segment: Editor_Display_Line, ok: bool) {
+	if window == nil || line == nil || start_byte < line.source_start || end_byte > line.source_end || end_byte < start_byte { return }
+	start := int(start_byte-window.start_byte)
+	end := int(end_byte-window.start_byte)
+	if start < 0 || end > len(window.source) { return }
+	return editor_project_line(window.source[start:end], start_byte, line.logical_line, allocator)
+}
+
+editor_display_line_for_target :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	target: Editor_Row_Target,
+	allocator := context.temp_allocator,
+) -> (display_line: Editor_Display_Line, ok: bool) {
+	if line == nil { return }
+	if !target.is_cell { return line^, true }
+	return editor_project_source_segment(window, line, target.cell_start, target.cell_end, allocator)
+}
+
+editor_table_line_fit :: proc(window: ^Editor_Window, line: ^Editor_Display_Line, width: f32) -> bool {
+	layout := editor_table_row_layout(window, line, width)
+	return layout.ok && layout.wraps
+}
+
+editor_table_cell_for_x :: proc(layout: Editor_Table_Row_Layout, visual_x: f32) -> int {
+	if len(layout.cells) == 0 { return -1 }
+	for cell_width, cell_index in layout.widths {
+		if visual_x < layout.origins[cell_index]+cell_width { return cell_index }
+	}
+	return len(layout.cells)-1
 }
 
 // editor_display_to_source maps an Runa hit-test boundary back to the nearest
@@ -1763,28 +2037,28 @@ editor_window_line :: proc(window: ^Editor_Window, logical_line: u64) -> (line: 
 	return &window.lines[index], true
 }
 
-editor_line_should_wrap :: proc(language: string, window: ^Editor_Window, line: ^Editor_Display_Line, presentation_current := true) -> bool {
+editor_line_should_wrap :: proc(language: string, window: ^Editor_Window, line: ^Editor_Display_Line, presentation_current := true, width: f32 = 0) -> bool {
 	if language != "markdown" && language != "plain-text" { return false }
 	if language != "markdown" || !presentation_current || window == nil || line == nil ||
 	   !window.presentation_ready || (!window.presentation_stale && window.presentation_revision != window.editor_revision) {
 		return true
 	}
+	table_line := editor_table_line_is_projected(window, line)
 	for record in window.presentation_spans {
-		// Fenced code and Markdown table rows remain on the horizontal-scroll
-		// path. Inline code is prose content and continues to wrap normally.
-		if record.kind != EDITOR_PRESENTATION_CODE_BLOCK && record.kind != EDITOR_PRESENTATION_TABLE &&
-		   record.kind != EDITOR_PRESENTATION_TABLE_HEADER && record.kind != EDITOR_PRESENTATION_TABLE_DELIMITER &&
-		   record.kind != EDITOR_PRESENTATION_TABLE_PIPE { continue }
+		// Fenced code remains on the horizontal-scroll path. Tables use their
+		// parser-owned structural pipe map for a cell-aware fit decision below.
+		if record.kind != EDITOR_PRESENTATION_CODE_BLOCK { continue }
 		start := window.start_byte+u64(record.start_byte)
 		end := window.start_byte+u64(record.end_byte)
 		if start < line.source_end && end > line.source_start { return false }
 	}
 	for record in window.presentation_blocks {
-		if record.kind != EDITOR_PRESENTATION_BLOCK_CODE && record.kind != EDITOR_PRESENTATION_BLOCK_TABLE { continue }
+		if record.kind != EDITOR_PRESENTATION_BLOCK_CODE { continue }
 		start := window.start_byte+u64(record.start_byte)
 		end := window.start_byte+u64(record.end_byte)
 		if start < line.source_end && end > line.source_start { return false }
 	}
+	if table_line { return editor_table_line_fit(window, line, width) }
 	return true
 }
 
@@ -1817,6 +2091,37 @@ editor_measure_line_height :: proc(
 	presentation_current: bool,
 ) -> (height: f32, shaped_width: f32, visual_rows: int, ok: bool) {
 	if line == nil { return }
+	if wrap && editor_table_line_is_projected(window, line) {
+		layout := editor_table_row_layout(window, line, width)
+		if layout.ok && layout.wraps {
+			tallest: f32 = EDITOR_ROW_HEIGHT
+			visual_rows := 1
+			for &cell, cell_index in layout.cells {
+				style_spans := editor_presentation_text_styles_for_line(window, &cell, context.temp_allocator) if presentation_current else nil
+				run, built := alicorn.text_run_build_with_overflow(
+					&rt.text_engine,
+					cell.display,
+					16,
+					layout.widths[cell_index],
+					context.temp_allocator,
+					context.temp_allocator,
+					.Monospace,
+					alicorn.FONT_WEIGHT_REGULAR,
+					.Wrap,
+					true,
+					style_spans,
+				)
+				if !built { continue }
+				tallest = max(tallest, run.height)
+				visual_rows = max(visual_rows, len(run.lines))
+				alicorn.text_run_destroy(&run)
+			}
+			if presentation_current {
+				tallest += editor_markdown_row_extra_height(editor_markdown_row_presentation(window, line, true))
+			}
+			return tallest, width, visual_rows, true
+		}
+	}
 	style_spans: []alicorn.Text_Style_Span
 	if presentation_current { style_spans = editor_presentation_text_styles_for_line(window, line, context.temp_allocator) }
 	overflow := alicorn.Text_Overflow.Clip
@@ -1845,7 +2150,7 @@ editor_measure_window_wrapping :: proc(
 	if rt == nil || view == nil || window == nil || !view.wrap_height_index_ready || width <= 0 { return false }
 	changed := false
 	for &line in window.lines {
-		wrap := editor_line_should_wrap(language, window, &line, presentation_current)
+		wrap := editor_line_should_wrap(language, window, &line, presentation_current, width)
 		height, _, _, ok := editor_measure_line_height(rt, window, &line, width, wrap, presentation_current)
 		if !ok { continue }
 		changed = alicorn.virtual_list_height_index_set_height(&view.wrap_height_index, int(line.logical_line), height) || changed
@@ -1876,6 +2181,7 @@ editor_visible_window_content_width :: proc(
 	gutter_width: f32,
 	language: string,
 	presentation_current: bool,
+	wrap_width: f32,
 ) -> f32 {
 	if window == nil || index == nil || viewport_height <= 0 { return 0 }
 	overscan_y := max(viewport_height*0.5, EDITOR_ROW_HEIGHT)
@@ -1887,7 +2193,7 @@ editor_visible_window_content_width :: proc(
 	width: f32 = 0
 	for position := metrics.first; position < metrics.last; position += 1 {
 		line, found := editor_window_line(window, u64(position))
-		if !found || editor_line_should_wrap(language, window, line, presentation_current) { continue }
+		if !found || editor_line_should_wrap(language, window, line, presentation_current, wrap_width) { continue }
 		// Deliberately conservative for multi-byte glyphs. The frontier is
 		// limited to rows near the viewport, never the full document.
 		// The lane leaves the gutter and its inner text padding outside the

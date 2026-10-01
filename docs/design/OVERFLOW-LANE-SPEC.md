@@ -8,29 +8,29 @@ Wide unwrapped rows (Markdown tables, long code lines) overflow the editor viewp
 
 ## Solution
 
-Build a horizontal overflow lane first, then semantic table projections on top of it. Keep files ordinary Markdown at all times: align by padding real source spaces (Org/`markdown-mode` model), style with Aero-paper surfaces, never a virtual grid renderer.
+Keep files ordinary Markdown at all times: explicit formatting may align columns by padding source spaces (Org/`markdown-mode` model), while presentation can wrap table cells into aligned visual subrows without changing the file. Use parser-provided row/cell/pipe geometry; do not build a virtual grid renderer.
 
 Correction accepted: `md-mode` auto-align default is `t` per current docs (earlier audit said `nil` from an older README). Precedent taken from `md-mode` is edit-view source honesty + unwrapped wide rows + cursor-following, not the default value.
 
 ## User Stories
 
-1. As a notes author, I want wide table rows to stay on one source line and scroll horizontally, so that I can read every cell.
-2. As a notes author, I want the caret to stay visible when I arrow into overflow, so that I am never typing blind.
-3. As a notes author, I want wrapped prose to stay fixed at x=0 while only unwrapped rows shift, so that prose never slides sideways.
-4. As a notes author, I want the gutter/line numbers to stay fixed while overflow scrolls, so that I keep my place.
-5. As a code author, I want long code lines to use the same overflow lane, so that the fix is not table-specific debt.
-6. As a Markdown author, I want `Format Table` to pad columns with real spaces, so that the file stays valid Markdown and caret/copy/save stay trivial.
-7. As a Markdown author, I want header/delimiter/pipes styled (cool well, stronger header + bold, muted delimiter + 1px rule, muted pipes), so that aligned source reads as a table without HTML rendering.
-8. As a Markdown author, I want `Tab` to align + go to next cell, `Shift+Tab` to previous, `Enter` same-column next row/create row, so that tables edit like Org/`markdown-mode`.
-9. As a tasks author, I want `item.toggle` at the caret to flip `[ ]`/`[x]`, so that I do not need the Outline sidebar.
+1. As a notes author, I want long table cells to wrap into aligned visual subrows when useful column widths fit, so that I can read summaries without rewriting source.
+2. As a notes author, I want tables with too many columns or very long unbroken tokens to retain horizontal overflow, so that each column still has useful space.
+3. As a notes author, I want the caret and selection to map to source bytes in wrapped continuations, so that the source remains directly editable.
+4. As a notes author, I want Tab/Shift+Tab to navigate semantic cells regardless of their visual row count, so that table navigation stays structural.
+5. As a notes author, I want resize to reflow cells without changing bytes, dirty state, or the source-row count.
+6. As a notes author, I want wrapped cells and prose to remain fixed while only true overflow rows shift horizontally.
+7. As a notes author, I want the gutter/line numbers to stay fixed while overflow scrolls, so that I keep my place.
+8. As a code author, I want long code lines to use the same overflow lane, so that the fix is not table-specific debt.
+9. As a Markdown author, I want `Format Table` to pad columns with real spaces, so that the file stays valid Markdown and caret/copy/save stay trivial.
 10. As a reader of unaligned files, I want nothing rewritten on open, so that dirty state is never invented (explicit align only, like `md-mode` opt-in).
 
 ## Implementation Decisions
 
-- Slice order (agreed): 1) overflow lane + caret-follow; 2) row/cell/pipe projection; 3) header/delimiter/pipe visuals; 4) `Format Table`; 5) `Tab`/`Shift+Tab`/`Enter` navigation; 6) caret task toggle. Slices 1–6 are now implemented incrementally; manual scrollbar/trackpad panning remains a release-hardening follow-up.
+- Original slices 1–6 (overflow lane, row/cell/pipe projection, table visuals, `Format Table`, cell navigation, and task toggle) are implemented. Cell-aware visual rows are a follow-on presentation slice: parser-owned cell boundaries feed bounded width measurement, per-cell shaping, source-mapped hit testing, and sparse logical-row height updates. Manual table selection/resize/IME checks remain a release-hardening follow-up.
 - Slice 1 — overflow lane (UI-only, no buffer/document-text change):
   - `scrollX` lives in document view state alongside `ScrollY` (per-document, session-disposable like `ScrollY`, not part of `Document` text authority).
-  - Applies only to lines resolved as unwrapped (`NoWrapLine` true — tables — or code mode unwrapped). Wrapped prose always renders at x=0 and ignores `scrollX`.
+  - Applies only to no-wrap code rows and table rows that fail the cell-width fit rule. Wrapped prose and cell-wrapped table rows stay at x=0 and ignore `scrollX`.
   - Alicorn keeps the scroll owner on its variable-height list. Scratchpad counter-shifts the line-number gutter and wrapped prose so only no-wrap row content moves. The horizontal bar follows no-wrap rows near the viewport and can disappear over wrapped-only sections without discarding the saved per-document X position.
   - Caret-follow: when caret enters a wide row, adjust `scrollX` just enough to keep caret visible (with small padding); when caret returns to wrapped prose, reset/ignore it. Mouse click into overflow maps through `scrollX`. Gutter stays fixed.
   - No generic sideways shift of wrapped prose. No vertical behavior change. No new dependencies.
@@ -48,6 +48,7 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
 - Slice 4 — aligner is one undoable whole-table edit preserving meaning; explicit command only, never on open.
 - Slice 5 — navigation reuses aligner (`Tab` = align + next, `Shift+Tab` = prev, `Enter` = same-column next/create). Must intercept `Tab` before it inserts `\t`.
 - Slice 6 — caret toggle mirrors Outline logic (`[ ]`↔`[x]`, accept `[X]` as checked).
+- Cell-aware visual rows — each table source row remains one physical line. When the column minimums fit, cell contents wrap independently, column widths remain stable across rows, and row height follows the tallest cell. When the fit rule fails, the source row uses the existing horizontal overflow lane. Resizing changes only this disposable layout; it never reformats or dirties the document.
 - Contracts: `ScrollY` pattern in `application.ViewState` + `ui` wiring is the prior art for `scrollX`; `document.NewMarkdownPresentation`/`SpansIn` + `visualLineCache` epoch pattern is prior art for revision-tagged projections.
 
 ## Testing Decisions
@@ -55,6 +56,8 @@ Correction accepted: `md-mode` auto-align default is `t` per current docs (earli
 - Good tests assert external behavior at the highest seam: view-state + rendered x-offset/caret visibility for slice 1 (headless `ui` tests, no pixels); projection byte ranges + alignments for slice 2 (pure `language/markdown` tests with escaped-pipe/code-span/CJK/uneven fixtures); style mapping, one-edit formatting/undo, navigation, and caret toggling for later slices.
 - Prior art: `ui/editor_view_test.go` (visual lines, wrap widths, cache epochs), `ui/prose_render_geometry_test.go`, `language/markdown/presentation_test.go` + `project_test.go`, `application/gatec_test.go` for view/conflict flows.
 - Benchmarks: wide-table overflow pan + 100-row table projection/align latency; never block keystroke-to-frame (align off the frame path like current 150ms debounce).
+
+Acceptance for cell-aware visual rows: a two-column Page/Summary table wraps the summary without a horizontal bar when it fits; a many-column table or an unbroken token wider than the lane keeps horizontal overflow; resize changes visual row height but not source bytes; pointer hit testing on continuation rows maps to the correct cell source range; Tab remains cell navigation and does not change the revision.
 
 ## Out of Scope
 

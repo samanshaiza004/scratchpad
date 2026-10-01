@@ -60,7 +60,16 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 			start, end := blockRange(node, source, state.end)
 			if start < end {
 				add(start, end, document.PresentationTable)
-				addBlock(projection, document.BlockTable, start, end)
+				columns := 0
+				for _, table := range projection.Tables {
+					if table.StartByte == start {
+						columns = len(table.Columns)
+						break
+					}
+				}
+				projection.Blocks = append(projection.Blocks, document.BlockPresentation{
+					Kind: document.BlockTable, StartByte: start, EndByte: end, Level: columns,
+				})
 			}
 		case *ast.ListItem:
 			appendListPresentation(add, node, source)

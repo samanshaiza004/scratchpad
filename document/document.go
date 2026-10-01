@@ -203,6 +203,8 @@ const (
 type BlockPresentation struct {
 	Kind               BlockKind
 	StartByte, EndByte int
+	// Level carries small block-specific metadata. For BlockTable it is the
+	// parser-declared column count; other block kinds currently leave it zero.
 	Level              int
 }
 
