@@ -23,6 +23,9 @@ ACTION_MARKDOWN_TABLE_NEXT :: "markdown.table-next"
 ACTION_MARKDOWN_TABLE_PREVIOUS :: "markdown.table-previous"
 ACTION_MARKDOWN_TABLE_ENTER :: "markdown.table-enter"
 ACTION_WORKSPACE_REFRESH :: "workspace.refresh"
+ACTION_WORKSPACE_RENAME :: "workspace.rename"
+ACTION_WORKSPACE_MOVE :: "workspace.move"
+ACTION_WORKSPACE_TRASH :: "workspace.trash"
 ACTION_EDIT_UNDO       :: "edit.undo"
 ACTION_EDIT_REDO       :: "edit.redo"
 ACTION_EDIT_CUT        :: "edit.cut"
@@ -112,6 +115,8 @@ App :: struct {
 	tree_directories:       [dynamic]Tree_Directory,
 	tree_focused_path:      string,
 	tree_focused_is_dir:    bool,
+	workspace_context_path: string,
+	workspace_context_is_dir: bool,
 	workspace_mutation_kind: Workspace_Mutation_Kind,
 	workspace_mutation_source: string,
 	workspace_mutation_name: string,
@@ -515,6 +520,10 @@ build_app :: proc(
 		alicorn.container_end(&ui)
 	}
 	alicorn.container_end(&ui)
+
+	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None {
+		workspace_context_menu_build(app, &ui, rt)
+	}
 
 	if app.shutdown_intent != .None {
 		build_shutdown_dialog(app, &ui, rt)
@@ -2152,6 +2161,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	}
 	if app.workspace_mutation_kind != .None {
 		return workspace_mutation_handle_key(app, rt, key)
+	}
+	if key == .Context_Menu {
+		return workspace_context_menu_open_focused(app, rt)
 	}
 	if key == .Workspace_Rename {
 		if app.tree_scroll_owner != 0 && rt.focused == app.tree_scroll_owner && app.tree_focused_path != "" {
@@ -4089,6 +4101,7 @@ application_stop :: proc(state: rawptr) {
 	app.editor_window_error = ""
 	editor_window_rejection_clear(app)
 	workspace_mutation_clear(app)
+	workspace_context_menu_clear(app)
 	find_presentation_destroy(&app.find_presentation, context.allocator)
 	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
 	find_discard_saved_selection(app)
@@ -4120,7 +4133,7 @@ main :: proc() {
 		menus=app.menus[:],
 		build=build_app,
 		on_key=application_key,
-		on_pointer=editor_pointer,
+		on_pointer=application_pointer,
 		on_text_key=editor_text_key,
 		on_text_input=editor_text_input,
 		on_services=application_services,

@@ -67,6 +67,7 @@ type PresentationDocument struct {
 type PresentationState struct {
 	Revision      uint64
 	HasWorkspace  bool
+	HasTrasher    bool
 	WorkspaceRoot string
 	Active        DocumentID
 	Documents     []PresentationDocument
@@ -98,6 +99,7 @@ func (a *Application) Snapshot() PresentationState {
 	state := PresentationState{
 		Revision:      a.presentationRevision,
 		HasWorkspace:  a.HasWorkspace,
+		HasTrasher:    a.Trasher != nil,
 		WorkspaceRoot: filepath.Clean(a.Workspace.Root),
 		Active:        a.Active,
 		Documents:     make([]PresentationDocument, 0, len(a.Order)),

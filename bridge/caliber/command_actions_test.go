@@ -30,6 +30,14 @@ func TestPublishedShellActionsUseCanonicalScratchpadIDsAndContext(t *testing.T) 
 	if got := byID[string(commands.WorkspaceRefresh)]; got.Enabled || got.Visible {
 		t.Fatalf("Refresh should be hidden/disabled without a workspace: %+v", got)
 	}
+	for _, id := range []commands.ID{commands.WorkspaceNewFile, commands.WorkspaceNewFolder, commands.WorkspaceRename, commands.WorkspaceMove} {
+		if got := byID[string(id)]; got.Enabled || got.Visible {
+			t.Fatalf("%s should be hidden/disabled without a workspace: %+v", id, got)
+		}
+	}
+	if got := byID[string(commands.WorkspaceTrash)]; got.Enabled || got.Visible {
+		t.Fatalf("Move to Trash should be hidden/disabled without a workspace: %+v", got)
+	}
 	if got := byID[string(commands.WorkspaceOpen)]; !got.Visible || !got.Enabled {
 		t.Fatalf("Open Folder should be available without a workspace: %+v", got)
 	}
@@ -51,6 +59,20 @@ func TestPublishedShellActionsUseCanonicalScratchpadIDsAndContext(t *testing.T) 
 	}
 	if got := byID[string(commands.WorkspaceRefresh)]; !got.Visible || !got.Enabled {
 		t.Fatalf("Refresh should be enabled with a workspace: %+v", got)
+	}
+	for _, id := range []commands.ID{commands.WorkspaceNewFile, commands.WorkspaceNewFolder, commands.WorkspaceRename, commands.WorkspaceMove} {
+		if got := byID[string(id)]; !got.Visible || !got.Enabled {
+			t.Fatalf("%s should be enabled with a workspace: %+v", id, got)
+		}
+	}
+	if got := byID[string(commands.WorkspaceTrash)]; !got.Visible || got.Enabled {
+		t.Fatalf("Move to Trash should be visible but disabled without a trasher: %+v", got)
+	}
+	withTrasher := stateFromApplication(3, application.PresentationState{HasWorkspace: true, HasTrasher: true})
+	for _, action := range withTrasher.Actions {
+		if action.ID == string(commands.WorkspaceTrash) && (!action.Visible || !action.Enabled) {
+			t.Fatalf("Move to Trash should be enabled when the OS trasher exists: %+v", action)
+		}
 	}
 	if got := byID[string(commands.TabNext)]; !got.Visible || !got.Enabled || len(got.Bindings) != 1 {
 		t.Fatalf("tab navigation should be enabled with multiple documents: %+v", got)

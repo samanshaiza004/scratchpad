@@ -23,24 +23,12 @@ Workspace_Document_Migration :: struct {
 
 workspace_mutation_controls :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil { return }
-	selected := app.tree_focused_path != ""
 	alicorn.container_begin(ui, .Container, label="workspace-mutation-create", style=alicorn.layout_style(.Row, height=32, gap=6))
 	if alicorn.button(ui, "New File", key=alicorn.key_string("workspace-new-file"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{disabled=!app.backend.state.has_workspace}) {
 		workspace_mutation_open_create(app, rt, .Create_File)
 	}
 	if alicorn.button(ui, "New Folder", key=alicorn.key_string("workspace-new-folder"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{disabled=!app.backend.state.has_workspace}) {
 		workspace_mutation_open_create(app, rt, .Create_Folder)
-	}
-	alicorn.container_end(ui)
-	alicorn.container_begin(ui, .Container, label="workspace-mutation-selected", style=alicorn.layout_style(.Row, height=32, gap=6))
-	if alicorn.button(ui, "Rename", key=alicorn.key_string("workspace-rename"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{disabled=!selected}) {
-		workspace_mutation_open_selected(app, rt, .Rename)
-	}
-	if alicorn.button(ui, "Move…", key=alicorn.key_string("workspace-move"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{disabled=!selected}) {
-		workspace_mutation_open_selected(app, rt, .Move)
-	}
-	if alicorn.button(ui, "Trash…", key=alicorn.key_string("workspace-trash"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{disabled=!selected}) {
-		workspace_mutation_open_selected(app, rt, .Trash)
 	}
 	alicorn.container_end(ui)
 }

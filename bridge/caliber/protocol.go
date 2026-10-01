@@ -616,6 +616,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 	commandContext := commands.CommandContext{
 		ActiveDocument: snapshot.Active != "",
 		HasWorkspace:   snapshot.HasWorkspace,
+		HasTrasher:     snapshot.HasTrasher,
 		DocumentCount:  len(snapshot.Documents),
 	}
 	state := StateEnvelope{
@@ -686,6 +687,11 @@ var shellActionIDs = []commands.ID{
 	commands.TabNext,
 	commands.TabPrevious,
 	commands.WorkspaceRefresh,
+	commands.WorkspaceNewFile,
+	commands.WorkspaceNewFolder,
+	commands.WorkspaceRename,
+	commands.WorkspaceMove,
+	commands.WorkspaceTrash,
 	commands.DocumentFormat,
 	commands.MarkdownTableNext,
 	commands.MarkdownTablePrevious,

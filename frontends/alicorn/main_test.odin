@@ -1677,6 +1677,38 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		"F2 on the focused workspace item should open Rename with its current basename")
 	workspace_mutation_cancel(&app, &rt)
 	workspace_mutation_focus_after_frame(&app, &rt)
+	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "workspace tree should build before context-menu invocation"); return }
+	context_row, context_row_found := test_workspace_tree_row(&rt, "src/nested/first.txt")
+	if !context_row_found { testing.expect(t, false, "context-menu target row should be realized"); return }
+	context_bounds := rt.nodes[context_row].bounds
+	context_x, context_y := context_bounds.x+context_bounds.w/2, context_bounds.y+context_bounds.h/2
+	application_pointer(
+		rawptr(&app),
+		&rt,
+		alicorn.Pointer_Event{kind=.Down, x=context_x, y=context_y, button=alicorn.POINTER_BUTTON_SECONDARY},
+		context_row,
+	)
+	testing.expect(t, alicorn.context_menu_is_open(&rt) && tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.workspace_context_path), "src/nested/first.txt"),
+		"secondary-click should open the context menu for the row under the pointer")
+	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "context menu should describe after secondary-click"); return }
+	rename_item := test_workspace_context_menu_item(&rt, "Rename")
+	if rename_item == 0 { testing.expect(t, false, "workspace context menu should contain its registered Rename action"); return }
+	testing.expect(t, !rt.nodes[rename_item].disabled, "Rename should be enabled for a workspace tree item")
+	testing.expect(t, alicorn.context_menu_handle_key(&rt, .Activate), "Enter should activate the focused workspace context-menu action")
+	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "Rename action should dispatch through the existing mutation flow"); return }
+	testing.expect(t, app.workspace_mutation_kind == .Rename &&
+		tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.workspace_mutation_source), "src/nested/first.txt") &&
+		app.workspace_mutation_name == "first.txt",
+		"context-menu Rename should open the existing dialog for the exact right-clicked item")
+	workspace_mutation_cancel(&app, &rt)
+	workspace_mutation_focus_after_frame(&app, &rt)
+	if !test_render_workspace_tree(t, &app, &rt) { return }
+	_ = application_key(rawptr(&app), &rt, .Context_Menu)
+	testing.expect(t, alicorn.context_menu_is_open(&rt), "Shift+F10 should open the context menu for the focused tree item")
+	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.workspace_context_path), "src/nested/first.txt"),
+		"keyboard invocation should preserve the focused semantic tree target")
+	alicorn.context_menu_close(&rt)
+	if !test_render_workspace_tree(t, &app, &rt) { return }
 	for document in app.backend.state.documents {
 		index, ok := editor_view_ensure(&app.editor_views, document.id)
 		if !ok { testing.expect(t, false, "could not allocate a per-document editor view"); return }
@@ -1823,8 +1855,19 @@ test_render_workspace_tree :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtim
 	alicorn.container_begin(&ui, .Root, label="scratchpad-tree-integration-test", style=alicorn.layout_style(.Column, width=800, height=600, clip=true))
 	build_workspace_tree(app, &ui, rt)
 	alicorn.container_end(&ui)
+	workspace_context_menu_build(app, &ui, rt)
 	alicorn.end_frame(&ui)
 	return true
+}
+
+test_workspace_context_menu_item :: proc(rt: ^alicorn.Runtime, label: string) -> alicorn.Node_ID {
+	if rt == nil || rt.context_menu.panel == 0 { return 0 }
+	for node_id in rt.order {
+		if node, found := rt.nodes[node_id]; found && node.active && node.parent == rt.context_menu.panel && node.kind == .Button && node.label == label {
+			return node_id
+		}
+	}
+	return 0
 }
 
 test_click_workspace_tree_row :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime, path: string) -> bool {
@@ -1869,6 +1912,7 @@ tree_test_cleanup :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) {
 	}
 	tree_clear_directories(app)
 	tree_clear_focused_path(app)
+	workspace_context_menu_clear(app)
 	if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
 	alicorn.destroy_runtime(rt)
 }
