@@ -19,9 +19,16 @@ ACTION_DOCUMENT_CLOSE  :: "document.close"
 ACTION_TAB_NEXT        :: "tab.next"
 ACTION_TAB_PREVIOUS    :: "tab.previous"
 ACTION_DOCUMENT_FORMAT :: "document.format"
+ACTION_DOCUMENT_GO_TO_LINE :: "document.go-to-line"
+ACTION_DOCUMENT_TOGGLE_WRAP :: "document.toggle-wrap"
 ACTION_MARKDOWN_TABLE_NEXT :: "markdown.table-next"
 ACTION_MARKDOWN_TABLE_PREVIOUS :: "markdown.table-previous"
 ACTION_MARKDOWN_TABLE_ENTER :: "markdown.table-enter"
+ACTION_MARKDOWN_ENTER :: "markdown.enter"
+ACTION_MARKDOWN_TOGGLE_STRONG :: "markdown.toggle-strong"
+ACTION_MARKDOWN_TOGGLE_EMPHASIS :: "markdown.toggle-emphasis"
+ACTION_MARKDOWN_TOGGLE_INLINE_CODE :: "markdown.toggle-inline-code"
+ACTION_MARKDOWN_INSERT_TASK :: "markdown.insert-task"
 ACTION_WORKSPACE_REFRESH :: "workspace.refresh"
 ACTION_WORKSPACE_NEW_FILE :: "workspace.new-file"
 ACTION_WORKSPACE_NEW_FOLDER :: "workspace.new-folder"
@@ -35,6 +42,7 @@ ACTION_EDIT_CUT        :: "edit.cut"
 ACTION_EDIT_COPY       :: "edit.copy"
 ACTION_EDIT_PASTE      :: "edit.paste"
 ACTION_EDIT_SELECT_ALL :: "edit.select_all"
+ACTION_EDIT_DELETE_LINE :: "edit.delete-line"
 TREE_SEMANTIC_NAMESPACE :: u64(0x5343524154434850)
 TREE_ROW_HEIGHT :: 28
 TREE_SCROLL_KEY :: "scratchpad-workspace-tree"
@@ -167,13 +175,18 @@ App :: struct {
 	find_presentation:      Find_Presentation,
 	find_error:             string,
 	find_replace_message:   string,
+	go_to_line_open:        bool,
+	go_to_line_query:       string,
+	go_to_line_query_node:  alicorn.Node_ID,
+	go_to_line_focus_pending: bool,
+	go_to_line_error:       string,
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
 	dialog_action:          string,
 	file_items:             [5]host.Application_Menu_Item,
-	edit_items:             [8]host.Application_Menu_Item,
+	edit_items:             [10]host.Application_Menu_Item,
 	workspace_items:        [6]host.Application_Menu_Item,
-	document_items:         [4]host.Application_Menu_Item,
+	document_items:         [11]host.Application_Menu_Item,
 	menus:                  [4]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -336,6 +349,7 @@ build_app :: proc(
 	_ = find_capture_text_field(rt, app.workspace_search_query_node, &app.workspace_search_query)
 	app.workspace_search_results_owner = 0
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
+	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
 	if app.find_open { find_refresh_if_needed(app, rt) }
 	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
 	clear(&app.editor_row_targets)
@@ -493,6 +507,9 @@ build_app :: proc(
 			alicorn.text(&ui, "Open a document to view its bounded source window.")
 		}
 		alicorn.container_end(&ui)
+		if active, found := find_document(state, state.active); found {
+			build_document_status(app, &ui, rt, active)
+		}
 		alicorn.container_end(&ui)
 		alicorn.split_second_end(&ui, workspace_split)
 		alicorn.split_end(&ui, workspace_split)
@@ -567,6 +584,18 @@ build_app :: proc(
 		alicorn.modal_overlay_end(&ui)
 	} else if app.workspace_mutation_kind != .None {
 		workspace_mutation_build_dialog(app, &ui, rt)
+	} else if app.go_to_line_open {
+		alicorn.modal_overlay_begin(&ui, alicorn.key_string("go-to-line-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+		alicorn.container_begin(&ui, .Container, label="go-to-line-dialog", style=alicorn.layout_style(.Column, width=420, height=150, padding=20, gap=10, align=.Start, clip=true), color=COLOR_PANEL)
+		alicorn.text(&ui, "Go to Line")
+		app.go_to_line_query_node = alicorn.text_field(&ui, app.go_to_line_query, key=alicorn.key_string("go-to-line-query"), style=alicorn.layout_style(.Row, height=34))
+		if app.go_to_line_error != "" { alicorn.text(&ui, app.go_to_line_error) }
+		alicorn.container_begin(&ui, .Container, label="go-to-line-actions", style=alicorn.layout_style(.Row, height=36, gap=8, align=.Center))
+		if alicorn.button(&ui, "Go", key=alicorn.key_string("go-to-line-submit"), style=alicorn.layout_style(.Row, width=80, height=32)) { _ = go_to_line_submit(app, rt) }
+		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("go-to-line-cancel"), style=alicorn.layout_style(.Row, width=88, height=32)) { go_to_line_close(app, rt, true) }
+		alicorn.container_end(&ui)
+		alicorn.container_end(&ui)
+		alicorn.modal_overlay_end(&ui)
 	} else if app.settings_surface_open {
 		settings_surface_build(app, &ui, rt)
 	}
@@ -575,6 +604,14 @@ build_app :: proc(
 	frame_deferred_action_run(app, rt)
 	find_restore_after_frame(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
+	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
+		if alicorn.focus(rt, app.go_to_line_query_node) {
+			if node, found := rt.nodes[app.go_to_line_query_node]; found && node.kind == .Text_Field {
+				_ = alicorn.set_text_selection(rt, app.go_to_line_query_node, 0, len(node.text))
+			}
+			app.go_to_line_focus_pending = false
+		}
+	}
 	if app.editor_restore_scroll && app.editor_scroll_owner != 0 {
 		if app.editor_restore_vertical {
 			_ = alicorn.scroll_region_set_offset(rt, app.editor_scroll_owner, app.editor_restore_y, "restore per-document vertical view")
@@ -862,6 +899,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	if window_matches {
 		_ = editor_view_resolve_document_edge(view, window, display_line_count)
+		_ = editor_view_resolve_goto_line(view, window, display_line_count)
 		if line, found := editor_line_for_source(window, view.caret_byte); found {
 			previous_caret := view.caret_byte
 			view.caret_byte = editor_normalize_source_position(line, view.caret_byte)
@@ -916,6 +954,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	if view.wrap_height_index_ready && window_available {
 		needs_measurement := abs(view.wrap_measurement_width-wrap_width) > 0.5 ||
+		                     view.wrap_measurement_mode != view.wrap_mode ||
 		                     view.wrap_measurement_revision != window.editor_revision ||
 		                     view.wrap_measurement_presentation_revision != window.presentation_revision ||
 		                     view.wrap_measurement_start_line != window.start_line ||
@@ -957,6 +996,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				view.viewport_anchor_resolved = false
 			}
 			view.wrap_measurement_width = wrap_width
+			view.wrap_measurement_mode = view.wrap_mode
 			view.wrap_measurement_revision = window.editor_revision
 			view.wrap_measurement_presentation_revision = window.presentation_revision
 			view.wrap_measurement_start_line = window.start_line
@@ -975,6 +1015,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			document.language,
 			presentation_visual,
 			wrap_width,
+			view.wrap_mode,
 		)
 	}
 	content_width := max(viewport_width, visible_intrinsic_width)
@@ -1025,6 +1066,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	                      window.start_line <= visible_start &&
 	                      window.end_line >= visible_end
 	if metadata_refresh_needed { window_covers_view = false }
+	bracket_match: Editor_Bracket_Match
+	bracket_match_found := false
+	if window_matches && !view.preedit_active && !view.preedit_recoverable {
+		bracket_match, bracket_match_found = editor_bracket_match_in_window(window, view.caret_byte)
+	}
 	for position := list.first; position < list.last; position += 1 {
 		line_number := u64(position)
 		row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, position)
@@ -1032,7 +1078,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		if line, found := editor_window_line(window, line_number); window_available && found {
 			table_row := editor_table_row_layout(window, line, wrap_width)
 			table_wrap_active := table_row.ok && table_row.wraps && !view.preedit_active && !view.preedit_recoverable
-			line_wraps := editor_line_should_wrap(document.language, window, line, presentation_visual, wrap_width)
+			line_wraps := editor_line_should_wrap_for_view(document.language, window, line, presentation_visual, wrap_width, view.wrap_mode)
 			if editor_table_line_is_projected(window, line) && !table_wrap_active { line_wraps = false }
 			row_presentation_current := document.language == "markdown" && presentation_visual &&
 			                           !view.preedit_active && !view.preedit_recoverable
@@ -1138,6 +1184,23 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			if paint_current {
 				paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator)
 				if app.find_open { paint_spans = find_merge_paint_spans(window, line, &app.find_presentation, paint_spans, rt.scratch_allocator) }
+			}
+			if bracket_match_found {
+				combined_spans := make([dynamic]alicorn.Text_Paint_Span, 0, len(paint_spans)+2, allocator=rt.scratch_allocator)
+				for span in paint_spans { append(&combined_spans, span) }
+				bracket_bytes := [2]u64{bracket_match.first, bracket_match.second}
+				for source_byte in bracket_bytes {
+					if source_byte < line.source_start || source_byte >= line.source_end { continue }
+					start, end, mapped := editor_source_range_to_display(line, source_byte, source_byte+1)
+					if !mapped { continue }
+					append(&combined_spans, alicorn.Text_Paint_Span{
+						start=start,
+						end=end,
+						background=alicorn.Color{0.34, 0.48, 0.72, 0.7},
+						background_set=true,
+					})
+				}
+				paint_spans = combined_spans[:]
 			}
 			_ = alicorn.text_paint_spans(ui, line_node, paint_spans)
 			text_style_spans: []alicorn.Text_Style_Span
@@ -1933,6 +1996,8 @@ open_path_from_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { go_to_line_open_surface(app, rt); return }
+	if command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) { editor_toggle_wrap_mode(app, rt); return }
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FILE) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FILE); return }
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FOLDER) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FOLDER); return }
 	if command == action_id_for(ACTION_WORKSPACE_SETTINGS) { dispatch_action(app, rt, ACTION_WORKSPACE_SETTINGS); return }
@@ -1946,6 +2011,170 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 			return
 		}
 	}
+}
+
+editor_toggle_wrap_mode :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.backend.started { return }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { set_error(app, "Could not retain this document's wrap preference."); return }
+	view := &app.editor_views[view_index]
+	switch view.wrap_mode {
+	case .Auto: view.wrap_mode = .On
+	case .On: view.wrap_mode = .Off
+	case .Off: view.wrap_mode = .Auto
+	}
+	view.wrap_measurement_width = -1
+	alicorn.invalidate_root(rt, "Scratchpad per-document word-wrap preference changed")
+}
+
+go_to_line_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.backend.started { return }
+	if _, found := find_document(&app.backend.state, app.backend.state.active); !found { return }
+	app.go_to_line_open = true
+	app.go_to_line_query_node = 0
+	app.go_to_line_focus_pending = true
+	find_set_message(&app.go_to_line_query, "")
+	find_set_message(&app.go_to_line_error, "")
+	app.find_focus_pending = false
+	app.editor_focus_pending = false
+	alicorn.invalidate_root(rt, "Scratchpad Go to Line opened")
+}
+
+go_to_line_close :: proc(app: ^App, rt: ^alicorn.Runtime, restore_editor: bool) {
+	if app == nil { return }
+	app.go_to_line_open = false
+	app.go_to_line_focus_pending = false
+	app.go_to_line_query_node = 0
+	find_set_message(&app.go_to_line_error, "")
+	if restore_editor { app.editor_focus_pending = true }
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad Go to Line closed") }
+}
+
+go_to_line_parse_decimal :: proc(text: string) -> (value: u64, ok: bool) {
+	if len(text) == 0 { return 0, false }
+	for character in text {
+		if character < '0' || character > '9' { return 0, false }
+		digit := u64(character-'0')
+		if value > (0xFFFF_FFFF_FFFF_FFFF-digit)/10 { return 0, false }
+		value = value*10+digit
+	}
+	return value, true
+}
+
+go_to_line_parse :: proc(query: string, line_count: u64) -> (line, column: u64, ok: bool) {
+	start, end := 0, len(query)
+	for start < end && (query[start] == ' ' || query[start] == '\t') { start += 1 }
+	for end > start && (query[end-1] == ' ' || query[end-1] == '\t') { end -= 1 }
+	if start == end || line_count == 0 { return 0, 0, false }
+	colon := -1
+	for index in start..<end {
+		if query[index] == ':' {
+			if colon >= 0 { return 0, 0, false }
+			colon = index
+		}
+	}
+	line_end := end if colon < 0 else colon
+	parsed_line, line_ok := go_to_line_parse_decimal(query[start:line_end])
+	if !line_ok || parsed_line == 0 { return 0, 0, false }
+	column = 1
+	if colon >= 0 {
+		column, ok = go_to_line_parse_decimal(query[colon+1:end])
+		if !ok || column == 0 { return 0, 0, false }
+	}
+	line = min(parsed_line, line_count)-1
+	return line, column, true
+}
+
+go_to_line_submit :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || !app.backend.started { return true }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { app.go_to_line_error = "No active document."; return true }
+	line_count := document.line_count
+	if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
+		view := &app.editor_views[view_index]
+		if view.optimistic_pending_edits > 0 {
+			if view.optimistic_line_delta < 0 {
+				removed := u64(-view.optimistic_line_delta)
+				line_count = line_count-removed if removed < line_count else 1
+			} else { line_count += u64(view.optimistic_line_delta) }
+		}
+	}
+	target_line, column, parsed := go_to_line_parse(app.go_to_line_query, line_count)
+	if !parsed {
+		find_set_message(&app.go_to_line_error, "Enter a line number or line:column (both start at 1).")
+		alicorn.invalidate_root(rt, "Scratchpad Go to Line input was invalid")
+		return true
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { app.go_to_line_error = "Could not retain the active document view."; return true }
+	view := &app.editor_views[view_index]
+	view.pending_goto_line = true
+	view.pending_goto_target_line = target_line
+	view.pending_goto_column = column
+	view.preferred_x_set = false
+	view.viewport_anchor_pending = false
+	view.viewport_anchor_resolved = false
+	if window, exact := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision); exact {
+		if editor_view_resolve_goto_line(view, window, line_count) { view.pending_goto_target_line = target_line }
+	}
+	if app.editor_scroll_owner != 0 {
+		_ = editor_ensure_line_visible(rt, view, app.editor_scroll_owner, int(target_line), "Scratchpad Go to Line navigated to the requested logical row")
+	}
+	app.go_to_line_open = false
+	app.go_to_line_query_node = 0
+	app.go_to_line_focus_pending = false
+	app.editor_focus_pending = true
+	alicorn.invalidate_root(rt, "Scratchpad Go to Line requested its bounded source window")
+	return true
+}
+
+build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
+	if app == nil || ui == nil { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { return }
+	view := &app.editor_views[view_index]
+	window, _ := editor_presentation_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	line_count := document.line_count
+	if view.optimistic_pending_edits > 0 {
+		if view.optimistic_line_delta < 0 {
+			removed := u64(-view.optimistic_line_delta)
+			line_count = line_count-removed if removed < line_count else 1
+		} else { line_count += u64(view.optimistic_line_delta) }
+	}
+	location := "Ln —  Col —"
+	if view.pending_goto_line {
+		location = fmt.tprintf("Ln %d  Col %d", view.pending_goto_target_line+1, view.pending_goto_column)
+	} else if line, found := editor_line_for_source(window, view.caret_byte); found {
+		column := u64(1)
+		position := line.source_start
+		for position < min(view.caret_byte, line.source_end) {
+			next, _, moved := editor_move_horizontal(line, position, .Leading, 1)
+			if !moved || next <= position { break }
+			position = next
+			column += 1
+		}
+		location = fmt.tprintf("Ln %d  Col %d", line.logical_line+1, column)
+		if editor_window_is_long_line_chunk(window) { location = fmt.tprintf("%s  (chunk)", location) }
+	}
+	modified := ""
+	if document.dirty || view.optimistic_pending_edits > 0 { modified = "  • Modified" }
+	wrap_label := "Auto"
+	switch view.wrap_mode {
+	case .On: wrap_label = "On"
+	case .Off: wrap_label = "Off"
+	case .Auto: wrap_label = "Auto"
+	}
+	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string(fmt.tprintf("document-status:%s", document.id)), style=alicorn.layout_style(.Row, height=28, gap=14, padding=8, align=.Center), color=COLOR_SUBTLE)
+	alicorn.text(ui, fmt.tprintf("%s%s  ·  %s  ·  %d lines", location, modified, document.language, line_count))
+	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string(fmt.tprintf("document-wrap:%s", document.id)), style=alicorn.layout_style(.Row, width=96, height=24)) {
+		editor_toggle_wrap_mode(app, rt)
+	}
+	if alicorn.button(ui, "Go to Line…", key=alicorn.key_string(fmt.tprintf("document-goto:%s", document.id)), style=alicorn.layout_style(.Row, width=106, height=24)) {
+		go_to_line_open_surface(app, rt)
+	}
+	alicorn.container_end(ui)
 }
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
@@ -1983,11 +2212,15 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	}
 	entry, found := find_action(&app.backend.state, action_id)
 	if !found || !entry.visible { return }
-	selection_command := action_id == ACTION_DOCUMENT_FORMAT ||
+	markdown_selection_command := action_id == ACTION_DOCUMENT_FORMAT ||
+	                     action_id == ACTION_MARKDOWN_TOGGLE_STRONG ||
+	                     action_id == ACTION_MARKDOWN_TOGGLE_EMPHASIS ||
+	                     action_id == ACTION_MARKDOWN_TOGGLE_INLINE_CODE ||
+	                     action_id == ACTION_MARKDOWN_INSERT_TASK ||
 	                     action_id == ACTION_MARKDOWN_TABLE_NEXT ||
 	                     action_id == ACTION_MARKDOWN_TABLE_PREVIOUS ||
 	                     action_id == ACTION_MARKDOWN_TABLE_ENTER
-	if selection_command {
+	if markdown_selection_command {
 		document, document_found := find_document(&app.backend.state, app.backend.state.active)
 		if !document_found || document.language != "markdown" { return }
 	} else if !entry.enabled {
@@ -2039,7 +2272,9 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
 		}
 		bridge.backend_command_result_destroy(&response, context.allocator)
-	case ACTION_DOCUMENT_FORMAT, ACTION_MARKDOWN_TABLE_NEXT, ACTION_MARKDOWN_TABLE_PREVIOUS, ACTION_MARKDOWN_TABLE_ENTER:
+	case ACTION_DOCUMENT_FORMAT, ACTION_MARKDOWN_TOGGLE_STRONG, ACTION_MARKDOWN_TOGGLE_EMPHASIS,
+		 ACTION_MARKDOWN_TOGGLE_INLINE_CODE, ACTION_MARKDOWN_INSERT_TASK, ACTION_EDIT_DELETE_LINE,
+		 ACTION_MARKDOWN_TABLE_NEXT, ACTION_MARKDOWN_TABLE_PREVIOUS, ACTION_MARKDOWN_TABLE_ENTER:
 		document, found := find_document(&app.backend.state, app.backend.state.active)
 		if !found { break }
 		view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
@@ -2313,6 +2548,11 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 			return true
 		}
 		return key != .Return
+	}
+	if app.go_to_line_open {
+		if key == .Escape { go_to_line_close(app, rt, true); return true }
+		if key == .Return { return go_to_line_submit(app, rt) }
+		return true
 	}
 	if app.workspace_mutation_kind != .None {
 		return workspace_mutation_handle_key(app, rt, key)
@@ -2744,6 +2984,18 @@ editor_text_key :: proc(
 	if event.key == .Backspace || event.key == .Delete ||
 	   event.key == .Delete_Word_Backward || event.key == .Delete_Word_Forward ||
 	   event.key == .Delete_Line_Backward || event.key == .Delete_Line_Forward {
+		if event.key == .Backspace && view.selection_anchor == view.caret_byte && view.auto_pair_valid &&
+		   view.caret_byte == view.auto_pair_closer_byte && view.caret_byte > window.start_byte {
+			local := int(view.caret_byte-window.start_byte)
+			if local > 0 && local < len(window.source) {
+				opener, closer := window.source[local-1], window.source[local]
+				if editor_pair_closer_for_opener(opener) == closer {
+					_ = editor_apply_local_replace(app, rt, view.caret_byte-1, view.caret_byte+1, {}, view.caret_byte-1, view.caret_byte-1)
+					view.auto_pair_valid = false
+					return true
+				}
+			}
+		}
 		start_byte := view.caret_byte
 		end_byte := view.caret_byte
 		if view.selection_anchor != view.caret_byte {
@@ -2776,11 +3028,15 @@ editor_text_key :: proc(
 					return true
 				}
 			case .Delete_Word_Backward:
-				previous, _, moved := editor_move_word_source(window, view.caret_byte, view.caret_affinity, -1)
+				move := editor_move_word_source
+				if event.control && event.alt { move = editor_move_subword_source }
+				previous, _, moved := move(window, view.caret_byte, view.caret_affinity, -1)
 				if !moved { return true }
 				start_byte = previous
 			case .Delete_Word_Forward:
-				next, _, moved := editor_move_word_source(window, view.caret_byte, view.caret_affinity, 1)
+				move := editor_move_word_source
+				if event.control && event.alt { move = editor_move_subword_source }
+				next, _, moved := move(window, view.caret_byte, view.caret_affinity, 1)
 				if !moved { return true }
 				end_byte = next
 			case .Delete_Line_Backward:
@@ -2809,6 +3065,10 @@ editor_text_key :: proc(
 	selection_exists := view.selection_anchor != view.caret_byte
 	leftward := event.key == .Left || event.key == .Word_Left
 	rightward := event.key == .Right || event.key == .Word_Right
+	move_word := editor_move_word_source
+	if event.control && event.alt && (event.key == .Word_Left || event.key == .Word_Right) {
+		move_word = editor_move_subword_source
+	}
 	if !shift && selection_exists && (leftward || rightward) {
 		boundary := view.selection_anchor
 		boundary_affinity := view.anchor_affinity
@@ -2817,7 +3077,7 @@ editor_text_key :: proc(
 		}
 		if event.key == .Word_Left || event.key == .Word_Right {
 			direction := -1 if leftward else 1
-			moved_caret, moved_affinity, moved := editor_move_word_source(window, boundary, boundary_affinity, direction)
+			moved_caret, moved_affinity, moved := move_word(window, boundary, boundary_affinity, direction)
 			if moved { next_caret, next_affinity = moved_caret, moved_affinity }
 		} else {
 			next_caret, next_affinity = boundary, boundary_affinity
@@ -2829,7 +3089,7 @@ editor_text_key :: proc(
 		case .Left, .Right, .Word_Left, .Word_Right:
 			direction := -1 if leftward else 1
 			if event.key == .Word_Left || event.key == .Word_Right {
-				moved_caret, moved_affinity, moved := editor_move_word_source(window, old_caret, old_affinity, direction)
+				moved_caret, moved_affinity, moved := move_word(window, old_caret, old_affinity, direction)
 				if !moved { return true }
 				next_caret, next_affinity = moved_caret, moved_affinity
 			} else if direction < 0 && old_caret == line.source_start {
@@ -2913,7 +3173,7 @@ editor_text_key :: proc(
 			}
 			current_geometry, current_visual_rows, _, current_measured := editor_line_visual_caret_metrics(
 				rt, window, &current_display_line, document.language, current_width, presentation_current,
-				current_node, old_caret, old_affinity,
+				current_node, old_caret, old_affinity, true, view.wrap_mode,
 			)
 			if !current_measured || !current_geometry.valid { return true }
 			if !view.preferred_x_set {
@@ -3010,7 +3270,7 @@ editor_text_key :: proc(
 				if target_line != current_line {
 					_, target_visual_rows, _, target_measured := editor_line_visual_caret_metrics(
 						rt, window, &target_display_line, document.language, target_width, presentation_current,
-						target_node, 0, .Leading, false,
+						target_node, 0, .Leading, false, view.wrap_mode,
 					)
 					if !target_measured { return true }
 					mapped_visual_row = 0 if event.key == .Down else target_visual_rows-1
@@ -3024,7 +3284,7 @@ editor_text_key :: proc(
 			}
 			mapped_caret, mapped_affinity, moved := editor_source_at_visual_point(
 				rt, window, &target_display_line, document.language, target_width, presentation_current,
-				target_node, target_visual_x, target_visual_y, mapped_visual_row,
+				target_node, target_visual_x, target_visual_y, mapped_visual_row, view.wrap_mode,
 			)
 			if !moved { return true }
 			next_caret, next_affinity = mapped_caret, mapped_affinity
@@ -3119,6 +3379,7 @@ editor_apply_local_replace_with_wire :: proc(
 	replacement, wire_replacement: []u8,
 	resulting_anchor, resulting_caret: u64,
 	typing_group_id: u64 = 0,
+	action_id := "",
 ) -> bool {
 	if app == nil || rt == nil || !app.backend.started || end_byte < start_byte {
 		return false
@@ -3157,6 +3418,18 @@ editor_apply_local_replace_with_wire :: proc(
 	if typing_group_id == 0 { editor_undo_group_break(view) }
 	local_start := int(start_byte-window.start_byte)
 	local_end := int(end_byte-window.start_byte)
+	if view.auto_pair_valid {
+		marker := view.auto_pair_closer_byte
+		if start_byte <= marker && end_byte <= marker {
+			delta := i64(len(replacement))-i64(end_byte-start_byte)
+			if delta < 0 {
+				removed := u64(-delta)
+				view.auto_pair_closer_byte = marker-removed if removed <= marker else 0
+			} else { view.auto_pair_closer_byte = marker+u64(delta) }
+		} else if start_byte <= marker && end_byte > marker {
+			view.auto_pair_valid = false
+		}
+	}
 	removed_line_breaks := editor_count_line_breaks(window.source[local_start:local_end])
 	new_window, replaced, replace_error := editor_window_replace_bytes(window, start_byte, end_byte, replacement)
 	if !replaced {
@@ -3170,9 +3443,20 @@ editor_apply_local_replace_with_wire :: proc(
 		set_error(app, "Could not retain the edit's document identity.")
 		return false
 	}
+	owned_action_id: string
+	if action_id != "" {
+		owned_action_id, id_error = strings.clone(action_id, context.allocator)
+		if id_error != nil {
+			delete(document_id, context.allocator)
+			editor_window_destroy(&new_window)
+			set_error(app, "Could not retain the semantic edit intent.")
+			return false
+		}
+	}
 	replacement_copy, replacement_error := make([]u8, len(replacement), allocator=context.allocator)
 	if replacement_error != nil {
 		delete(document_id, context.allocator)
+		if len(owned_action_id) > 0 { delete(owned_action_id, context.allocator) }
 		editor_window_destroy(&new_window)
 		set_error(app, "Could not retain replacement bytes for the serial edit queue.")
 		return false
@@ -3183,6 +3467,7 @@ editor_apply_local_replace_with_wire :: proc(
 		wire_copy, replacement_error = make([]u8, len(wire_replacement), allocator=context.allocator)
 		if replacement_error != nil {
 			delete(document_id, context.allocator)
+			if len(owned_action_id) > 0 { delete(owned_action_id, context.allocator) }
 			delete(replacement_copy, context.allocator)
 			editor_window_destroy(&new_window)
 			set_error(app, "Could not retain the authoritative replacement bytes for the serial edit queue.")
@@ -3219,6 +3504,7 @@ editor_apply_local_replace_with_wire :: proc(
 		after_anchor_byte=selection_snapshot.after_anchor_byte,
 		after_cursor_byte=selection_snapshot.after_cursor_byte,
 		typing_group_id=typing_group_id,
+		action_id=owned_action_id,
 		replacement=replacement_copy,
 		wire_replacement=wire_copy,
 	})
@@ -3255,6 +3541,23 @@ editor_insert_newline :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	line, line_found := editor_line_for_source(window, start_byte)
 	if !line_found {
 		set_error(app, "The source line needed for Enter is outside the loaded window.")
+		return true
+	}
+	action_id := ""
+	if document.language == "markdown" && view.selection_anchor == view.caret_byte {
+		projection, projection_ok := editor_markdown_enter_projection(window, line, view.caret_byte)
+		if !projection_ok {
+			set_error(app, "Could not project Markdown Enter into the bounded source window.")
+			return true
+		}
+		start_byte, end_byte = projection.start_byte, projection.end_byte
+		replacement := projection.replacement
+		defer delete(replacement, context.temp_allocator)
+		caret := start_byte+u64(len(replacement))
+		action_id = ACTION_MARKDOWN_ENTER
+		_ = editor_apply_local_replace_with_wire(
+			app, rt, start_byte, end_byte, replacement, []u8{'\n'}, caret, caret, 0, action_id,
+		)
 		return true
 	}
 	replacement, projection_ok := editor_enter_projection(window, line)
@@ -3344,6 +3647,7 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 		edit.after_anchor_byte,
 		edit.after_cursor_byte,
 		edit.typing_group_id,
+		edit.action_id,
 	)
 }
 
@@ -3499,6 +3803,18 @@ shutdown_note_edit_failure :: proc(app: ^App) {
 	if app != nil && app.shutdown_intent != .None { app.shutdown_edit_failed = true }
 }
 
+editor_pair_closer_for_opener :: proc(opener: u8) -> u8 {
+	switch opener {
+	case '(': return ')'
+	case '[': return ']'
+	case '{': return '}'
+	case '"': return '"'
+	case '\'': return '\''
+	case '`': return '`'
+	}
+	return 0
+}
+
 editor_flush_pending_edits :: proc(app: ^App) -> bool {
 	if app == nil { return false }
 	for len(app.editor_edits) > 0 {
@@ -3586,6 +3902,7 @@ editor_text_input :: proc(
 		}
 		return
 	}
+	was_composition := view.preedit_active || view.preedit_recoverable
 	start_byte, end_byte := min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)
 	if view.preedit_recoverable {
 		// A later text-input commit must not replace (and lose) the earlier OS
@@ -3628,6 +3945,48 @@ editor_text_input :: proc(
 		start_byte, end_byte = view.preedit_replace_start, view.preedit_replace_end
 	}
 	replacement := transmute([]u8)event.text
+	if !was_composition && len(replacement) == 1 {
+		window, exact_window := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+		if exact_window && view.selection_anchor == view.caret_byte && view.auto_pair_valid &&
+		   view.caret_byte == view.auto_pair_closer_byte && view.caret_byte >= window.start_byte {
+			local := int(view.caret_byte-window.start_byte)
+			if local < len(window.source) && window.source[local] == replacement[0] && replacement[0] == view.auto_pair_closer {
+				view.caret_byte += 1
+				view.selection_anchor = view.caret_byte
+				view.anchor_affinity = .Trailing
+				view.caret_affinity = .Trailing
+				view.preferred_x_set = false
+				view.auto_pair_valid = false
+				editor_undo_group_break(view)
+				alicorn.invalidate_root(rt, "Scratchpad skipped the matching auto-pair closer")
+				return
+			}
+		}
+		closer := editor_pair_closer_for_opener(replacement[0])
+		if exact_window && closer != 0 {
+			selected, selection_available := editor_selected_source_bytes(window, view.selection_anchor, view.caret_byte)
+			if selection_available {
+				pair_bytes, allocation_error := make([]u8, len(selected)+2, allocator=context.temp_allocator)
+				if allocation_error == nil {
+					pair_bytes[0], pair_bytes[len(pair_bytes)-1] = replacement[0], closer
+					if len(selected) > 0 { mem.copy(rawptr(&pair_bytes[1]), rawptr(&selected[0]), len(selected)) }
+					inner_start := start_byte+1
+					inner_end := inner_start+u64(len(selected))
+					result_anchor, result_caret := inner_start, inner_end
+					if view.selection_anchor > view.caret_byte { result_anchor, result_caret = inner_end, inner_start }
+					if editor_apply_local_replace(app, rt, start_byte, end_byte, pair_bytes, result_anchor, result_caret) {
+						view.auto_pair_closer_byte = inner_end
+						view.auto_pair_closer = closer
+						view.auto_pair_valid = true
+						editor_preedit_clear(view)
+						sync_menu_states(app)
+						sync_runtime_actions(app, rt)
+						return
+					}
+				}
+			}
+		}
+	}
 	resulting_caret := start_byte+u64(len(replacement))
 	if editor_apply_local_typing_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
 		editor_preedit_clear(view)
@@ -3842,6 +4201,10 @@ sync_menu_states :: proc(app: ^App) {
 	for &item in app.document_items {
 		if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_FORMAT) {
 			item.state.enabled = has_document && active_document.language == "markdown"
+		} else if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) {
+			item.state.enabled = has_document
+		} else if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) {
+			item.state.enabled = has_document
 		}
 	}
 	active_view: ^Editor_View_State
@@ -3891,6 +4254,8 @@ sync_menu_states :: proc(app: ^App) {
 			item.state = alicorn.Action_State{enabled=has_document && paste_range_available && app.services.clipboard.get_text != nil}
 		case ACTION_EDIT_SELECT_ALL:
 			item.state = alicorn.Action_State{enabled=has_document && editor_current_byte_length(app, active_document) > 0}
+		case ACTION_EDIT_DELETE_LINE:
+			item.state = alicorn.Action_State{enabled=has_document}
 		}
 		if composition_active {
 			switch string_for_action_id(item.command) {
@@ -3910,6 +4275,7 @@ string_for_action_id :: proc(id: host.Application_Command_ID) -> string {
 	if id == action_id_for(ACTION_EDIT_COPY) { return ACTION_EDIT_COPY }
 	if id == action_id_for(ACTION_EDIT_PASTE) { return ACTION_EDIT_PASTE }
 	if id == action_id_for(ACTION_EDIT_SELECT_ALL) { return ACTION_EDIT_SELECT_ALL }
+	if id == action_id_for(ACTION_EDIT_DELETE_LINE) { return ACTION_EDIT_DELETE_LINE }
 	return ""
 }
 
@@ -4302,7 +4668,7 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE), label="Save", shortcut=host.Application_Menu_Shortcut{'S', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_CLOSE), label="Close Document", shortcut=host.Application_Menu_Shortcut{'W', {.Primary}}},
 	}
-	app.edit_items = [8]host.Application_Menu_Item{
+	app.edit_items = [10]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_EDIT_UNDO), label="Undo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_REDO), label="Redo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary, .Shift}}},
 		{kind=.Separator},
@@ -4311,6 +4677,8 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_EDIT_PASTE), label="Paste", shortcut=host.Application_Menu_Shortcut{'V', {.Primary}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_SELECT_ALL), label="Select All", shortcut=host.Application_Menu_Shortcut{'A', {.Primary}}},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_EDIT_DELETE_LINE), label="Delete Line", shortcut=host.Application_Menu_Shortcut{'K', {.Primary, .Shift}}},
 	}
 	app.workspace_items = [6]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FILE), label="New File"},
@@ -4320,11 +4688,18 @@ init_menus :: proc(app: ^App) {
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SETTINGS), label="Settings…"},
 	}
-	app.document_items = [4]host.Application_Menu_Item{
+	app.document_items = [11]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_TAB_NEXT), label="Next Document"},
 		{kind=.Command, command=action_id_for(ACTION_TAB_PREVIOUS), label="Previous Document"},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_FORMAT), label="Format Table"},
+		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_GO_TO_LINE), label="Go to Line…", shortcut=host.Application_Menu_Shortcut{'G', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP), label="Cycle Word Wrap"},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_STRONG), label="Strong", shortcut=host.Application_Menu_Shortcut{'B', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_EMPHASIS), label="Emphasis", shortcut=host.Application_Menu_Shortcut{'I', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
+		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 	}
 	app.menus = [4]host.Application_Menu{
 		{label="File", items=app.file_items[:]},

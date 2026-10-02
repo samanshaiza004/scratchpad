@@ -80,6 +80,8 @@ Editor_Window :: struct {
 	lines:           [dynamic]Editor_Display_Line,
 }
 
+Editor_Wrap_Mode :: enum { Auto, On, Off }
+
 Editor_View_State :: struct {
 	document_id:       string,
 	scroll_y:          f32,
@@ -87,6 +89,7 @@ Editor_View_State :: struct {
 	horizontal_extent: f32,
 	extent_revision:    u64,
 	horizontal_scroll_suspended: bool,
+	wrap_mode: Editor_Wrap_Mode,
 	restore_y_pending: bool,
 	restore_x_pending: bool,
 	selection_anchor:  u64,
@@ -95,6 +98,12 @@ Editor_View_State :: struct {
 	caret_affinity:    alicorn.Text_Affinity,
 	preferred_x:       f32,
 	preferred_x_set:   bool,
+	pending_goto_line: bool,
+	pending_goto_column: u64,
+	pending_goto_target_line: u64,
+	auto_pair_closer_byte: u64,
+	auto_pair_closer: u8,
+	auto_pair_valid: bool,
 	preedit_text:      []u8,
 	preedit_active:    bool,
 	// A committed SDL text event can be rejected by the bounded edit lane. Keep
@@ -124,6 +133,7 @@ Editor_View_State :: struct {
 	wrap_measurement_start_line: u64,
 	wrap_measurement_end_line: u64,
 	wrap_measurement_pending_edits: u64,
+	wrap_measurement_mode: Editor_Wrap_Mode,
 	wrap_last_outer_width: f32,
 	wrap_last_outer_height: f32,
 	wrap_last_split_position: f32,
@@ -317,6 +327,7 @@ Editor_Edit_Intent :: struct {
 	after_anchor_byte:  u64,
 	after_cursor_byte:  u64,
 	typing_group_id:    u64,
+	action_id:         string,
 	replacement:       []u8,
 	wire_replacement:  []u8,
 }
@@ -434,11 +445,12 @@ editor_navigation_text_run :: proc(
 	language: string,
 	width: f32,
 	presentation_current: bool,
+	wrap_mode := Editor_Wrap_Mode.Auto,
 ) -> (run: alicorn.Text_Run, ok: bool) {
 	if line == nil { return }
 	style_spans: []alicorn.Text_Style_Span
 	if presentation_current { style_spans = editor_presentation_text_styles_for_line(window, line, context.temp_allocator) }
-	wrap := editor_line_should_wrap(language, window, line, presentation_current, width)
+	wrap := editor_line_should_wrap_for_view(language, window, line, presentation_current, width, wrap_mode)
 	overflow := alicorn.Text_Overflow.Clip
 	max_width: f32 = 0
 	if wrap {
@@ -462,6 +474,7 @@ editor_line_visual_caret_metrics :: proc(
 	source_byte: u64,
 	affinity: alicorn.Text_Affinity,
 	measure_caret := true,
+	wrap_mode := Editor_Wrap_Mode.Auto,
 ) -> (geometry: alicorn.Text_Caret_Geometry, visual_rows: int, run_height: f32, ok: bool) {
 	if rt == nil || line == nil { return }
 	position := alicorn.Text_Position{byte=editor_source_to_display(line, source_byte), affinity=affinity}
@@ -473,7 +486,7 @@ editor_line_visual_caret_metrics :: proc(
 			return
 		}
 	}
-	run, built := editor_navigation_text_run(rt, window, line, language, width, presentation_current)
+	run, built := editor_navigation_text_run(rt, window, line, language, width, presentation_current, wrap_mode)
 	if !built { return }
 	defer alicorn.text_run_destroy(&run)
 	visual_rows, run_height = len(run.lines), run.height
@@ -494,6 +507,7 @@ editor_source_at_visual_point :: proc(
 	text_node: alicorn.Node_ID,
 	visual_x, visual_y: f32,
 	visual_row := -1,
+	wrap_mode := Editor_Wrap_Mode.Auto,
 ) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
 	if rt == nil || line == nil { return }
 	position: alicorn.Text_Position
@@ -505,7 +519,7 @@ editor_source_at_visual_point :: proc(
 		}
 		position = alicorn.text_run_hit_test(&node.text_run, visual_x, y, rt.scratch_allocator)
 	} else {
-		run, built := editor_navigation_text_run(rt, window, line, language, width, presentation_current)
+		run, built := editor_navigation_text_run(rt, window, line, language, width, presentation_current, wrap_mode)
 		if !built { return }
 		defer alicorn.text_run_destroy(&run)
 		y := visual_y
@@ -836,6 +850,7 @@ editor_views_destroy :: proc(views: ^[dynamic]Editor_View_State, allocator := co
 editor_edit_intent_destroy :: proc(intent: ^Editor_Edit_Intent, allocator := context.allocator) {
 	if intent == nil { return }
 	if len(intent.document_id) > 0 { delete(intent.document_id, allocator) }
+	if len(intent.action_id) > 0 { delete(intent.action_id, allocator) }
 	delete(intent.replacement, allocator)
 	delete(intent.wire_replacement, allocator)
 	intent^ = {}
@@ -1712,6 +1727,138 @@ editor_view_resolve_document_edge :: proc(
 	return true
 }
 
+// Go-to-line remains a byte-based view intent until its logical row is in the
+// bounded window. Column is one-based and counted in Runa grapheme steps.
+editor_view_resolve_goto_line :: proc(
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	line_count: u64,
+) -> bool {
+	if view == nil || window == nil || !view.pending_goto_line || line_count == 0 { return false }
+	target_line := min(view.pending_goto_target_line, line_count-1)
+	line, found := editor_window_line(window, target_line)
+	if !found { return false }
+	position := editor_normalize_source_position(line, line.source_start)
+	column := max(view.pending_goto_column, 1)
+	for _ in 1..<column {
+		next, _, moved := editor_move_horizontal(line, position, .Leading, 1)
+		if !moved { break }
+		position = next
+	}
+	view.selection_anchor = position
+	view.caret_byte = position
+	view.anchor_affinity = .Leading
+	view.caret_affinity = .Leading
+	view.pending_goto_line = false
+	view.pending_goto_column = 0
+	view.pending_goto_target_line = 0
+	view.pending_document_edge = .None
+	view.pending_document_edge_shift = false
+	view.preferred_x_set = false
+	return true
+}
+
+// editor_subword_move_ascii provides source-language-neutral identifier
+// subword boundaries for ASCII identifiers. Non-ASCII and punctuation remain
+// on Runa's normal Unicode word path.
+editor_subword_move_ascii :: proc(text: string, byte: int, direction: int) -> (next: int, handled: bool) {
+	if direction == 0 || byte < 0 || byte > len(text) { return byte, false }
+	is_part := proc(value: u8) -> bool {
+		return value == '_' || (value >= 'a' && value <= 'z') ||
+		       (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9')
+	}
+	is_lower := proc(value: u8) -> bool { return value >= 'a' && value <= 'z' }
+	is_upper := proc(value: u8) -> bool { return value >= 'A' && value <= 'Z' }
+	is_digit := proc(value: u8) -> bool { return value >= '0' && value <= '9' }
+	inside := false
+	if byte > 0 && is_part(text[byte-1]) { inside = true }
+	if byte < len(text) && is_part(text[byte]) { inside = true }
+	if !inside { return byte, false }
+	start := byte
+	if start == len(text) || (start > 0 && !is_part(text[start])) { start -= 1 }
+	for start > 0 && is_part(text[start-1]) { start -= 1 }
+	end := byte
+	if end < len(text) && !is_part(text[end]) { end += 1 }
+	for end < len(text) && is_part(text[end]) { end += 1 }
+	if end <= start { return byte, false }
+	boundaries: [dynamic]int
+	defer delete(boundaries)
+	append(&boundaries, start)
+	for index := start+1; index < end; index += 1 {
+		previous, current := text[index-1], text[index]
+		if previous == '_' || current == '_' ||
+		   (is_lower(previous) && is_upper(current)) ||
+		   (is_digit(previous) != is_digit(current)) {
+			append(&boundaries, index)
+			continue
+		}
+		if is_upper(previous) && is_upper(current) && index+1 < end && is_lower(text[index+1]) {
+			append(&boundaries, index)
+		}
+	}
+	append(&boundaries, end)
+	if direction < 0 {
+		for index := len(boundaries)-1; index >= 0; index -= 1 {
+			if boundaries[index] < byte { return boundaries[index], true }
+		}
+	} else {
+		for boundary in boundaries {
+			if boundary > byte { return boundary, true }
+		}
+	}
+	return byte, true
+}
+
+Editor_Bracket_Match :: struct { first: u64, second: u64 }
+
+editor_bracket_match_in_window :: proc(window: ^Editor_Window, caret_byte: u64) -> (match: Editor_Bracket_Match, found: bool) {
+	if window == nil || len(window.source) == 0 { return }
+	window_end := window.start_byte+u64(len(window.source))
+	if caret_byte < window.start_byte || caret_byte > window_end { return }
+	local := int(caret_byte-window.start_byte)
+	index := -1
+	if local < len(window.source) && editor_is_bracket(window.source[local]) { index = local }
+	if index < 0 && local > 0 && editor_is_bracket(window.source[local-1]) { index = local-1 }
+	if index < 0 { return }
+	value := window.source[index]
+	opening := value == '(' || value == '[' || value == '{'
+	partner := editor_bracket_partner(value)
+	if partner == 0 { return }
+	depth := 0
+	step := 1 if opening else -1
+	position := index
+	for position >= 0 && position < len(window.source) {
+		candidate := window.source[position]
+		if candidate == value { depth += 1 }
+		if candidate == partner {
+			depth -= 1
+			if depth == 0 {
+				left := min(index, position)
+				right := max(index, position)
+				return Editor_Bracket_Match{window.start_byte+u64(left), window.start_byte+u64(right)}, true
+			}
+		}
+		position += step
+	}
+	return
+}
+
+editor_is_bracket :: proc(value: u8) -> bool {
+	return value == '(' || value == ')' || value == '[' || value == ']' || value == '{' || value == '}'
+}
+
+editor_bracket_partner :: proc(value: u8) -> u8 {
+	switch value {
+	case '(': return ')'
+	case ')': return '('
+	case '[': return ']'
+	case ']': return '['
+	case '{': return '}'
+	case '}': return '{'
+	}
+	return 0
+}
+
 editor_position_after_delete :: proc(position, start_byte, end_byte: u64) -> u64 {
 	if position <= start_byte { return position }
 	if position >= end_byte { return position-(end_byte-start_byte) }
@@ -1821,6 +1968,24 @@ editor_move_word_source :: proc(
 	return source_byte, affinity, false
 }
 
+editor_move_subword_source :: proc(
+	window: ^Editor_Window,
+	source_byte: u64,
+	affinity: alicorn.Text_Affinity,
+	direction: int,
+) -> (next_source: u64, next_affinity: alicorn.Text_Affinity, moved: bool) {
+	if window == nil || direction == 0 { return source_byte, affinity, false }
+	line, found := editor_line_for_source(window, source_byte)
+	if !found { return source_byte, affinity, false }
+	display_byte := editor_source_to_display(line, source_byte)
+	display_target, handled := editor_subword_move_ascii(line.display, display_byte, direction)
+	if handled {
+		mapped := editor_normalize_source_position(line, editor_display_to_source(line, display_target))
+		if mapped != source_byte { return mapped, .Leading, true }
+	}
+	return editor_move_word_source(window, source_byte, affinity, direction)
+}
+
 editor_window_destroy :: proc(window: ^Editor_Window, allocator := context.allocator) {
 	if window == nil { return }
 	if len(window.document_id) > 0 { delete(window.document_id, allocator) }
@@ -1924,6 +2089,158 @@ editor_enter_projection :: proc(
 		mem.copy(rawptr(&result[eol_length]), rawptr(&window.source[line_start]), indent_length)
 	}
 	return result, true
+}
+
+Editor_Markdown_Enter_Projection :: struct {
+	start_byte: u64,
+	end_byte: u64,
+	remove_from: int,
+	breakout: bool,
+	replacement: []u8,
+}
+
+// editor_markdown_enter_projection mirrors the bounded, common Markdown list
+// and quote continuation semantics used by Go. Go remains authoritative; the
+// returned bytes are only the immediate optimistic projection.
+editor_markdown_enter_projection :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	cursor_byte: u64,
+	allocator := context.temp_allocator,
+) -> (projection: Editor_Markdown_Enter_Projection, ok: bool) {
+	if window == nil || line == nil || cursor_byte < line.source_start || cursor_byte > line.source_end ||
+	   line.source_start < window.start_byte || line.source_end < line.source_start {
+		return {}, false
+	}
+	line_start := int(line.source_start-window.start_byte)
+	line_end := int(line.source_end-window.start_byte)
+	cursor := int(cursor_byte-window.start_byte)
+	if line_start < 0 || line_end > len(window.source) || cursor < line_start || cursor > line_end { return {}, false }
+	prefix_end := min(cursor, line_start+4096)
+	line_prefix := window.source[line_start:prefix_end]
+	at_line_end := cursor == line_end
+
+	prefix := make([dynamic]u8, 0, len(line_prefix)+16, allocator=allocator)
+	remove_from, breakout, prefix_ok := editor_markdown_enter_prefix(line_prefix, at_line_end, &prefix, allocator)
+	if !prefix_ok {
+		delete(prefix)
+		return {}, false
+	}
+	defer delete(prefix)
+
+	eol_length := 1
+	eol_crlf := false
+	for value, index in window.source {
+		if value != '\n' { continue }
+		if index > 0 && window.source[index-1] == '\r' { eol_length, eol_crlf = 2, true }
+		break
+	}
+	replacement, allocation_error := make([]u8, eol_length+len(prefix), allocator=allocator)
+	if allocation_error != nil { return {}, false }
+	if eol_crlf { replacement[0], replacement[1] = '\r', '\n' } else { replacement[0] = '\n' }
+	for value, index in prefix { replacement[eol_length+index] = value }
+	projection.start_byte = cursor_byte
+	projection.remove_from = remove_from
+	projection.breakout = breakout
+	if breakout { projection.start_byte = line.source_start+u64(remove_from) }
+	projection.end_byte = cursor_byte
+	projection.replacement = replacement
+	return projection, true
+}
+
+editor_markdown_enter_prefix :: proc(
+	line_prefix: []u8,
+	at_line_end: bool,
+	out: ^[dynamic]u8,
+	allocator := context.temp_allocator,
+) -> (remove_from: int, breakout: bool, ok: bool) {
+	if out == nil { return 0, false, false }
+	indent_end := 0
+	for indent_end < len(line_prefix) && (line_prefix[indent_end] == ' ' || line_prefix[indent_end] == '\t') { indent_end += 1 }
+	quote_end := indent_end
+	quote_prefix := make([dynamic]u8, 0, len(line_prefix)+4, allocator=allocator)
+	for index in 0..<indent_end { append(&quote_prefix, line_prefix[index]) }
+	for quote_end < len(line_prefix) && line_prefix[quote_end] == '>' {
+		append(&quote_prefix, '>', ' ')
+		quote_end += 1
+		if quote_end < len(line_prefix) && line_prefix[quote_end] == ' ' { quote_end += 1 }
+		for quote_end < len(line_prefix) && line_prefix[quote_end] == '\t' { quote_end += 1 }
+	}
+	defer delete(quote_prefix)
+
+	list_start := quote_end
+	marker_end, ordered := editor_markdown_list_marker(line_prefix, list_start)
+	if marker_end <= list_start {
+		if at_line_end && quote_end > indent_end && len(line_prefix) == quote_end {
+			for index in 0..<indent_end { append(out, line_prefix[index]) }
+			return indent_end, true, true
+		}
+		for value in quote_prefix { append(out, value) }
+		return 0, false, true
+	}
+
+	item_content_start := marker_end
+	task_start := marker_end
+	for task_start < len(line_prefix) && (line_prefix[task_start] == ' ' || line_prefix[task_start] == '\t') { task_start += 1 }
+	task := task_start+3 < len(line_prefix) && line_prefix[task_start] == '[' &&
+	        (line_prefix[task_start+1] == ' ' || line_prefix[task_start+1] == 'x' || line_prefix[task_start+1] == 'X') &&
+	        line_prefix[task_start+2] == ']' && (line_prefix[task_start+3] == ' ' || line_prefix[task_start+3] == '\t')
+	if task { item_content_start = task_start+4 }
+	content_empty := true
+	for value in line_prefix[item_content_start:] {
+		if value != ' ' && value != '\t' && value != '\r' && value != '\n' { content_empty = false; break }
+	}
+	if at_line_end && content_empty {
+		for value in quote_prefix { append(out, value) }
+		return list_start, true, true
+	}
+
+	for value in quote_prefix { append(out, value) }
+	if ordered {
+		marker_byte := list_start
+		for marker_byte < marker_end && line_prefix[marker_byte] >= '0' && line_prefix[marker_byte] <= '9' { marker_byte += 1 }
+		number: u64 = 0
+		parsed := marker_byte > list_start
+		for index in list_start..<marker_byte {
+			digit := u64(line_prefix[index]-'0')
+			if number > (0xFFFF_FFFF_FFFF_FFFF-digit)/10 { parsed = false; break }
+			number = number*10+digit
+		}
+		if parsed && number < 0xFFFF_FFFF_FFFF_FFFF {
+			number += 1
+			digits: [dynamic]u8
+			for number > 0 {
+				append(&digits, u8('0'+number%10))
+				number /= 10
+			}
+			old_width := marker_byte-list_start
+			for _ in 0..<max(old_width-len(digits), 0) { append(out, '0') }
+			for index := len(digits)-1; index >= 0; index -= 1 { append(out, digits[index]) }
+			delete(digits)
+			for index in marker_byte..<marker_end { append(out, line_prefix[index]) }
+		} else {
+			for index in list_start..<marker_end { append(out, line_prefix[index]) }
+		}
+	} else {
+		for index in list_start..<marker_end { append(out, line_prefix[index]) }
+	}
+	if task { append(out, '[', ' ', ']', ' ') }
+	return 0, false, true
+}
+
+editor_markdown_list_marker :: proc(line: []u8, start: int) -> (end: int, ordered: bool) {
+	if start >= len(line) { return 0, false }
+	index := start
+	if line[index] == '-' || line[index] == '+' || line[index] == '*' {
+		index += 1
+	} else {
+		for index < len(line) && line[index] >= '0' && line[index] <= '9' { index += 1 }
+		if index == start || index >= len(line) || (line[index] != '.' && line[index] != ')') { return 0, false }
+		ordered = true
+		index += 1
+	}
+	if index >= len(line) || (line[index] != ' ' && line[index] != '\t') { return 0, false }
+	return index+1, ordered
 }
 
 // editor_window_replace_bytes updates only the already-bounded source window.
@@ -2252,6 +2569,35 @@ editor_line_should_wrap :: proc(language: string, window: ^Editor_Window, line: 
 	return true
 }
 
+// User wrap preferences apply to ordinary logical rows. Parser-owned fenced
+// code and table layout retain their established policy so toggling prose wrap
+// cannot turn a table into independently reflowed cells or wrap a code block.
+editor_line_should_wrap_for_view :: proc(
+	language: string,
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	presentation_current := true,
+	width: f32 = 0,
+	mode := Editor_Wrap_Mode.Auto,
+) -> bool {
+	baseline := editor_line_should_wrap(language, window, line, presentation_current, width)
+	if mode == .Auto || window == nil || line == nil { return baseline }
+	if editor_table_line_is_projected(window, line) { return baseline }
+	for record in window.presentation_spans {
+		if record.kind != EDITOR_PRESENTATION_CODE_BLOCK { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if start < line.source_end && end > line.source_start { return false }
+	}
+	for record in window.presentation_blocks {
+		if record.kind != EDITOR_PRESENTATION_BLOCK_CODE { continue }
+		start := window.start_byte+u64(record.start_byte)
+		end := window.start_byte+u64(record.end_byte)
+		if start < line.source_end && end > line.source_start { return false }
+	}
+	return mode == .On
+}
+
 editor_cursor_in_markdown_table :: proc(window: ^Editor_Window, source_byte: u64) -> bool {
 	if window == nil || !window.presentation_ready ||
 	   (!window.presentation_stale && window.presentation_revision != window.editor_revision) {
@@ -2341,7 +2687,7 @@ editor_measure_window_wrapping :: proc(
 	if rt == nil || view == nil || window == nil || !view.wrap_height_index_ready || width <= 0 { return false }
 	changed := false
 	for &line in window.lines {
-		wrap := editor_line_should_wrap(language, window, &line, presentation_current, width)
+		wrap := editor_line_should_wrap_for_view(language, window, &line, presentation_current, width, view.wrap_mode)
 		height, _, _, ok := editor_measure_line_height(rt, window, &line, width, wrap, presentation_current)
 		if !ok { continue }
 		changed = alicorn.virtual_list_height_index_set_height(&view.wrap_height_index, int(line.logical_line), height) || changed
@@ -2373,6 +2719,7 @@ editor_visible_window_content_width :: proc(
 	language: string,
 	presentation_current: bool,
 	wrap_width: f32,
+	wrap_mode := Editor_Wrap_Mode.Auto,
 ) -> f32 {
 	if window == nil || index == nil || viewport_height <= 0 { return 0 }
 	overscan_y := max(viewport_height*0.5, EDITOR_ROW_HEIGHT)
@@ -2384,7 +2731,7 @@ editor_visible_window_content_width :: proc(
 	width: f32 = 0
 	for position := metrics.first; position < metrics.last; position += 1 {
 		line, found := editor_window_line(window, u64(position))
-		if !found || editor_line_should_wrap(language, window, line, presentation_current, wrap_width) { continue }
+		if !found || editor_line_should_wrap_for_view(language, window, line, presentation_current, wrap_width, wrap_mode) { continue }
 		// Deliberately conservative for multi-byte glyphs. The frontier is
 		// limited to rows near the viewport, never the full document.
 		// The lane leaves the gutter and its inner text padding outside the

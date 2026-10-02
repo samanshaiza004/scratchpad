@@ -495,6 +495,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		} else {
 			appliedEdit, err = r.app.ReplaceDocument(application.PresentationCommand{
 				Kind: application.PresentationReplaceDocument, DocumentID: application.DocumentID(request.DocumentID),
+				ActionID:       request.ActionID,
 				EditorRevision: request.EditorRevision, StartByte: int(request.StartByte), EndByte: int(request.EndByte),
 				Replacement: replacement, HasSelectionState: request.HasSelectionState,
 				BeforeAnchorByte: int(request.BeforeAnchorByte), BeforeCursorByte: int(request.BeforeCursorByte),

@@ -91,6 +91,78 @@ test_editor_edit_selection_snapshot_captures_only_transaction_state :: proc(t: ^
 }
 
 @(test)
+test_editor_subword_boundaries_and_pair_mapping :: proc(t: ^testing.T) {
+	next, handled := editor_subword_move_ascii("helloWorld", 0, 1)
+	testing.expect(t, handled && next == 5, "subword-right should stop between lower- and upper-case identifier runs")
+	next, handled = editor_subword_move_ascii("helloWorld", 10, -1)
+	testing.expect(t, handled && next == 5, "subword-left should stop at the matching camel-case boundary")
+	next, handled = editor_subword_move_ascii("HTTPServer", 0, 1)
+	testing.expect(t, handled && next == 4, "an acronym should form one subword before the following capitalized word")
+	next, handled = editor_subword_move_ascii("item42Name", 0, 1)
+	testing.expect(t, handled && next == 4, "subword movement should stop at an identifier digit transition")
+	_, handled = editor_subword_move_ascii("日本語", 0, 1)
+	testing.expect(t, !handled, "non-ASCII word movement should remain on Runa's Unicode path")
+	testing.expect(t,
+		editor_pair_closer_for_opener('(') == ')' && editor_pair_closer_for_opener('[') == ']' &&
+		editor_pair_closer_for_opener('{') == '}' && editor_pair_closer_for_opener('x') == 0,
+		"auto-pair mapping should be limited to the supported balanced delimiters")
+}
+
+@(test)
+test_editor_markdown_enter_projection_matches_list_continuation_and_breakout :: proc(t: ^testing.T) {
+	window := Editor_Window{start_byte=40, source=[]u8{'-', ' ', 'i', 't', 'e', 'm'}}
+	line := Editor_Display_Line{logical_line=3, source_start=40, source_end=46}
+	continued, continued_ok := editor_markdown_enter_projection(&window, &line, 46)
+	defer delete(continued.replacement, context.temp_allocator)
+	testing.expect(t, continued_ok && continued.start_byte == 46 && continued.end_byte == 46 &&
+		string(continued.replacement) == "\n- ",
+		"Markdown Enter should optimistically continue a non-empty unordered list item")
+
+	empty_window := Editor_Window{start_byte=0, source=[]u8{' ', ' ', '-', ' '}}
+	empty_line := Editor_Display_Line{logical_line=0, source_start=0, source_end=4}
+	breakout, breakout_ok := editor_markdown_enter_projection(&empty_window, &empty_line, 4)
+	defer delete(breakout.replacement, context.temp_allocator)
+	testing.expect(t, breakout_ok && breakout.breakout && breakout.start_byte == 2 && breakout.end_byte == 4 &&
+		string(breakout.replacement) == "\n  ",
+		"Enter on an empty list item should remove its marker and leave the list at the same indentation")
+
+	crlf_window := Editor_Window{start_byte=0, source=[]u8{'-', ' ', 'x', '\r', '\n'}}
+	crlf_line := Editor_Display_Line{logical_line=0, source_start=0, source_end=3}
+	crlf, crlf_ok := editor_markdown_enter_projection(&crlf_window, &crlf_line, 3)
+	defer delete(crlf.replacement, context.temp_allocator)
+	testing.expect(t, crlf_ok && string(crlf.replacement) == "\r\n- ",
+		"optimistic Markdown continuation should preserve a CRLF document's local line ending")
+}
+
+@(test)
+test_go_to_line_parses_one_based_line_and_grapheme_column :: proc(t: ^testing.T) {
+	line, column, ok := go_to_line_parse(" 12:5 ", 20)
+	testing.expect(t, ok && line == 11 && column == 5, "Go to Line should translate one-based line:column input")
+	line, column, ok = go_to_line_parse("999", 20)
+	testing.expect(t, ok && line == 19 && column == 1, "Go to Line should clamp an oversized line to the document end")
+	_, _, ok = go_to_line_parse("0:1", 20)
+	testing.expect(t, !ok, "Go to Line should reject a zero line number")
+	_, _, ok = go_to_line_parse("1:0", 20)
+	testing.expect(t, !ok, "Go to Line should reject a zero column")
+	_, _, ok = go_to_line_parse("18446744073709551616", 20)
+	testing.expect(t, !ok, "Go to Line should reject decimal overflow")
+}
+
+@(test)
+test_editor_bracket_match_is_bounded_and_nested :: proc(t: ^testing.T) {
+	window := Editor_Window{start_byte=100, source=[]u8{'(', 'a', '[', 'b', ']', ')'}}
+	outer, outer_ok := editor_bracket_match_in_window(&window, 101)
+	testing.expect(t, outer_ok && outer.first == 100 && outer.second == 105,
+		"caret after an opening parenthesis should find its nested matching close")
+	inner, inner_ok := editor_bracket_match_in_window(&window, 104)
+	testing.expect(t, inner_ok && inner.first == 102 && inner.second == 104,
+		"caret before a closing bracket should find its matching open")
+	partial := Editor_Window{start_byte=100, source=[]u8{'(', 'x'}}
+	_, partial_ok := editor_bracket_match_in_window(&partial, 101)
+	testing.expect(t, !partial_ok, "bracket matching must not infer a pair outside the bounded source window")
+}
+
+@(test)
 test_rejected_editor_window_request_does_not_repeat_until_request_changes :: proc(t: ^testing.T) {
 	app: App
 	defer editor_window_rejection_clear(&app)

@@ -1553,6 +1553,7 @@ visible_window_lane_stop :: proc(lane: ^Visible_Window_Lane) -> bool {
 Editor_Edit_Request :: struct {
 	sequence:          u64,
 	document_id:       string,
+	action_id:         string,
 	based_on_revision: u64,
 	editor_revision:   u64,
 	start_byte:        u64,
@@ -1595,6 +1596,7 @@ Editor_Edit_Lane :: struct {
 editor_edit_request_destroy :: proc(request: ^Editor_Edit_Request, allocator: mem.Allocator) {
 	if request == nil { return }
 	if len(request.document_id) > 0 { delete(request.document_id, allocator) }
+	if len(request.action_id) > 0 { delete(request.action_id, allocator) }
 	delete(request.replacement, allocator)
 	request^ = {}
 }
@@ -1635,6 +1637,7 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 			result = backend_command(
 				lane.backend,
 				"replace_document",
+				action_id=request.action_id,
 				document_id=request.document_id,
 				editor_revision=request.editor_revision,
 				start_byte=request.start_byte,
@@ -1660,6 +1663,7 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 			command=result,
 		}
 		request.document_id = ""
+		if len(request.action_id) > 0 { delete(request.action_id, lane.allocator) }
 		delete(request.replacement, lane.allocator)
 		lane.completed_ready = true
 		lane.active = false
@@ -1712,6 +1716,7 @@ editor_edit_lane_submit :: proc(
 	replacement: []u8,
 	before_anchor_byte, before_cursor_byte, after_anchor_byte, after_cursor_byte: u64,
 	typing_group_id: u64 = 0,
+	action_id := "",
 ) -> (accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 || sequence == 0 {
 		return false, "editor edit lane is not running or request identity is invalid"
@@ -1727,15 +1732,25 @@ editor_edit_lane_submit :: proc(
 	}
 	owned_id, id_error := strings.clone(document_id, lane.allocator)
 	if id_error != nil { return false, "could not retain editor edit document identity" }
+	owned_action_id: string
+	if action_id != "" {
+		owned_action_id, id_error = strings.clone(action_id, lane.allocator)
+		if id_error != nil {
+			delete(owned_id, lane.allocator)
+			return false, "could not retain editor edit semantic intent"
+		}
+	}
 	owned_bytes, bytes_error := make([]u8, len(replacement), allocator=lane.allocator)
 	if bytes_error != nil {
 		delete(owned_id, lane.allocator)
+		if len(owned_action_id) > 0 { delete(owned_action_id, lane.allocator) }
 		return false, "could not retain editor edit bytes"
 	}
 	if len(replacement) > 0 { copy(owned_bytes, replacement) }
 	lane.pending_request = Editor_Edit_Request{
 		sequence=sequence,
 		document_id=owned_id,
+		action_id=owned_action_id,
 		based_on_revision=based_on_revision,
 		editor_revision=editor_revision,
 		start_byte=start_byte,

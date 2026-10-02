@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"scratchpad/commands"
 	"scratchpad/editor"
 )
 
@@ -27,6 +28,7 @@ const (
 // application-owned; a frontend supplies only semantic intent.
 type PresentationCommand struct {
 	Kind              PresentationCommandKind
+	ActionID          string
 	Path              string
 	Preview           bool
 	DocumentID        DocumentID
@@ -187,6 +189,45 @@ func (a *Application) ReplaceDocument(command PresentationCommand) (editor.Appli
 	}
 	if doc.Revision() != command.EditorRevision {
 		return editor.AppliedEdit{}, fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, command.EditorRevision, doc.Revision())
+	}
+	if command.ActionID == string(commands.MarkdownEnter) {
+		if doc.RootLanguage != "markdown" || len(command.Replacement) != 1 || command.Replacement[0] != '\n' {
+			return editor.AppliedEdit{}, errors.New("markdown Enter intent requires a Markdown document and a single LF sentinel")
+		}
+		cursorByte := command.StartByte
+		selectionCollapsed := command.StartByte == command.EndByte
+		if command.HasSelectionState {
+			cursorByte = command.BeforeCursorByte
+			selectionCollapsed = command.BeforeAnchorByte == command.BeforeCursorByte
+		}
+		line, ok := doc.Editor.Buffer.LineAt(cursorByte)
+		if !ok {
+			return editor.AppliedEdit{}, errors.New("markdown Enter position is outside the document")
+		}
+		lineStart, lineEnd, ok := doc.Editor.Buffer.LineRange(line)
+		if !ok || cursorByte < lineStart || cursorByte > lineEnd {
+			return editor.AppliedEdit{}, errors.New("markdown Enter position is outside its logical line")
+		}
+		prefixEnd := min(cursorByte, lineStart+4096)
+		linePrefix, readErr := doc.Editor.Buffer.Bytes(lineStart, prefixEnd)
+		if readErr != nil {
+			return editor.AppliedEdit{}, readErr
+		}
+		atLineEnd := selectionCollapsed && cursorByte == lineEnd
+		projection := commands.MarkdownEnterPrefix(linePrefix, atLineEnd)
+		start := command.StartByte
+		if projection.Breakout {
+			start = lineStart + projection.RemoveFrom
+		}
+		replacement := make([]byte, 1, len(projection.Prefix)+1)
+		replacement[0] = '\n'
+		replacement = append(replacement, projection.Prefix...)
+		command.StartByte = start
+		command.Replacement = doc.Editor.NormalizeLineEndings(replacement)
+		if command.HasSelectionState {
+			cursor := start + len(command.Replacement)
+			command.AfterAnchorByte, command.AfterCursorByte = cursor, cursor
+		}
 	}
 	before := doc.Revision()
 	var applied editor.AppliedEdit

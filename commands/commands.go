@@ -64,6 +64,7 @@ const (
 	EditJoinLines         ID = "edit.join-lines"
 
 	MarkdownToggleStrong       ID = "markdown.toggle-strong"
+	MarkdownEnter              ID = "markdown.enter"
 	MarkdownToggleEmphasis     ID = "markdown.toggle-emphasis"
 	MarkdownToggleStrike       ID = "markdown.toggle-strike"
 	MarkdownToggleInlineCode   ID = "markdown.toggle-inline-code"
