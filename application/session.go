@@ -135,6 +135,11 @@ type recoveryPayload struct {
 	Snapshots map[string]document.DocumentSnapshot
 }
 
+const (
+	recoveryWriteThrottle = time.Second
+	recoveryRunningRetry  = 250 * time.Millisecond
+)
+
 func (a *Application) captureRecovery() recoveryPayload {
 	return a.captureRecoveryPayload(true)
 }
@@ -194,31 +199,44 @@ func (a *Application) WriteRecovery(dir string) error {
 
 // MaybeWriteRecovery captures immutable buffer snapshots on the UI goroutine
 // and performs materialization plus filesystem work asynchronously, keeping
-// large recovery copies out of the keystroke-to-frame path. A clean payload also goes through the throttled
-// async path so writeRecovery can clear stale files; authoritative document
-// transitions additionally call refreshRecoverySnapshot (see below).
-func (a *Application) MaybeWriteRecovery(dir string) {
+// large recovery copies out of the keystroke-to-frame path. A clean payload
+// also goes through the throttled async path so writeRecovery can clear stale
+// files; authoritative document transitions additionally call
+// refreshRecoverySnapshot (see below). A positive result is the delay until a
+// caller should attempt another snapshot, including when an earlier snapshot
+// is still in flight and may not contain the latest edit. The returned error
+// is from a completed asynchronous write, if one was observed.
+func (a *Application) MaybeWriteRecovery(dir string) (time.Duration, error) {
 	if dir == "" {
-		return
+		return 0, nil
 	}
 	// A failed startup restore must remain available for a later retry or an
 	// explicit discard. Do not let an empty session overwrite it on the first
 	// frame after startup.
 	if a.recoveryWritesBlocked {
-		return
+		return 0, nil
 	}
+	var previousErr error
 	select {
-	case <-a.recoveryDone:
+	case previousErr = <-a.recoveryDone:
 		a.recoveryRunning = false
 	default:
 	}
-	if a.recoveryRunning || time.Since(a.lastRecovery) < time.Second {
-		return
+	retryAfter := time.Until(a.lastRecovery.Add(recoveryWriteThrottle))
+	if a.recoveryRunning {
+		if retryAfter <= 0 {
+			return recoveryRunningRetry, previousErr
+		}
+		return retryAfter, previousErr
+	}
+	if retryAfter > 0 {
+		return retryAfter, previousErr
 	}
 	payload := a.captureRecoveryPayload(false)
 	a.lastRecovery = time.Now()
 	a.recoveryRunning = true
 	go func() { a.recoveryDone <- writeRecovery(dir, payload) }()
+	return 0, previousErr
 }
 
 // SetRecoveryWritesBlocked prevents automatic recovery snapshots from

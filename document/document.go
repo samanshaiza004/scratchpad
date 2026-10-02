@@ -838,15 +838,15 @@ func (d *Document) Save(store workspace.FileStore) error {
 	if d == nil || d.Editor == nil || d.Path == "" {
 		return errors.New("document has no save path")
 	}
-	disk, err := store.Verify(d.Path)
-	if err != nil {
-		return err
-	}
-	if !d.DiskVersion.Equal(disk) {
-		return ErrDiskChanged
+	conditional, ok := store.(workspace.ConditionalFileStore)
+	if !ok {
+		return errors.New("file store does not support conditional save")
 	}
 	current := d.Editor.Buffer.Text()
-	version, err := store.Save(d.Path, current, d.FileMode)
+	version, err := conditional.SaveIfVersion(d.Path, current, d.FileMode, d.DiskVersion)
+	if errors.Is(err, workspace.ErrVersionChanged) {
+		return ErrDiskChanged
+	}
 	if err != nil {
 		if errors.Is(err, workspace.ErrParentDirSync) {
 			if version.Verified {

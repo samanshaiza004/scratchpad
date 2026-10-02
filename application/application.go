@@ -487,15 +487,31 @@ func (a *Application) OverwriteDisk(id DocumentID) error {
 		}
 		return err
 	}
-	if !snapshot.Version.Equal(conflict.DiskVersion) {
+	if !snapshot.Version.EqualForReplacement(conflict.DiskVersion) {
 		a.Conflicts[id] = Conflict{
 			Base:        append([]byte(nil), doc.BaseSnapshot()...),
 			Disk:        append([]byte(nil), snapshot.Data...),
 			DiskVersion: snapshot.Version, DiskMode: snapshot.Mode,
 		}
+		a.touchPresentation()
 		return document.ErrDiskChanged
 	}
-	version, err := a.Store.Save(doc.Path, doc.Editor.Buffer.Text(), doc.FileMode)
+	conditional, ok := a.Store.(workspace.ConditionalFileStore)
+	if !ok {
+		return errors.New("file store does not support conditional save")
+	}
+	version, err := conditional.SaveIfVersion(doc.Path, doc.Editor.Buffer.Text(), doc.FileMode, conflict.DiskVersion)
+	if errors.Is(err, workspace.ErrVersionChanged) {
+		if latest, loadErr := a.Store.Load(doc.Path); loadErr == nil {
+			a.Conflicts[id] = Conflict{
+				Base:        append([]byte(nil), doc.BaseSnapshot()...),
+				Disk:        append([]byte(nil), latest.Data...),
+				DiskVersion: latest.Version, DiskMode: latest.Mode,
+			}
+		}
+		a.touchPresentation()
+		return document.ErrDiskChanged
+	}
 	if err != nil {
 		if errors.Is(err, workspace.ErrParentDirSync) && version.Verified {
 			doc.MarkOverwritten(version)
@@ -529,6 +545,23 @@ func (a *Application) SaveActive() error {
 	}
 	beforePath, beforeVersion, beforeDirty := doc.Path, doc.DiskVersion, doc.Dirty()
 	if err := doc.Save(a.Store); err != nil {
+		if errors.Is(err, document.ErrDiskChanged) {
+			if latest, loadErr := a.Store.Load(doc.Path); loadErr == nil {
+				a.Conflicts[a.Active] = Conflict{
+					Base:        append([]byte(nil), doc.BaseSnapshot()...),
+					Disk:        append([]byte(nil), latest.Data...),
+					DiskVersion: latest.Version, DiskMode: latest.Mode,
+				}
+				delete(a.Stale, a.Active)
+				a.touchPresentation()
+				return ErrConflict
+			}
+			status, reconcileErr := a.Reconcile(a.Active)
+			if reconcileErr == nil && status == StatusConflict {
+				a.touchPresentation()
+				return ErrConflict
+			}
+		}
 		// ErrParentDirSync means the replacement completed when Document was
 		// able to adopt the verified post-write version. Finish the same
 		// application-level bookkeeping as a clean save before surfacing the

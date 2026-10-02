@@ -43,6 +43,7 @@ type Runtime struct {
 	pendingSaveAs       *pendingSaveAsConfirmation
 	nextSaveAsToken     uint64
 	recoveryDir         string
+	recoveryTimer       *time.Timer
 	startupNotice       string
 	watcher             *workspace.OSWatcher
 	stateDirOverride    string
@@ -249,6 +250,7 @@ func (r *Runtime) Stop(input []byte) []byte {
 			return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "recovery_flush_failed", fmt.Sprintf("could not preserve unsaved recovery data: %v", err), true))
 		}
 	}
+	r.cancelRecoveryTimerLocked()
 	r.generation++
 	r.cancelWorkspaceSearchLocked()
 	if r.app != nil {
@@ -371,7 +373,7 @@ func (r *Runtime) Pump() []byte {
 		return marshalResponse(errorResponse(0, lifecycleStopped, "not_running", "backend is not running", false))
 	}
 	if r.recoveryDir != "" {
-		r.app.MaybeWriteRecovery(r.recoveryDir)
+		r.maybeWriteRecoveryLocked()
 	}
 	if r.presentationEnabled && r.asyncError == "" {
 		if err := r.pollDerivedLocked(); err != nil {
@@ -408,7 +410,7 @@ func (r *Runtime) Pump() []byte {
 	}
 	response = r.applyCommand(request)
 	if r.recoveryDir != "" {
-		r.app.MaybeWriteRecovery(r.recoveryDir)
+		r.maybeWriteRecoveryLocked()
 	}
 	if r.presentationEnabled {
 		r.app.PollDerived(time.Now())
@@ -421,6 +423,55 @@ func (r *Runtime) Pump() []byte {
 		r.asyncError = ""
 	}
 	return marshalResponse(response)
+}
+
+// maybeWriteRecoveryLocked keeps the one-second recovery throttle compatible
+// with the event-driven idle loop. If an edit arrives during the throttle (or
+// while an older snapshot is still being written), schedule another async
+// snapshot attempt instead of relying on another command or frame.
+func (r *Runtime) maybeWriteRecoveryLocked() {
+	if r.app == nil || r.recoveryDir == "" {
+		return
+	}
+	delay, err := r.app.MaybeWriteRecovery(r.recoveryDir)
+	if err != nil {
+		r.asyncError = err.Error()
+	}
+	if delay <= 0 {
+		r.cancelRecoveryTimerLocked()
+		return
+	}
+	// Keep the existing timer rather than replacing it on every Pump call. If an
+	// authoritative transition moves the recovery deadline, the callback
+	// re-enters this method and recalculates before starting another snapshot.
+	if r.recoveryTimer != nil {
+		return
+	}
+	generation, app := r.generation, r.app
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.recoveryTimer != timer {
+			return
+		}
+		r.recoveryTimer = nil
+		if r.lifecycle != lifecycleRunning || r.generation != generation || r.app != app {
+			return
+		}
+		// Re-enter the asynchronous path. If an older write is still running,
+		// MaybeWriteRecovery schedules a bounded retry instead of blocking this
+		// runtime lock on filesystem work.
+		r.maybeWriteRecoveryLocked()
+	})
+	r.recoveryTimer = timer
+}
+
+func (r *Runtime) cancelRecoveryTimerLocked() {
+	if r.recoveryTimer != nil {
+		r.recoveryTimer.Stop()
+		r.recoveryTimer = nil
+	}
 }
 
 func (r *Runtime) enablePresentationLocked(documentID string) error {
