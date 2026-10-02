@@ -17,6 +17,9 @@ build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		dispatch_action(app, rt, ACTION_WORKSPACE_OPEN)
 	}
 	alicorn.container_end(ui)
+	if alicorn.button(ui, "Command Palette…", key=alicorn.key_string("start-command-palette"), style=alicorn.layout_style(.Row, width=304, height=36)) {
+		command_palette_open_surface(app, rt)
+	}
 	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 }

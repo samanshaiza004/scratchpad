@@ -21,6 +21,7 @@ ACTION_TAB_PREVIOUS    :: "tab.previous"
 ACTION_DOCUMENT_FORMAT :: "document.format"
 ACTION_DOCUMENT_GO_TO_LINE :: "document.go-to-line"
 ACTION_DOCUMENT_TOGGLE_WRAP :: "document.toggle-wrap"
+ACTION_VIEW_COMMAND_PALETTE :: "view.command-palette"
 ACTION_MARKDOWN_TABLE_NEXT :: "markdown.table-next"
 ACTION_MARKDOWN_TABLE_PREVIOUS :: "markdown.table-previous"
 ACTION_MARKDOWN_TABLE_ENTER :: "markdown.table-enter"
@@ -180,6 +181,18 @@ App :: struct {
 	go_to_line_query_node:  alicorn.Node_ID,
 	go_to_line_focus_pending: bool,
 	go_to_line_error:       string,
+	command_palette_open: bool,
+	command_palette_query: string,
+	command_palette_node: alicorn.Node_ID,
+	command_palette_overlay_node: alicorn.Node_ID,
+	command_palette_panel_node: alicorn.Node_ID,
+	command_palette_results_scroll_node: alicorn.Node_ID,
+	command_palette_focus_pending: bool,
+	command_palette_restore_pending: bool,
+	command_palette_previous_focus: alicorn.Node_ID,
+	command_palette_selected_index: int,
+	command_palette_recent: [8]host.Application_Command_ID,
+	command_palette_recent_count: int,
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
 	dialog_action:          string,
@@ -187,7 +200,8 @@ App :: struct {
 	edit_items:             [10]host.Application_Menu_Item,
 	workspace_items:        [6]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
-	menus:                  [4]host.Application_Menu,
+	view_items:             [1]host.Application_Menu_Item,
+	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
 	smoke_wake_observed:    bool,
@@ -365,6 +379,7 @@ build_app :: proc(
 	app.workspace_search_results_owner = 0
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
+	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
 	if app.find_open { find_refresh_if_needed(app, rt) }
 	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
 	clear(&app.editor_row_targets)
@@ -418,8 +433,13 @@ build_app :: proc(
 			app.workspace_search_focus_pending = true
 		}
 		alicorn.container_end(&ui)
+		alicorn.container_begin(&ui, .Container, label="workspace-panel-heading", style=alicorn.layout_style(.Row, height=30, gap=6, align=.Center))
+		alicorn.text(&ui, "SEARCH" if app.workspace_search_mode else "FILES", style=alicorn.layout_style(.Row, grow=1, height=26))
+		if alicorn.button(&ui, "Commands…", key=alicorn.key_string("workspace-command-palette-open"), style=alicorn.layout_style(.Row, width=100, height=28)) {
+			command_palette_open_surface(app, rt)
+		}
+		alicorn.container_end(&ui)
 		if app.workspace_search_mode {
-			alicorn.text(&ui, "WORKSPACE SEARCH")
 			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=34))
 			app.workspace_search_query_node = query_node
 			if app.workspace_search_error != "" { alicorn.text(&ui, app.workspace_search_error) }
@@ -447,7 +467,6 @@ build_app :: proc(
 				alicorn.virtual_list_end(&ui, search_list)
 			}
 		} else {
-			alicorn.text(&ui, "FILES")
 			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
 			build_workspace_tree(app, &ui, rt)
 		}
@@ -536,7 +555,7 @@ build_app :: proc(
 	}
 	alicorn.container_end(&ui)
 
-	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None && !app.settings_surface_open {
+	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.command_palette_open {
 		workspace_context_menu_build(app, &ui, rt)
 	}
 
@@ -614,10 +633,13 @@ build_app :: proc(
 		alicorn.modal_overlay_end(&ui)
 	} else if app.settings_surface_open {
 		settings_surface_build(app, &ui, rt)
+	} else if app.command_palette_open {
+		command_palette_build(app, &ui, rt)
 	}
 
 	alicorn.end_frame(&ui)
 	frame_deferred_action_run(app, rt)
+	command_palette_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
@@ -2046,6 +2068,7 @@ open_path_from_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_VIEW_COMMAND_PALETTE) { command_palette_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { go_to_line_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) { editor_toggle_wrap_mode(app, rt); return }
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FILE) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FILE); return }
@@ -2481,6 +2504,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		clear_close_prompt(app)
 		deferred_actions_run(app, rt)
 		alicorn.invalidate_root(rt, "dirty close cancelled")
+		case .Action:
+			application_menu_command(rawptr(app), rt, action_id_for(action.value))
 	case:
 		set_error(app, "Scratchpad received an unsupported deferred frame action.")
 		alicorn.invalidate_root(rt, "Scratchpad rejected an unsupported deferred frame action")
@@ -2599,6 +2624,21 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		}
 		return key != .Return
 	}
+	if app.command_palette_open {
+		#partial switch key {
+		case .Open_Command_Palette, .Escape:
+			command_palette_close_surface(app, rt, true)
+			return true
+		case .Return:
+			return command_palette_execute_selected(app, rt)
+		case .Up:
+			return command_palette_move_selection(app, rt, -1)
+		case .Down:
+			return command_palette_move_selection(app, rt, 1)
+		case:
+			return false
+		}
+	}
 	if app.go_to_line_open {
 		if key == .Escape { go_to_line_close(app, rt, true); return true }
 		if key == .Return { return go_to_line_submit(app, rt) }
@@ -2609,6 +2649,10 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	}
 	if app.settings_surface_open {
 		return settings_surface_handle_key(app, rt, key)
+	}
+	if key == .Open_Command_Palette {
+		command_palette_open_surface(app, rt)
+		return true
 	}
 	if key == .Context_Menu {
 		return workspace_context_menu_open_focused(app, rt)
@@ -4755,11 +4799,15 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 	}
-	app.menus = [4]host.Application_Menu{
+	app.view_items = [1]host.Application_Menu_Item{
+		{kind=.Command, command=action_id_for(ACTION_VIEW_COMMAND_PALETTE), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}},
+	}
+	app.menus = [5]host.Application_Menu{
 		{label="File", items=app.file_items[:]},
 		{label="Edit", items=app.edit_items[:]},
 		{label="Workspace", items=app.workspace_items[:]},
 		{label="Document", items=app.document_items[:]},
+		{label="View", items=app.view_items[:]},
 	}
 }
 
@@ -4803,6 +4851,7 @@ application_stop :: proc(state: rawptr) {
 	find_set_message(&app.find_replace_text, "")
 	find_set_message(&app.find_replace_message, "")
 	find_set_message(&app.find_error, "")
+	find_set_message(&app.command_palette_query, "")
 	find_set_message(&app.workspace_search_query, "")
 	find_set_message(&app.workspace_search_started_query, "")
 	find_set_message(&app.workspace_search_started_root, "")
@@ -4832,6 +4881,7 @@ main :: proc() {
 		on_pointer=application_pointer,
 		on_text_key=editor_text_key,
 		on_text_input=editor_text_input,
+		on_text_change=command_palette_text_change,
 		on_services=application_services,
 		on_start=application_start,
 		on_close_requested=application_close_requested,

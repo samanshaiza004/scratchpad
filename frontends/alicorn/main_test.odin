@@ -853,19 +853,21 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
 	start_file_found := false
 	start_folder_found := false
+	start_commands_found := false
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
 		if !found { continue }
 		if node.key == "start-open-file" { start_file_found = true }
 		if node.key == "start-open-folder" { start_folder_found = true }
+		if node.key == "start-command-palette" { start_commands_found = true }
 		if node.key == "backend-stop" || node.key == "backend-start" || node.key == "workbench-toolbar" ||
 		   node.key == "sidebar-refresh" || node.key == "sidebar-open-folder" ||
 		   node.key == "workspace-mutation-create" || node.key == "workspace-show-ignored" {
 			testing.expect(t, false, fmt.tprintf("obsolete persistent control remains in the empty shell: %s", node.key))
 		}
 	}
-	testing.expect(t, start_file_found && start_folder_found,
-		"the fresh empty screen should expose Open File and Open Folder")
+	testing.expect(t, start_file_found && start_folder_found && start_commands_found,
+		"the fresh empty screen should expose Open File, Open Folder, and the command palette")
 
 	app.settings_surface_open = true
 	alicorn.invalidate_root(&rt, "show settings in workbench cleanup test")
