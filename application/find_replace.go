@@ -23,6 +23,12 @@ type FindReplaceAllResult struct {
 // ReplaceCurrentMatch revalidates the selected source range against the
 // authoritative document before applying one undoable edit.
 func (a *Application) ReplaceCurrentMatch(id DocumentID, expectedRevision uint64, match CurrentMatch, query, replacement []byte, beforeAnchor, beforeCursor int) (editor.AppliedEdit, error) {
+	return a.ReplaceCurrentMatchWithOptions(id, expectedRevision, match, query, replacement, beforeAnchor, beforeCursor, FindOptions{MatchCase: true})
+}
+
+// ReplaceCurrentMatchWithOptions validates and replaces one current literal
+// match using the same matching rules as Find.
+func (a *Application) ReplaceCurrentMatchWithOptions(id DocumentID, expectedRevision uint64, match CurrentMatch, query, replacement []byte, beforeAnchor, beforeCursor int, options FindOptions) (editor.AppliedEdit, error) {
 	if a == nil {
 		return editor.AppliedEdit{}, errors.New("nil application")
 	}
@@ -37,10 +43,10 @@ func (a *Application) ReplaceCurrentMatch(id DocumentID, expectedRevision uint64
 		return editor.AppliedEdit{}, ErrStaleFindMatch
 	}
 	current, err := doc.Editor.Buffer.Bytes(match.Start, match.End)
-	if err != nil || !bytes.Equal(current, query) {
+	if err != nil || !findMatchAt(doc.Editor.Buffer.Text(), match.Start, match.End, query, options) {
 		return editor.AppliedEdit{}, ErrStaleFindMatch
 	}
-	if bytes.Equal(query, replacement) {
+	if bytes.Equal(current, replacement) {
 		return editor.AppliedEdit{}, nil
 	}
 	replacement = doc.Editor.NormalizeLineEndings(replacement)
@@ -56,6 +62,12 @@ func (a *Application) ReplaceCurrentMatch(id DocumentID, expectedRevision uint64
 // ReplaceAllCurrent computes literal non-overlapping matches against the
 // authoritative Go buffer and applies them as one undoable source transaction.
 func (a *Application) ReplaceAllCurrent(id DocumentID, expectedRevision uint64, query, replacement []byte, beforeAnchor, beforeCursor int) (FindReplaceAllResult, error) {
+	return a.ReplaceAllCurrentWithOptions(id, expectedRevision, query, replacement, beforeAnchor, beforeCursor, FindOptions{MatchCase: true})
+}
+
+// ReplaceAllCurrentWithOptions computes and applies literal, non-overlapping
+// matches using the same options as Find.
+func (a *Application) ReplaceAllCurrentWithOptions(id DocumentID, expectedRevision uint64, query, replacement []byte, beforeAnchor, beforeCursor int, options FindOptions) (FindReplaceAllResult, error) {
 	result := FindReplaceAllResult{}
 	if a == nil {
 		return result, errors.New("nil application")
@@ -71,22 +83,33 @@ func (a *Application) ReplaceAllCurrent(id DocumentID, expectedRevision uint64, 
 		return result, nil
 	}
 	source := doc.Editor.Buffer.Text()
-	first, last, count := -1, -1, 0
+	first, last := -1, -1
+	var matchStarts []int
 	for offset := 0; offset <= len(source)-len(query); {
-		relative := bytes.Index(source[offset:], query)
-		if relative < 0 {
+		start, found := findNextLiteral(source, query, offset, options)
+		if !found {
 			break
 		}
-		start := offset + relative
 		if first < 0 {
 			first = start
 		}
 		last = start + len(query)
-		count++
+		matchStarts = append(matchStarts, start)
 		offset = last
 	}
+	count := len(matchStarts)
 	result.MatchCount = count
-	if count == 0 || bytes.Equal(query, replacement) {
+	if count == 0 {
+		return result, nil
+	}
+	allReplacementsUnchanged := true
+	for _, matchStart := range matchStarts {
+		if !bytes.Equal(source[matchStart:matchStart+len(query)], replacement) {
+			allReplacementsUnchanged = false
+			break
+		}
+	}
+	if allReplacementsUnchanged {
 		return result, nil
 	}
 	replacement = doc.Editor.NormalizeLineEndings(replacement)
@@ -106,12 +129,7 @@ func (a *Application) ReplaceAllCurrent(id DocumentID, expectedRevision uint64, 
 	}
 	newSpan := make([]byte, 0, newLength)
 	sourceOffset, finalCursor := first, first
-	for sourceOffset < last {
-		relative := bytes.Index(source[sourceOffset:last], query)
-		if relative < 0 {
-			break
-		}
-		matchStart := sourceOffset + relative
+	for _, matchStart := range matchStarts {
 		newSpan = append(newSpan, source[sourceOffset:matchStart]...)
 		newSpan = append(newSpan, replacement...)
 		sourceOffset = matchStart + len(query)
@@ -132,4 +150,19 @@ func (a *Application) ReplaceAllCurrent(id DocumentID, expectedRevision uint64, 
 	result.AnchorByte, result.CursorByte = doc.Editor.Selection()
 	result.CursorLine, _ = doc.Editor.Buffer.LineAt(result.CursorByte)
 	return result, nil
+}
+
+func findMatchAt(source []byte, start, end int, query []byte, options FindOptions) bool {
+	if start < 0 || end < start || end > len(source) || end-start != len(query) {
+		return false
+	}
+	value := source[start:end]
+	if options.MatchCase {
+		if !bytes.Equal(value, query) {
+			return false
+		}
+	} else if !bytes.EqualFold(value, query) {
+		return false
+	}
+	return !options.WholeWord || isWholeWordMatch(source, start, end)
 }

@@ -82,6 +82,9 @@ type CommandRequest struct {
 	TypingGroupID        uint64 `json:"typing_group_id,omitempty"`
 	Query                string `json:"query,omitempty"`
 	MaxMatches           int    `json:"max_matches,omitempty"`
+	MatchCase            bool   `json:"match_case,omitempty"`
+	WholeWord            bool   `json:"whole_word,omitempty"`
+	SaveAsToken          uint64 `json:"save_as_token,omitempty"`
 	SearchGeneration     uint64 `json:"search_generation,omitempty"`
 	HasTargetByte        bool   `json:"has_target_byte,omitempty"`
 	TargetByte           uint64 `json:"target_byte,omitempty"`
@@ -112,7 +115,15 @@ type Response struct {
 	MatchesReplaced     int                  `json:"matches_replaced,omitempty"`
 	SourceRefreshNeeded bool                 `json:"source_refresh_needed,omitempty"`
 	WorkspaceSearchPage *WorkspaceSearchPage `json:"workspace_search_page,omitempty"`
+	SaveAsConflict      *SaveAsConflict      `json:"save_as_conflict,omitempty"`
 	Diagnostic          string               `json:"diagnostic,omitempty"`
+}
+
+// SaveAsConflict carries an opaque, one-shot confirmation token. The
+// destination's verified disk version stays backend-owned until confirmation.
+type SaveAsConflict struct {
+	Token uint64 `json:"token"`
+	Path  string `json:"path"`
 }
 
 const (
@@ -331,6 +342,20 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	}
 	switch request.Command {
 	case "snapshot", "ping", "refresh_workspace", "list_workspace_files":
+	case "save_as_document":
+		if err := validateRequiredPath(request.Path, "path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+	case "confirm_save_as", "cancel_save_as":
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if request.SaveAsToken == 0 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_save_as_token", "save_as_token is required", false), false
+		}
 	case "create_file", "create_folder", "trash_path":
 		if err := validateRequiredPath(request.Path, "path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false

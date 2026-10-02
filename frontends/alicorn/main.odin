@@ -16,6 +16,7 @@ ACTION_FILE_OPEN       :: "file.open"
 ACTION_FILE_QUICK_OPEN :: "file.quick-open"
 ACTION_WORKSPACE_OPEN  :: "workspace.open"
 ACTION_FILE_SAVE       :: "file.save"
+ACTION_FILE_SAVE_AS    :: "file.save-as"
 ACTION_DOCUMENT_CLOSE  :: "document.close"
 ACTION_TAB_NEXT        :: "tab.next"
 ACTION_TAB_PREVIOUS    :: "tab.previous"
@@ -96,6 +97,7 @@ Deferred_Action_Kind :: enum {
 	Close_After_Save,
 	Close_With_Discard,
 	Cancel_Close_Prompt,
+	Save_As_Path,
 }
 
 Deferred_Action :: struct {
@@ -147,6 +149,11 @@ App :: struct {
 	backend_library:        string,
 	error_message:          string,
 	close_document_id:      string,
+	save_as_confirmation_open: bool,
+	save_as_confirmation_document_id: string,
+	save_as_confirmation_path: string,
+	save_as_confirmation_token: u64,
+	dialog_document_id:     string,
 	shutdown_intent:        Shutdown_Intent,
 	shutdown_edit_failed:   bool,
 	tree_root_path:         string,
@@ -186,6 +193,8 @@ App :: struct {
 	find_open:              bool,
 	find_query:             string,
 	find_replace_text:      string,
+	find_match_case:        bool,
+	find_whole_word:        bool,
 	find_query_node:        alicorn.Node_ID,
 	find_replace_node:      alicorn.Node_ID,
 	find_focus_pending:     bool,
@@ -238,7 +247,7 @@ App :: struct {
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
 	dialog_action:          string,
-	file_items:             [6]host.Application_Menu_Item,
+	file_items:             [7]host.Application_Menu_Item,
 	edit_items:             [10]host.Application_Menu_Item,
 	workspace_items:        [6]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
@@ -551,6 +560,16 @@ build_app :: proc(
 			alicorn.text(&ui, "Find")
 			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=30))
 			app.find_query_node = find_node
+			if alicorn.button(&ui, "Aa", key=alicorn.key_string("find-match-case"), style=alicorn.layout_style(.Row, width=38, height=28), state=alicorn.Button_State{selected=app.find_match_case}) {
+				app.find_match_case = !app.find_match_case
+				app.find_presentation.editor_revision = 0
+				find_refresh_if_needed(app, rt)
+			}
+			if alicorn.button(&ui, "W", key=alicorn.key_string("find-whole-word"), style=alicorn.layout_style(.Row, width=34, height=28), state=alicorn.Button_State{selected=app.find_whole_word}) {
+				app.find_whole_word = !app.find_whole_word
+				app.find_presentation.editor_revision = 0
+				find_refresh_if_needed(app, rt)
+			}
 			find_status := ""
 			if app.find_query == "" { find_status = "Type to find" }
 			else if app.find_error != "" { find_status = app.find_error }
@@ -601,7 +620,7 @@ build_app :: proc(
 	}
 	alicorn.container_end(&ui)
 
-	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.command_palette_open && !app.quick_open_open {
+	if app.shutdown_intent == .None && app.close_document_id == "" && !app.save_as_confirmation_open && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.command_palette_open && !app.quick_open_open {
 		workspace_context_menu_build(app, &ui, rt)
 	}
 
@@ -659,6 +678,21 @@ build_app :: proc(
 				set_error(app, "Could not queue close cancellation until the current frame is complete.")
 				alicorn.invalidate_root(rt, "Scratchpad could not defer close cancellation")
 			}
+		}
+		alicorn.container_end(&ui)
+		alicorn.container_end(&ui)
+		alicorn.modal_overlay_end(&ui)
+	} else if app.save_as_confirmation_open {
+		alicorn.modal_overlay_begin(&ui, alicorn.key_string("save-as-confirmation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-dialog", style=alicorn.layout_style(.Column, width=480, height=176, padding=22, gap=12, align=.Start, clip=true), color=COLOR_PANEL)
+		alicorn.text(&ui, "Replace the existing file?")
+		alicorn.text(&ui, app.save_as_confirmation_path, style=alicorn.layout_style(.Row, height=52), text_style=alicorn.Text_Style{overflow=.Wrap})
+		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
+		if alicorn.button(&ui, "Replace", key=alicorn.key_string("save-as-confirmation-replace"), style=alicorn.layout_style(.Row, width=104, height=34)) {
+			save_as_confirm_overwrite(app, rt)
+		}
+		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("save-as-confirmation-cancel"), style=alicorn.layout_style(.Row, width=90, height=34)) {
+			save_as_cancel_overwrite(app, rt)
 		}
 		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
@@ -2134,6 +2168,7 @@ application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.Fi
 	if result == nil { return }
 	if result.status == .Error {
 		app.dialog_action = ""
+		clear_dialog_document(app)
 		set_error(app, result.error)
 		alicorn.invalidate_root(rt, "Scratchpad native dialog failed")
 		deferred_actions_run(app, rt)
@@ -2141,10 +2176,24 @@ application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.Fi
 	}
 	if result.status != .Accepted || len(result.paths) == 0 {
 		app.dialog_action = ""
+		clear_dialog_document(app)
 		deferred_actions_run(app, rt)
 		return
 	}
 	path := result.paths[0]
+	if app.dialog_action == ACTION_FILE_SAVE_AS {
+		if len(app.editor_edits) > 0 {
+			if !deferred_action_enqueue(app, .Save_As_Path, value=app.dialog_document_id, path=path) {
+				set_error(app, "Could not queue the selected Save As destination behind pending edits.")
+			}
+		} else {
+			save_as_to_path(app, rt, app.dialog_document_id, path)
+		}
+		app.dialog_action = ""
+		clear_dialog_document(app)
+		deferred_actions_run(app, rt)
+		return
+	}
 	if len(app.editor_edits) > 0 {
 		if !deferred_action_enqueue(app, .Open_Path, path=path) {
 			set_error(app, "Could not queue the selected file behind pending edits.")
@@ -2159,7 +2208,102 @@ application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.Fi
 		}
 	}
 	app.dialog_action = ""
+	clear_dialog_document(app)
 	deferred_actions_run(app, rt)
+}
+
+clear_dialog_document :: proc(app: ^App) {
+	if app == nil { return }
+	if len(app.dialog_document_id) > 0 { delete(app.dialog_document_id, context.allocator) }
+	app.dialog_document_id = ""
+}
+
+save_as_to_path :: proc(app: ^App, rt: ^alicorn.Runtime, document_id, path: string) {
+	if app == nil || rt == nil || !app.backend.started || document_id == "" || path == "" { return }
+	response := bridge.backend_command(&app.backend, "save_as_document", document_id=document_id, path=path)
+	if !response.ok && response.code == "save_as_destination_exists" && response.save_as_conflict.token != 0 {
+		save_as_confirmation_clear(app)
+		app.save_as_confirmation_document_id, _ = strings.clone(document_id, context.allocator)
+		app.save_as_confirmation_path, _ = strings.clone(response.save_as_conflict.path, context.allocator)
+		if app.save_as_confirmation_document_id != "" && app.save_as_confirmation_path != "" {
+			app.save_as_confirmation_token = response.save_as_conflict.token
+			app.save_as_confirmation_open = true
+			set_error(app, "")
+		} else {
+			save_as_confirmation_clear(app)
+			set_error(app, "Could not retain the Save As overwrite confirmation.")
+		}
+		alicorn.invalidate_root(rt, "Scratchpad requested Save As overwrite confirmation")
+	} else {
+		if response.ok { editor_migrate_after_save_as(app, rt, document_id) }
+		handle_command_result(app, rt, &response)
+	}
+	bridge.backend_command_result_destroy(&response, context.allocator)
+}
+
+save_as_confirm_overwrite :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.save_as_confirmation_open || app.save_as_confirmation_token == 0 { return }
+	response := bridge.backend_command(
+		&app.backend, "confirm_save_as",
+		document_id=app.save_as_confirmation_document_id,
+		save_as_token=app.save_as_confirmation_token,
+	)
+	if response.ok { editor_migrate_after_save_as(app, rt, app.save_as_confirmation_document_id) }
+	save_as_confirmation_clear(app)
+	handle_command_result(app, rt, &response)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	deferred_actions_run(app, rt)
+}
+
+save_as_cancel_overwrite :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.save_as_confirmation_open { return }
+	response := bridge.backend_command(
+		&app.backend, "cancel_save_as",
+		document_id=app.save_as_confirmation_document_id,
+		save_as_token=app.save_as_confirmation_token,
+		read_latest_after=false,
+	)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	save_as_confirmation_clear(app)
+	deferred_actions_run(app, rt)
+	alicorn.invalidate_root(rt, "Scratchpad cancelled Save As overwrite")
+}
+
+save_as_confirmation_clear :: proc(app: ^App) {
+	if app == nil { return }
+	if len(app.save_as_confirmation_document_id) > 0 { delete(app.save_as_confirmation_document_id, context.allocator) }
+	if len(app.save_as_confirmation_path) > 0 { delete(app.save_as_confirmation_path, context.allocator) }
+	app.save_as_confirmation_document_id = ""
+	app.save_as_confirmation_path = ""
+	app.save_as_confirmation_token = 0
+	app.save_as_confirmation_open = false
+}
+
+editor_migrate_after_save_as :: proc(app: ^App, rt: ^alicorn.Runtime, old_id: string) {
+	if app == nil || old_id == "" { return }
+	new_id := app.backend.state.active
+	if new_id == "" || new_id == old_id { return }
+	if index := editor_view_find(app.editor_views[:], old_id); index >= 0 {
+		copy, err := strings.clone(new_id, context.allocator)
+		if err == nil {
+			delete(app.editor_views[index].document_id, context.allocator)
+			app.editor_views[index].document_id = copy
+		}
+	}
+	if app.editor_presented_document_id == old_id {
+		copy, err := strings.clone(new_id, context.allocator)
+		if err == nil {
+			delete(app.editor_presented_document_id, context.allocator)
+			app.editor_presented_document_id = copy
+		}
+	}
+	if app.editor_window_ready && app.editor_window.document_id == old_id {
+		editor_window_destroy(&app.editor_window)
+		app.editor_window_ready = false
+		app.editor_request_generation += 1
+		editor_window_rejection_clear(app)
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad reloaded editor projection after Save As identity change") }
+	}
 }
 
 open_path_from_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
@@ -2445,6 +2589,10 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	switch action_id {
 	case ACTION_FILE_OPEN:
 		request_file_dialog(app, rt, .Open_File, "Open File")
+	case ACTION_FILE_SAVE_AS:
+		if app.backend.state.active != "" {
+			request_file_dialog(app, rt, .Save_File, "Save As")
+		}
 	case ACTION_WORKSPACE_OPEN:
 		request_file_dialog(app, rt, .Open_Folder, "Open Folder")
 	case ACTION_FILE_SAVE:
@@ -2652,6 +2800,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		request_close_document(app, rt, action.value)
 	case .Open_Path:
 		quick_open_open_path(app, rt, action.value)
+	case .Save_As_Path:
+		save_as_to_path(app, rt, action.value, action.path)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -2678,7 +2828,7 @@ deferred_actions_clear :: proc(app: ^App) {
 }
 
 deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || rt == nil || !app.backend.started || len(app.editor_edits) > 0 || app.dialog_action != "" {
+	if app == nil || rt == nil || !app.backend.started || len(app.editor_edits) > 0 || app.dialog_action != "" || app.save_as_confirmation_open {
 		return
 	}
 	if app.close_document_id != "" {
@@ -2721,6 +2871,8 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 				handle_command_result(app, rt, &response)
 				bridge.backend_command_result_destroy(&response, context.allocator)
 			}
+        case .Save_As_Path:
+            save_as_to_path(app, rt, action.value, action.path)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(
@@ -2743,13 +2895,26 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			alicorn.invalidate_root(rt, "dirty close cancelled")
 		}
 		deferred_action_destroy(&action)
-		if app.dialog_action != "" || app.close_document_id != "" || app.workspace_mutation_kind != .None { break }
+		if app.dialog_action != "" || app.close_document_id != "" || app.save_as_confirmation_open || app.workspace_mutation_kind != .None { break }
 	}
 }
 
 request_file_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, kind: host.File_Dialog_Kind, title: string) {
 	app.dialog_sequence += 1
-	app.dialog_action = ACTION_FILE_OPEN if kind == .Open_File else ACTION_WORKSPACE_OPEN
+	app.dialog_action = ACTION_WORKSPACE_OPEN
+	if kind == .Open_File { app.dialog_action = ACTION_FILE_OPEN }
+	if kind == .Save_File {
+		app.dialog_action = ACTION_FILE_SAVE_AS
+		clear_dialog_document(app)
+		copy, clone_error := strings.clone(app.backend.state.active, context.allocator)
+		if clone_error != nil {
+			app.dialog_action = ""
+			set_error(app, "Could not retain the active document for Save As.")
+			alicorn.invalidate_root(rt, "Scratchpad could not retain the Save As document identity")
+			return
+		}
+		app.dialog_document_id = copy
+	}
 	request := host.File_Dialog_Request{
 		id=host.Dialog_ID(app.dialog_sequence),
 		kind=kind,
@@ -2759,6 +2924,7 @@ request_file_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, kind: host.File_Dia
 	}
 	if !host.ShowFileDialog(app.services.dialogs, request) {
 		app.dialog_action = ""
+		clear_dialog_document(app)
 		set_error(app, "The native file dialog could not be opened.")
 		alicorn.invalidate_root(rt, "Scratchpad native dialog request failed")
 		deferred_actions_run(app, rt)
@@ -2770,6 +2936,11 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	if app.shutdown_intent != .None {
 		if key == .Escape { shutdown_cancel(app, rt); return true }
 		return key != .Return
+	}
+	if app.save_as_confirmation_open {
+		if key == .Escape { save_as_cancel_overwrite(app, rt); return true }
+		if key == .Return { save_as_confirm_overwrite(app, rt); return true }
+		return true
 	}
 	if app.close_document_id != "" {
 		if key == .Escape {
@@ -4916,12 +5087,13 @@ clear_close_prompt :: proc(app: ^App) {
 }
 
 init_menus :: proc(app: ^App) {
-	app.file_items = [6]host.Application_Menu_Item{
+	app.file_items = [7]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_FILE_OPEN), label="Open File…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'O', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_FILE_QUICK_OPEN), label="Quick Open…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_OPEN), label="Open Folder…", state=alicorn.Action_State{enabled=true}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE), label="Save", shortcut=host.Application_Menu_Shortcut{'S', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE_AS), label="Save As…", shortcut=host.Application_Menu_Shortcut{'S', {.Primary, .Shift}}},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_CLOSE), label="Close Document", shortcut=host.Application_Menu_Shortcut{'W', {.Primary}}},
 	}
 	app.edit_items = [10]host.Application_Menu_Item{

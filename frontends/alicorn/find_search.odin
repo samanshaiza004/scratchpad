@@ -16,6 +16,8 @@ EDITOR_CARET_GUTTER_BACKGROUND :: alicorn.Color{0.15, 0.19, 0.27, 0.48}
 Find_Presentation :: struct {
 	document_id:     string,
 	query:           string,
+	match_case:      bool,
+	whole_word:      bool,
 	editor_revision: u64,
 	matches:         []bridge.Current_Match,
 	active_match:    int,
@@ -80,6 +82,8 @@ find_presentation_install :: proc(
 	presentation: ^Find_Presentation,
 	document_id: string,
 	query: string,
+	match_case: bool,
+	whole_word: bool,
 	editor_revision: u64,
 	matches: []bridge.Current_Match,
 	truncated: bool,
@@ -101,6 +105,8 @@ find_presentation_install :: proc(
 	find_presentation_destroy(presentation, allocator)
 	presentation.document_id = document_id_copy
 	presentation.query = query_copy
+	presentation.match_case = match_case
+	presentation.whole_word = whole_word
 	presentation.editor_revision = editor_revision
 	presentation.matches = match_copy
 	presentation.active_match = find_initial_match(match_copy, source_cursor)

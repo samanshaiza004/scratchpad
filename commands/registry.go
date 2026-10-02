@@ -132,6 +132,7 @@ func DefaultRegistry() Registry {
 		{ID: QuickOpen, Title: "Quick Open…", Category: "File", Bindings: []Keybinding{{Key: "primary+p"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: WorkspaceOpen, Title: "Open Folder…", Category: "File", Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: FileSave, Title: "Save", Category: "File", Bindings: []Keybinding{{Key: "primary+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
+		{ID: FileSaveAs, Title: "Save As…", Category: "File", Bindings: []Keybinding{{Key: "primary+shift+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: DocumentClose, Title: "Close Document", Category: "File", Bindings: []Keybinding{{Key: "primary+w"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: DocumentActivate, Title: "Activate Document", Category: "Document", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: EditUndo, Title: "Undo", Category: "Edit", Bindings: []Keybinding{{Key: "primary+z"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument && ctx.CanUndo }},

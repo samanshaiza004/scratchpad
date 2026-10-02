@@ -240,6 +240,12 @@ Backend_Response :: struct {
 	source_refresh_needed: bool           `json:"source_refresh_needed"`,
 	workspace_search_page: Workspace_Search_Page `json:"workspace_search_page"`,
 	workspace_files: Workspace_Files `json:"workspace_files"`,
+	save_as_conflict: Save_As_Conflict `json:"save_as_conflict"`,
+}
+
+Save_As_Conflict :: struct {
+	token: u64 `json:"token"`,
+	path: string `json:"path"`,
 }
 
 Editor_Selection :: struct {
@@ -343,6 +349,9 @@ Backend_Command_Request :: struct {
 	include_ignored: bool `json:"include_ignored,omitempty"`,
 	query:            string `json:"query,omitempty"`,
 	max_matches:      int    `json:"max_matches,omitempty"`,
+	match_case:       bool   `json:"match_case,omitempty"`,
+	whole_word:       bool   `json:"whole_word,omitempty"`,
+	save_as_token:    u64    `json:"save_as_token,omitempty"`,
 	search_generation: u64   `json:"search_generation,omitempty"`,
 	has_target_byte:  bool   `json:"has_target_byte,omitempty"`,
 	target_byte:      u64    `json:"target_byte,omitempty"`,
@@ -992,6 +1001,7 @@ Backend_Command_Result :: struct {
 	command_outcome: string,
 	directory_listing: Directory_Listing,
 	close_decision: Close_Decision,
+	save_as_conflict: Save_As_Conflict,
 	visible_window:  Visible_Window,
 	code_owned:     bool,
 	message_owned:  bool,
@@ -1005,6 +1015,7 @@ Backend_Command_Result :: struct {
 	matches_owned: bool,
 	search_page_owned: bool,
 	workspace_files_owned: bool,
+	save_as_conflict_path_owned: bool,
 }
 
 backend_command :: proc(
@@ -1042,6 +1053,9 @@ backend_command :: proc(
 	include_ignored := false,
 	query := "",
 	max_matches: int = 0,
+	match_case := false,
+	whole_word := false,
+	save_as_token: u64 = 0,
 	search_generation: u64 = 0,
 	has_target_byte := false,
 	target_byte: u64 = 0,
@@ -1099,6 +1113,9 @@ backend_command :: proc(
 		include_ignored=include_ignored,
 		query=query,
 		max_matches=max_matches,
+		match_case=match_case,
+		whole_word=whole_word,
+		save_as_token=save_as_token,
 		search_generation=search_generation,
 		has_target_byte=has_target_byte,
 		target_byte=target_byte,
@@ -1127,6 +1144,11 @@ backend_command :: proc(
 	result.revision = response.revision
 	result.matches_replaced = response.matches_replaced
 	result.source_refresh_needed = response.source_refresh_needed
+	if response.save_as_conflict.token != 0 {
+		result.save_as_conflict.token = response.save_as_conflict.token
+		result.save_as_conflict.path, _ = strings.clone(response.save_as_conflict.path, allocator)
+		result.save_as_conflict_path_owned = len(result.save_as_conflict.path) > 0
+	}
 	if response.ok && response.command_outcome != "no_op" && (command == "replace_document" || command == "find_replace_current" || command == "paste_document") {
 		if response.edit.document_id == "" || response.edit.editor_revision == 0 {
 			backend_response_destroy(&response, allocator)
@@ -1250,6 +1272,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.matches_owned { delete(result.matches, allocator) }
 	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
 	if result.workspace_files_owned { workspace_files_destroy(&result.workspace_files, allocator) }
+	if result.save_as_conflict_path_owned { delete(result.save_as_conflict.path, allocator) }
 	result^ = {}
 }
 
@@ -2094,6 +2117,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.outcome.code, allocator)
 	delete(response.outcome.message, allocator)
 	delete(response.close_decision.document_id, allocator)
+	delete(response.save_as_conflict.path, allocator)
 	delete(response.editor_selection.document_id, allocator)
 	delete(response.resource.document_id, allocator)
 	delete(response.edit.document_id, allocator)

@@ -36,6 +36,15 @@ type Runtime struct {
 	generation          uint64
 	asyncError          string
 	workspaceSearch     *workspaceSearchSession
+    pendingSaveAs       *pendingSaveAsConfirmation
+    nextSaveAsToken     uint64
+}
+
+type pendingSaveAsConfirmation struct {
+    token      uint64
+    documentID application.DocumentID
+    path       string
+    version    workspace.DiskVersion
 }
 
 func NewRuntime() *Runtime {
@@ -77,6 +86,8 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.generation++
 	r.asyncError = ""
 	r.workspaceSearch = nil
+	r.pendingSaveAs = nil
+	r.nextSaveAsToken = 0
 	if err := r.publishApplicationState(); err != nil {
 		r.caliber.close()
 		r.caliber = nil
@@ -121,6 +132,7 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.resourceLeases = 0
 	r.presentationEnabled = false
 	r.asyncError = ""
+	r.pendingSaveAs = nil
 	return marshalResponse(Response{
 		Version:   ProtocolVersion,
 		RequestID: request.RequestID,
@@ -447,6 +459,44 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}); err != nil {
 			return commandError(request, "application_error", err)
 		}
+	case "save_as_document":
+		// A new Save As attempt invalidates any earlier unanswered overwrite
+		// prompt. Only one native save dialog can be active in the frontend.
+		r.pendingSaveAs = nil
+		documentID := application.DocumentID(request.DocumentID)
+		err := r.app.SaveAs(documentID, request.Path)
+		if err != nil {
+			var destinationExists *application.SaveAsDestinationExistsError
+			if errors.As(err, &destinationExists) {
+				r.nextSaveAsToken++
+				if r.nextSaveAsToken == 0 {
+					r.nextSaveAsToken++
+				}
+				r.pendingSaveAs = &pendingSaveAsConfirmation{
+					token: r.nextSaveAsToken, documentID: documentID,
+					path: destinationExists.Path, version: destinationExists.Version,
+				}
+				response := commandError(request, "save_as_destination_exists", err)
+				response.Revision = r.revision
+				response.SaveAsConflict = &SaveAsConflict{Token: r.nextSaveAsToken, Path: destinationExists.Path}
+				return response
+			}
+			return commandError(request, "application_error", err)
+		}
+	case "confirm_save_as":
+		pending := r.pendingSaveAs
+		if pending == nil || pending.token != request.SaveAsToken || pending.documentID != application.DocumentID(request.DocumentID) {
+			return commandError(request, "stale_save_as_confirmation", errors.New("Save As confirmation is no longer current; choose the destination again"))
+		}
+		r.pendingSaveAs = nil
+		if err := r.app.ConfirmSaveAs(pending.documentID, pending.path, pending.version); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "cancel_save_as":
+		if pending := r.pendingSaveAs; pending != nil && pending.token == request.SaveAsToken && pending.documentID == application.DocumentID(request.DocumentID) {
+			r.pendingSaveAs = nil
+		}
+		publishState = false
 	case "close_document":
 		if err := r.app.Dispatch(application.PresentationCommand{
 			Kind:       application.PresentationCloseDocument,
@@ -486,10 +536,11 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			if request.HasSelectionState {
 				beforeAnchor, beforeCursor = int(request.BeforeAnchorByte), int(request.BeforeCursorByte)
 			}
-			appliedEdit, err = r.app.ReplaceCurrentMatch(
+			appliedEdit, err = r.app.ReplaceCurrentMatchWithOptions(
 				application.DocumentID(request.DocumentID), request.EditorRevision,
 				application.CurrentMatch{Start: int(request.StartByte), End: int(request.EndByte)},
 				[]byte(request.Query), replacement, beforeAnchor, beforeCursor,
+				application.FindOptions{MatchCase: request.MatchCase, WholeWord: request.WholeWord},
 			)
 		} else if request.Command == "paste_document" {
 			appliedEdit, err = r.app.PasteDocument(
@@ -553,8 +604,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if request.HasSelectionState {
 			beforeAnchor, beforeCursor = int(request.BeforeAnchorByte), int(request.BeforeCursorByte)
 		}
-		result, err := r.app.ReplaceAllCurrent(application.DocumentID(request.DocumentID), request.EditorRevision,
-			[]byte(request.Query), replacement, beforeAnchor, beforeCursor)
+		result, err := r.app.ReplaceAllCurrentWithOptions(application.DocumentID(request.DocumentID), request.EditorRevision,
+			[]byte(request.Query), replacement, beforeAnchor, beforeCursor,
+			application.FindOptions{MatchCase: request.MatchCase, WholeWord: request.WholeWord})
 		if err != nil {
 			if errors.Is(err, application.ErrStaleEditorRevision) {
 				return commandError(request, "stale_editor_revision", err)
@@ -684,7 +736,8 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if limit == 0 {
 			limit = MaxFindMatches
 		}
-		found := r.app.FindCurrentLimited(application.DocumentID(request.DocumentID), []byte(request.Query), limit+1)
+		found := r.app.FindCurrentLimitedWithOptions(application.DocumentID(request.DocumentID), []byte(request.Query), limit+1,
+			application.FindOptions{MatchCase: request.MatchCase, WholeWord: request.WholeWord})
 		if len(found) > limit {
 			matchesTruncated = true
 			found = found[:limit]
