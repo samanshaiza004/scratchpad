@@ -749,6 +749,67 @@ test_editor_100k_paste_fits_full_visible_window_and_bounded_optimistic_source ::
 ALICORN_TEST_UI_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Variable.ttf")
 ALICORN_TEST_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
 
+
+@(test)
+test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T) {
+	app: App
+	app.backend.started = true
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.temp_allocator)
+	defer delete(app.editor_row_targets)
+	init_menus(&app)
+
+	settings_item_found := false
+	new_file_found := false
+	new_folder_found := false
+	refresh_found := false
+	for item in app.workspace_items {
+		if item.label == "Settings…" { settings_item_found = true }
+		if item.label == "New File" { new_file_found = true }
+		if item.label == "New Folder" { new_folder_found = true }
+		if item.label == "Refresh Workspace" { refresh_found = true }
+	}
+	testing.expect(t, settings_item_found && new_file_found && new_folder_found && refresh_found,
+		"workspace actions removed from the sidebar should remain available from the Workspace menu")
+
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 600})
+	defer alicorn.destroy_runtime(&rt)
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
+		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
+	testing.expect(t, fonts_loaded, "workbench UI cleanup test should load the bundled UI fonts")
+	if !fonts_loaded { return }
+
+	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
+	start_file_found := false
+	start_folder_found := false
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if !found { continue }
+		if node.key == "start-open-file" { start_file_found = true }
+		if node.key == "start-open-folder" { start_folder_found = true }
+		if node.key == "backend-stop" || node.key == "backend-start" || node.key == "workbench-toolbar" ||
+		   node.key == "sidebar-refresh" || node.key == "sidebar-open-folder" ||
+		   node.key == "workspace-mutation-create" || node.key == "workspace-show-ignored" {
+			testing.expect(t, false, fmt.tprintf("obsolete persistent control remains in the empty shell: %s", node.key))
+		}
+	}
+	testing.expect(t, start_file_found && start_folder_found,
+		"the fresh empty screen should expose Open File and Open Folder")
+
+	app.settings_surface_open = true
+	alicorn.invalidate_root(&rt, "show settings in workbench cleanup test")
+	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
+	settings_checkbox_found := false
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if found && node.key == "settings-show-ignored-files" { settings_checkbox_found = true }
+		if found && node.key == "workspace-show-ignored" {
+			testing.expect(t, false, "ignored-file visibility should not remain as a tree checkbox")
+		}
+	}
+	testing.expect(t, settings_checkbox_found,
+		"Show ignored files should be available from the Settings surface")
+}
+
 tree_test_wake :: proc(data: rawptr) {}
 
 backend_integration_test_mutex: sync.Mutex

@@ -23,6 +23,9 @@ ACTION_MARKDOWN_TABLE_NEXT :: "markdown.table-next"
 ACTION_MARKDOWN_TABLE_PREVIOUS :: "markdown.table-previous"
 ACTION_MARKDOWN_TABLE_ENTER :: "markdown.table-enter"
 ACTION_WORKSPACE_REFRESH :: "workspace.refresh"
+ACTION_WORKSPACE_NEW_FILE :: "workspace.new-file"
+ACTION_WORKSPACE_NEW_FOLDER :: "workspace.new-folder"
+ACTION_WORKSPACE_SETTINGS :: "workspace.settings"
 ACTION_WORKSPACE_RENAME :: "workspace.rename"
 ACTION_WORKSPACE_MOVE :: "workspace.move"
 ACTION_WORKSPACE_TRASH :: "workspace.trash"
@@ -74,7 +77,7 @@ Deferred_Action :: struct {
 	discard:     bool,
 }
 
-Shutdown_Intent :: enum {None, Quit_Application, Stop_Backend}
+Shutdown_Intent :: enum {None, Quit_Application}
 
 MAX_DEFERRED_ACTIONS :: 64
 
@@ -131,6 +134,7 @@ App :: struct {
 	workspace_mutation_dirty: bool,
 	workspace_mutation_queued: bool,
 	show_ignored_files:     bool,
+	settings_surface_open:  bool,
 	workspace_search_mode:  bool,
 	workspace_search_query: string,
 	workspace_search_started_query: string,
@@ -162,7 +166,7 @@ App :: struct {
 	dialog_action:          string,
 	file_items:             [5]host.Application_Menu_Item,
 	edit_items:             [8]host.Application_Menu_Item,
-	workspace_items:        [1]host.Application_Menu_Item,
+	workspace_items:        [6]host.Application_Menu_Item,
 	document_items:         [4]host.Application_Menu_Item,
 	menus:                  [4]host.Application_Menu,
 	smoke:                  bool,
@@ -342,26 +346,6 @@ build_app :: proc(
 		color=COLOR_BACKGROUND,
 	)
 
-	status := "Backend stopped"
-	if app.backend.started { status = "Backend running" }
-	alicorn.container_begin(&ui, .Container, label="workbench-title-row", style=alicorn.layout_style(.Row, height=34, gap=10, align=.Center))
-	alicorn.text(&ui, "Scratchpad")
-	alicorn.text(&ui, "Alicorn · Workbench shell")
-	alicorn.container_begin(&ui, .Container, label="title-row-spacer", style=alicorn.layout_style(.Row, grow=1))
-	alicorn.container_end(&ui)
-	alicorn.text(&ui, status)
-	if app.backend.started {
-		if alicorn.button(&ui, "Stop", key=alicorn.key_string("backend-stop"), style=alicorn.layout_style(.Row, width=76, height=32)) {
-			request_backend_stop(app, rt)
-		}
-	} else {
-		if alicorn.button(&ui, "Start", key=alicorn.key_string("backend-start"), style=alicorn.layout_style(.Row, width=76, height=32)) {
-			start_backend(app)
-			alicorn.invalidate_root(rt, "Scratchpad backend started from diagnostic control")
-		}
-	}
-	alicorn.container_end(&ui)
-
 	if app.error_message != "" {
 		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.Color{0.28, 0.11, 0.12, 1})
 		alicorn.text(&ui, "Scratchpad needs attention.")
@@ -369,23 +353,10 @@ build_app :: proc(
 		alicorn.container_end(&ui)
 	}
 
-	if app.backend.started {
+	if app.backend.started && !app.backend.state.has_workspace && len(app.backend.state.documents) == 0 {
+		build_start_screen(app, &ui, rt)
+	} else if app.backend.started {
 		state := &app.backend.state
-		alicorn.container_begin(&ui, .Container, label="workbench-toolbar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-		if alicorn.button(&ui, "Open File…", key=alicorn.key_string("action-file-open"), style=alicorn.layout_style(.Row, width=130, height=34)) {
-			dispatch_action(app, rt, ACTION_FILE_OPEN)
-		}
-		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("action-workspace-open"), style=alicorn.layout_style(.Row, width=140, height=34)) {
-			dispatch_action(app, rt, ACTION_WORKSPACE_OPEN)
-		}
-		if save_enabled := action_enabled(state, ACTION_FILE_SAVE); alicorn.button(&ui, "Save", key=alicorn.key_string("action-file-save"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!save_enabled}) {
-			dispatch_action(app, rt, ACTION_FILE_SAVE)
-		}
-		if close_enabled := action_enabled(state, ACTION_DOCUMENT_CLOSE); alicorn.button(&ui, "Close", key=alicorn.key_string("action-document-close"), style=alicorn.layout_style(.Row, width=84, height=34), state=alicorn.Button_State{disabled=!close_enabled}) {
-			dispatch_action(app, rt, ACTION_DOCUMENT_CLOSE)
-		}
-		alicorn.container_end(&ui)
-
 		workspace_split := alicorn.split_begin(
 			&ui,
 			key=alicorn.key_string("scratchpad-workspace-editor-split"),
@@ -440,24 +411,7 @@ build_app :: proc(
 			}
 		} else {
 			alicorn.text(&ui, "FILES")
-			ignored_change := alicorn.checkbox(
-			&ui,
-			"Show ignored files",
-			app.show_ignored_files,
-			key=alicorn.key_string("workspace-show-ignored"),
-			style=alicorn.layout_style(.Row, height=26),
-			disabled=!state.has_workspace,
-		)
-		if ignored_change.changed { tree_set_show_ignored_files(app, rt, ignored_change.value) }
-		alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
-		alicorn.text(&ui, fmt.tprintf("%d open documents", len(state.documents)))
-		if alicorn.button(&ui, "Open Folder…", key=alicorn.key_string("sidebar-open-folder"), style=alicorn.layout_style(.Row, height=34)) {
-			dispatch_action(app, rt, ACTION_WORKSPACE_OPEN)
-		}
-		if alicorn.button(&ui, "Refresh Workspace", key=alicorn.key_string("sidebar-refresh"), style=alicorn.layout_style(.Row, height=34), state=alicorn.Button_State{disabled=!action_enabled(state, ACTION_WORKSPACE_REFRESH)}) {
-			dispatch_action(app, rt, ACTION_WORKSPACE_REFRESH)
-		}
-		workspace_mutation_controls(app, &ui, rt)
+			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
 			build_workspace_tree(app, &ui, rt)
 		}
 		alicorn.container_end(&ui)
@@ -515,13 +469,13 @@ build_app :: proc(
 		alicorn.split_second_end(&ui, workspace_split)
 		alicorn.split_end(&ui, workspace_split)
 	} else {
-		alicorn.container_begin(&ui, .Container, label="backend-stopped-card", style=alicorn.layout_style(.Column, grow=1, padding=24, gap=12), color=COLOR_PANEL)
-		alicorn.text(&ui, "Start the shared Scratchpad backend to load real workspace and document state.")
+		alicorn.container_begin(&ui, .Container, label="backend-starting-card", style=alicorn.layout_style(.Column, grow=1, padding=24, gap=12), color=COLOR_PANEL)
+		alicorn.text(&ui, "Starting Scratchpad…")
 		alicorn.container_end(&ui)
 	}
 	alicorn.container_end(&ui)
 
-	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None {
+	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None && !app.settings_surface_open {
 		workspace_context_menu_build(app, &ui, rt)
 	}
 
@@ -580,6 +534,8 @@ build_app :: proc(
 		alicorn.modal_overlay_end(&ui)
 	} else if app.workspace_mutation_kind != .None {
 		workspace_mutation_build_dialog(app, &ui, rt)
+	} else if app.settings_surface_open {
+		settings_surface_build(app, &ui, rt)
 	}
 
 	alicorn.end_frame(&ui)
@@ -655,20 +611,6 @@ application_close_requested :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host
 	return .Defer
 }
 
-request_backend_stop :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || !app.backend.started { return }
-	if app.shutdown_intent != .None { return }
-	if shutdown_has_uncommitted_work(app) {
-		shutdown_begin(app, rt, .Stop_Backend)
-		return
-	}
-	disable_runtime_actions(app, rt)
-	stopped, message := stop_backend(app)
-	sync_menu_states(app)
-	if stopped { set_error(app, "") } else { set_error(app, message) }
-	alicorn.invalidate_root(rt, "Scratchpad backend stopped from diagnostic control")
-}
-
 shutdown_cancel :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil { return }
 	app.shutdown_intent = .None
@@ -676,27 +618,20 @@ shutdown_cancel :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad shutdown request cancelled") }
 }
 
-shutdown_finish :: proc(app: ^App, rt: ^alicorn.Runtime) {
+shutdown_finish :: proc(app: ^App) {
 	if app == nil { return }
 	intent := app.shutdown_intent
 	app.shutdown_intent = .None
 	app.shutdown_edit_failed = false
 	if intent == .Quit_Application {
 		host.application_request_quit(app.services.quit)
-	} else if intent == .Stop_Backend {
-		clear_close_prompt(app)
-		disable_runtime_actions(app, rt)
-		stopped, message := stop_backend(app)
-		sync_menu_states(app)
-		if stopped { set_error(app, "") } else { set_error(app, message) }
-		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad backend stopped after explicit dirty-state decision") }
 	}
 }
 
 shutdown_advance :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || app.shutdown_intent == .None || app.shutdown_edit_failed || len(app.editor_edits) > 0 { return }
 	if shutdown_dirty_document_count(app) > 0 || shutdown_recoverable_document(app) != "" { return }
-	shutdown_finish(app, rt)
+	shutdown_finish(app)
 }
 
 shutdown_save_all :: proc(app: ^App, rt: ^alicorn.Runtime) {
@@ -739,16 +674,14 @@ shutdown_discard_all :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			editor_preedit_clear(&view)
 		}
 	}
-	shutdown_finish(app, rt)
+	shutdown_finish(app)
 }
 
 build_shutdown_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil { return }
-	intent_text := "stopping the backend"
-	if app.shutdown_intent == .Quit_Application { intent_text = "closing Scratchpad" }
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("shutdown-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 	alicorn.container_begin(ui, .Container, label="shutdown-dialog", style=alicorn.layout_style(.Column, width=540, height=320, padding=22, gap=12, align=.Start, clip=true), color=COLOR_PANEL)
-	alicorn.text(ui, fmt.tprintf("Save changes before %s?", intent_text))
+	alicorn.text(ui, "Save changes before closing Scratchpad?")
 	if len(app.editor_edits) > 0 {
 		alicorn.text(ui, fmt.tprintf("Waiting for %d pending editor change(s) to finish.", len(app.editor_edits)))
 	} else {
@@ -788,9 +721,7 @@ build_shutdown_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 			alicorn.container_end(ui)
 		}
 		if app.shutdown_edit_failed && dirty_count == 0 {
-			label := "Close Anyway"
-			if app.shutdown_intent == .Stop_Backend { label = "Stop Anyway" }
-			if alicorn.button(ui, label, key=alicorn.key_string("shutdown-edit-failure-discard"), style=alicorn.layout_style(.Row, width=135, height=34)) {
+			if alicorn.button(ui, "Close Anyway", key=alicorn.key_string("shutdown-edit-failure-discard"), style=alicorn.layout_style(.Row, width=135, height=34)) {
 				shutdown_discard_all(app, rt)
 			}
 		}
@@ -1881,6 +1812,9 @@ open_path_from_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_WORKSPACE_NEW_FILE) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FILE); return }
+	if command == action_id_for(ACTION_WORKSPACE_NEW_FOLDER) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FOLDER); return }
+	if command == action_id_for(ACTION_WORKSPACE_SETTINGS) { dispatch_action(app, rt, ACTION_WORKSPACE_SETTINGS); return }
 	if command == action_id_for(ACTION_EDIT_CUT) { editor_clipboard_command(app, rt, ACTION_EDIT_CUT); return }
 	if command == action_id_for(ACTION_EDIT_COPY) { editor_clipboard_command(app, rt, ACTION_EDIT_COPY); return }
 	if command == action_id_for(ACTION_EDIT_PASTE) { editor_clipboard_command(app, rt, ACTION_EDIT_PASTE); return }
@@ -1895,6 +1829,18 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || !app.backend.started { return }
+	switch action_id {
+	case ACTION_WORKSPACE_NEW_FILE:
+		workspace_mutation_open_create(app, rt, .Create_File)
+		return
+	case ACTION_WORKSPACE_NEW_FOLDER:
+		workspace_mutation_open_create(app, rt, .Create_Folder)
+		return
+	case ACTION_WORKSPACE_SETTINGS:
+		app.settings_surface_open = true
+		alicorn.invalidate_root(rt, "Scratchpad Settings opened")
+		return
+	}
 	if editor_active_preedit(app) && (action_id == ACTION_EDIT_UNDO || action_id == ACTION_EDIT_REDO) {
 		set_error(app, "Finish or cancel the active text composition before using Undo or Redo.")
 		alicorn.invalidate_root(rt, "Scratchpad history command refused during IME composition")
@@ -2161,6 +2107,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	}
 	if app.workspace_mutation_kind != .None {
 		return workspace_mutation_handle_key(app, rt, key)
+	}
+	if app.settings_surface_open {
+		return settings_surface_handle_key(app, rt, key)
 	}
 	if key == .Context_Menu {
 		return workspace_context_menu_open_focused(app, rt)
@@ -3628,16 +3577,6 @@ sync_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	}
 }
 
-disable_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || rt == nil { return }
-	for action in app.backend.state.actions {
-		_ = alicorn.action_update(rt,
-			alicorn.Action_Descriptor{id=action_id_for(action.id), name=action.id, label=action.title},
-			alicorn.Action_State{enabled=false, checked=action.checked},
-		)
-	}
-}
-
 sync_menu_states :: proc(app: ^App) {
 	if app == nil { return }
 	composition_active := editor_active_preedit(app)
@@ -3647,7 +3586,14 @@ sync_menu_states :: proc(app: ^App) {
 	}
 	for &item in app.workspace_items {
 		if item.kind != .Command { continue }
-		item.state = menu_action_state(&app.backend.state, item.command)
+		switch {
+		case item.command == action_id_for(ACTION_WORKSPACE_NEW_FILE), item.command == action_id_for(ACTION_WORKSPACE_NEW_FOLDER):
+			item.state = alicorn.Action_State{enabled=app.backend.started && app.backend.state.has_workspace}
+		case item.command == action_id_for(ACTION_WORKSPACE_SETTINGS):
+			item.state = alicorn.Action_State{enabled=true}
+		case:
+			item.state = menu_action_state(&app.backend.state, item.command)
+		}
 	}
 	for &item in app.document_items {
 		if item.kind != .Command { continue }
@@ -4054,8 +4000,13 @@ init_menus :: proc(app: ^App) {
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_SELECT_ALL), label="Select All", shortcut=host.Application_Menu_Shortcut{'A', {.Primary}}},
 	}
-	app.workspace_items = [1]host.Application_Menu_Item{
+	app.workspace_items = [6]host.Application_Menu_Item{
+		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FILE), label="New File"},
+		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FOLDER), label="New Folder"},
+		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_REFRESH), label="Refresh Workspace", shortcut=host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SETTINGS), label="Settings…"},
 	}
 	app.document_items = [4]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_TAB_NEXT), label="Next Document"},

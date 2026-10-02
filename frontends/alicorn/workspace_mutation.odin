@@ -21,18 +21,6 @@ Workspace_Document_Migration :: struct {
 	new_path: string,
 }
 
-workspace_mutation_controls :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
-	if app == nil || ui == nil { return }
-	alicorn.container_begin(ui, .Container, label="workspace-mutation-create", style=alicorn.layout_style(.Row, height=32, gap=6))
-	if alicorn.button(ui, "New File", key=alicorn.key_string("workspace-new-file"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{disabled=!app.backend.state.has_workspace}) {
-		workspace_mutation_open_create(app, rt, .Create_File)
-	}
-	if alicorn.button(ui, "New Folder", key=alicorn.key_string("workspace-new-folder"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{disabled=!app.backend.state.has_workspace}) {
-		workspace_mutation_open_create(app, rt, .Create_Folder)
-	}
-	alicorn.container_end(ui)
-}
-
 workspace_mutation_open_create :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspace_Mutation_Kind) {
 	if app == nil || rt == nil || !app.backend.state.has_workspace { return }
 	parent := ""
