@@ -5,6 +5,23 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
+test_string_bytes_to_wire_preserves_ascii_and_utf8_bytes :: proc(t: ^testing.T) {
+	ascii, ascii_ok := string_bytes_to_wire("Superman")
+	testing.expect(t, ascii_ok && len(ascii) == 8, "ASCII replacement should allocate one wire value per source byte")
+	if ascii_ok && len(ascii) == 8 {
+		testing.expect(t, ascii[0] == 83 && ascii[7] == 110,
+			"wire conversion must use byte offsets, not the character value as a slice index")
+	}
+
+	utf8, utf8_ok := string_bytes_to_wire("é")
+	testing.expect(t, utf8_ok && len(utf8) == 2, "non-ASCII replacement should preserve both UTF-8 bytes")
+	if utf8_ok && len(utf8) == 2 {
+		testing.expect(t, utf8[0] == 0xC3 && utf8[1] == 0xA9,
+			"wire values should contain the original UTF-8 bytes")
+	}
+}
+
+@(test)
 test_find_match_reveal_centers_offscreen_rows_without_nudging_comfortable_rows :: proc(t: ^testing.T) {
 	comfortable, comfortable_scroll := find_match_center_offset(400, 600, 520, 24)
 	near_edge, edge_scroll := find_match_center_offset(400, 600, 960, 24)

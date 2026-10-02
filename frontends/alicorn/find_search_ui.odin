@@ -129,7 +129,7 @@ find_replace_current :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		alicorn.invalidate_root(rt, "Scratchpad refused invalid Find source coordinates")
 		return true
 	}
-	replacement, replacement_ok := find_replacement_bytes(app.find_replace_text)
+	replacement, replacement_ok := string_bytes_to_wire(app.find_replace_text)
 	if !replacement_ok {
 		find_set_message(&app.find_replace_message, "Could not prepare replacement text.")
 		return true
@@ -207,7 +207,7 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		alicorn.invalidate_root(rt, "Scratchpad Replace All waited for current authoritative Find results")
 		return true
 	}
-	replacement, replacement_ok := find_replacement_bytes(app.find_replace_text)
+	replacement, replacement_ok := string_bytes_to_wire(app.find_replace_text)
 	if !replacement_ok {
 		find_set_message(&app.find_replace_message, "Could not prepare replacement text.")
 		return true
@@ -255,10 +255,10 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	return true
 }
 
-find_replacement_bytes :: proc(text: string) -> (replacement: []int, ok: bool) {
+string_bytes_to_wire :: proc(text: string) -> (replacement: []int, ok: bool) {
 	result, allocation_error := make([]int, len(text), allocator=context.temp_allocator)
 	if allocation_error != nil { return nil, false }
-	for index, value in text { result[index] = int(value) }
+	for byte_index in 0..<len(text) { result[byte_index] = int(text[byte_index]) }
 	return result, true
 }
 

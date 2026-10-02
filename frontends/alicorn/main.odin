@@ -4382,13 +4382,12 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			alicorn.invalidate_root(rt, "Scratchpad refused a paste across the bounded source-window edge")
 			return
 		}
-		wire_replacement, allocation_error := make([]int, len(text), allocator=context.temp_allocator)
-		if allocation_error != nil {
+		wire_replacement, conversion_ok := string_bytes_to_wire(text)
+		if !conversion_ok {
 			set_error(app, "Could not prepare clipboard text for Scratchpad.")
 			alicorn.invalidate_root(rt, "Scratchpad could not encode clipboard bytes")
 			return
 		}
-		for index, value in text { wire_replacement[index] = int(value) }
 		document_id, id_error := strings.clone(document.id, context.temp_allocator)
 		if id_error != nil {
 			set_error(app, "Could not retain the active document identity for Paste.")
