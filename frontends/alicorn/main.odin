@@ -1285,7 +1285,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			markdown_row := editor_markdown_row_presentation(window, line, row_presentation_current)
 			row_background := editor_markdown_row_background(markdown_row)
 			row_key := alicorn.key_string(fmt.tprintf("scratchpad-row:%s:%d", document.id, line.logical_line))
-			alicorn.container_begin(
+			editor_row_node := alicorn.container_begin(
 				ui,
 				.Container,
 				label="scratchpad-editor-logical-line",
@@ -1296,7 +1296,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			// The parent virtual list shifts the whole row for horizontal scroll.
 			// Counter-shift fixed chrome and wrapped prose; no-wrap text stays in
 			// the parent's scrolling lane.
-			alicorn.container_begin_ex(
+			editor_gutter_node := alicorn.container_begin_ex(
 				ui,
 				.Virtual_List,
 				label="scratchpad-editor-line-number-gutter",
@@ -1313,7 +1313,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				key=alicorn.key_string(fmt.tprintf("scratchpad-line-number:%s:%d", document.id, line.logical_line)),
 				font=.Monospace,
 			)
-			if window_matches && rt.focused == list.scroll.id &&
+			if editor_table_line_is_projected(window, line) && window_matches && rt.focused == list.scroll.id &&
 			   view.caret_byte >= line.source_start && view.caret_byte <= line.source_end &&
 			   !view.preedit_active && !view.preedit_recoverable {
 				gutter_paint := [?]alicorn.Text_Paint_Span{{
@@ -1397,19 +1397,6 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, rt.scratch_allocator) }
 			decoration_current := window_covers_view && window.document_id == document.id &&
 			                      !view.preedit_active && !view.preedit_recoverable
-			if decoration_current && show_caret {
-				if row_start, row_end, row_ok := editor_visual_row_display_range(
-					rt, line, caret_display, view.caret_affinity, wrap_width, line_wraps, text_style_spans,
-				); row_ok {
-					caret_row := [?]alicorn.Text_Paint_Span{{
-						start=row_start,
-						end=row_end,
-						background=EDITOR_CARET_ROW_BACKGROUND,
-						background_set=true,
-					}}
-					paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], rt.scratch_allocator)
-				}
-			}
 			if decoration_current {
 				search_spans := workspace_search_match_paint_spans_for_line(window, line, view, rt.scratch_allocator)
 				paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, rt.scratch_allocator)
@@ -1453,6 +1440,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
 				show_caret,
 			)
+			if show_caret && !view.preedit_active && !view.preedit_recoverable {
+				caret_position := alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity}
+				_ = alicorn.visual_row_background(ui, editor_row_node, line_node, caret_position, EDITOR_CARET_ROW_BACKGROUND)
+				_ = alicorn.visual_row_background(ui, editor_gutter_node, line_node, caret_position, EDITOR_CARET_ROW_BACKGROUND)
+			}
 			}
 			alicorn.container_end(ui)
 			alicorn.container_end(ui)
