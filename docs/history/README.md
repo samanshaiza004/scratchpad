@@ -17,6 +17,7 @@ These reports preserve decisions, measurements, audits, and plans from earlier e
 
 ## Frontend experiments
 
+- [Retired Shirei frontend records](shirei/README.md)
 - [GPUI dogfood report](GPUI-DOGFOOD.md)
 - [GPUI parity gap audit](GPUI-GAP-AUDIT.md)
 - [GPUI parity ledger](GPUI-PARITY.md)

@@ -12,19 +12,19 @@ Scratchpad application
 ├── workspace/files/save/conflicts
 ├── language providers and derived projections
 ├── commands and application state
-└── Shirei composition
+└── Caliber C ABI backend
 
-Shirei
-├── windowing and platform integration
-├── layout, rendering, shaping, bidi
-├── input, IME, clipboard, focus
-├── generic widgets and virtualization
-└── snapshot/headless infrastructure
+Alicorn (Odin)
+├── SDL3 window and platform input
+├── Runa layout, text, and rendering
+├── focus, IME, clipboard, and viewport state
+└── native menus and workbench presentation
 ```
 
-There is one process and one normal Go application state model. There is no
-host/guest protocol, replicated document state, capability layer, or revision
-bridge inherited from the old Wasm experiments.
+The Alicorn frontend and Go backend run in one native process and communicate
+through Caliber's versioned C ABI. The Go application owns document bytes and
+product semantics; Alicorn owns transient focus, selection, viewport, and paint
+state. There is no replicated document authority.
 
 ## Document model
 
@@ -61,8 +61,8 @@ editor must still check the revision-tagged projection validity.
 The application shell has two presentations over that same model. Opening a
 file without a workspace keeps `HasWorkspace` false and presents a focused
 editor; opening a directory enables the workspace tree and its per-document
-views. `ui` owns this presentation choice, while `application.OpenPath` stays
-the shared file-or-directory entry seam.
+views. Alicorn owns this presentation choice, while `application.OpenPath`
+stays the shared file-or-directory entry seam.
 
 Workspace mutation commands take explicit paths and reconcile affected open
 documents before changing disk state. A committed move rekeys the existing
@@ -90,7 +90,7 @@ Only packages with immediate scaffold value exist today:
 
 - `document/`: product-owned document identity, revision bookkeeping, derived
   projection tags, and the byte line index helper. Its only text authority is
-  the editor package; it has no Shirei imports.
+  the editor package; it does not depend on frontend packages.
 - `workspace/`: workspace-root validation, path containment, file-store and
   disk-fingerprint policy, atomic replacement, advisory directory watching,
   directory listing, raw-byte search, and safe no-replace workspace
@@ -101,10 +101,11 @@ Only packages with immediate scaffold value exist today:
   projection adapter. Parser/provider seams for other languages remain a Gate
   E decision.
 - `commands/`: stable IDs, typed context predicates, and source-only product
-  transformations; no Shirei dependency.
-- `ui/`: Shirei composition. It should translate application state into views;
-  it should not become the document authority.
-- `cmd/scratchpad/`: native process entry point.
+  transformations; no frontend dependency.
+- `bridge/caliber/`: frontend-neutral C ABI and c-shared Go backend.
+- `frontends/alicorn/`: native Odin/Runa presentation and transient editor
+  view state; it does not own durable document bytes or command semantics.
+- `cmd/alicorn-dev/`: pinned dependency, build, test, and native-smoke driver.
 
 Planned packages should be created only when a real second consumer or a
 coherent state boundary exists. In particular, do not create empty `buffer`,
@@ -120,8 +121,8 @@ documents. It separates:
    line indexing;
 2. an editor view with viewport, selection, caret affinity, scroll anchor,
    visible-line layout cache, and decorations;
-3. a Shirei process/paint adapter that keeps focus, IME, clipboard, and native
-   input on the framework side where possible.
+3. an Alicorn presentation adapter that keeps focus, IME, clipboard, and
+   native input in the frontend while the Go editor remains authoritative.
 
 The first custom proof should be line-oriented with fixed row height and no soft
 wrapping. It should render only visible rows and convert byte/rune positions at
@@ -255,7 +256,8 @@ range. Configurable bindings remain deferred until semantics stabilize.
 
 ## Framework boundary
 
-Scratchpad consumes Shirei. A generic framework limitation is upstream work only
-after a minimal reproduction, a focused test, and evidence that the need is
-not a product policy. Scratchpad-specific workspace semantics, Markdown todo
-rules, parser selection, and command behavior remain downstream.
+Alicorn is the supported presentation runtime for v0.1.0. A generic runtime
+limitation should be fixed upstream only after a minimal reproduction, a
+focused test, and evidence that the need is not Scratchpad product policy.
+Scratchpad-specific workspace semantics, Markdown behavior, parser selection,
+and command behavior remain in the Go application and its adapters.

@@ -22,18 +22,11 @@ jobs:
         run: go test -tags treesitter_release ./...
       - name: Vet
         run: go vet ./...
-      - name: Build commands
+      - name: Build Go tools
         run: |
-          go build -tags treesitter_release -o scratchpad-${{ matrix.os }} ./cmd/scratchpad
-          go build -tags treesitter_release ./cmd/scratcheditor
+          go build -tags treesitter_release ./cmd/alicorn-dev
           go build -tags treesitter_release ./cmd/fragmentbench
-          go build -tags treesitter_release ./cmd/textbench
           go build -tags treesitter_cgo ./cmd/treebench
-      - name: Upload native release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: scratchpad-${{ matrix.os }}
-          path: scratchpad-${{ matrix.os }}
 
   no-cgo-compatibility:
     runs-on: ubuntu-latest
@@ -47,7 +40,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Build explicit pure-Go compatibility artifact
-        run: go build -tags treesitter_pure -o scratchpad-no-cgo.exe ./cmd/scratchpad
-      - name: Verify pure-Go capability report compiles
-        run: GOOS=linux go test -tags treesitter_pure ./language/treesitter
+      - name: Verify the pure-Go language adapter on Linux
+        run: go test -tags treesitter_pure ./language/treesitter
+        env:
+          GOOS: linux
+      - name: Cross-build the pure-Go language adapter tool for Windows
+        run: go build -tags treesitter_pure -o treesitter-pure.exe ./cmd/treebench

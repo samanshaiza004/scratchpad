@@ -9,8 +9,8 @@
 ## Supporting material
 
 - [Design contracts](design/EDITOR-CORE-CONTRACT.md) and [overflow lane specification](design/OVERFLOW-LANE-SPEC.md).
-- [Alicorn frontend notes](../frontends/alicorn/README.md), [GPUI experiment notes](../frontends/gpui/README.md), [editing ownership](frontends/alicorn/EDITING.md), [bounded Markdown design](frontends/alicorn/MARKDOWN.md), and [parity contract](frontends/alicorn/PARITY.md).
-- Research: [Shirei editor](research/SHIREI-RESEARCH.md), [keyboard navigation](research/KEYBOARD-NAVIGATION.md), [Tree-sitter options](research/TREE-SITTER-OPTIONS.md), [terminal](research/TERMINAL-RESEARCH.md), and [Shirei contributions](research/SHIREI-CONTRIBUTIONS.md).
+- [Alicorn setup and status](../frontends/alicorn/README.md), [editing ownership](frontends/alicorn/EDITING.md), [bounded Markdown design](frontends/alicorn/MARKDOWN.md), and [Alicorn coverage and follow-up gaps](frontends/alicorn/PARITY.md).
+- Research: [Tree-sitter options](research/TREE-SITTER-OPTIONS.md). Shirei and GPUI implementation reports are preserved as historical records under [engineering history](history/README.md).
 - [Baselines](baselines/README.md) — retained benchmark and parser measurements.
 - [Engineering history](history/README.md) — completed investigations, audits, and their original evidence.
 

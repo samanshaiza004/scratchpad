@@ -1,5 +1,5 @@
 // Package editor contains the smallest editor-scale storage spike. It is not
-// yet the product editor and intentionally has no Shirei dependency.
+// yet the product editor and intentionally has no frontend dependency.
 package editor
 
 import (

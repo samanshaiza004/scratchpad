@@ -5,16 +5,16 @@
       "windows": [
         "go",
         "run",
-        "./cmd/gpui-dev",
+        "./cmd/alicorn-dev",
         "test",
         "--caliber-root",
         "{candidate}",
         "--allow-caliber-revision"
-      ],
+      ], 
       "unix": [
         "go",
         "run",
-        "./cmd/gpui-dev",
+        "./cmd/alicorn-dev",
         "test",
         "--caliber-root",
         "{candidate}",
@@ -54,9 +54,9 @@
       "rustc"
     ],
     "caliber_library": {
-      "windows": "frontends/gpui/build/caliber_ffi.dll",
-      "macos": "frontends/gpui/build/libcaliber_ffi.dylib",
-      "linux": "frontends/gpui/build/libcaliber_ffi.so"
+      "windows": "out/alicorn/caliber_ffi.dll",
+      "macos": "out/alicorn/libcaliber_ffi.dylib",
+      "linux": "out/alicorn/libcaliber_ffi.so"
     },
     "requested_abi": 1
   }

@@ -1,37 +1,12 @@
 # Scratchpad
 
-Scratchpad is a native, file-first text editor for notes, prose, tasks, and code. It is built around ordinary files and a dependable, comfortable text-editing foundation.
+Scratchpad is a native, file-first editor for notes, prose, tasks, and code. For v0.1.0, **Alicorn is the supported desktop frontend**. The Go application remains authoritative for document bytes, editing commands, workspace operations, saves, conflicts, and recovery; Alicorn provides the native window, interaction, and presentation.
 
-## Product thesis
+## Product direction
 
-Scratchpad is being built as a **file-native projection editor**: files remain durable and portable, while future views may gather, reduce, or rearrange text without making those views a new source of truth.
+Scratchpad keeps ordinary files durable and portable while exploring views that can gather or reduce text without becoming a new source of truth. Version 0.1.0 focuses on dependable file workflows and ordinary editing. Projection features described in [the product thesis](docs/THESIS.md) are future exploration, not a v0.1.0 promise. See [the roadmap](docs/PLAN.md) for current scope.
 
-For version 0.1.0, the work is focused on the editor foundation: ordinary file workflows and the basic feel of editing text well. Projection features are planned exploration for 0.2.0; they are not part of the 0.1.0 feature promise.
-
-Read [the product thesis](docs/THESIS.md) for the long-term direction and [the roadmap](docs/PLAN.md) for the versioned scope.
-
-## Run Scratchpad
-
-Prerequisite: Go 1.25.5 or newer.
-
-```bash
-go run ./cmd/scratchpad
-go run ./cmd/scratchpad --version
-```
-
-Run the Go checks with:
-
-```bash
-go test ./...
-```
-
-## Experimental frontends
-
-The Go and Shirei application is the working product path.
-
-## Alicorn
-
-Alicorn explores a separate native shell over the same Scratchpad application and document model. It has a bounded editing viewport; clipboard, undo and redo, IME composition, and soft wrapping are still in progress.
+## Run Alicorn
 
 From the repository root:
 
@@ -39,11 +14,25 @@ From the repository root:
 .\tools\alicorn.ps1 run
 ```
 
-See [Alicorn setup and status](frontends/alicorn/README.md) for prerequisites and platform details.
+```sh
+./tools/alicorn.sh run
+```
 
-## GPUI
+The wrapper synchronizes the pinned Alicorn and Caliber dependencies. It requires Go 1.25.5 or newer, Odin, Rust/Cargo for Caliber, and the platform's native build tools. Windows also needs a 64-bit MinGW-w64 C compiler; macOS needs SDL3 (`brew install sdl3`). See [Alicorn setup and current status](frontends/alicorn/README.md).
 
-GPUI is an integration experiment, not a full editor port. It demonstrates a Rust/GPUI shell using Scratchpad's Go application through the Caliber boundary, with a bounded viewport and a small editing spike. See [the GPUI experiment notes](frontends/gpui/README.md) for its scope and build instructions.
+Run the Alicorn integration suite with `test` instead of `run`; `build` creates a native artifact and `smoke` checks launch, publication, wake, presentation, and shutdown.
+
+## Checks
+
+```sh
+go test -tags treesitter_release ./...
+```
+
+The Alicorn integration suite also runs Go/Caliber boundary tests, Odin checks, and frontend behavior tests through `tools/alicorn.ps1 test` or `tools/alicorn.sh test`.
+
+## Frontend history and known gaps
+
+The former Shirei and GPUI implementations are preserved at the `archive/pre-v0.1.0-frontends` branch and tag. They are not supported build targets. Alicorn currently lacks saved-session restoration, the outline sidebar, fold controls, selectable/persisted themes, editor font-zoom controls, and expand-selection. These are recorded in the [Alicorn coverage and follow-up list](docs/frontends/alicorn/PARITY.md); native Windows/macOS validation is tracked separately from missing features.
 
 ## Project principles
 
@@ -55,7 +44,7 @@ GPUI is an integration experiment, not a full editor port. It demonstrates a Rus
 
 ## Documentation
 
-The [documentation index](docs/README.md) organizes the thesis, current roadmap, architecture, research, design contracts, and historical engineering records.
+Start with the [documentation index](docs/README.md), [architecture](docs/ARCHITECTURE.md), [Alicorn editing behavior](docs/frontends/alicorn/EDITING.md), and [Markdown design](docs/frontends/alicorn/MARKDOWN.md). Completed implementation and retired frontend reports are under [engineering history](docs/history/README.md).
 
 ## License
 

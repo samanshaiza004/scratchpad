@@ -1,5 +1,5 @@
 // Package application owns the product's open-document registry and active
-// application state. It deliberately contains no Shirei dependency.
+// application state. It deliberately contains no frontend dependency.
 package application
 
 import (

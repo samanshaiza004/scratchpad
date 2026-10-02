@@ -20,7 +20,7 @@ type caliberStateLease struct {
 }
 
 func loadCaliber() (*caliberRuntime, error) {
-	return nil, errors.New("cgo is required for the GPUI backend Caliber adapter")
+	return nil, errors.New("cgo is required for the Alicorn Caliber backend adapter")
 }
 
 func (c *caliberRuntime) close() {}

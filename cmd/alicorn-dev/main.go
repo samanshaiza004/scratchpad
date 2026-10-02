@@ -1,6 +1,6 @@
-// alicorn-dev is the bounded build/test/smoke harness for Scratchpad's
-// experimental Odin/Alicorn frontend. The Go application and c-shared bridge
-// remain the same frontend-neutral implementation used by GPUI.
+// alicorn-dev is the build/test/smoke harness for Scratchpad's supported
+// Odin/Alicorn frontend. The Go application and c-shared bridge own product
+// state and semantics.
 package main
 
 import (
@@ -52,8 +52,10 @@ func run(args []string) error {
 	flags.SetOutput(os.Stderr)
 	goPath := flags.String("go", os.Getenv("SCRATCHPAD_GO"), "64-bit Go executable (Windows cgo requires amd64)")
 	odinArg := flags.String("odin", "", "Odin compiler (or use ALICORN_ODIN/PATH)")
-	alicornRootArg := flags.String("alicorn-root", os.Getenv("CALIBER_CANDIDATE_ROOT"), "Alicorn checkout override for dependency validation")
+	alicornRootArg := flags.String("alicorn-root", os.Getenv("ALICORN_CANDIDATE_ROOT"), "Alicorn checkout override for dependency validation")
 	allowAlicornRevision := flags.Bool("allow-alicorn-revision", false, "allow an Alicorn candidate different from the lock")
+	caliberRootArg := flags.String("caliber-root", os.Getenv("CALIBER_CANDIDATE_ROOT"), "Caliber checkout override for dependency validation")
+	allowCaliberRevision := flags.Bool("allow-caliber-revision", false, "allow a Caliber candidate different from the lock")
 	release := flags.Bool("release", false, "build optimized native artifacts")
 	outArg := flags.String("out", "out/alicorn", "artifact directory")
 	workspace := flags.String("workspace", "", "initial Scratchpad workspace directory; defaults to this checkout")
@@ -99,20 +101,27 @@ func run(args []string) error {
 		return fmt.Errorf("inspect Alicorn checkout at %s: %w", alicornRoot, err)
 	}
 	alicornCommit = strings.TrimSpace(alicornCommit)
-	if !*allowAlicornRevision && alicornCommit != locked.Alicorn.Revision {
-		return fmt.Errorf("Alicorn checkout is at %s; dependencies.lock.json requires %s", alicornCommit, locked.Alicorn.Revision)
+	if err := validateLockedRevision("Alicorn", alicornCommit, locked.Alicorn.Revision, *allowAlicornRevision); err != nil {
+		return err
 	}
 	if _, err := os.Stat(filepath.Join(alicornRoot, "runtime")); err != nil {
 		return fmt.Errorf("Alicorn runtime source is missing from %s: %w", alicornRoot, err)
 	}
-	caliberRoot := filepath.Join(root, ".deps", "caliber")
+	caliberRoot := *caliberRootArg
+	if caliberRoot == "" {
+		caliberRoot = filepath.Join(root, ".deps", "caliber")
+	}
+	caliberRoot, err = filepath.Abs(caliberRoot)
+	if err != nil {
+		return err
+	}
 	caliberCommit, err := gitOutput(caliberRoot, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("inspect locked Caliber checkout: %w", err)
 	}
 	caliberCommit = strings.TrimSpace(caliberCommit)
-	if caliberCommit != locked.Caliber.Revision {
-		return fmt.Errorf("Caliber checkout is at %s; dependencies.lock.json requires %s", caliberCommit, locked.Caliber.Revision)
+	if err := validateLockedRevision("Caliber", caliberCommit, locked.Caliber.Revision, *allowCaliberRevision); err != nil {
+		return err
 	}
 	if _, err := os.Stat(filepath.Join(caliberRoot, "include", "caliber.h")); err != nil {
 		return fmt.Errorf("canonical Caliber header is missing: %w", err)
@@ -138,7 +147,7 @@ func run(args []string) error {
 	}
 	backendPath := filepath.Join(out, backendLibraryName())
 	manifest := artifactManifest{
-		CaliberCommit: locked.Caliber.Revision,
+		CaliberCommit: caliberCommit,
 		AlicornCommit: alicornCommit,
 		ABIVersion:    1,
 		Artifacts:     []string{backendLibraryName(), filepath.Base(caliberLibrary)},
@@ -216,6 +225,13 @@ func run(args []string) error {
 		return runCommand(root, launchEnv, "Alicorn frontend", exe)
 	}
 	return nil
+}
+
+func validateLockedRevision(dependency, actual, required string, allowCandidate bool) error {
+	if allowCandidate || actual == required {
+		return nil
+	}
+	return fmt.Errorf("%s checkout is at %s; dependencies.lock.json requires %s", dependency, actual, required)
 }
 
 func repoRoot() (string, error) {

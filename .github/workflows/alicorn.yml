@@ -1,4 +1,4 @@
-name: Alicorn Phase 1 lifecycle
+name: Alicorn native frontend
 
 on:
   push:
@@ -57,6 +57,19 @@ jobs:
       - name: Native window lifecycle smoke
         if: runner.os == 'macOS'
         run: ./tools/alicorn.sh smoke
+      - name: Build native release artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\tools\alicorn.ps1 build --release
+      - name: Build native release artifact
+        if: runner.os == 'macOS'
+        run: ./tools/alicorn.sh build --release
+      - name: Upload Alicorn artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scratchpad-alicorn-${{ matrix.os }}
+          path: out/alicorn/
+          if-no-files-found: error
 
   linux-foreign-checks:
     runs-on: ubuntu-latest

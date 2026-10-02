@@ -1,6 +1,6 @@
 # Alicorn editing ownership contract
 
-Status: Phase 4 ordinary editing and Phase 5A soft wrapping/visual rows are implemented and headless-tested, including pointer selection, multiline indentation, clipboard, undo/redo, IME composition, and source-preserving reflow. Native Windows/macOS click-count, modifier, drag-autoscroll, clipboard, IME, and wrap-resize behavior still needs manual verification. This document records ownership boundaries, invariants, and the editing contract for the experimental Alicorn frontend.
+Status: ordinary editing and soft wrapping/visual rows are implemented and headless-tested, including pointer selection, multiline indentation, clipboard, undo/redo, IME composition, and source-preserving reflow. Native Windows/macOS click-count, modifier, drag-autoscroll, clipboard, IME, and wrap-resize behavior still needs manual verification. This document records ownership boundaries, invariants, and the editing contract for the supported Alicorn frontend.
 
 ## Ownership
 

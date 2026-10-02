@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+func TestValidateLockedRevision(t *testing.T) {
+	tests := []struct {
+		name    string
+		actual  string
+		allow   bool
+		wantErr bool
+	}{
+		{name: "locked revision", actual: "abc", wantErr: false},
+		{name: "candidate without override", actual: "def", wantErr: true},
+		{name: "candidate with override", actual: "def", allow: true, wantErr: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateLockedRevision("Caliber", test.actual, "abc", test.allow)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateLockedRevision() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateDarwinBackendArtifact(t *testing.T) {
 	loadCommands := `Load command 12
           cmd LC_RPATH

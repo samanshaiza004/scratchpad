@@ -1,3 +1,5 @@
+> Historical audit of the retired Shirei frontend. Repository-source links point to the preserved `archive/pre-v0.1.0-frontends` Git ref.
+
 # Keyboard navigation research
 
 Status: implemented baseline; the keyboard tree contract and tests landed in
@@ -12,34 +14,34 @@ existing `treeState`/command seams with a small, contained UI change.
 
 ## Current repository seam
 
-- The Files sidebar is rendered by [`sidebar`](../../ui/root.go#L621), which
+- The Files sidebar is rendered by [`sidebar`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L621), which
   creates a scrolling viewport, calls `ScrollOnInput`, and then renders the
   workspace tree. The existing scroll hook is wheel/hover based; it is not a
   keyboard reveal mechanism.
-- [`treeState`](../../ui/root.go#L1200) stores `Expanded`, multi-selection,
+- [`treeState`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L1200) stores `Expanded`, multi-selection,
   `AnchorPath`, `LeadPath`, visible paths, and transient row IDs. It has no
   focused path or focus container identity.
-- [`renderTreeWithShell`](../../ui/root.go#L1387) creates a keyed container for
+- [`renderTreeWithShell`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L1387) creates a keyed container for
   each path, but the row itself is only `Attrs(Expand)` and a custom
-  [`WorkstationRow`](../../ui/material.go#L207). The row calls Shirei's
+  [`WorkstationRow`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/material.go#L207). The row calls Shirei's
   `ProcessButtonEvents`, which is pointer interaction only and does not take
   keyboard focus in the vendored framework source ([Shirei button source](https://github.com/hasenj/go-shirei/blob/6df9f18e3c2016d780f27f4ed67ff62cb189bf60/widgets/button.go#L31-L40)).
 - A normal mouse click selects a row and immediately opens a file or toggles a
   directory; Shift selects a visible range; the platform primary modifier
   toggles a row. Those semantics are implemented in
-  [`treeSelectionClick`](../../ui/root.go#L1233) and the row click handler
-  ([`renderTreeWithShell`](../../ui/root.go#L1460)).
+  [`treeSelectionClick`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L1233) and the row click handler
+  ([`renderTreeWithShell`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L1460)).
 - The editor is currently the keyboard owner: its viewport is marked
   `Focusable`, calls `AutoFocus` and `FocusOnClick`, and calls `WantKeyboard`
-  only while it has focus ([`EditableDocumentView`](../../ui/editor_view.go#L1292)).
+  only while it has focus ([`EditableDocumentView`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/editor_view.go#L1292)).
   The Files tree has no analogous focus path.
 - Global input is processed before the main layout in
-  [`handleGlobalInput`](../../ui/root.go#L2311). F2 invokes workspace rename,
-  but [`commandPath`](../../ui/root.go#L3104) falls back to the active document
+  [`handleGlobalInput`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L2311). F2 invokes workspace rename,
+  but [`commandPath`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L3104) falls back to the active document
   when no explicit path is supplied. Consequently, a future tree-focused F2
   must pass the focused/selected tree path explicitly or it can rename the
   active document instead. The command registry already names F2 as Rename and
-  Delete as Move to Trash ([`commands/registry.go`](../../commands/registry.go#L123)).
+  Delete as Move to Trash ([`commands/registry.go`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/commands/registry.go#L123)).
 - The current mouse selection model is already compatible with a separate
   keyboard focus model: selected paths are ordered through `VisiblePaths`, and
   the anchor/lead pair supports range selection. What is missing is the
@@ -143,11 +145,11 @@ a product decision, not a framework constraint.
   dispatcher ([Shirei input API](https://github.com/hasenj/go-shirei/blob/6df9f18e3c2016d780f27f4ed67ff62cb189bf60/shirei.go#L110-L117)). Call it only while the tree's focus target owns the keyboard, and keep modal/text-input precedence ahead of tree handling.
 - `ScrollOnInput` only reacts when its container is hovered
   ([Shirei scroll API](https://github.com/hasenj/go-shirei/blob/6df9f18e3c2016d780f27f4ed67ff62cb189bf60/shirei.go#L933-L950)). Keyboard movement therefore needs an explicit reveal step. Scratchpad already has a geometry-based precedent in
-  [`revealPopupSelection`](../../ui/root.go#L440), which uses row render data,
+  [`revealPopupSelection`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L440), which uses row render data,
   `SetScrollOffset`, and `RequestNextFrame`.
 - Focus must survive row rerenders and filesystem mutations by path identity,
   with a deterministic fallback when the focused path disappears. The existing
-  deferred row-ID invalidation in [`resetTreeAfterMutation`](../../ui/root.go#L2994)
+  deferred row-ID invalidation in [`resetTreeAfterMutation`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go#L2994)
   shows that the tree already treats row handles as transient.
 - The public Shirei APIs inspected here expose logical focus and keyboard
   ownership, but no product-level tree role, accessible name, expanded-state
@@ -181,8 +183,8 @@ a product decision, not a framework constraint.
 
 ## Sources
 
-- Repository seam: [`ui/root.go`](../../ui/root.go), [`ui/material.go`](../../ui/material.go), [`ui/editor_view.go`](../../ui/editor_view.go), [`commands/registry.go`](../../commands/registry.go).
-- Shirei dependency version: [`go.mod`](../../go.mod#L5); first-party source at [hasenj/go-shirei](https://github.com/hasenj/go-shirei/tree/6df9f18e3c2016d780f27f4ed67ff62cb189bf60).
+- Repository seam: [`ui/root.go`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/root.go), [`ui/material.go`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/material.go), [`ui/editor_view.go`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/editor_view.go), [`commands/registry.go`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/commands/registry.go).
+- Shirei dependency version: [`go.mod`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/go.mod#L5); first-party source at [hasenj/go-shirei](https://github.com/hasenj/go-shirei/tree/6df9f18e3c2016d780f27f4ed67ff62cb189bf60).
 - [VS Code default keyboard shortcuts](https://code.visualstudio.com/docs/reference/default-keybindings), [VS Code accessibility](https://code.visualstudio.com/docs/configure/accessibility/accessibility), and [VS Code keybinding rules](https://code.visualstudio.com/docs/configure/keybindings).
 - [JetBrains Project tool window](https://www.jetbrains.com/help/idea/project-tool-window.html), [JetBrains keyboard shortcuts](https://www.jetbrains.com/help/idea/mastering-keyboard-shortcuts.html), and [predefined Windows keymap](https://www.jetbrains.com/help/idea/reference-keymap-win-default.html).
 - [W3C ARIA Authoring Practices: Tree View Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/treeview/).

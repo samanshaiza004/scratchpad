@@ -14,7 +14,7 @@ Syntax remains visible. Tabs, BOMs, CRLF, invalid bytes, and saved bytes retain 
 
 ## Resource extension
 
-`read_visible_lines` defaults to the unchanged SPVS v1 payload, so existing GPUI clients need no decoder changes. `include_presentation=true` requests SPVS v2. Its first 48 bytes and following raw source bytes retain the v1 layout and meanings; the descriptor's `byte_len` still counts only source bytes.
+`read_visible_lines` defaults to the unchanged SPVS v1 payload. `include_presentation=true` requests SPVS v2. Its first 48 bytes and following raw source bytes retain the v1 layout and meanings; the descriptor's `byte_len` still counts only source bytes.
 
 The appended little-endian trailer has a 24-byte header: presentation revision (`u64`), flags (`u32`, ready=1 and truncated=2), span count (`u32`), block count (`u32`), and a zero reserved word (`u32`). Span records followed by block records each occupy 16 bytes: explicit wire kind, start, end, and level/flags (`u32` each). The low eight bits hold level; for `PresentationTableCell` they carry the zero-based column index. Those spans carry parser-trimmed source ranges while pipe spans retain structural/navigation positions. Block bits 8 and 9 indicate clipping at the window start and end. Ranges are half-open, relative to the returned source window, and clipped to it. Wire IDs are explicit constants rather than Go enum ordinals.
 
@@ -38,7 +38,7 @@ Markdown and plain-text prose wrap. Markdown tables use one table-wide layout pl
 
 After an optimistic edit, presentation ranges that were explicitly rebased with the source remain usable for visual continuity across the edit acknowledgement. As Goldmark catches up, Alicorn can take an exact projection for an acknowledged revision and chase it through the remaining queued replacements, so newly formed headings and inline constructs can appear styled while typing continues. Rebased ranges remain presentation-only and never authorize source mutation; the next exact projection replaces them when it arrives. Table commands use the frontend's current caret and selection snapshot, while Go synchronously validates table context against authoritative source before applying a command.
 
-The existing Markdown A and soft-wrap coverage verifies exact-revision styling, source/display mapping, wrapped visual-row navigation and selection, no-wrap code and table-overflow policy, long-word wrapping, sparse height shifts, and resize anchoring. The cell-aware table path compiles and preserves source bytes, but still needs focused automated layout/hit-test coverage and native review of table selection, resize, scrolling, and IME on Windows and macOS. This pass does not claim full Shirei appearance or Markdown-command parity. Shirei remains the default/product frontend.
+The existing Markdown and soft-wrap coverage verifies exact-revision styling, source/display mapping, wrapped visual-row navigation and selection, no-wrap code and table-overflow policy, long-word wrapping, sparse height shifts, and resize anchoring. The cell-aware table path compiles and preserves source bytes, but still needs focused automated layout/hit-test coverage and native review of table selection, resize, scrolling, and IME on Windows and macOS. Alicorn is the supported frontend; the remaining differences from the retired Shirei workbench are tracked in [the coverage list](PARITY.md).
 
 ## Validation limits
 
@@ -46,7 +46,7 @@ Headless tests must cover exact/stale revision handling, metadata bounds and mal
 
 ## Validation recorded for Markdown A
 
-On Windows, the locked dependency validation passes root Go tests (including the existing Shirei editor/UI), cgo bridge tests, Odin type checking, nine bridge tests, and forty frontend tests. The bridge also passes `go test -race ./...` with the canonical Caliber header and actual library. GPUI's eighteen unit tests, foreign smoke, and `cargo clippy --all-targets -- -D warnings` pass with the locked Caliber source.
+Historical Windows validation for the pre-cleanup frontend tree passed root Go tests, cgo bridge tests, Odin type checking, nine bridge tests, and forty frontend tests. The bridge also passed `go test -race ./...` with the canonical Caliber header and actual library. The archived GPUI report records its Rust test and smoke results.
 
 The locked native Alicorn smoke passes startup, publication, wake, GPU submission, and ordered shutdown. The real-backend Markdown regression covers pending-to-ready publication, edit invalidation, retained row identity, unchanged shaped-run/caret/hit geometry, source fidelity, and request deduplication. Alicorn's foundation/runtime/native suites pass, including dense decorated-span allocation and geometry checks.
 

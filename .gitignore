@@ -8,18 +8,16 @@
 *.test
 *.out
 coverage.out
-
+ 
 # Local development state
 .scratchpad/
 .DS_Store
 
 # Generated visual artifacts and local benchmark output
-testdata/generated/
+testdata/generated/ 
 *.pprof
 
-# GPUI dogfood native artifacts
-/frontends/gpui/build/
-/frontends/gpui/target/
+# Native frontend and backend build output
 /frontends/alicorn/build/
 /bridge/caliber/build/
 /out/

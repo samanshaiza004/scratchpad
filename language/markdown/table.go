@@ -8,7 +8,7 @@ import (
 
 // collectTableProjections lowers every *markdownast.Table in the already-parsed
 // Goldmark tree into source-byte-only table projections. It intentionally
-// produces no Shirei values and never mutates source.
+// produces no frontend values and never mutates source.
 //
 // Table recognition and column alignments come from the parser: a table node
 // exists only when Goldmark accepted a header/delimiter pair, and each header
