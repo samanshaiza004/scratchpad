@@ -338,6 +338,97 @@ find_match_center_offset :: proc(current_offset, viewport, row_top, row_height: 
 	return max(row_top+row_height*0.5-viewport*0.5, 0), true
 }
 
+// Resolve a workspace search destination only after the target editor row has
+// been emitted and shaped. This lets us account for both the active tab's saved
+// scroll restoration and the actual horizontal geometry of the matched text.
+workspace_search_reveal_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || app.editor_scroll_owner == 0 || !app.backend.started { return }
+	document, document_found := find_document(&app.backend.state, app.backend.state.active)
+	if !document_found { return }
+	view_index := editor_view_find(app.editor_views[:], document.id)
+	if view_index < 0 { return }
+	view := &app.editor_views[view_index]
+	if !view.workspace_search_reveal_pending { return }
+	if view.workspace_search_match_revision != document.editor_revision ||
+	   !app.editor_window_ready || app.editor_window.document_id != document.id ||
+	   app.editor_window.editor_revision != document.editor_revision {
+		return
+	}
+	line, line_found := editor_window_line(&app.editor_window, view.workspace_search_reveal_line)
+	if !line_found { return }
+	target, target_found := editor_row_target_for_source(
+		app.editor_row_targets[:], line.logical_line, view.workspace_search_match_start,
+	)
+	if !target_found { return }
+	target_node, node_found := rt.nodes[target.node]
+	owner, owner_found := rt.nodes[app.editor_scroll_owner]
+	if !node_found || !owner_found || !target_node.active || !owner.active ||
+	   target_node.bounds.h <= 0 || owner.kind != .Scroll_Region { return }
+
+	viewport_top := owner.scroll_viewport_bounds.y
+	viewport_height := owner.scroll_viewport_height
+	if viewport_height <= 0 { viewport_height = owner.bounds.h }
+	if viewport_height <= 0 { return }
+	margin_y := min(viewport_height*0.18, 64)
+	if target_node.bounds.y < viewport_top+margin_y ||
+	   target_node.bounds.y+target_node.bounds.h > viewport_top+viewport_height-margin_y {
+		next_y := owner.scroll_offset_y +
+		          (target_node.bounds.y+target_node.bounds.h*0.5 - viewport_top-viewport_height*0.5)
+		max_y := max(owner.scroll_content_height-viewport_height, 0)
+		if alicorn.scroll_region_set_offset(
+			rt, app.editor_scroll_owner, min(max(next_y, 0), max_y),
+			"Scratchpad centered the opened workspace search result after layout",
+		) {
+			return
+		}
+	}
+
+	display_line, display_found := editor_display_line_for_target(&app.editor_window, line, target)
+	if !display_found { return }
+	match_start := view.workspace_search_match_start
+	match_end := min(view.workspace_search_match_end, line.source_end)
+	if target.is_cell {
+		match_start = max(match_start, target.cell_start)
+		match_end = min(match_end, target.cell_end)
+	}
+	if match_end <= match_start { match_end = match_start }
+	start_display := editor_source_to_display(&display_line, match_start)
+	end_display := editor_source_to_display(&display_line, match_end)
+	start_geometry := alicorn.text_node_caret_geometry(
+		rt, target.node, alicorn.Text_Position{byte=start_display, affinity=.Leading},
+	)
+	end_geometry := alicorn.text_node_caret_geometry(
+		rt, target.node, alicorn.Text_Position{byte=end_display, affinity=.Trailing},
+	)
+	if !start_geometry.valid || !end_geometry.valid { return }
+
+	viewport_left := owner.scroll_viewport_bounds.x
+	viewport_width := owner.scroll_viewport_width
+	if viewport_width <= 0 { viewport_width = owner.bounds.w }
+	if viewport_width <= 0 { return }
+	viewport_right := viewport_left+viewport_width
+	match_left := min(start_geometry.rect.x, end_geometry.rect.x)
+	match_right := max(start_geometry.rect.x, end_geometry.rect.x)
+	if match_right <= match_left { match_right = match_left+1 }
+	margin_x := min(viewport_width*0.08, 48)
+	comfort_left := viewport_left+margin_x
+	comfort_right := viewport_right-margin_x
+	if match_left < comfort_left || match_right > comfort_right {
+		match_width := match_right-match_left
+		next_x := owner.scroll_offset_x +
+		          ((match_left+match_right)*0.5 - (viewport_left+viewport_width*0.5))
+		if match_width >= viewport_width-2*margin_x {
+			next_x = owner.scroll_offset_x+(match_left-comfort_left)
+		}
+		max_x := max(owner.scroll_content_width-viewport_width, 0)
+		_ = alicorn.scroll_region_set_offset_x(
+			rt, app.editor_scroll_owner, min(max(next_x, 0), max_x),
+			"Scratchpad revealed a workspace search match in the horizontal lane",
+		)
+	}
+	view.workspace_search_reveal_pending = false
+}
+
 find_move_match :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) -> bool {
 	if app == nil || (app.workspace_search_mode && !app.find_open) || (!app.find_open && len(app.find_query) == 0) { return false }
 	stale := false
@@ -599,7 +690,8 @@ workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result
 						view.workspace_search_match_start = u64(result.start_byte)
 						view.workspace_search_match_end = u64(result.end_byte)
 						view.workspace_search_match_revision = document.editor_revision
-						_ = find_reveal_match_line(rt, view, app.editor_scroll_owner, result.line)
+						view.workspace_search_reveal_pending = true
+						view.workspace_search_reveal_line = u64(result.line)
 					}
 				}
 			}

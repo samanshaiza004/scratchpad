@@ -154,6 +154,8 @@ Editor_View_State :: struct {
 	workspace_search_match_start: u64,
 	workspace_search_match_end: u64,
 	workspace_search_match_revision: u64,
+	workspace_search_reveal_pending: bool,
+	workspace_search_reveal_line: u64,
 	optimistic_window: Editor_Window,
 	optimistic_window_ready: bool,
 	optimistic_pending_edits: u64,

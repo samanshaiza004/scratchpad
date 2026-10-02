@@ -675,6 +675,7 @@ build_app :: proc(
 			_ = alicorn.text_input_target_area_set(rt, app.editor_scroll_owner, area)
 		}
 	}
+	workspace_search_reveal_after_frame(app, rt)
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	return root
 }
@@ -1044,6 +1045,25 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.wrap_measurement_end_line = window.end_line
 			view.wrap_measurement_pending_edits = view.optimistic_pending_edits
 		}
+	}
+	// Search navigation is an explicit source destination, so it takes
+	// precedence over the document's saved tab scroll position. Resolve its
+	// vertical location after wrapping measurements, then apply it after this
+	// frame has emitted the destination document's retained scroll region.
+	if view.workspace_search_reveal_pending &&
+	   view.workspace_search_match_revision == document.editor_revision &&
+	   view.wrap_height_index_ready &&
+	   view.workspace_search_reveal_line < u64(max(line_count, 0)) {
+		target_line := int(view.workspace_search_reveal_line)
+		target_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, target_line)
+		target_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, target_line)
+		if target_height <= 0 { target_height = EDITOR_ROW_HEIGHT }
+		desired_y, _ := find_match_center_offset(scroll_y, viewport_height, target_top, target_height)
+		max_y := max(view.wrap_height_index.total_height-viewport_height, 0)
+		desired_y = min(max(desired_y, 0), max_y)
+		scroll_y = desired_y
+		view.scroll_y = desired_y
+		view.restore_y_pending = true
 	}
 	visible_intrinsic_width: f32 = 0
 	if window_matches {

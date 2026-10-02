@@ -122,6 +122,8 @@ workspace_search_match_clear :: proc(view: ^Editor_View_State) {
 	view.workspace_search_match_start = 0
 	view.workspace_search_match_end = 0
 	view.workspace_search_match_revision = 0
+	view.workspace_search_reveal_pending = false
+	view.workspace_search_reveal_line = 0
 }
 
 workspace_search_match_paint_spans_for_line :: proc(
