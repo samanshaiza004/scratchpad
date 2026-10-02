@@ -718,7 +718,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			CanRedo:        document.CanRedo,
 			Language:       document.Language,
 		}
-		if presentationEnabled && document.Language == "markdown" {
+		if presentationEnabled {
 			stateDocument.PresentationRevision = document.PresentationRevision
 			stateDocument.PresentationReady = document.PresentationReady
 		}

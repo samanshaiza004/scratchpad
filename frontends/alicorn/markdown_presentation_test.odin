@@ -277,6 +277,52 @@ test_markdown_paint_spans_use_projected_bytes_without_metric_styles :: proc(t: ^
 	testing.expect(t, line.display == "#   X", "styling metadata must not alter source-derived display bytes")
 }
 
+@(test)
+test_code_syntax_paint_spans_use_semantic_roles_and_source_bytes :: proc(t: ^testing.T) {
+	source := "func main() { return 42 }"
+	source_bytes, source_error := make([]u8, len(source), context.temp_allocator)
+	if source_error != nil { testing.expect(t, false, "could not allocate syntax test source bytes"); return }
+	defer delete(source_bytes, context.temp_allocator)
+	for index in 0..<len(source) { source_bytes[index] = source[index] }
+	line, line_ok := editor_project_line(source_bytes, 200, 0, context.temp_allocator)
+	testing.expect(t, line_ok, "plain code source should project for syntax paint mapping")
+	if !line_ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	spans := [?]bridge.Presentation_Record{
+		{kind=EDITOR_PRESENTATION_CODE_KEYWORD, start_byte=0, end_byte=4},
+		{kind=EDITOR_PRESENTATION_CODE_FUNCTION, start_byte=5, end_byte=9},
+		{kind=EDITOR_PRESENTATION_CODE_NUMBER, start_byte=21, end_byte=23},
+	}
+	window := Editor_Window{
+		document_id="syntax-paint-test",
+		editor_revision=4,
+		start_byte=200,
+		source=source_bytes,
+		presentation_revision=4,
+		presentation_ready=true,
+		presentation_spans=spans[:],
+	}
+	paints := editor_presentation_spans_for_line(&window, &line, context.temp_allocator)
+	defer delete(paints, context.temp_allocator)
+	if len(paints) != 3 {
+		testing.expect(t, false, "keyword, function, and number roles should all produce paint spans")
+		return
+	}
+	expected_starts := [?]int{0, 5, 21}
+	expected_ends := [?]int{4, 9, 23}
+	for index in 0..<len(paints) {
+		testing.expect(t, paints[index].start == expected_starts[index] && paints[index].end == expected_ends[index],
+			"semantic paint spans should map absolute source bytes into row-local display bytes")
+		testing.expect(t, paints[index].color_set, "every code semantic role should map to a theme color")
+	}
+	testing.expect(t, line.display == source, "syntax paint must not rewrite code source bytes")
+	for kind in EDITOR_PRESENTATION_CODE_COMMENT..=EDITOR_PRESENTATION_CODE_ATTRIBUTE {
+		_, color_set := editor_presentation_record_color(kind)
+		testing.expect(t, color_set, "every advertised syntax role should have a frontend color")
+	}
+}
+
 test_table_window :: proc(source: string) -> (window: Editor_Window, ok: bool) {
 	bytes, allocation_error := make([]u8, len(source), context.temp_allocator)
 	if allocation_error != nil { return }

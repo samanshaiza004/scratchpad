@@ -11,6 +11,7 @@ import (
 
 	"scratchpad/application"
 	"scratchpad/document"
+	"scratchpad/language"
 	"scratchpad/language/markdown"
 )
 
@@ -78,11 +79,88 @@ func TestWindowPresentationIsExactRevisionAndRecordCapped(t *testing.T) {
 	}
 }
 
-func TestWindowPresentationForNonMarkdownIsEmptyAndReady(t *testing.T) {
-	doc := document.New("main.go", []byte("package main"), "go")
-	_, ready, truncated, spans, blocks := windowPresentation(doc, 0, []byte("package main"))
+func TestWindowPresentationForUnsupportedLanguageIsEmptyAndReady(t *testing.T) {
+	doc := document.New("notes.txt", []byte("plain text"), "plain-text")
+	_, ready, truncated, spans, blocks := windowPresentation(doc, 0, []byte("plain text"))
 	if !ready || truncated || len(spans) != 0 || len(blocks) != 0 {
-		t.Fatalf("non-Markdown presentation = ready:%v truncated:%v spans:%d blocks:%d", ready, truncated, len(spans), len(blocks))
+		t.Fatalf("unsupported-language presentation = ready:%v truncated:%v spans:%d blocks:%d", ready, truncated, len(spans), len(blocks))
+	}
+}
+
+func TestWindowPresentationIncludesBoundedCodeHighlights(t *testing.T) {
+	source := []byte("package main\nfunc main() { return 42 }\n")
+	doc := document.New("main.go", source, "go")
+	functionStart := bytes.Index(source, []byte("func main")) + len("func ")
+	numberStart := bytes.Index(source, []byte("42"))
+	projection := document.Projections{
+		Revision: doc.Revision(),
+		Code: document.NewCodeProjection(doc.Revision(), "go", []document.HighlightSpan{
+			{StartByte: 0, EndByte: len("package"), Kind: document.HighlightKeyword},
+			{StartByte: functionStart, EndByte: functionStart + len("main"), Kind: document.HighlightFunction},
+			{StartByte: numberStart, EndByte: numberStart + 2, Kind: document.HighlightNumber},
+		}, nil, nil),
+	}
+	if !doc.SetDerived(nil, projection) {
+		t.Fatal("could not publish Go syntax projection")
+	}
+	start := bytes.Index(source, []byte("func"))
+	window := source[start : len(source)-1]
+	revision, ready, truncated, spans, blocks := windowPresentation(doc, start, window)
+	if !ready || truncated || revision != doc.Revision() || len(spans) != 2 || len(blocks) != 0 {
+		t.Fatalf("code metadata: revision=%d ready=%v truncated=%v spans=%+v blocks=%d", revision, ready, truncated, spans, len(blocks))
+	}
+	if spans[0].kind != wirePresentationKind(document.PresentationCodeFunction) ||
+		spans[0].start != uint32(functionStart-start) || spans[0].end != uint32(functionStart-start+len("main")) ||
+		spans[1].kind != wirePresentationKind(document.PresentationCodeNumber) ||
+		spans[1].start != uint32(numberStart-start) || spans[1].end != uint32(numberStart-start+2) {
+		t.Fatalf("code spans were not clipped and rebased to the visible window: %+v", spans)
+	}
+}
+
+func TestWindowPresentationMergesFencedGoHighlightsWithMarkdown(t *testing.T) {
+	source := []byte("```go\nfunc main() {}\n```\n")
+	doc := document.New("note.md", source, "markdown")
+	projection := markdown.Project(source, doc.Revision())
+	functionStart := bytes.Index(source, []byte("func main")) + len("func ")
+	projection.Code = document.NewCodeProjection(doc.Revision(), "go", []document.HighlightSpan{
+		{StartByte: functionStart, EndByte: functionStart + len("main"), Kind: document.HighlightFunction},
+	}, nil, nil)
+	if !doc.SetDerived(nil, projection) {
+		t.Fatal("could not publish Markdown and fenced-Go projections")
+	}
+	revision, ready, truncated, spans, blocks := windowPresentation(doc, 0, source)
+	if !ready || truncated || revision != doc.Revision() || len(spans) == 0 || len(blocks) == 0 {
+		t.Fatalf("merged Markdown/code metadata: revision=%d ready=%v truncated=%v spans=%d blocks=%d", revision, ready, truncated, len(spans), len(blocks))
+	}
+	foundFunction := false
+	for _, span := range spans {
+		if span.kind == wirePresentationKind(document.PresentationCodeFunction) &&
+			span.start == uint32(functionStart) && span.end == uint32(functionStart+len("main")) {
+			foundFunction = true
+			break
+		}
+	}
+	if !foundFunction {
+		t.Fatalf("fenced-Go semantic span missing from Markdown source window: %+v", spans)
+	}
+}
+
+func TestWindowPresentationCapsDenseCodeHighlights(t *testing.T) {
+	source := []byte("x")
+	doc := document.New("dense.go", source, "go")
+	highlights := make([]document.HighlightSpan, MaxPresentationRecords+8)
+	for i := range highlights {
+		highlights[i] = document.HighlightSpan{StartByte: 0, EndByte: 1, Kind: document.HighlightVariable}
+	}
+	if !doc.SetDerived(nil, document.Projections{
+		Revision: doc.Revision(),
+		Code:     document.NewCodeProjection(doc.Revision(), "go", highlights, nil, nil),
+	}) {
+		t.Fatal("could not publish dense syntax projection")
+	}
+	_, ready, truncated, spans, blocks := windowPresentation(doc, 0, source)
+	if !ready || !truncated || len(spans) != MaxPresentationRecords || len(blocks) != 0 {
+		t.Fatalf("dense code metadata: ready=%v truncated=%v spans=%d blocks=%d", ready, truncated, len(spans), len(blocks))
 	}
 }
 
@@ -217,6 +295,93 @@ func TestOptInMarkdownProjectionPublishesReadinessWithoutPumping(t *testing.T) {
 	state = latestStateForTest(t, runtime)
 	if !edited.OK || state.Documents[0].EditorRevision == oldRevision || state.Documents[0].PresentationReady || state.Documents[0].PresentationRevision != state.Documents[0].EditorRevision {
 		t.Fatalf("edit did not publish stale/pending readiness: response=%+v state=%+v", edited, state.Documents[0])
+	}
+}
+
+func TestOptInCodeProjectionPublishesAndTransportsSyntaxHighlights(t *testing.T) {
+	if !application.AnalysisSupported(language.Go) {
+		t.Skip("Go Tree-sitter parser is unavailable in this build")
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	writeFile(t, path, "package main\nfunc main() { println(42) }\n")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 215, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open Go source: %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	if len(state.Documents) != 1 {
+		t.Fatalf("opened documents = %+v", state.Documents)
+	}
+	docID := state.Documents[0].ID
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 216, BasedOnRevision: state.ApplicationRev,
+		Command: "read_visible_lines", DocumentID: docID, StartLine: 0,
+		MaxLines: 16, MaxBytes: 1024, IncludePresentation: true,
+	}))
+	pending := decodeResponse(t, runtime.Pump())
+	if !pending.OK || pending.Resource == nil {
+		t.Fatalf("initial code window = %+v", pending)
+	}
+	if err := runtime.caliber.releaseResourceOwner(pending.Resource.ResourceID, pending.Resource.Generation); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		state = latestStateForTest(t, runtime)
+		if len(state.Documents) == 1 && state.Documents[0].PresentationReady {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(state.Documents) != 1 || !state.Documents[0].PresentationReady ||
+		state.Documents[0].PresentationRevision != state.Documents[0].EditorRevision {
+		t.Fatalf("Go syntax readiness was not published: %+v", state.Documents)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 217, BasedOnRevision: state.ApplicationRev,
+		Command: "read_visible_lines", DocumentID: docID, StartLine: 0,
+		MaxLines: 16, MaxBytes: 1024, IncludePresentation: true,
+	}))
+	ready := decodeResponse(t, runtime.Pump())
+	if !ready.OK || ready.Resource == nil {
+		t.Fatalf("ready code window = %+v", ready)
+	}
+	resource, err := runtime.caliber.readResourceCopy(ready.Resource.ResourceID, ready.Resource.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trailer := resource[visibleSliceHeaderBytes+int(ready.Resource.ByteLen):]
+	spanCount := int(binary.LittleEndian.Uint32(trailer[12:16]))
+	if binary.LittleEndian.Uint64(trailer[:8]) != state.Documents[0].EditorRevision ||
+		binary.LittleEndian.Uint32(trailer[8:12])&presentationReadyFlag == 0 || spanCount == 0 {
+		t.Fatalf("ready Go trailer lacks exact syntax metadata: revision=%d flags=%d spans=%d",
+			binary.LittleEndian.Uint64(trailer[:8]), binary.LittleEndian.Uint32(trailer[8:12]), spanCount)
+	}
+	foundKeyword := false
+	for index := 0; index < spanCount; index++ {
+		offset := presentationTrailerHeaderBytes + index*presentationRecordBytes
+		if binary.LittleEndian.Uint32(trailer[offset:offset+4]) == wirePresentationKind(document.PresentationCodeKeyword) {
+			foundKeyword = true
+			break
+		}
+	}
+	if !foundKeyword {
+		t.Fatalf("Go syntax trailer did not contain keyword role among %d records", spanCount)
+	}
+	if err := runtime.caliber.releaseResourceOwner(ready.Resource.ResourceID, ready.Resource.Generation); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"scratchpad/commands"
 	"scratchpad/editor"
+	"scratchpad/language"
 )
 
 // PresentationCommandKind names the small set of application-owned lifecycle
@@ -115,6 +116,18 @@ func (a *Application) Snapshot() PresentationState {
 		if doc == nil {
 			continue
 		}
+		presentationReady := false
+		if doc.RootLanguage == string(language.Markdown) {
+			presentationReady = doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision()
+		} else if !AnalysisSupported(language.ID(doc.RootLanguage)) {
+			// Unsupported languages have no derived presentation to wait for;
+			// their visible source is complete as plain text.
+			presentationReady = true
+		} else {
+			presentationReady = doc.DerivedCurrent() &&
+				doc.Projections.Code.Revision == doc.Revision() &&
+				doc.Projections.Code.Language != ""
+		}
 		state.Documents = append(state.Documents, PresentationDocument{
 			ID:                   id,
 			Path:                 doc.Path,
@@ -128,7 +141,7 @@ func (a *Application) Snapshot() PresentationState {
 			CanRedo:              doc.Editor.CanRedo(),
 			Language:             doc.RootLanguage,
 			PresentationRevision: doc.Revision(),
-			PresentationReady:    doc.RootLanguage == "markdown" && doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision(),
+			PresentationReady:    presentationReady,
 		})
 	}
 	return state

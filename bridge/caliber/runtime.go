@@ -17,6 +17,7 @@ import (
 	"scratchpad/commands"
 	"scratchpad/document"
 	"scratchpad/editor"
+	"scratchpad/language"
 	"scratchpad/workspace"
 )
 
@@ -420,7 +421,7 @@ func (r *Runtime) enablePresentationLocked(documentID string) error {
 		return nil
 	}
 	doc := r.app.Documents[application.DocumentID(documentID)]
-	if doc == nil || doc.RootLanguage != "markdown" {
+	if doc == nil || (doc.RootLanguage != string(language.Markdown) && !application.AnalysisSupported(language.ID(doc.RootLanguage))) {
 		return nil
 	}
 	r.presentationEnabled = true
@@ -1062,11 +1063,7 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		var presentationRevision uint64
 		var ready, metadataTruncated bool
 		var spans, blocks []presentationWireRecord
-		if doc.RootLanguage == "markdown" {
-			presentationRevision, ready, metadataTruncated, spans, blocks = windowPresentation(doc, startByte, lines)
-		} else {
-			presentationRevision, ready = doc.Revision(), true
-		}
+		presentationRevision, ready, metadataTruncated, spans, blocks = windowPresentation(doc, startByte, lines)
 		payload, err = encodeVisibleSliceV2(r.applicationRevision, doc.Revision(), uint64(startLine), uint64(endLine), truncated, lines, presentationRevision, ready, metadataTruncated, spans, blocks)
 		metadataByteLen = uint64(presentationTrailerHeaderBytes + (len(spans)+len(blocks))*presentationRecordBytes)
 	} else {

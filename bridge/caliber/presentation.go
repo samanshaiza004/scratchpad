@@ -1,7 +1,9 @@
 package backend
 
 import (
+	"scratchpad/application"
 	"scratchpad/document"
+	"scratchpad/language"
 )
 
 // wirePresentationKind assigns stable transport IDs. These values are
@@ -83,34 +85,71 @@ func windowPresentation(doc *document.Document, sourceStart int, source []byte) 
 	if doc == nil {
 		return 0, false, false, nil, nil
 	}
-	if doc.RootLanguage != "markdown" {
+	markdown := doc.RootLanguage == string(language.Markdown)
+	code := doc.Projections.Code
+	if !markdown && !application.AnalysisSupported(language.ID(doc.RootLanguage)) {
 		return doc.Revision(), true, false, nil, nil
 	}
 	sourceEnd := sourceStart + len(source)
-	ready := doc.DerivedCurrent() && doc.Projections.Markdown.Revision == doc.Revision()
-	revision := doc.Projections.Markdown.Revision
+	revision := doc.Revision()
+	ready := doc.DerivedCurrent()
+	if markdown {
+		ready = ready && doc.Projections.Markdown.Revision == revision
+	} else {
+		ready = ready && doc.Projections.Code.Revision == revision && doc.Projections.Code.Language != ""
+	}
 	if !ready {
 		return revision, false, false, nil, nil
 	}
-	spans, spansTruncated := doc.Projections.Markdown.SpansInLimit(sourceStart, sourceEnd, MaxPresentationRecords)
-	spanRecords := make([]presentationWireRecord, 0, len(spans))
-	for _, span := range spans {
-		kind := wirePresentationKind(span.Kind)
-		if kind == 0 {
-			continue
+	spanRecords := make([]presentationWireRecord, 0)
+	spansTruncated := false
+	if markdown {
+		spans, truncated := doc.Projections.Markdown.SpansInLimit(sourceStart, sourceEnd, MaxPresentationRecords)
+		spansTruncated = truncated
+		spanRecords = make([]presentationWireRecord, 0, len(spans))
+		for _, span := range spans {
+			kind := wirePresentationKind(span.Kind)
+			if kind == 0 {
+				continue
+			}
+			start := max(span.StartByte, sourceStart)
+			end := min(span.EndByte, sourceEnd)
+			if start >= end {
+				continue
+			}
+			spanRecords = append(spanRecords, presentationWireRecord{
+				kind: kind, start: uint32(start - sourceStart), end: uint32(end - sourceStart),
+				levelFlags: uint32(max(span.Level, 0) & 0xff),
+			})
 		}
-		start := max(span.StartByte, sourceStart)
-		end := min(span.EndByte, sourceEnd)
-		if start >= end {
-			continue
-		}
-		spanRecords = append(spanRecords, presentationWireRecord{
-			kind: kind, start: uint32(start - sourceStart), end: uint32(end - sourceStart),
-			levelFlags: uint32(max(span.Level, 0) & 0xff),
-		})
 	}
 	remaining := MaxPresentationRecords - len(spanRecords)
-	blocks, blocksTruncated := doc.Projections.BlocksIn(sourceStart, sourceEnd, remaining+1)
+	// Fenced Go is parsed as a nested language, but its byte ranges share the
+	// Markdown source coordinate space and use the same bounded trailer.
+	if code.Revision == revision && code.Language != "" {
+		highlights, truncated := code.HighlightsInLimit(sourceStart, sourceEnd, remaining)
+		spansTruncated = spansTruncated || truncated
+		for _, span := range highlights {
+			kind := wireHighlightKind(span.Kind)
+			if kind == 0 {
+				continue
+			}
+			start := max(span.StartByte, sourceStart)
+			end := min(span.EndByte, sourceEnd)
+			if start >= end {
+				continue
+			}
+			spanRecords = append(spanRecords, presentationWireRecord{
+				kind: kind, start: uint32(start - sourceStart), end: uint32(end - sourceStart),
+			})
+		}
+	}
+	remaining = MaxPresentationRecords - len(spanRecords)
+	var blocks []document.BlockPresentation
+	blocksTruncated := false
+	if markdown {
+		blocks, blocksTruncated = doc.Projections.BlocksIn(sourceStart, sourceEnd, remaining+1)
+	}
 	if len(blocks) > remaining {
 		blocks = blocks[:remaining]
 		blocksTruncated = true
@@ -138,6 +177,45 @@ func windowPresentation(doc *document.Document, sourceStart int, source []byte) 
 		})
 	}
 	return revision, true, spansTruncated || blocksTruncated, spanRecords, blockRecords
+}
+
+func wireHighlightKind(kind document.HighlightKind) uint32 {
+	switch kind {
+	case document.HighlightComment:
+		return wirePresentationKind(document.PresentationCodeComment)
+	case document.HighlightKeyword:
+		return wirePresentationKind(document.PresentationCodeKeyword)
+	case document.HighlightString:
+		return wirePresentationKind(document.PresentationCodeString)
+	case document.HighlightNumber:
+		return wirePresentationKind(document.PresentationCodeNumber)
+	case document.HighlightType:
+		return wirePresentationKind(document.PresentationCodeType)
+	case document.HighlightFunction:
+		return wirePresentationKind(document.PresentationCodeFunction)
+	case document.HighlightMethod:
+		return wirePresentationKind(document.PresentationCodeMethod)
+	case document.HighlightVariable:
+		return wirePresentationKind(document.PresentationCodeVariable)
+	case document.HighlightConstant:
+		return wirePresentationKind(document.PresentationCodeConstant)
+	case document.HighlightProperty:
+		return wirePresentationKind(document.PresentationCodeProperty)
+	case document.HighlightOperator:
+		return wirePresentationKind(document.PresentationCodeOperator)
+	case document.HighlightPunctuation:
+		return wirePresentationKind(document.PresentationCodePunctuation)
+	case document.HighlightBuiltin:
+		return wirePresentationKind(document.PresentationCodeBuiltin)
+	case document.HighlightParameter:
+		return wirePresentationKind(document.PresentationCodeParameter)
+	case document.HighlightTag:
+		return wirePresentationKind(document.PresentationCodeTag)
+	case document.HighlightAttribute:
+		return wirePresentationKind(document.PresentationCodeAttribute)
+	default:
+		return 0
+	}
 }
 
 func wireBlockKind(kind document.BlockKind) uint32 {

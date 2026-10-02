@@ -246,21 +246,35 @@ func NewCodeProjection(revision uint64, language string, highlights []HighlightS
 }
 
 func (p CodeProjection) HighlightsIn(startByte, endByte int) []HighlightSpan {
+	result, _ := p.HighlightsInLimit(startByte, endByte, len(p.Highlights))
+	return result
+}
+
+// HighlightsInLimit returns intersecting spans in source order and reports
+// whether additional spans matched after reaching limit. The result allocation
+// and traversal are bounded by the caller's visible-presentation budget.
+func (p CodeProjection) HighlightsInLimit(startByte, endByte, limit int) ([]HighlightSpan, bool) {
 	if endByte <= startByte || len(p.Highlights) == 0 {
-		return nil
+		return nil, false
+	}
+	if limit < 0 {
+		limit = 0
 	}
 	endIndex := sort.Search(len(p.Highlights), func(i int) bool { return p.Highlights[i].StartByte >= endByte })
 	startIndex := 0
 	if len(p.maxEnds) == len(p.Highlights) {
 		startIndex = sort.Search(endIndex, func(i int) bool { return p.maxEnds[i] > startByte })
 	}
-	result := make([]HighlightSpan, 0, endIndex-startIndex)
+	result := make([]HighlightSpan, 0, min(endIndex-startIndex, limit))
 	for _, span := range p.Highlights[startIndex:endIndex] {
 		if span.EndByte > startByte && span.StartByte < endByte {
+			if len(result) == limit {
+				return result, true
+			}
 			result = append(result, span)
 		}
 	}
-	return result
+	return result, false
 }
 
 // PresentationKind identifies a source-preserving Markdown presentation

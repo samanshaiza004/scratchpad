@@ -102,6 +102,25 @@ func TestDisplayCodeRebasesOnlySafeHighlightSpans(t *testing.T) {
 	}
 }
 
+func TestCodeProjectionHighlightsInLimitBoundsResultAndReportsTruncation(t *testing.T) {
+	spans := make([]HighlightSpan, 10000)
+	for i := range spans {
+		spans[i] = HighlightSpan{StartByte: 10, EndByte: 20, Kind: HighlightKeyword}
+	}
+	projection := NewCodeProjection(3, "go", spans, nil, nil)
+	got, truncated := projection.HighlightsInLimit(12, 18, 7)
+	if !truncated || len(got) != 7 {
+		t.Fatalf("bounded highlights = %d spans, truncated=%v; want 7 and true", len(got), truncated)
+	}
+	all, truncated := projection.HighlightsInLimit(12, 18, 10000)
+	if truncated || len(all) != len(spans) {
+		t.Fatalf("complete highlights = %d spans, truncated=%v; want %d and false", len(all), truncated, len(spans))
+	}
+	if got, truncated := projection.HighlightsInLimit(20, 30, 7); len(got) != 0 || truncated {
+		t.Fatalf("disjoint bounded highlights = %d spans, truncated=%v; want empty and false", len(got), truncated)
+	}
+}
+
 func BenchmarkMarkdownPresentationSpansIn(b *testing.B) {
 	for _, test := range []struct {
 		name  string

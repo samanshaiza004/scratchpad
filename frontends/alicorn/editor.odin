@@ -23,6 +23,22 @@ EDITOR_PRESENTATION_STRIKE :: u32(7)
 EDITOR_PRESENTATION_CODE_BLOCK :: u32(8)
 EDITOR_PRESENTATION_LIST_MARKER :: u32(10)
 EDITOR_PRESENTATION_TASK_MARKER :: u32(11)
+EDITOR_PRESENTATION_CODE_COMMENT :: u32(12)
+EDITOR_PRESENTATION_CODE_KEYWORD :: u32(13)
+EDITOR_PRESENTATION_CODE_STRING :: u32(14)
+EDITOR_PRESENTATION_CODE_NUMBER :: u32(15)
+EDITOR_PRESENTATION_CODE_TYPE :: u32(16)
+EDITOR_PRESENTATION_CODE_FUNCTION :: u32(17)
+EDITOR_PRESENTATION_CODE_METHOD :: u32(18)
+EDITOR_PRESENTATION_CODE_VARIABLE :: u32(19)
+EDITOR_PRESENTATION_CODE_CONSTANT :: u32(20)
+EDITOR_PRESENTATION_CODE_PROPERTY :: u32(21)
+EDITOR_PRESENTATION_CODE_OPERATOR :: u32(22)
+EDITOR_PRESENTATION_CODE_PUNCTUATION :: u32(23)
+EDITOR_PRESENTATION_CODE_BUILTIN :: u32(24)
+EDITOR_PRESENTATION_CODE_PARAMETER :: u32(25)
+EDITOR_PRESENTATION_CODE_TAG :: u32(26)
+EDITOR_PRESENTATION_CODE_ATTRIBUTE :: u32(27)
 EDITOR_PRESENTATION_TABLE :: u32(29)
 EDITOR_PRESENTATION_TABLE_HEADER :: u32(30)
 EDITOR_PRESENTATION_TABLE_DELIMITER :: u32(31)
@@ -1457,18 +1473,36 @@ editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, co
 		return alicorn.Color{0.62, 0.75, 0.94, 1}, true
 	case EDITOR_PRESENTATION_TASK_MARKER:
 		return alicorn.Color{0.44, 0.8, 1.0, 1}, true
-	case 12: // code comment
+	case EDITOR_PRESENTATION_CODE_COMMENT:
 		return alicorn.Color{0.48, 0.69, 0.57, 1}, true
-	case 13: // code keyword
+	case EDITOR_PRESENTATION_CODE_KEYWORD:
 		return alicorn.Color{0.78, 0.62, 1.0, 1}, true
-	case 14: // code string
+	case EDITOR_PRESENTATION_CODE_STRING:
 		return alicorn.Color{0.86, 0.72, 0.49, 1}, true
-	case 15: // code number
+	case EDITOR_PRESENTATION_CODE_NUMBER:
 		return alicorn.Color{0.54, 0.78, 0.9, 1}, true
-	case 16: // code type
+	case EDITOR_PRESENTATION_CODE_TYPE:
 		return alicorn.Color{0.42, 0.8, 0.76, 1}, true
-	case 17, 18: // function and method
+	case EDITOR_PRESENTATION_CODE_FUNCTION, EDITOR_PRESENTATION_CODE_METHOD:
 		return alicorn.Color{0.48, 0.72, 0.98, 1}, true
+	case EDITOR_PRESENTATION_CODE_VARIABLE:
+		return alicorn.Color{0.78, 0.83, 0.92, 1}, true
+	case EDITOR_PRESENTATION_CODE_CONSTANT:
+		return alicorn.Color{0.91, 0.72, 0.48, 1}, true
+	case EDITOR_PRESENTATION_CODE_PROPERTY:
+		return alicorn.Color{0.62, 0.78, 0.98, 1}, true
+	case EDITOR_PRESENTATION_CODE_OPERATOR:
+		return alicorn.Color{0.73, 0.77, 0.86, 1}, true
+	case EDITOR_PRESENTATION_CODE_PUNCTUATION:
+		return alicorn.Color{0.61, 0.68, 0.8, 1}, true
+	case EDITOR_PRESENTATION_CODE_BUILTIN:
+		return alicorn.Color{0.4, 0.79, 0.86, 1}, true
+	case EDITOR_PRESENTATION_CODE_PARAMETER:
+		return alicorn.Color{0.83, 0.76, 0.91, 1}, true
+	case EDITOR_PRESENTATION_CODE_TAG:
+		return alicorn.Color{0.88, 0.58, 0.64, 1}, true
+	case EDITOR_PRESENTATION_CODE_ATTRIBUTE:
+		return alicorn.Color{0.84, 0.74, 0.51, 1}, true
 	case 29: // table
 		return alicorn.Color{0.76, 0.81, 0.9, 1}, true
 	case 30: // table header

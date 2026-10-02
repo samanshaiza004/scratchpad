@@ -1078,7 +1078,10 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.restore_y_pending = true
 		}
 	}
-	request_presentation := document.language == "markdown"
+	request_presentation := document.language == "markdown" ||
+	                        document.language == "go" ||
+	                        document.language == "typescript" ||
+	                        document.language == "tsx"
 	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
 	                              !window.presentation_stale &&
 	                              window.presentation_revision == document.presentation_revision &&
@@ -1087,12 +1090,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	// also safe for visual continuity after the edit ACK; it stays presentation-
 	// only until the exact projection for the accepted source revision arrives.
 	presentation_visual := presentation_window_matches ||
-	                       (document.language == "markdown" && window_matches && window.presentation_ready &&
+	                       (request_presentation && window_matches && window.presentation_ready &&
 	                        window.presentation_stale)
 	// A rebased projection can keep the current text styled, but it is not the
-	// parser's answer for a newer revision. Fetch exact metadata when Goldmark
-	// catches up; if this revision was already chased into the optimistic window,
-	// do not request the same projection repeatedly.
+	// parser's answer for a newer revision. Fetch exact metadata when the
+	// language worker catches up; do not request the same projection repeatedly.
 	metadata_refresh_needed := request_presentation && document.presentation_ready && !presentation_window_matches
 	if window_matches && window.presentation_ready && window.presentation_revision == document.presentation_revision {
 		metadata_refresh_needed = false
