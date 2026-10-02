@@ -1868,7 +1868,19 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		id, clone_error := strings.clone(document.id, context.temp_allocator)
 		if clone_error == nil { append(&old_ids, id) }
 	}
-	workspace_mutation_execute(&app, &rt, .Move, "src", "", "archive/src", true, false, app.backend.state.workspace_root)
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Started,
+		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
+		source=tree_semantic_id("src", true),
+	})
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Dropped,
+		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
+		source=tree_semantic_id("src", true),
+		target=tree_semantic_id("archive", true),
+		position=.On,
+	})
+	testing.expect(t, app.workspace_drag_kind == .None, "a completed tree drop should clear the retained application payload")
 	for id in old_ids {
 		testing.expect(t, editor_view_find(app.editor_views[:], id) < 0, "old backend document identity should be replaced after a successful directory move")
 	}

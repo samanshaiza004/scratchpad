@@ -155,6 +155,10 @@ App :: struct {
 	tree_focused_is_dir:    bool,
 	workspace_context_path: string,
 	workspace_context_is_dir: bool,
+	workspace_drag_kind: Scratchpad_Drag_Kind,
+	workspace_drag_source_document_id: string,
+	workspace_drag_source_path: string,
+	workspace_drag_source_is_dir: bool,
 	workspace_mutation_kind: Workspace_Mutation_Kind,
 	workspace_mutation_source: string,
 	workspace_mutation_name: string,
@@ -534,6 +538,8 @@ build_app :: proc(
 					alicorn.invalidate_root(rt, "Scratchpad could not defer tab selection")
 				}
 			}
+			_ = alicorn.drag_source(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(document.id))
+			_ = alicorn.drop_target(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(document.id), .Between_Horizontal)
 			if alicorn.button(&ui, "×", key=alicorn.key_string(fmt.tprintf("tab-close:%s", document.id)), style=alicorn.layout_style(.Row, width=30, height=32)) {
 				if !frame_deferred_action_schedule(app, .Close_Document, document.id) {
 					set_error(app, "Could not queue document close until the current frame is complete.")
@@ -1519,6 +1525,7 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		focusable=true,
 	)
 	app.tree_scroll_owner = list.scroll.id
+	_ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, tree_semantic_id("", true), .On)
 	focus_state := alicorn.semantic_focus_state(rt)
 	for position := list.first; position < list.last; position += 1 {
 		row := rows[position]
@@ -1537,6 +1544,8 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			content_style=alicorn.button_content_style(.Start, padding_x=8),
 		)
 		_ = alicorn.semantic_bind(ui, semantic_id)
+		_ = alicorn.drag_source(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id)
+		if row.is_dir { _ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id, .On) }
 		if clicked { tree_activate_row(app, rt, row) }
 	}
 	alicorn.virtual_list_end(ui, list)
@@ -5038,6 +5047,7 @@ main :: proc() {
 		build=build_app,
 		on_key=application_key,
 		on_pointer=application_pointer,
+		on_drag=application_drag,
 		on_text_key=editor_text_key,
 		on_text_input=editor_text_input,
 		on_text_change=command_palette_text_change,
