@@ -5,6 +5,20 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
+test_find_match_reveal_centers_offscreen_rows_without_nudging_comfortable_rows :: proc(t: ^testing.T) {
+	comfortable, comfortable_scroll := find_match_center_offset(400, 600, 520, 24)
+	near_edge, edge_scroll := find_match_center_offset(400, 600, 960, 24)
+	wrapped, wrapped_scroll := find_match_center_offset(400, 600, 1_200, 72)
+
+	testing.expect(t, !comfortable_scroll && comfortable == 400,
+		"Find should not move a match already comfortably visible in the viewport")
+	testing.expect(t, edge_scroll && near_edge == 672,
+		"Find should center a near-edge logical row using its visual-row height")
+	testing.expect(t, wrapped_scroll && wrapped == 936,
+		"Find should center a wrapped row using the measured wrapped height")
+}
+
+@(test)
 test_find_navigation_wraps_in_both_directions :: proc(t: ^testing.T) {
 	testing.expect(t, find_step_match(3, -1, 1) == 0, "next from no active match should select the first")
 	testing.expect(t, find_step_match(3, 2, 1) == 0, "next from the last match should wrap to the first")

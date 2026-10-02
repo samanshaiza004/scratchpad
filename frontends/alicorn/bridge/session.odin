@@ -236,6 +236,8 @@ Backend_Response :: struct {
 	command_outcome:  string             `json:"command_outcome"`,
 	matches:          []Current_Match    `json:"matches"`,
 	matches_truncated: bool               `json:"matches_truncated"`,
+	matches_replaced: int                  `json:"matches_replaced"`,
+	source_refresh_needed: bool           `json:"source_refresh_needed"`,
 	workspace_search_page: Workspace_Search_Page `json:"workspace_search_page"`,
 }
 
@@ -974,6 +976,8 @@ Backend_Command_Result :: struct {
 	editor_selection: Editor_Selection,
 	matches:        []Current_Match,
 	matches_truncated: bool,
+	matches_replaced: int,
+	source_refresh_needed: bool,
 	workspace_search_page: Workspace_Search_Page,
 	code:           string,
 	message:        string,
@@ -1110,7 +1114,9 @@ backend_command :: proc(
 	}
 	result.ok = response.ok
 	result.revision = response.revision
-	if response.ok && command == "replace_document" {
+	result.matches_replaced = response.matches_replaced
+	result.source_refresh_needed = response.source_refresh_needed
+	if response.ok && response.command_outcome != "no_op" && (command == "replace_document" || command == "find_replace_current" || command == "paste_document") {
 		if response.edit.document_id == "" || response.edit.editor_revision == 0 {
 			backend_response_destroy(&response, allocator)
 			return Backend_Command_Result{code="malformed_edit_ack", message="Scratchpad returned a successful edit without a valid revision acknowledgement"}
@@ -1130,7 +1136,7 @@ backend_command :: proc(
 			result.edit_applied_replacement_owned = true
 		}
 	}
-	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command" || command == "open_path") && response.editor_selection.document_id != "" {
+	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command" || command == "open_path" || command == "find_replace_all" || command == "paste_document") && response.editor_selection.document_id != "" {
 		result.editor_selection = response.editor_selection
 		result.editor_selection.document_id, _ = strings.clone(response.editor_selection.document_id, allocator)
 		result.editor_selection_document_id_owned = len(result.editor_selection.document_id) > 0

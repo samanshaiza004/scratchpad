@@ -86,8 +86,180 @@ find_close_surface :: proc(app: ^App) {
 	if app == nil || !app.find_open { return }
 	app.find_open = false
 	app.find_query_node = 0
+	app.find_replace_node = 0
 	app.find_restore_pending = true
 	app.editor_focus_pending = true
+}
+
+find_replace_current :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || !app.find_open || !app.backend.started { return false }
+	if len(app.editor_edits) > 0 {
+		find_set_message(&app.find_replace_message, "Wait for pending edits to finish.")
+		alicorn.invalidate_root(rt, "Scratchpad deferred Find replacement until pending edits finish")
+		return true
+	}
+	if editor_active_preedit(app) {
+		find_set_message(&app.find_replace_message, "Finish or cancel text composition before replacing.")
+		alicorn.invalidate_root(rt, "Scratchpad Find replacement refused during IME composition")
+		return true
+	}
+	if len(app.find_replace_text) > int(bridge.MAX_EDIT_BYTES) {
+		find_set_message(&app.find_replace_message, "Replacement exceeds the 128 KiB per-edit limit.")
+		alicorn.invalidate_root(rt, "Scratchpad Find replacement exceeded the edit limit")
+		return true
+	}
+	find_refresh_if_needed(app, rt)
+	if len(app.find_presentation.matches) == 0 || app.find_presentation.active_match < 0 ||
+	   app.find_presentation.active_match >= len(app.find_presentation.matches) {
+		find_set_message(&app.find_replace_message, "No current match to replace.")
+		alicorn.invalidate_root(rt, "Scratchpad Find replacement has no active match")
+		return true
+	}
+	document, view, _, ready := active_editor_context(app)
+	if !ready || view == nil || document.id != app.find_presentation.document_id ||
+	   document.editor_revision != app.find_presentation.editor_revision ||
+	   app.find_presentation.query != app.find_query {
+		find_set_message(&app.find_replace_message, "Waiting for the current source window.")
+		alicorn.invalidate_root(rt, "Scratchpad Find replacement waited for the exact source window")
+		return true
+	}
+	match := app.find_presentation.matches[app.find_presentation.active_match]
+	if match.start < 0 || match.end <= match.start || u64(match.end) > document.byte_length {
+		find_set_message(&app.find_replace_message, "The active Find match has invalid source coordinates.")
+		alicorn.invalidate_root(rt, "Scratchpad refused invalid Find source coordinates")
+		return true
+	}
+	replacement, replacement_ok := find_replacement_bytes(app.find_replace_text)
+	if !replacement_ok {
+		find_set_message(&app.find_replace_message, "Could not prepare replacement text.")
+		return true
+	}
+	response := bridge.backend_command(
+		&app.backend,
+		"find_replace_current",
+		document_id=document.id,
+		editor_revision=document.editor_revision,
+		start_byte=u64(match.start),
+		end_byte=u64(match.end),
+		query=app.find_query,
+		replacement=replacement,
+		has_selection_state=true,
+		before_anchor_byte=view.selection_anchor,
+		before_cursor_byte=view.caret_byte,
+	)
+	if response.ok && response.edit.document_id == document.id && response.edit.editor_revision > 0 {
+		view.authoritative_revision = response.edit.editor_revision
+		view.optimistic_pending_edits = 0
+		view.optimistic_line_delta = 0
+		view.selection_anchor = response.edit.new_end_byte
+		view.caret_byte = response.edit.new_end_byte
+		view.anchor_affinity = .Trailing
+		view.caret_affinity = .Trailing
+		view.preferred_x_set = false
+		view.position_reconcile_pending = true
+		app.find_presentation.editor_revision = 0
+		find_set_message(&app.find_replace_message, "Replaced current match.")
+		find_refresh_if_needed(app, rt)
+	} else if response.ok {
+		find_set_message(&app.find_replace_message, "The replacement did not change the document.")
+	} else {
+		find_set_message(&app.find_replace_message, response.message)
+		if response.code == "stale_editor_revision" || response.code == "stale_find_match" {
+			app.find_presentation.editor_revision = 0
+			find_refresh_if_needed(app, rt)
+		}
+	}
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad replaced the active Find match against authoritative source")
+	return true
+}
+
+find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || !app.find_open || !app.backend.started { return false }
+	if len(app.editor_edits) > 0 {
+		find_set_message(&app.find_replace_message, "Wait for pending edits to finish.")
+		alicorn.invalidate_root(rt, "Scratchpad deferred Replace All until pending edits finish")
+		return true
+	}
+	if editor_active_preedit(app) {
+		find_set_message(&app.find_replace_message, "Finish or cancel text composition before replacing.")
+		alicorn.invalidate_root(rt, "Scratchpad Replace All refused during IME composition")
+		return true
+	}
+	if len(app.find_query) == 0 {
+		find_set_message(&app.find_replace_message, "Enter a Find query first.")
+		return true
+	}
+	if len(app.find_replace_text) > int(bridge.MAX_EDIT_BYTES) {
+		find_set_message(&app.find_replace_message, "Replacement exceeds the 128 KiB per-edit limit.")
+		alicorn.invalidate_root(rt, "Scratchpad Replace All replacement exceeded the edit limit")
+		return true
+	}
+	find_refresh_if_needed(app, rt)
+	if len(app.find_presentation.matches) == 0 {
+		find_set_message(&app.find_replace_message, "No matches to replace.")
+		return true
+	}
+	document, view, _, ready := active_editor_context(app)
+	if !ready || view == nil || document.id != app.find_presentation.document_id ||
+	   document.editor_revision != app.find_presentation.editor_revision || app.find_presentation.query != app.find_query {
+		find_set_message(&app.find_replace_message, "Waiting for current Find results.")
+		alicorn.invalidate_root(rt, "Scratchpad Replace All waited for current authoritative Find results")
+		return true
+	}
+	replacement, replacement_ok := find_replacement_bytes(app.find_replace_text)
+	if !replacement_ok {
+		find_set_message(&app.find_replace_message, "Could not prepare replacement text.")
+		return true
+	}
+	response := bridge.backend_command(
+		&app.backend,
+		"find_replace_all",
+		document_id=document.id,
+		editor_revision=document.editor_revision,
+		query=app.find_query,
+		replacement=replacement,
+		has_selection_state=true,
+		before_anchor_byte=view.selection_anchor,
+		before_cursor_byte=view.caret_byte,
+	)
+	if response.ok {
+		switch {
+		case response.matches_replaced == 0:
+			find_set_message(&app.find_replace_message, "No matches to replace.")
+		case response.source_refresh_needed && response.editor_selection.document_id == document.id:
+			view.authoritative_revision = response.editor_selection.editor_revision
+			view.optimistic_pending_edits = 0
+			view.optimistic_line_delta = 0
+			view.selection_anchor = response.editor_selection.anchor_byte
+			view.caret_byte = response.editor_selection.cursor_byte
+			view.anchor_affinity = .Trailing
+			view.caret_affinity = .Trailing
+			view.preferred_x_set = false
+			view.position_reconcile_pending = true
+			app.find_presentation.editor_revision = 0
+			find_set_message(&app.find_replace_message, fmt.tprintf("Replaced %d matches.", response.matches_replaced))
+			find_refresh_if_needed(app, rt)
+		case:
+			find_set_message(&app.find_replace_message, fmt.tprintf("%d matches were unchanged.", response.matches_replaced))
+		}
+	} else {
+		find_set_message(&app.find_replace_message, response.message)
+		if response.code == "stale_editor_revision" {
+			app.find_presentation.editor_revision = 0
+			find_refresh_if_needed(app, rt)
+		}
+	}
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad replaced all current Find matches in one authoritative edit")
+	return true
+}
+
+find_replacement_bytes :: proc(text: string) -> (replacement: []int, ok: bool) {
+	result, allocation_error := make([]int, len(text), allocator=context.temp_allocator)
+	if allocation_error != nil { return nil, false }
+	for index, value in text { result[index] = int(value) }
+	return result, true
 }
 
 find_apply_active_match :: proc(app: ^App, rt: ^alicorn.Runtime, reveal := true) -> bool {
@@ -108,10 +280,56 @@ find_apply_active_match :: proc(app: ^App, rt: ^alicorn.Runtime, reveal := true)
 	view.caret_affinity = .Trailing
 	view.preferred_x_set = false
 	if reveal && rt != nil && app.editor_scroll_owner != 0 {
-		_ = editor_ensure_line_visible(rt, view, app.editor_scroll_owner, match.line, "Scratchpad Find revealed the active source match")
+		_ = find_reveal_match_line(rt, view, app.editor_scroll_owner, match.line)
 	}
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad Find selected a source-byte match") }
 	return true
+}
+
+// Keep an already-comfortably-visible match in place. Otherwise move its
+// logical source row toward the viewport center, using the same sparse visual
+// row measurements as the editor so wrapped Markdown retains correct geometry.
+find_reveal_match_line :: proc(
+	rt: ^alicorn.Runtime,
+	view: ^Editor_View_State,
+	owner: alicorn.Node_ID,
+	logical_line: int,
+) -> bool {
+	if rt == nil || view == nil || owner == 0 || logical_line < 0 { return false }
+	node, found := rt.nodes[owner]
+	if !found || !node.active || node.kind != .Scroll_Region { return false }
+	viewport := node.scroll_viewport_height
+	if viewport <= 0 { viewport = node.bounds.h }
+	if viewport <= 0 { return false }
+
+	row_top := f32(logical_line)*EDITOR_ROW_HEIGHT
+	row_height := EDITOR_ROW_HEIGHT
+	if view.wrap_height_index_ready && logical_line < view.wrap_height_index.item_count {
+		row_top = alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, logical_line)
+		row_height = alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, logical_line)
+		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT }
+	}
+	row_bottom := row_top+row_height
+	centered_offset, should_scroll := find_match_center_offset(
+		node.scroll_offset_y, viewport, row_top, row_height,
+	)
+	if !should_scroll { return false }
+	return alicorn.scroll_region_set_offset(
+		rt,
+		owner,
+		centered_offset,
+		"Scratchpad centered a Find match while preserving comfortably visible context",
+	)
+}
+
+find_match_center_offset :: proc(current_offset, viewport, row_top, row_height: f32) -> (offset: f32, should_scroll: bool) {
+	if viewport <= 0 || row_height <= 0 { return current_offset, false }
+	row_bottom := row_top+row_height
+	margin := min(viewport*0.18, 64)
+	if row_top >= current_offset+margin && row_bottom <= current_offset+viewport-margin {
+		return current_offset, false
+	}
+	return max(row_top+row_height*0.5-viewport*0.5, 0), true
 }
 
 find_move_match :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) -> bool {

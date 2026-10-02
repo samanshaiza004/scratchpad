@@ -13,17 +13,39 @@ const DefaultIndent = "\t"
 // document without a line ending defaults to LF, which is also the safest
 // representation for a new file.
 func (e *ScratchEditor) lineEnding() []byte {
-	text := e.Buffer.Text()
-	for index, value := range text {
-		if value != '\n' {
-			continue
-		}
-		if index > 0 && text[index-1] == '\r' {
-			return []byte("\r\n")
-		}
+	if e == nil {
 		return []byte{'\n'}
 	}
+	_, firstNewline, ok := e.Buffer.LineRange(0)
+	if !ok || firstNewline >= e.Buffer.ByteLen() {
+		return []byte{'\n'}
+	}
+	if firstNewline > 0 {
+		previous, err := e.Buffer.Bytes(firstNewline-1, firstNewline)
+		if err == nil && len(previous) == 1 && previous[0] == '\r' {
+			return []byte("\r\n")
+		}
+	}
 	return []byte{'\n'}
+}
+
+// NormalizeLineEndings copies text while converting CRLF, lone CR, and LF
+// separators to this document's first line-ending convention. Documents
+// without an existing separator use LF.
+func (e *ScratchEditor) NormalizeLineEndings(text []byte) []byte {
+	eol := e.lineEnding()
+	result := make([]byte, 0, len(text))
+	for index := 0; index < len(text); index++ {
+		if text[index] != '\r' && text[index] != '\n' {
+			result = append(result, text[index])
+			continue
+		}
+		if text[index] == '\r' && index+1 < len(text) && text[index+1] == '\n' {
+			index++
+		}
+		result = append(result, eol...)
+	}
+	return result
 }
 
 // newlineText is the single-line Enter payload used by Insert. It copies

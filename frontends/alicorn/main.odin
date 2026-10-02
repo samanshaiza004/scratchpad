@@ -151,7 +151,9 @@ App :: struct {
 	workspace_search_results_owner: alicorn.Node_ID,
 	find_open:              bool,
 	find_query:             string,
+	find_replace_text:      string,
 	find_query_node:        alicorn.Node_ID,
+	find_replace_node:      alicorn.Node_ID,
 	find_focus_pending:     bool,
 	find_select_query_pending: bool,
 	find_restore_pending:   bool,
@@ -164,6 +166,7 @@ App :: struct {
 	editor_focus_pending:   bool,
 	find_presentation:      Find_Presentation,
 	find_error:             string,
+	find_replace_message:   string,
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
 	dialog_action:          string,
@@ -329,6 +332,7 @@ build_app :: proc(
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	_ = find_capture_text_field(rt, app.find_query_node, &app.find_query)
+	_ = find_capture_text_field(rt, app.find_replace_node, &app.find_replace_text)
 	_ = find_capture_text_field(rt, app.workspace_search_query_node, &app.workspace_search_query)
 	app.workspace_search_results_owner = 0
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
@@ -447,9 +451,10 @@ build_app :: proc(
 		}
 		alicorn.container_end(&ui)
 		if app.find_open {
-			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=42, gap=8, padding=5, align=.Center), color=COLOR_SUBTLE)
+			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=78, gap=4, padding=5), color=COLOR_SUBTLE)
+			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=32, gap=8, align=.Center))
 			alicorn.text(&ui, "Find")
-			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=32))
+			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=30))
 			app.find_query_node = find_node
 			find_status := ""
 			if app.find_query == "" { find_status = "Type to find" }
@@ -460,9 +465,23 @@ build_app :: proc(
 				if app.find_presentation.truncated { find_status = fmt.tprintf("%s+", find_status) }
 			}
 			alicorn.text(&ui, find_status)
-			if alicorn.button(&ui, "↑", key=alicorn.key_string("find-previous"), style=alicorn.layout_style(.Row, width=36, height=30)) { _ = find_move_match(app, rt, -1) }
-			if alicorn.button(&ui, "↓", key=alicorn.key_string("find-next"), style=alicorn.layout_style(.Row, width=36, height=30)) { _ = find_move_match(app, rt, 1) }
-			if alicorn.button(&ui, "×", key=alicorn.key_string("find-close"), style=alicorn.layout_style(.Row, width=32, height=30)) { find_close_surface(app) }
+			if alicorn.button(&ui, "↑", key=alicorn.key_string("find-previous"), style=alicorn.layout_style(.Row, width=34, height=28)) { _ = find_move_match(app, rt, -1) }
+			if alicorn.button(&ui, "↓", key=alicorn.key_string("find-next"), style=alicorn.layout_style(.Row, width=34, height=28)) { _ = find_move_match(app, rt, 1) }
+			if alicorn.button(&ui, "×", key=alicorn.key_string("find-close"), style=alicorn.layout_style(.Row, width=30, height=28)) { find_close_surface(app) }
+			alicorn.container_end(&ui)
+			alicorn.container_begin(&ui, .Container, label="scratchpad-replace-bar", style=alicorn.layout_style(.Row, height=32, gap=8, align=.Center))
+			alicorn.text(&ui, "Replace")
+			replace_node := alicorn.text_field(&ui, app.find_replace_text, key=alicorn.key_string("scratchpad-find-replace-text"), style=alicorn.layout_style(.Row, grow=1, height=30))
+			app.find_replace_node = replace_node
+			can_replace := app.find_query != "" && len(app.find_presentation.matches) > 0 && len(app.editor_edits) == 0 && !editor_active_preedit(app)
+			if alicorn.button(&ui, "Replace", key=alicorn.key_string("find-replace-current"), style=alicorn.layout_style(.Row, width=82, height=28), state=alicorn.Button_State{disabled=!can_replace}) {
+				_ = find_replace_current(app, rt)
+			}
+			if alicorn.button(&ui, "All", key=alicorn.key_string("find-replace-all"), style=alicorn.layout_style(.Row, width=58, height=28), state=alicorn.Button_State{disabled=!can_replace}) {
+				_ = find_replace_all(app, rt)
+			}
+			if app.find_replace_message != "" { alicorn.text(&ui, app.find_replace_message) }
+			alicorn.container_end(&ui)
 			alicorn.container_end(&ui)
 		}
 
@@ -1931,6 +1950,10 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || !app.backend.started { return }
+	if action_id == ACTION_EDIT_PASTE {
+		editor_clipboard_command(app, rt, action_id)
+		return
+	}
 	switch action_id {
 	case ACTION_WORKSPACE_NEW_FILE:
 		workspace_mutation_open_create(app, rt, .Create_File)
@@ -2350,6 +2373,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	}
 	if key == .Return && app.find_open && rt.focused == app.find_query_node {
 		return find_move_match(app, rt, 1)
+	}
+	if key == .Return && app.find_open && rt.focused == app.find_replace_node {
+		return find_replace_current(app, rt)
 	}
 	if key == .Return && app.workspace_search_mode && rt.focused == app.workspace_search_query_node {
 		if len(app.workspace_search_view.results) > 0 {
@@ -3928,6 +3954,13 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			}
 		}
 	}
+	if action_id == ACTION_EDIT_PASTE && len(app.editor_edits) > 0 {
+		if !deferred_action_enqueue(app, .Action, value=action_id) {
+			set_error(app, "Could not queue Paste behind pending editor edits.")
+		}
+		alicorn.invalidate_root(rt, "Scratchpad queued Paste behind pending editor edits")
+		return
+	}
 	document, view, window, ready := active_editor_context(app)
 	if !ready || view == nil || window == nil {
 		set_error(app, "The active document's bounded source window is not ready for this Edit command.")
@@ -3983,8 +4016,73 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			alicorn.invalidate_root(rt, "Scratchpad refused a paste across the bounded source-window edge")
 			return
 		}
-		caret := start_byte+u64(len(text))
-		_ = editor_apply_local_replace(app, rt, start_byte, end_byte, transmute([]u8)text, caret, caret)
+		wire_replacement, allocation_error := make([]int, len(text), allocator=context.temp_allocator)
+		if allocation_error != nil {
+			set_error(app, "Could not prepare clipboard text for Scratchpad.")
+			alicorn.invalidate_root(rt, "Scratchpad could not encode clipboard bytes")
+			return
+		}
+		for index, value in text { wire_replacement[index] = int(value) }
+		document_id, id_error := strings.clone(document.id, context.temp_allocator)
+		if id_error != nil {
+			set_error(app, "Could not retain the active document identity for Paste.")
+			return
+		}
+		document_revision := document.editor_revision
+		before_anchor, before_cursor := view.selection_anchor, view.caret_byte
+		response := bridge.backend_command(
+			&app.backend,
+			"paste_document",
+			document_id=document_id,
+			editor_revision=document_revision,
+			start_byte=start_byte,
+			end_byte=end_byte,
+			replacement=wire_replacement,
+			has_selection_state=true,
+			before_anchor_byte=before_anchor,
+			before_cursor_byte=before_cursor,
+		)
+		if response.ok && response.command_outcome != "no_op" &&
+		   response.edit.document_id == document_id && response.edit.editor_revision > document_revision &&
+		   response.edit.start_byte == start_byte && response.edit.old_end_byte == end_byte {
+			applied := transmute([]u8)text
+			if len(response.edit.applied_replacement) > 0 {
+				applied = response.edit.applied_replacement
+			}
+			if response.edit.new_end_byte == start_byte+u64(len(applied)) {
+				next_window, projected, _ := editor_window_replace_bytes(window, start_byte, end_byte, applied)
+				view_index := editor_view_find(app.editor_views[:], document_id)
+				if projected && view_index >= 0 {
+					editor_wrap_heights_apply_edit(
+						&app.editor_views[view_index], window, start_byte, end_byte, applied,
+						editor_count_line_breaks(window.source[int(start_byte-window.start_byte):int(end_byte-window.start_byte)]),
+					)
+					view = &app.editor_views[view_index]
+					if view.optimistic_window_ready {
+						editor_window_destroy(&view.optimistic_window)
+					}
+					next_window.editor_revision = response.edit.editor_revision
+					next_window.application_rev = app.backend.state.application_rev
+					view.optimistic_window = next_window
+					view.optimistic_window_ready = true
+					view.optimistic_pending_edits = 0
+					view.optimistic_line_delta = 0
+					view.authoritative_revision = response.edit.editor_revision
+				} else if projected {
+					editor_window_destroy(&next_window)
+				}
+			}
+		}
+		handle_command_result(app, rt, &response)
+		if response.ok && response.source_refresh_needed && response.editor_selection.document_id == document_id {
+			if view_index := editor_view_find(app.editor_views[:], document_id); view_index >= 0 {
+				app.editor_views[view_index].authoritative_revision = response.editor_selection.editor_revision
+			}
+			editor_apply_backend_selection(app, rt, response.editor_selection)
+			app.find_presentation.editor_revision = 0
+		}
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		delete(document_id, context.temp_allocator)
 	}
 }
 
@@ -4273,6 +4371,8 @@ application_stop :: proc(state: rawptr) {
 	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
 	find_discard_saved_selection(app)
 	find_set_message(&app.find_query, "")
+	find_set_message(&app.find_replace_text, "")
+	find_set_message(&app.find_replace_message, "")
 	find_set_message(&app.find_error, "")
 	find_set_message(&app.workspace_search_query, "")
 	find_set_message(&app.workspace_search_started_query, "")

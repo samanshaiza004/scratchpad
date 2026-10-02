@@ -1480,3 +1480,255 @@ func decodeResponse(tb testing.TB, data []byte) Response {
 	}
 	return response
 }
+
+func TestFindReplaceAllIsRevisionGuardedAtomicAndKeepsSourceInGo(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "replace.txt")
+	writeFile(t, path, "disk token disk token private-disk-tail")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 900,
+		BasedOnRevision: state.ApplicationRev, Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := state.Active
+
+	// Establish unsaved authoritative bytes through the same bounded edit
+	// contract used by the frontend.
+	unsaved := "unsaved token unsaved token SECRET_SENTINEL"
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 901, BasedOnRevision: state.ApplicationRev,
+		Command: "replace_document", DocumentID: string(id),
+		EditorRevision: state.Documents[0].EditorRevision,
+		StartByte:      0, EndByte: uint64(len("disk token disk token private-disk-tail")),
+		Replacement: intBytes(unsaved),
+	}))
+	edit := decodeResponse(t, runtime.Pump())
+	if !edit.OK || edit.Edit == nil {
+		t.Fatalf("unsaved edit response = %+v", edit)
+	}
+	state = latestStateForTest(t, runtime)
+	if state.Documents[0].EditorRevision != edit.Edit.EditorRevision {
+		t.Fatalf("unsaved state revision = %d, edit revision = %d", state.Documents[0].EditorRevision, edit.Edit.EditorRevision)
+	}
+
+	beforeRevision := state.Documents[0].EditorRevision
+	beforeAnchor, beforeCursor := uint64(13), uint64(6)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 902, BasedOnRevision: state.ApplicationRev,
+		Command: "find_replace_all", DocumentID: string(id), EditorRevision: beforeRevision,
+		Query: "unsaved", Replacement: intBytes("edited"), HasSelectionState: true,
+		BeforeAnchorByte: beforeAnchor, BeforeCursorByte: beforeCursor,
+	}))
+	raw := runtime.Pump()
+	replaced := decodeResponse(t, raw)
+	if !replaced.OK || replaced.MatchesReplaced != 2 || !replaced.SourceRefreshNeeded || replaced.EditorSelection == nil {
+		t.Fatalf("Replace All response = %+v", replaced)
+	}
+	if strings.Contains(string(raw), "SECRET_SENTINEL") || strings.Contains(string(raw), "unsaved token") {
+		t.Fatalf("Replace All response transported document bytes: %s", raw)
+	}
+	if replaced.EditorSelection.EditorRevision != beforeRevision+1 ||
+		replaced.EditorSelection.AnchorByte != 19 || replaced.EditorSelection.CursorByte != 19 ||
+		replaced.EditorSelection.CursorLine != 0 {
+		t.Fatalf("Replace All selection = %+v", replaced.EditorSelection)
+	}
+	doc := runtime.app.Documents[application.DocumentID(id)]
+	wantReplaced := "edited token edited token SECRET_SENTINEL"
+	if got := string(doc.Editor.Buffer.Text()); got != wantReplaced {
+		t.Fatalf("Replace All source = %q, want %q", got, wantReplaced)
+	}
+
+	state = latestStateForTest(t, runtime)
+	// A query is exact literal input; a miss is a successful no-op.
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 903, BasedOnRevision: state.ApplicationRev,
+		Command: "find_replace_all", DocumentID: string(id), EditorRevision: doc.Revision(),
+		Query: "does-not-match", Replacement: intBytes("x"),
+	}))
+	miss := decodeResponse(t, runtime.Pump())
+	if !miss.OK || miss.MatchesReplaced != 0 || miss.SourceRefreshNeeded {
+		t.Fatalf("no-match response = %+v", miss)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != wantReplaced {
+		t.Fatalf("no-match changed source to %q", got)
+	}
+
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 904, BasedOnRevision: state.ApplicationRev,
+		Command: "find_replace_all", DocumentID: string(id), EditorRevision: beforeRevision,
+		Query: "edited", Replacement: intBytes("stale"),
+	}))
+	stale := decodeResponse(t, runtime.Pump())
+	if stale.OK || stale.Outcome.Code != "stale_editor_revision" {
+		t.Fatalf("stale Replace All response = %+v", stale)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != wantReplaced {
+		t.Fatalf("stale Replace All mutated source to %q", got)
+	}
+
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 905, BasedOnRevision: state.ApplicationRev,
+		Command: string(commands.EditUndo), DocumentID: string(id),
+	}))
+	undo := decodeResponse(t, runtime.Pump())
+	if !undo.OK || undo.EditorSelection == nil {
+		t.Fatalf("single Undo response = %+v", undo)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != unsaved {
+		t.Fatalf("one Undo restored %q, want the entire unsaved source %q", got, unsaved)
+	}
+	if undo.EditorSelection.AnchorByte != beforeAnchor || undo.EditorSelection.CursorByte != beforeCursor {
+		t.Fatalf("Undo selection = %d:%d, want %d:%d", undo.EditorSelection.AnchorByte, undo.EditorSelection.CursorByte, beforeAnchor, beforeCursor)
+	}
+}
+
+func intBytes(value string) []int {
+	result := make([]int, len(value))
+	for index, item := range []byte(value) {
+		result[index] = int(item)
+	}
+	return result
+}
+
+func TestFindReplaceCurrentUsesUnsavedSourceAndOneUndo(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.md")
+	writeFile(t, path, "disk source")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 920, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := state.Active
+	doc := runtime.app.Documents[application.DocumentID(id)]
+	unsaved := "unsaved token and token"
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 921, BasedOnRevision: state.ApplicationRev,
+		Command: "replace_document", DocumentID: string(id), EditorRevision: doc.Revision(),
+		StartByte: 0, EndByte: uint64(doc.Editor.Buffer.ByteLen()), Replacement: intBytes(unsaved),
+	}))
+	unsavedEdit := decodeResponse(t, runtime.Pump())
+	if !unsavedEdit.OK || unsavedEdit.Edit == nil {
+		t.Fatalf("unsaved edit response = %+v", unsavedEdit)
+	}
+	state = latestStateForTest(t, runtime)
+	beforeRevision := doc.Revision()
+	beforeAnchor, beforeCursor := 2, 5
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 922, BasedOnRevision: state.ApplicationRev,
+		Command: "find_replace_current", DocumentID: string(id), EditorRevision: beforeRevision,
+		StartByte: 8, EndByte: 13, Query: "token", Replacement: intBytes("word"),
+		HasSelectionState: true, BeforeAnchorByte: uint64(beforeAnchor), BeforeCursorByte: uint64(beforeCursor),
+	}))
+	replaced := decodeResponse(t, runtime.Pump())
+	if !replaced.OK || replaced.Edit == nil || replaced.Edit.EditorRevision != beforeRevision+1 {
+		t.Fatalf("Replace Current response = %+v", replaced)
+	}
+	if got, want := string(doc.Editor.Buffer.Text()), "unsaved word and token"; got != want {
+		t.Fatalf("Replace Current source = %q, want %q", got, want)
+	}
+
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 923, BasedOnRevision: state.ApplicationRev,
+		Command: "edit.undo", DocumentID: string(id),
+	}))
+	undo := decodeResponse(t, runtime.Pump())
+	if !undo.OK || undo.EditorSelection == nil {
+		t.Fatalf("Undo response = %+v", undo)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != unsaved {
+		t.Fatalf("one Undo restored %q, want %q", got, unsaved)
+	}
+	if undo.EditorSelection.AnchorByte != uint64(beforeAnchor) || undo.EditorSelection.CursorByte != uint64(beforeCursor) {
+		t.Fatalf("Undo selection = %d:%d, want %d:%d", undo.EditorSelection.AnchorByte, undo.EditorSelection.CursorByte, beforeAnchor, beforeCursor)
+	}
+}
+
+func TestPasteDocumentCommandCreatesSmartMarkdownLinkAndOneUndo(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.md")
+	writeFile(t, path, "disk")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 930, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	id := state.Active
+	doc := runtime.app.Documents[application.DocumentID(id)]
+	unsaved := "Alicorn"
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 931, BasedOnRevision: state.ApplicationRev,
+		Command: "replace_document", DocumentID: string(id), EditorRevision: doc.Revision(),
+		StartByte: 0, EndByte: uint64(doc.Editor.Buffer.ByteLen()), Replacement: intBytes(unsaved),
+	}))
+	unsavedEdit := decodeResponse(t, runtime.Pump())
+	if !unsavedEdit.OK {
+		t.Fatalf("unsaved edit response = %+v", unsavedEdit)
+	}
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 932, BasedOnRevision: state.ApplicationRev,
+		Command: "paste_document", DocumentID: string(id), EditorRevision: doc.Revision(),
+		StartByte: 0, EndByte: uint64(len(unsaved)), Replacement: intBytes("https://example.com"),
+		HasSelectionState: true, BeforeAnchorByte: uint64(len(unsaved)), BeforeCursorByte: 0,
+	}))
+	pasted := decodeResponse(t, runtime.Pump())
+	if !pasted.OK || pasted.Edit == nil || pasted.EditorSelection == nil {
+		t.Fatalf("Paste response = %+v", pasted)
+	}
+	want := "[Alicorn](https://example.com)"
+	if got := string(doc.Editor.Buffer.Text()); got != want {
+		t.Fatalf("pasted Markdown source = %q, want %q", got, want)
+	}
+	if got := pasted.Edit.AppliedReplacement; stringFromInts(got) != want {
+		t.Fatalf("acknowledged pasted bytes = %q, want %q", stringFromInts(got), want)
+	}
+
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 933, BasedOnRevision: state.ApplicationRev,
+		Command: "edit.undo", DocumentID: string(id),
+	}))
+	undo := decodeResponse(t, runtime.Pump())
+	if !undo.OK || string(doc.Editor.Buffer.Text()) != unsaved {
+		t.Fatalf("one Undo response=%+v source=%q, want %q", undo, doc.Editor.Buffer.Text(), unsaved)
+	}
+	if undo.EditorSelection == nil || undo.EditorSelection.AnchorByte != uint64(len(unsaved)) || undo.EditorSelection.CursorByte != 0 {
+		t.Fatalf("Undo did not restore the original reverse selection: %+v", undo.EditorSelection)
+	}
+}
+
+func stringFromInts(values []int) string {
+	bytes := make([]byte, len(values))
+	for index, value := range values {
+		bytes[index] = byte(value)
+	}
+	return string(bytes)
+}

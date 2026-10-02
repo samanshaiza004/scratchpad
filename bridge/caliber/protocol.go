@@ -107,6 +107,8 @@ type Response struct {
 	CloseDecision       *CloseDecision       `json:"close_decision,omitempty"`
 	Matches             []CurrentMatch       `json:"matches,omitempty"`
 	MatchesTruncated    bool                 `json:"matches_truncated,omitempty"`
+	MatchesReplaced     int                  `json:"matches_replaced,omitempty"`
+	SourceRefreshNeeded bool                 `json:"source_refresh_needed,omitempty"`
 	WorkspaceSearchPage *WorkspaceSearchPage `json:"workspace_search_page,omitempty"`
 	Diagnostic          string               `json:"diagnostic,omitempty"`
 }
@@ -346,7 +348,7 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
 		}
-	case "replace_document":
+	case "replace_document", "find_replace_current", "find_replace_all", "paste_document":
 		if request.DocumentID == "" {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id is required", false), false
 		}
@@ -372,6 +374,20 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 			if value < 0 || value > 255 {
 				return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_bytes", "replacement values must be bytes", false), false
 			}
+		}
+		if request.Command == "find_replace_current" || request.Command == "find_replace_all" {
+			if len(request.Query) == 0 {
+				return request, errorResponse(request.RequestID, lifecycle, "invalid_query", "Find replacement requires a non-empty query", false), false
+			}
+			if len(request.Query) > MaxFindQueryBytes {
+				return request, errorResponse(request.RequestID, lifecycle, "query_too_large", fmt.Sprintf("query exceeds %d bytes", MaxFindQueryBytes), false), false
+			}
+			if strings.ContainsRune(request.Query, 0) {
+				return request, errorResponse(request.RequestID, lifecycle, "invalid_query", "query must not contain NUL", false), false
+			}
+		}
+		if request.Command == "paste_document" && !request.HasSelectionState {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_selection", "paste requires the current selection snapshot", false), false
 		}
 	case "execute_command":
 		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) {

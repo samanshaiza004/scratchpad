@@ -354,6 +354,8 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var editorSelection *EditorSelection
 	var matches []CurrentMatch
 	var matchesTruncated bool
+	var matchesReplaced int
+	var sourceRefreshNeeded bool
 	var searchPage *WorkspaceSearchPage
 	var commandOutcome string
 	publishState := true
@@ -464,44 +466,104 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			}
 			return commandError(request, "application_error", err)
 		}
-	case "replace_document":
+	case "replace_document", "find_replace_current", "paste_document":
 		replacement := make([]byte, len(request.Replacement))
 		for i, value := range request.Replacement {
 			replacement[i] = byte(value)
 		}
-		appliedEdit, err := r.app.ReplaceDocument(application.PresentationCommand{
-			Kind:              application.PresentationReplaceDocument,
-			DocumentID:        application.DocumentID(request.DocumentID),
-			EditorRevision:    request.EditorRevision,
-			StartByte:         int(request.StartByte),
-			EndByte:           int(request.EndByte),
-			Replacement:       replacement,
-			HasSelectionState: request.HasSelectionState,
-			BeforeAnchorByte:  int(request.BeforeAnchorByte),
-			BeforeCursorByte:  int(request.BeforeCursorByte),
-			AfterAnchorByte:   int(request.AfterAnchorByte),
-			AfterCursorByte:   int(request.AfterCursorByte),
-			TypingGroupID:     request.TypingGroupID,
-		})
+		var appliedEdit editor.AppliedEdit
+		var err error
+		if request.Command == "find_replace_current" {
+			beforeAnchor, beforeCursor := 0, 0
+			if doc := r.app.Documents[application.DocumentID(request.DocumentID)]; doc != nil && doc.Editor != nil {
+				beforeAnchor, beforeCursor = doc.Editor.Selection()
+			}
+			if request.HasSelectionState {
+				beforeAnchor, beforeCursor = int(request.BeforeAnchorByte), int(request.BeforeCursorByte)
+			}
+			appliedEdit, err = r.app.ReplaceCurrentMatch(
+				application.DocumentID(request.DocumentID), request.EditorRevision,
+				application.CurrentMatch{Start: int(request.StartByte), End: int(request.EndByte)},
+				[]byte(request.Query), replacement, beforeAnchor, beforeCursor,
+			)
+		} else if request.Command == "paste_document" {
+			appliedEdit, err = r.app.PasteDocument(
+				application.DocumentID(request.DocumentID), request.EditorRevision,
+				int(request.StartByte), int(request.EndByte), replacement,
+				int(request.BeforeAnchorByte), int(request.BeforeCursorByte),
+			)
+		} else {
+			appliedEdit, err = r.app.ReplaceDocument(application.PresentationCommand{
+				Kind: application.PresentationReplaceDocument, DocumentID: application.DocumentID(request.DocumentID),
+				EditorRevision: request.EditorRevision, StartByte: int(request.StartByte), EndByte: int(request.EndByte),
+				Replacement: replacement, HasSelectionState: request.HasSelectionState,
+				BeforeAnchorByte: int(request.BeforeAnchorByte), BeforeCursorByte: int(request.BeforeCursorByte),
+				AfterAnchorByte: int(request.AfterAnchorByte), AfterCursorByte: int(request.AfterCursorByte),
+				TypingGroupID: request.TypingGroupID,
+			})
+		}
+		if err != nil {
+			if errors.Is(err, application.ErrStaleEditorRevision) {
+				return commandError(request, "stale_editor_revision", err)
+			}
+			if errors.Is(err, application.ErrStaleFindMatch) {
+				return commandError(request, "stale_find_match", err)
+			}
+			return commandError(request, "application_error", err)
+		}
+		if appliedEdit.SourceEdit.AfterRevision == appliedEdit.SourceEdit.BeforeRevision {
+			publishState = false
+			commandOutcome = CommandOutcomeNoOp
+			break
+		}
+		sourceEdit := appliedEdit.SourceEdit
+		edit = &EditAck{DocumentID: request.DocumentID, EditorRevision: sourceEdit.AfterRevision,
+			StartByte: uint64(sourceEdit.StartByte), OldEndByte: uint64(sourceEdit.OldEndByte), NewEndByte: uint64(sourceEdit.NewEndByte)}
+		if !bytes.Equal(appliedEdit.Replacement, replacement) || bytes.ContainsAny(replacement, "\r\n") {
+			edit.AppliedReplacement = make([]int, len(appliedEdit.Replacement))
+			for i, value := range appliedEdit.Replacement {
+				edit.AppliedReplacement[i] = int(value)
+			}
+		}
+		if request.Command == "paste_document" {
+			doc := r.app.Documents[application.DocumentID(request.DocumentID)]
+			anchor, cursor := doc.Editor.Selection()
+			cursorLine, _ := doc.Editor.Buffer.LineAt(cursor)
+			editorSelection = &EditorSelection{
+				DocumentID: request.DocumentID, EditorRevision: sourceEdit.AfterRevision,
+				AnchorByte: uint64(anchor), CursorByte: uint64(cursor), CursorLine: uint64(cursorLine),
+			}
+			sourceRefreshNeeded = true
+		}
+	case "find_replace_all":
+		replacement := make([]byte, len(request.Replacement))
+		for i, value := range request.Replacement {
+			replacement[i] = byte(value)
+		}
+		beforeAnchor, beforeCursor := 0, 0
+		if doc := r.app.Documents[application.DocumentID(request.DocumentID)]; doc != nil && doc.Editor != nil {
+			beforeAnchor, beforeCursor = doc.Editor.Selection()
+		}
+		if request.HasSelectionState {
+			beforeAnchor, beforeCursor = int(request.BeforeAnchorByte), int(request.BeforeCursorByte)
+		}
+		result, err := r.app.ReplaceAllCurrent(application.DocumentID(request.DocumentID), request.EditorRevision,
+			[]byte(request.Query), replacement, beforeAnchor, beforeCursor)
 		if err != nil {
 			if errors.Is(err, application.ErrStaleEditorRevision) {
 				return commandError(request, "stale_editor_revision", err)
 			}
 			return commandError(request, "application_error", err)
 		}
-		sourceEdit := appliedEdit.SourceEdit
-		edit = &EditAck{
-			DocumentID:     request.DocumentID,
-			EditorRevision: sourceEdit.AfterRevision,
-			StartByte:      uint64(sourceEdit.StartByte),
-			OldEndByte:     uint64(sourceEdit.OldEndByte),
-			NewEndByte:     uint64(sourceEdit.NewEndByte),
-		}
-		if !bytes.Equal(appliedEdit.Replacement, replacement) || bytes.ContainsAny(replacement, "\r\n") {
-			edit.AppliedReplacement = make([]int, len(appliedEdit.Replacement))
-			for i, value := range appliedEdit.Replacement {
-				edit.AppliedReplacement[i] = int(value)
-			}
+		matchesReplaced = result.MatchCount
+		if result.Changed {
+			sourceRefreshNeeded = true
+			editorSelection = &EditorSelection{DocumentID: request.DocumentID,
+				EditorRevision: result.EditorRevision, AnchorByte: uint64(result.AnchorByte),
+				CursorByte: uint64(result.CursorByte), CursorLine: uint64(result.CursorLine)}
+		} else {
+			publishState = false
+			commandOutcome = CommandOutcomeNoOp
 		}
 	case "execute_command":
 		documentID := application.DocumentID(request.DocumentID)
@@ -678,6 +740,8 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response.CloseDecision = closeDecision
 	response.Matches = matches
 	response.MatchesTruncated = matchesTruncated
+	response.MatchesReplaced = matchesReplaced
+	response.SourceRefreshNeeded = sourceRefreshNeeded
 	response.WorkspaceSearchPage = searchPage
 	return response
 }
