@@ -24,6 +24,13 @@ func TestPublishedShellActionsUseCanonicalScratchpadIDsAndContext(t *testing.T) 
 	if !open.Visible || !open.Enabled {
 		t.Fatalf("Open File should be available without an active document: %+v", open)
 	}
+	quickOpen := byID[string(commands.QuickOpen)]
+	if quickOpen.Title != "Quick Open…" || len(quickOpen.Bindings) != 1 || quickOpen.Bindings[0] != "primary+p" {
+		t.Fatalf("Quick Open should be published with its canonical shortcut: %+v", quickOpen)
+	}
+	if !quickOpen.Enabled || !quickOpen.Visible {
+		t.Fatalf("Quick Open should fall back to the native picker without a workspace: %+v", quickOpen)
+	}
 	if got := byID[string(commands.FileSave)]; got.Enabled {
 		t.Fatalf("Save should be disabled without an active document: %+v", got)
 	}
@@ -60,6 +67,10 @@ func TestPublishedShellActionsUseCanonicalScratchpadIDsAndContext(t *testing.T) 
 	if got := byID[string(commands.WorkspaceRefresh)]; !got.Visible || !got.Enabled {
 		t.Fatalf("Refresh should be enabled with a workspace: %+v", got)
 	}
+	quickOpen = byID[string(commands.QuickOpen)]
+	if !quickOpen.Visible || !quickOpen.Enabled {
+		t.Fatalf("Quick Open should be enabled with a workspace: %+v", quickOpen)
+	}
 	for _, id := range []commands.ID{commands.WorkspaceNewFile, commands.WorkspaceNewFolder, commands.WorkspaceRename, commands.WorkspaceMove} {
 		if got := byID[string(id)]; !got.Visible || !got.Enabled {
 			t.Fatalf("%s should be enabled with a workspace: %+v", id, got)
@@ -85,6 +96,49 @@ func TestPublishedShellActionsUseCanonicalScratchpadIDsAndContext(t *testing.T) 
 	}
 	if got := withWorkspace.Documents[0]; got.ByteLength != 18 || !got.CanUndo || got.CanRedo {
 		t.Fatalf("document metadata lost editor state: %+v", got)
+	}
+}
+
+func TestPublishedAlicornEditorActionVocabulary(t *testing.T) {
+	state := stateFromApplication(1, application.PresentationState{
+		HasWorkspace: true,
+		Active:       "doc-1",
+		Documents:    []application.PresentationDocument{{ID: "doc-1", Language: "markdown"}},
+	})
+	byID := make(map[string]ActionState, len(state.Actions))
+	for _, action := range state.Actions {
+		byID[action.ID] = action
+	}
+	want := []commands.ID{
+		commands.EditIndentLines, commands.EditOutdentLines, commands.EditDeleteLine,
+		commands.EditInsertLineAbove, commands.EditInsertLineBelow, commands.EditMoveLineUp,
+		commands.EditMoveLineDown, commands.EditDuplicateLine, commands.EditJoinLines,
+		commands.CommentToggle, commands.ItemToggle, commands.MarkdownToggleStrong, commands.MarkdownToggleEmphasis,
+		commands.MarkdownToggleStrike, commands.MarkdownToggleInlineCode, commands.MarkdownInsertLink,
+		commands.MarkdownHeading1, commands.MarkdownHeading2, commands.MarkdownHeading3,
+		commands.MarkdownToggleBulletedList, commands.MarkdownToggleNumberedList,
+		commands.MarkdownToggleQuote, commands.MarkdownInsertTask, commands.MarkdownInsertCodeBlock,
+		commands.MarkdownSetFenceLanguage, commands.MarkdownInsertTable, commands.MarkdownTableNext,
+		commands.MarkdownTablePrevious, commands.MarkdownTableEnter, commands.MarkdownInsertDivider, commands.MarkdownSmartPaste,
+	}
+	for _, id := range want {
+		if action, ok := byID[string(id)]; !ok || action.Title == "" {
+			t.Errorf("Alicorn action %q is not published with a title: %+v", id, action)
+		}
+	}
+	for _, id := range []commands.ID{
+		commands.EditIndentLines, commands.EditOutdentLines, commands.EditDeleteLine,
+		commands.EditInsertLineAbove, commands.EditInsertLineBelow, commands.EditMoveLineUp,
+		commands.EditMoveLineDown, commands.EditDuplicateLine, commands.EditJoinLines,
+		commands.MarkdownToggleStrong, commands.MarkdownToggleEmphasis, commands.MarkdownToggleStrike,
+		commands.MarkdownToggleInlineCode, commands.MarkdownInsertLink, commands.MarkdownHeading1,
+		commands.MarkdownHeading2, commands.MarkdownHeading3, commands.MarkdownToggleBulletedList,
+		commands.MarkdownToggleNumberedList, commands.MarkdownToggleQuote, commands.MarkdownInsertTask, commands.ItemToggle,
+		commands.MarkdownInsertCodeBlock, commands.MarkdownInsertTable, commands.MarkdownInsertDivider, commands.MarkdownSmartPaste,
+	} {
+		if action := byID[string(id)]; !action.Visible || !action.Enabled {
+			t.Errorf("active Markdown action %q should be visible and enabled: %+v", id, action)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -237,7 +238,10 @@ func (r *Runtime) Pump() []byte {
 		return marshalResponse(response)
 	}
 	response.BasedOnRevision = request.BasedOnRevision
-	if request.BasedOnRevision != 0 && request.BasedOnRevision != r.applicationRevision {
+	// The path-only Quick Open index is a read against the current workspace,
+	// not a mutation based on a snapshot. It is safe to serve even if unrelated
+	// application state advanced while the frontend's worker request was queued.
+	if request.Command != "list_workspace_files" && request.BasedOnRevision != 0 && request.BasedOnRevision != r.applicationRevision {
 		response = errorResponse(request.RequestID, r.lifecycle, "stale_revision", fmt.Sprintf("based_on_revision %d does not match current application revision %d", request.BasedOnRevision, r.applicationRevision), false)
 		response.BasedOnRevision = request.BasedOnRevision
 		response.Revision = r.revision
@@ -349,6 +353,7 @@ func (r *Runtime) CaliberContextPointer() unsafe.Pointer {
 
 func (r *Runtime) applyCommand(request CommandRequest) Response {
 	var listing *DirectoryListing
+	var workspaceFiles *WorkspaceFiles
 	var edit *EditAck
 	var closeDecision *CloseDecision
 	var editorSelection *EditorSelection
@@ -585,6 +590,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if err != nil {
 			return commandError(request, "command_unavailable", err)
 		}
+		commandRequest.Argument = request.Argument
 		outcome := commands.Execute(commandRequest)
 		if outcome.Status == commands.ResultFailed {
 			if outcome.Err == nil {
@@ -718,6 +724,16 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "invalid_path", err)
 		}
 		listing = &value
+	case "list_workspace_files":
+		publishState = false
+		if !r.app.HasWorkspace {
+			return commandError(request, "no_workspace", errors.New("no workspace is open"))
+		}
+		paths, truncated, err := r.app.Workspace.QuickOpenFiles(context.Background())
+		if err != nil {
+			return commandError(request, "application_error", err)
+		}
+		workspaceFiles = &WorkspaceFiles{Paths: paths, Truncated: truncated}
 	case "read_visible_lines":
 		response, err := r.readVisibleLines(request)
 		if err != nil {
@@ -735,6 +751,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response := okResponse(request.RequestID, r.lifecycle, r.revision)
 	response.BasedOnRevision = request.BasedOnRevision
 	response.DirectoryListing = listing
+	response.WorkspaceFiles = workspaceFiles
 	response.Edit = edit
 	response.EditorSelection = editorSelection
 	response.CommandOutcome = commandOutcome

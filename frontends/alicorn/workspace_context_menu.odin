@@ -111,6 +111,10 @@ workspace_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Ru
 
 application_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
 	app := cast(^App)state
+	if app.quick_open_open {
+		_ = quick_open_pointer(app, rt, event, target)
+		return
+	}
 	if app.command_palette_open {
 		_ = command_palette_pointer(app, rt, event, target)
 		return

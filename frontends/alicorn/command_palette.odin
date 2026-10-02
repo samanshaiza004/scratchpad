@@ -108,6 +108,7 @@ command_palette_aliases :: proc(action_id: string) -> string {
 	case "edit.undo": return "back"
 	case "edit.redo": return "forward"
 	case "file.open": return "open file browse"
+	case "file.quick-open": return "quick file path picker"
 	case "workspace.open": return "open folder project"
 	case "file.save": return "write"
 	case "edit.select_all": return "select everything"
@@ -428,6 +429,7 @@ command_palette_execute_selected :: proc(app: ^App, rt: ^alicorn.Runtime) -> boo
 }
 
 command_palette_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
+	quick_open_text_change(state, rt, change)
 	app := cast(^App)state
 	if app == nil || rt == nil || !app.command_palette_open || change.node != app.command_palette_node || !change.changed { return }
 	find_set_message(&app.command_palette_query, change.text)

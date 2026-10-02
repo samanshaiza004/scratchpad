@@ -34,6 +34,55 @@ func TestListShowsFilesAndFoldersButSkipsInternalMetadata(t *testing.T) {
 	}
 }
 
+func TestQuickOpenFilesReturnsSortedRelativePathsAndHonorsWorkspaceVisibility(t *testing.T) {
+	dir := t.TempDir()
+	for _, relative := range []string{"z.txt", "a.txt", "sub/B.md", "ignored.tmp", ".git/config", ".scratchpad/state"} {
+		path := filepath.Join(dir, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("not read by Quick Open"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored.tmp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, truncated, err := ws.QuickOpenFiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{".gitignore", "a.txt", "sub/B.md", "z.txt"}
+	if truncated || len(paths) != len(want) {
+		t.Fatalf("paths=%v truncated=%t", paths, truncated)
+	}
+	for index := range want {
+		if paths[index] != want[index] {
+			t.Fatalf("paths=%v, want %v", paths, want)
+		}
+	}
+}
+
+func TestQuickOpenFilesHonorsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := ws.QuickOpenFiles(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled quick-open walk error = %v", err)
+	}
+}
+
 func TestSearchStreamsRawByteMatchesAndHonorsCancellation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.txt")

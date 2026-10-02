@@ -129,6 +129,7 @@ func DefaultRegistry() Registry {
 	}
 	for _, descriptor := range []CommandDescriptor{
 		{ID: FileOpen, Title: "Open File…", Category: "File", Bindings: []Keybinding{{Key: "primary+o"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
+		{ID: QuickOpen, Title: "Quick Open…", Category: "File", Bindings: []Keybinding{{Key: "primary+p"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: WorkspaceOpen, Title: "Open Folder…", Category: "File", Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: FileSave, Title: "Save", Category: "File", Bindings: []Keybinding{{Key: "primary+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: DocumentClose, Title: "Close Document", Category: "File", Bindings: []Keybinding{{Key: "primary+w"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},

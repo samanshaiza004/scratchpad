@@ -383,6 +383,7 @@ workspace_mutation_execute :: proc(
 	if kind == .Rename || kind == .Move {
 		workspace_mutation_migrate_editor_views(app, rt, migrations[:])
 	}
+	quick_open_invalidate_index(app)
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
 	refresh_ok := workspace_mutation_refresh_tree(app, rt, kind, source, dest, source_is_dir)

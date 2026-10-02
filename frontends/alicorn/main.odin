@@ -13,6 +13,7 @@ COLOR_PANEL      :: alicorn.Color{0.08, 0.095, 0.13, 1}
 COLOR_SUBTLE     :: alicorn.Color{0.10, 0.12, 0.16, 1}
 
 ACTION_FILE_OPEN       :: "file.open"
+ACTION_FILE_QUICK_OPEN :: "file.quick-open"
 ACTION_WORKSPACE_OPEN  :: "workspace.open"
 ACTION_FILE_SAVE       :: "file.save"
 ACTION_DOCUMENT_CLOSE  :: "document.close"
@@ -28,8 +29,22 @@ ACTION_MARKDOWN_TABLE_ENTER :: "markdown.table-enter"
 ACTION_MARKDOWN_ENTER :: "markdown.enter"
 ACTION_MARKDOWN_TOGGLE_STRONG :: "markdown.toggle-strong"
 ACTION_MARKDOWN_TOGGLE_EMPHASIS :: "markdown.toggle-emphasis"
+ACTION_MARKDOWN_TOGGLE_STRIKE :: "markdown.toggle-strike"
 ACTION_MARKDOWN_TOGGLE_INLINE_CODE :: "markdown.toggle-inline-code"
+ACTION_MARKDOWN_INSERT_LINK :: "markdown.insert-link"
+ACTION_MARKDOWN_HEADING_1 :: "markdown.heading-1"
+ACTION_MARKDOWN_HEADING_2 :: "markdown.heading-2"
+ACTION_MARKDOWN_HEADING_3 :: "markdown.heading-3"
+ACTION_MARKDOWN_TOGGLE_BULLETED_LIST :: "markdown.toggle-bulleted-list"
+ACTION_MARKDOWN_TOGGLE_NUMBERED_LIST :: "markdown.toggle-numbered-list"
+ACTION_MARKDOWN_TOGGLE_QUOTE :: "markdown.toggle-quote"
 ACTION_MARKDOWN_INSERT_TASK :: "markdown.insert-task"
+ACTION_MARKDOWN_INSERT_CODE_BLOCK :: "markdown.insert-code-block"
+ACTION_MARKDOWN_SET_FENCE_LANGUAGE :: "markdown.set-fence-language"
+ACTION_MARKDOWN_INSERT_TABLE :: "markdown.insert-table"
+ACTION_MARKDOWN_INSERT_DIVIDER :: "markdown.insert-divider"
+ACTION_MARKDOWN_SMART_PASTE :: "markdown.smart-paste"
+ACTION_ITEM_TOGGLE :: "item.toggle"
 ACTION_WORKSPACE_REFRESH :: "workspace.refresh"
 ACTION_WORKSPACE_NEW_FILE :: "workspace.new-file"
 ACTION_WORKSPACE_NEW_FOLDER :: "workspace.new-folder"
@@ -44,6 +59,15 @@ ACTION_EDIT_COPY       :: "edit.copy"
 ACTION_EDIT_PASTE      :: "edit.paste"
 ACTION_EDIT_SELECT_ALL :: "edit.select_all"
 ACTION_EDIT_DELETE_LINE :: "edit.delete-line"
+ACTION_EDIT_INDENT_LINES :: "edit.indent-lines"
+ACTION_EDIT_OUTDENT_LINES :: "edit.outdent-lines"
+ACTION_EDIT_INSERT_LINE_ABOVE :: "edit.insert-line-above"
+ACTION_EDIT_INSERT_LINE_BELOW :: "edit.insert-line-below"
+ACTION_EDIT_MOVE_LINE_UP :: "edit.move-line-up"
+ACTION_EDIT_MOVE_LINE_DOWN :: "edit.move-line-down"
+ACTION_EDIT_DUPLICATE_LINE :: "edit.duplicate-line"
+ACTION_EDIT_JOIN_LINES :: "edit.join-lines"
+ACTION_COMMENT_TOGGLE :: "comment.toggle"
 TREE_SEMANTIC_NAMESPACE :: u64(0x5343524154434850)
 TREE_ROW_HEIGHT :: 28
 TREE_SCROLL_KEY :: "scratchpad-workspace-tree"
@@ -95,6 +119,7 @@ App :: struct {
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	editor_edit_lane:       bridge.Editor_Edit_Lane,
+	quick_open_lane:        bridge.Workspace_Files_Lane,
 	editor_edits:           [dynamic]Editor_Edit_Intent,
 	deferred_actions:       [dynamic]Deferred_Action,
 	editor_edit_sequence:   u64,
@@ -193,10 +218,27 @@ App :: struct {
 	command_palette_selected_index: int,
 	command_palette_recent: [8]host.Application_Command_ID,
 	command_palette_recent_count: int,
+	quick_open_open: bool,
+	quick_open_query: string,
+	quick_open_node: alicorn.Node_ID,
+	quick_open_overlay_node: alicorn.Node_ID,
+	quick_open_panel_node: alicorn.Node_ID,
+	quick_open_results_scroll_node: alicorn.Node_ID,
+	quick_open_focus_pending: bool,
+	quick_open_restore_pending: bool,
+	quick_open_previous_focus: alicorn.Node_ID,
+	quick_open_selected_index: int,
+	quick_open_generation: u64,
+	quick_open_path_root: string,
+	quick_open_paths: []string,
+	quick_open_truncated: bool,
+	quick_open_loading: bool,
+	quick_open_ready: bool,
+	quick_open_error: string,
 	tree_scroll_owner:      alicorn.Node_ID,
 	dialog_sequence:        u64,
 	dialog_action:          string,
-	file_items:             [5]host.Application_Menu_Item,
+	file_items:             [6]host.Application_Menu_Item,
 	edit_items:             [10]host.Application_Menu_Item,
 	workspace_items:        [6]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
@@ -380,6 +422,7 @@ build_app :: proc(
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
 	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
+	_ = find_capture_text_field(rt, app.quick_open_node, &app.quick_open_query)
 	if app.find_open { find_refresh_if_needed(app, rt) }
 	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
 	clear(&app.editor_row_targets)
@@ -435,6 +478,9 @@ build_app :: proc(
 		alicorn.container_end(&ui)
 		alicorn.container_begin(&ui, .Container, label="workspace-panel-heading", style=alicorn.layout_style(.Row, height=30, gap=6, align=.Center))
 		alicorn.text(&ui, "SEARCH" if app.workspace_search_mode else "FILES", style=alicorn.layout_style(.Row, grow=1, height=26))
+		if alicorn.button(&ui, "Quick Open", key=alicorn.key_string("workspace-quick-open"), style=alicorn.layout_style(.Row, width=84, height=28)) {
+			quick_open_open_surface(app, rt)
+		}
 		if alicorn.button(&ui, "Commands…", key=alicorn.key_string("workspace-command-palette-open"), style=alicorn.layout_style(.Row, width=100, height=28)) {
 			command_palette_open_surface(app, rt)
 		}
@@ -555,7 +601,7 @@ build_app :: proc(
 	}
 	alicorn.container_end(&ui)
 
-	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.command_palette_open {
+	if app.shutdown_intent == .None && app.close_document_id == "" && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.command_palette_open && !app.quick_open_open {
 		workspace_context_menu_build(app, &ui, rt)
 	}
 
@@ -633,6 +679,8 @@ build_app :: proc(
 		alicorn.modal_overlay_end(&ui)
 	} else if app.settings_surface_open {
 		settings_surface_build(app, &ui, rt)
+	} else if app.quick_open_open {
+		quick_open_build(app, &ui, rt)
 	} else if app.command_palette_open {
 		command_palette_build(app, &ui, rt)
 	}
@@ -640,6 +688,7 @@ build_app :: proc(
 	alicorn.end_frame(&ui)
 	frame_deferred_action_run(app, rt)
 	command_palette_restore_focus_after_frame(app, rt)
+	quick_open_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
@@ -1805,6 +1854,19 @@ start_backend :: proc(app: ^App) {
 			set_error(app, "Could not start the serial editor edit worker.")
 			return
 		}
+		quick_open_lane_started := bridge.workspace_files_lane_start(
+			&app.quick_open_lane,
+			&app.backend,
+			app.waker.wake,
+			app.waker.data,
+		)
+		if !quick_open_lane_started {
+			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
+			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
+			_, _ = bridge.backend_stop(&app.backend)
+			set_error(app, "Could not start the asynchronous Quick Open file index worker.")
+			return
+		}
 		set_error(app, "")
 		tree_sync_workspace(app)
 	}
@@ -1812,6 +1874,9 @@ start_backend :: proc(app: ^App) {
 
 stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	if app == nil { return false, "application state is unavailable" }
+	if !bridge.workspace_files_lane_stop(&app.quick_open_lane) {
+		return false, "Quick Open file index worker did not join cleanly"
+	}
 	if !bridge.visible_window_lane_stop(&app.visible_window_lane) {
 		return false, "visible-window worker did not join cleanly"
 	}
@@ -1887,6 +1952,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		}
 	}
 	_ = workspace_search_sync_wake(app, rt)
+	quick_open_take_completion(app, rt)
 	window_result, window_found := bridge.visible_window_lane_take(&app.visible_window_lane)
 	if window_found {
 		installed := false
@@ -2297,6 +2363,10 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || !app.backend.started { return }
+	if action_id == ACTION_FILE_QUICK_OPEN {
+		quick_open_open_surface(app, rt)
+		return
+	}
 	if action_id == ACTION_EDIT_PASTE {
 		editor_clipboard_command(app, rt, action_id)
 		return
@@ -2331,10 +2401,23 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	entry, found := find_action(&app.backend.state, action_id)
 	if !found || !entry.visible { return }
 	markdown_selection_command := action_id == ACTION_DOCUMENT_FORMAT ||
+	                     action_id == ACTION_ITEM_TOGGLE ||
 	                     action_id == ACTION_MARKDOWN_TOGGLE_STRONG ||
 	                     action_id == ACTION_MARKDOWN_TOGGLE_EMPHASIS ||
+	                     action_id == ACTION_MARKDOWN_TOGGLE_STRIKE ||
 	                     action_id == ACTION_MARKDOWN_TOGGLE_INLINE_CODE ||
+	                     action_id == ACTION_MARKDOWN_INSERT_LINK ||
+	                     action_id == ACTION_MARKDOWN_HEADING_1 ||
+	                     action_id == ACTION_MARKDOWN_HEADING_2 ||
+	                     action_id == ACTION_MARKDOWN_HEADING_3 ||
+	                     action_id == ACTION_MARKDOWN_TOGGLE_BULLETED_LIST ||
+	                     action_id == ACTION_MARKDOWN_TOGGLE_NUMBERED_LIST ||
+	                     action_id == ACTION_MARKDOWN_TOGGLE_QUOTE ||
 	                     action_id == ACTION_MARKDOWN_INSERT_TASK ||
+	                     action_id == ACTION_MARKDOWN_INSERT_CODE_BLOCK ||
+	                     action_id == ACTION_MARKDOWN_SET_FENCE_LANGUAGE ||
+	                     action_id == ACTION_MARKDOWN_INSERT_TABLE ||
+	                     action_id == ACTION_MARKDOWN_INSERT_DIVIDER ||
 	                     action_id == ACTION_MARKDOWN_TABLE_NEXT ||
 	                     action_id == ACTION_MARKDOWN_TABLE_PREVIOUS ||
 	                     action_id == ACTION_MARKDOWN_TABLE_ENTER
@@ -2391,7 +2474,15 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		}
 		bridge.backend_command_result_destroy(&response, context.allocator)
 	case ACTION_DOCUMENT_FORMAT, ACTION_MARKDOWN_TOGGLE_STRONG, ACTION_MARKDOWN_TOGGLE_EMPHASIS,
-		 ACTION_MARKDOWN_TOGGLE_INLINE_CODE, ACTION_MARKDOWN_INSERT_TASK, ACTION_EDIT_DELETE_LINE,
+		 ACTION_MARKDOWN_TOGGLE_STRIKE, ACTION_MARKDOWN_TOGGLE_INLINE_CODE, ACTION_MARKDOWN_INSERT_LINK,
+		 ACTION_MARKDOWN_HEADING_1, ACTION_MARKDOWN_HEADING_2, ACTION_MARKDOWN_HEADING_3,
+		 ACTION_MARKDOWN_TOGGLE_BULLETED_LIST, ACTION_MARKDOWN_TOGGLE_NUMBERED_LIST, ACTION_MARKDOWN_TOGGLE_QUOTE,
+		 ACTION_MARKDOWN_INSERT_TASK, ACTION_MARKDOWN_INSERT_CODE_BLOCK, ACTION_MARKDOWN_SET_FENCE_LANGUAGE,
+		 ACTION_MARKDOWN_INSERT_TABLE, ACTION_MARKDOWN_INSERT_DIVIDER, ACTION_MARKDOWN_SMART_PASTE,
+		 ACTION_EDIT_DELETE_LINE,
+		 ACTION_EDIT_INDENT_LINES, ACTION_EDIT_OUTDENT_LINES, ACTION_EDIT_INSERT_LINE_ABOVE,
+		 ACTION_EDIT_INSERT_LINE_BELOW, ACTION_EDIT_MOVE_LINE_UP, ACTION_EDIT_MOVE_LINE_DOWN,
+		 ACTION_EDIT_DUPLICATE_LINE, ACTION_EDIT_JOIN_LINES, ACTION_COMMENT_TOGGLE,
 		 ACTION_MARKDOWN_TABLE_NEXT, ACTION_MARKDOWN_TABLE_PREVIOUS, ACTION_MARKDOWN_TABLE_ENTER:
 		document, found := find_document(&app.backend.state, app.backend.state.active)
 		if !found { break }
@@ -2401,10 +2492,27 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			break
 		}
 		view := &app.editor_views[view_index]
+		clipboard_text := ""
+		if action_id == ACTION_MARKDOWN_SMART_PASTE {
+			text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
+			if !clipboard_ok {
+				set_error(app, "Could not read text from the system clipboard.")
+				alicorn.invalidate_root(rt, "Scratchpad smart paste clipboard read failed")
+				break
+			}
+			defer delete(text, context.allocator)
+			if len(text) > int(bridge.MAX_EDIT_BYTES) {
+				set_error(app, "Clipboard text exceeds the 128 KiB per-edit limit.")
+				alicorn.invalidate_root(rt, "Scratchpad rejected oversized Markdown smart paste")
+				break
+			}
+			clipboard_text = string(text)
+		}
 		response := bridge.backend_command(
 			&app.backend,
 			"execute_command",
 			action_id=action_id,
+			argument=clipboard_text,
 			document_id=document.id,
 			editor_revision=document.editor_revision,
 			editor_anchor_byte=view.selection_anchor,
@@ -2435,6 +2543,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	case ACTION_WORKSPACE_REFRESH:
 		response := bridge.backend_command(&app.backend, "refresh_workspace", include_ignored=app.show_ignored_files)
 		if response.ok {
+			quick_open_invalidate_index(app)
 			tree_clear_directories(app)
 			if response.directory_listing_owned {
 				if !tree_store_listing(app, response.directory_listing, true) { set_error(app, "Could not retain the refreshed workspace listing.") }
@@ -2541,6 +2650,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		select_document(app, rt, action.value)
 	case .Close_Document:
 		request_close_document(app, rt, action.value)
+	case .Open_Path:
+		quick_open_open_path(app, rt, action.value)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -2684,6 +2795,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 			return false
 		}
 	}
+	if app.quick_open_open { return quick_open_handle_key(app, rt, key) }
 	if app.go_to_line_open {
 		if key == .Escape { go_to_line_close(app, rt, true); return true }
 		if key == .Return { return go_to_line_submit(app, rt) }
@@ -4804,8 +4916,9 @@ clear_close_prompt :: proc(app: ^App) {
 }
 
 init_menus :: proc(app: ^App) {
-	app.file_items = [5]host.Application_Menu_Item{
+	app.file_items = [6]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_FILE_OPEN), label="Open File…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'O', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_FILE_QUICK_OPEN), label="Quick Open…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_OPEN), label="Open Folder…", state=alicorn.Action_State{enabled=true}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE), label="Save", shortcut=host.Application_Menu_Shortcut{'S', {.Primary}}},
@@ -4860,7 +4973,7 @@ application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
 	if app.backend.started {
 		stopped, message := stop_backend(app)
-		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil
+		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil
 		if !stopped { fmt.eprintln("Scratchpad backend shutdown error:", message) }
 	} else {
 		app.smoke_shutdown = true
@@ -4897,6 +5010,7 @@ application_stop :: proc(state: rawptr) {
 	find_set_message(&app.find_replace_message, "")
 	find_set_message(&app.find_error, "")
 	find_set_message(&app.command_palette_query, "")
+	quick_open_destroy(app)
 	find_set_message(&app.workspace_search_query, "")
 	find_set_message(&app.workspace_search_started_query, "")
 	find_set_message(&app.workspace_search_started_root, "")

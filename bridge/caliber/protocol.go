@@ -54,6 +54,7 @@ type CommandRequest struct {
 	BasedOnRevision      uint64 `json:"based_on_revision"`
 	Command              string `json:"command"`
 	ActionID             string `json:"action_id,omitempty"`
+	Argument             string `json:"argument,omitempty"`
 	Path                 string `json:"path,omitempty"`
 	Disposition          string `json:"disposition,omitempty"`
 	Name                 string `json:"name,omitempty"`
@@ -100,6 +101,7 @@ type Response struct {
 	BasedOnRevision     uint64               `json:"based_on_revision,omitempty"`
 	State               *StateEnvelope       `json:"state,omitempty"`
 	DirectoryListing    *DirectoryListing    `json:"directory_listing,omitempty"`
+	WorkspaceFiles      *WorkspaceFiles      `json:"workspace_files,omitempty"`
 	Resource            *ResourceDescriptor  `json:"resource,omitempty"`
 	Edit                *EditAck             `json:"edit,omitempty"`
 	EditorSelection     *EditorSelection     `json:"editor_selection,omitempty"`
@@ -264,6 +266,13 @@ type DirectoryEntry struct {
 	Dir  bool   `json:"dir"`
 }
 
+// WorkspaceFiles is the bounded, path-only candidate set used by frontend
+// Quick Open. File bytes remain in the authoritative document/editor path.
+type WorkspaceFiles struct {
+	Paths     []string `json:"paths"`
+	Truncated bool     `json:"truncated"`
+}
+
 func decodeStartRequest(input []byte) (StartRequest, Response, bool) {
 	var request StartRequest
 	if response, ok := validateWireInput(input, ""); !ok {
@@ -314,8 +323,14 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	if request.Disposition != "" && request.Command != "open_path" {
 		return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "disposition is only valid for open_path", false), false
 	}
+	if request.Argument != "" && (request.Command != "execute_command" || request.ActionID != string(commands.MarkdownSmartPaste)) {
+		return request, errorResponse(request.RequestID, lifecycle, "invalid_argument", "argument is only valid for Markdown smart paste", false), false
+	}
+	if len(request.Argument) > MaxEditBytes {
+		return request, errorResponse(request.RequestID, lifecycle, "argument_too_large", fmt.Sprintf("argument exceeds %d bytes", MaxEditBytes), false), false
+	}
 	switch request.Command {
-	case "snapshot", "ping", "refresh_workspace":
+	case "snapshot", "ping", "refresh_workspace", "list_workspace_files":
 	case "create_file", "create_folder", "trash_path":
 		if err := validateRequiredPath(request.Path, "path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
@@ -645,6 +660,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 	presentationEnabled := len(includePresentation) > 0 && includePresentation[0]
 	commandContext := commands.CommandContext{
 		ActiveDocument: snapshot.Active != "",
+		EditorFocused:  snapshot.Active != "",
 		HasWorkspace:   snapshot.HasWorkspace,
 		HasTrasher:     snapshot.HasTrasher,
 		DocumentCount:  len(snapshot.Documents),
@@ -683,6 +699,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			commandContext.CanRedo = document.CanRedo
 			commandContext.RootLanguage = document.Language
 			commandContext.Markdown = document.Language == "markdown"
+			commandContext.Code = document.Language != "markdown"
 		}
 	}
 	registry := commands.DefaultRegistry()
@@ -709,6 +726,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 
 var shellActionIDs = []commands.ID{
 	commands.FileOpen,
+	commands.QuickOpen,
 	commands.WorkspaceOpen,
 	commands.FileSave,
 	commands.DocumentClose,
@@ -723,14 +741,37 @@ var shellActionIDs = []commands.ID{
 	commands.WorkspaceMove,
 	commands.WorkspaceTrash,
 	commands.DocumentFormat,
+	commands.EditIndentLines,
+	commands.EditOutdentLines,
 	commands.EditDeleteLine,
+	commands.EditInsertLineAbove,
+	commands.EditInsertLineBelow,
+	commands.EditMoveLineUp,
+	commands.EditMoveLineDown,
+	commands.EditDuplicateLine,
+	commands.EditJoinLines,
+	commands.CommentToggle,
+	commands.ItemToggle,
 	commands.MarkdownToggleStrong,
 	commands.MarkdownToggleEmphasis,
+	commands.MarkdownToggleStrike,
 	commands.MarkdownToggleInlineCode,
+	commands.MarkdownInsertLink,
+	commands.MarkdownHeading1,
+	commands.MarkdownHeading2,
+	commands.MarkdownHeading3,
+	commands.MarkdownToggleBulletedList,
+	commands.MarkdownToggleNumberedList,
+	commands.MarkdownToggleQuote,
 	commands.MarkdownInsertTask,
+	commands.MarkdownInsertCodeBlock,
+	commands.MarkdownSetFenceLanguage,
+	commands.MarkdownInsertTable,
 	commands.MarkdownTableNext,
 	commands.MarkdownTablePrevious,
 	commands.MarkdownTableEnter,
+	commands.MarkdownInsertDivider,
+	commands.MarkdownSmartPaste,
 }
 
 func directoryListing(relative string, limit int, entries []workspace.Entry) DirectoryListing {

@@ -1,12 +1,14 @@
 package backend
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"scratchpad/application"
+	"scratchpad/commands"
 )
 
 func dispatchSearchCommand(t *testing.T, runtime *Runtime, request CommandRequest) Response {
@@ -98,6 +100,82 @@ func TestWorkspaceSearchNewGenerationDiscardsLateOldResults(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Path != "new.txt" || results[0].Text != "beta result" {
 		t.Fatalf("results included stale generation or wrong match: %+v", results)
+	}
+}
+
+func TestQuickOpenWorkspaceFilesArePathOnlyAndDoNotRepublishState(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "nested", "note.md"), "the document bytes stay out of the path index")
+	writeFile(t, filepath.Join(root, "z.txt"), "z")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	request := CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       state.Revision + 1,
+		BasedOnRevision: state.ApplicationRev + 1,
+		Command:         "list_workspace_files",
+	}
+	dispatchForTest(t, runtime, mustJSON(t, request))
+	response := decodeResponse(t, runtime.Pump())
+	if !response.OK || response.WorkspaceFiles == nil {
+		t.Fatalf("Quick Open file list response = %+v", response)
+	}
+	if response.BasedOnRevision != request.BasedOnRevision {
+		t.Fatalf("Quick Open response lost request revision identity: %+v", response)
+	}
+	if response.State != nil || response.WorkspaceFiles.Truncated {
+		t.Fatalf("path-only read should not republish state or truncate this fixture: %+v", response)
+	}
+	want := []string{"nested/note.md", "z.txt"}
+	if len(response.WorkspaceFiles.Paths) != len(want) {
+		t.Fatalf("Quick Open paths = %v, want %v", response.WorkspaceFiles.Paths, want)
+	}
+	for index := range want {
+		if response.WorkspaceFiles.Paths[index] != want[index] {
+			t.Fatalf("Quick Open paths = %v, want %v", response.WorkspaceFiles.Paths, want)
+		}
+	}
+}
+
+func TestMarkdownSmartPasteReceivesFrontendClipboardArgument(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.md")
+	writeFile(t, path, "selected text")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	opened := dispatchSearchCommand(t, runtime, CommandRequest{Command: "open_path", Path: "note.md"})
+	if !opened.OK {
+		t.Fatalf("open Markdown document = %+v", opened)
+	}
+	state := latestStateForTest(t, runtime)
+	var documentRevision uint64
+	for _, document := range state.Documents {
+		if document.ID == state.Active {
+			documentRevision = document.EditorRevision
+			break
+		}
+	}
+	response := dispatchSearchCommand(t, runtime, CommandRequest{
+		Command:          "execute_command",
+		ActionID:         string(commands.MarkdownSmartPaste),
+		DocumentID:       state.Active,
+		EditorRevision:   documentRevision,
+		EditorAnchorByte: 0,
+		EditorCursorByte: uint64(len("selected text")),
+		Argument:         "https://example.test/page",
+	})
+	if !response.OK {
+		t.Fatalf("smart paste = %+v", response)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "[selected text](https://example.test/page)" {
+		t.Fatalf("smart-paste result = %q", got)
 	}
 }
 

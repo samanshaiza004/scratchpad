@@ -239,6 +239,7 @@ Backend_Response :: struct {
 	matches_replaced: int                  `json:"matches_replaced"`,
 	source_refresh_needed: bool           `json:"source_refresh_needed"`,
 	workspace_search_page: Workspace_Search_Page `json:"workspace_search_page"`,
+	workspace_files: Workspace_Files `json:"workspace_files"`,
 }
 
 Editor_Selection :: struct {
@@ -263,6 +264,11 @@ Directory_Listing :: struct {
 	limit:         int              `json:"limit"`,
 	truncated:     bool             `json:"truncated"`,
 	entries:       []Directory_Entry `json:"entries"`,
+}
+
+Workspace_Files :: struct {
+	paths: []string `json:"paths"`,
+	truncated: bool `json:"truncated"`,
 }
 
 Directory_Entry :: struct {
@@ -321,6 +327,7 @@ Backend_Command_Request :: struct {
 	based_on_revision: u64    `json:"based_on_revision"`,
 	command:          string `json:"command"`,
 	action_id:        string `json:"action_id,omitempty"`,
+	argument:         string `json:"argument,omitempty"`,
 	path:             string `json:"path,omitempty"`,
 	name:             string `json:"name,omitempty"`,
 	disposition:      string `json:"disposition,omitempty"`,
@@ -979,6 +986,7 @@ Backend_Command_Result :: struct {
 	matches_replaced: int,
 	source_refresh_needed: bool,
 	workspace_search_page: Workspace_Search_Page,
+	workspace_files: Workspace_Files,
 	code:           string,
 	message:        string,
 	command_outcome: string,
@@ -996,12 +1004,14 @@ Backend_Command_Result :: struct {
 	visible_window_owned: bool,
 	matches_owned: bool,
 	search_page_owned: bool,
+	workspace_files_owned: bool,
 }
 
 backend_command :: proc(
 	backend: ^Backend,
 	command: string,
 	action_id := "",
+	argument := "",
 	path := "",
 	name := "",
 	disposition := "",
@@ -1057,6 +1067,7 @@ backend_command :: proc(
 		based_on_revision=request_revision,
 		command=command,
 		action_id=action_id,
+		argument=argument,
 		path=path,
 		name=name,
 		disposition=disposition,
@@ -1166,6 +1177,16 @@ backend_command :: proc(
 		result.directory_listing = listing
 		result.directory_listing_owned = true
 	}
+	if response.ok && command == "list_workspace_files" {
+		files, files_ok := workspace_files_clone(response.workspace_files, allocator)
+		if !files_ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="allocation_failed", message="could not retain the Quick Open path index"}
+		}
+		result.workspace_files = files
+		result.workspace_files_owned = true
+	}
 	if response.ok && command == "find_current" && len(response.matches) > 0 {
 		result.matches = make([]Current_Match, len(response.matches), allocator=allocator)
 		copy(result.matches[:], response.matches[:])
@@ -1228,7 +1249,26 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	if result.matches_owned { delete(result.matches, allocator) }
 	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
+	if result.workspace_files_owned { workspace_files_destroy(&result.workspace_files, allocator) }
 	result^ = {}
+}
+
+workspace_files_clone :: proc(source: Workspace_Files, allocator: mem.Allocator) -> (copy: Workspace_Files, ok: bool) {
+	copy.truncated = source.truncated
+	copy.paths = make([]string, len(source.paths), allocator=allocator)
+	for path, index in source.paths {
+		path_copy, err := strings.clone(path, allocator)
+		if err != nil { workspace_files_destroy(&copy, allocator); return {}, false }
+		copy.paths[index] = path_copy
+	}
+	return copy, true
+}
+
+workspace_files_destroy :: proc(files: ^Workspace_Files, allocator: mem.Allocator) {
+	if files == nil { return }
+	for &path in files.paths { delete(path, allocator) }
+	delete(files.paths, allocator)
+	files^ = {}
 }
 
 visible_window_destroy :: proc(window: ^Visible_Window, allocator: mem.Allocator) {
@@ -1543,6 +1583,175 @@ visible_window_lane_stop :: proc(lane: ^Visible_Window_Lane) -> bool {
 	thread.destroy(lane.thread)
 	lane.thread = nil
 	visible_window_lane_result_destroy(&lane.completed, lane.allocator)
+	lane.completed_ready = false
+	lane.backend = nil
+	lane.wake = nil
+	lane.wake_data = nil
+	return !lane.active && !lane.pending
+}
+
+Workspace_Files_Lane_Result :: struct {
+	generation: u64,
+	workspace_root: string,
+	files: Workspace_Files,
+	files_owned: bool,
+	error: string,
+	error_owned: bool,
+}
+
+// Quick Open's path-only filesystem walk runs off the UI thread. It has one
+// request in flight and returns an owned bounded candidate set; document bytes
+// and open-document state never enter this lane.
+Workspace_Files_Lane :: struct {
+	backend: ^Backend,
+	wake: Application_Wake_Proc,
+	wake_data: rawptr,
+	allocator: mem.Allocator,
+	mutex: sync.Mutex,
+	sema: sync.Sema,
+	thread: ^thread.Thread,
+	stopping: u32,
+	pending: bool,
+	active: bool,
+	pending_generation: u64,
+	latest_generation: u64,
+	pending_workspace_root: string,
+	completed: Workspace_Files_Lane_Result,
+	completed_ready: bool,
+}
+
+workspace_files_lane_result_destroy :: proc(result: ^Workspace_Files_Lane_Result, allocator: mem.Allocator) {
+	if result == nil { return }
+	if len(result.workspace_root) > 0 { delete(result.workspace_root, allocator) }
+	if result.files_owned { workspace_files_destroy(&result.files, allocator) }
+	if result.error_owned { delete(result.error, allocator) }
+	result^ = {}
+}
+
+workspace_files_lane_worker :: proc(t: ^thread.Thread) {
+	lane := cast(^Workspace_Files_Lane)t.data
+	for {
+		sync.sema_wait(&lane.sema)
+		sync.mutex_lock(&lane.mutex)
+		if sync.atomic_load(&lane.stopping) != 0 {
+			sync.mutex_unlock(&lane.mutex)
+			break
+		}
+		if !lane.pending {
+			sync.mutex_unlock(&lane.mutex)
+			continue
+		}
+		generation := lane.pending_generation
+		workspace_root := lane.pending_workspace_root
+		lane.pending_generation = 0
+		lane.pending_workspace_root = ""
+		lane.pending = false
+		lane.active = true
+		sync.mutex_unlock(&lane.mutex)
+
+		command := backend_command(lane.backend, "list_workspace_files", read_latest_after=false, allocator=lane.allocator)
+		completed := Workspace_Files_Lane_Result{generation=generation, workspace_root=workspace_root}
+		if command.ok && command.workspace_files_owned {
+			completed.files = command.workspace_files
+			completed.files_owned = true
+			command.workspace_files_owned = false
+		} else {
+			message := command.message
+			if message == "" { message = command.code }
+			completed.error, _ = strings.clone(message, lane.allocator)
+			completed.error_owned = len(completed.error) > 0
+		}
+		backend_command_result_destroy(&command, lane.allocator)
+
+		sync.mutex_lock(&lane.mutex)
+		lane.active = false
+		is_current := sync.atomic_load(&lane.stopping) == 0 && generation == lane.latest_generation
+		if is_current {
+			workspace_files_lane_result_destroy(&lane.completed, lane.allocator)
+			lane.completed = completed
+			completed = {}
+			lane.completed_ready = true
+		}
+		wake := lane.wake
+		wake_data := lane.wake_data
+		sync.mutex_unlock(&lane.mutex)
+		workspace_files_lane_result_destroy(&completed, lane.allocator)
+		if is_current && wake != nil { wake(wake_data) }
+	}
+}
+
+workspace_files_lane_start :: proc(
+	lane: ^Workspace_Files_Lane,
+	backend: ^Backend,
+	wake: Application_Wake_Proc,
+	wake_data: rawptr,
+	allocator := context.allocator,
+) -> bool {
+	if lane == nil || backend == nil || !backend.started || lane.thread != nil { return false }
+	lane.backend = backend
+	lane.wake = wake
+	lane.wake_data = wake_data
+	lane.allocator = allocator
+	lane.stopping = 0
+	lane.pending = false
+	lane.active = false
+	lane.latest_generation = 0
+	lane.completed = {}
+	lane.completed_ready = false
+	lane.sema = {}
+	lane.thread = thread.create(workspace_files_lane_worker, name="Scratchpad Quick Open path lane")
+	if lane.thread == nil { return false }
+	lane.thread.data = rawptr(lane)
+	thread.start(lane.thread)
+	return true
+}
+
+workspace_files_lane_request :: proc(lane: ^Workspace_Files_Lane, workspace_root: string) -> (generation: u64, accepted: bool) {
+	if lane == nil || lane.thread == nil || len(workspace_root) == 0 { return 0, false }
+	sync.mutex_lock(&lane.mutex)
+	defer sync.mutex_unlock(&lane.mutex)
+	if sync.atomic_load(&lane.stopping) != 0 || lane.pending || lane.active || lane.completed_ready { return 0, false }
+	owned_root, clone_error := strings.clone(workspace_root, lane.allocator)
+	if clone_error != nil { return 0, false }
+	lane.latest_generation += 1
+	if lane.latest_generation == 0 { lane.latest_generation = 1 }
+	generation = lane.latest_generation
+	lane.pending_generation = generation
+	lane.pending_workspace_root = owned_root
+	lane.pending = true
+	sync.sema_post(&lane.sema)
+	return generation, true
+}
+
+workspace_files_lane_take :: proc(lane: ^Workspace_Files_Lane) -> (result: Workspace_Files_Lane_Result, found: bool) {
+	if lane == nil { return {}, false }
+	sync.mutex_lock(&lane.mutex)
+	if !lane.completed_ready {
+		sync.mutex_unlock(&lane.mutex)
+		return {}, false
+	}
+	result = lane.completed
+	lane.completed = {}
+	lane.completed_ready = false
+	sync.mutex_unlock(&lane.mutex)
+	return result, true
+}
+
+workspace_files_lane_stop :: proc(lane: ^Workspace_Files_Lane) -> bool {
+	if lane == nil || lane.thread == nil { return true }
+	sync.mutex_lock(&lane.mutex)
+	sync.atomic_store(&lane.stopping, 1)
+	if lane.pending {
+		delete(lane.pending_workspace_root, lane.allocator)
+		lane.pending_workspace_root = ""
+		lane.pending = false
+	}
+	sync.mutex_unlock(&lane.mutex)
+	sync.sema_post(&lane.sema)
+	thread.join(lane.thread)
+	thread.destroy(lane.thread)
+	lane.thread = nil
+	workspace_files_lane_result_destroy(&lane.completed, lane.allocator)
 	lane.completed_ready = false
 	lane.backend = nil
 	lane.wake = nil

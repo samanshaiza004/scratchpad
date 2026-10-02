@@ -2,11 +2,20 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
+
+const (
+	QuickOpenMaxFiles     = 5000
+	QuickOpenMaxPathBytes = 128 << 10
+)
+
+var errQuickOpenLimit = errors.New("quick-open path limit reached")
 
 type Entry struct {
 	Name string
@@ -82,6 +91,55 @@ func (w Workspace) Files(ctx context.Context, emit func(string) bool) error {
 		emit(path)
 		return nil
 	})
+}
+
+// QuickOpenFiles returns a deterministic, bounded list of workspace-relative
+// paths. It shares the workspace walker's ignore and private-metadata policy,
+// and never reads file contents. The truncation flag is explicit so a UI can
+// tell the user when the candidate set is capped.
+func (w Workspace) QuickOpenFiles(ctx context.Context) (paths []string, truncated bool, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pathBytes := 0
+	err = w.Walker().Walk(func(path string, entry fs.DirEntry) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if len(paths) >= QuickOpenMaxFiles {
+			truncated = true
+			return errQuickOpenLimit
+		}
+		relative, relErr := filepath.Rel(w.Root, path)
+		if relErr != nil {
+			return relErr
+		}
+		relative = filepath.ToSlash(relative)
+		if pathBytes+len(relative) > QuickOpenMaxPathBytes {
+			truncated = true
+			return errQuickOpenLimit
+		}
+		paths = append(paths, relative)
+		pathBytes += len(relative)
+		return nil
+	})
+	if errors.Is(err, errQuickOpenLimit) {
+		err = nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		left, right := strings.ToLower(paths[i]), strings.ToLower(paths[j])
+		if left == right {
+			return paths[i] < paths[j]
+		}
+		return left < right
+	})
+	return paths, truncated, nil
 }
 
 func (w Workspace) containedPath(relative string) (string, error) {
