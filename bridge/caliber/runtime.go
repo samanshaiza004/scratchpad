@@ -12,6 +12,7 @@ import (
 
 	"scratchpad/application"
 	"scratchpad/commands"
+	"scratchpad/editor"
 	"scratchpad/workspace"
 )
 
@@ -480,6 +481,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			BeforeCursorByte:  int(request.BeforeCursorByte),
 			AfterAnchorByte:   int(request.AfterAnchorByte),
 			AfterCursorByte:   int(request.AfterCursorByte),
+			TypingGroupID:     request.TypingGroupID,
 		})
 		if err != nil {
 			if errors.Is(err, application.ErrStaleEditorRevision) {
@@ -515,6 +517,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "invalid_editor_selection", errors.New("editor selection is outside the document"))
 		}
 		doc.Editor.SetSelection(anchor, cursor)
+		doc.Editor.BreakUndoGroup()
 		commandRequest, err := commands.NewRequest(doc, commands.ID(request.ActionID))
 		if err != nil {
 			return commandError(request, "command_unavailable", err)
@@ -686,11 +689,33 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	}
 	buffer := doc.Editor.Buffer
 	lineCount := buffer.LineCount()
-	if request.StartLine >= uint64(lineCount) {
-		return Response{}, fmt.Errorf("start_line %d is outside the document's %d lines", request.StartLine, lineCount)
+	startLine := int(request.StartLine)
+	resolvedAnchorByte := uint64(0)
+	resolvedAnchorLine := uint64(0)
+	anchorResolved := false
+	if request.HasSourceAnchor {
+		position, mapped := doc.Editor.MapSourcePosition(request.SourceAnchorRevision, int(request.SourceAnchorByte))
+		if !mapped {
+			position = min(int(request.SourceAnchorByte), buffer.ByteLen())
+			if position < 0 {
+				position = 0
+			}
+		}
+		anchorLine, lineOK := buffer.LineAt(position)
+		if lineOK {
+			oldAnchorLine := int(request.SourceAnchorLine)
+			startLine += anchorLine - oldAnchorLine
+			startLine = max(0, min(startLine, lineCount-1))
+			resolvedAnchorByte = uint64(position)
+			resolvedAnchorLine = uint64(anchorLine)
+			anchorResolved = true
+		}
+	}
+	if startLine < 0 || startLine >= lineCount {
+		return Response{}, fmt.Errorf("start_line %d is outside the document's %d lines", startLine, lineCount)
 	}
 
-	lineStart, lineEnd, lineOK := buffer.LineRange(int(request.StartLine))
+	lineStart, lineEnd, lineOK := buffer.LineRange(startLine)
 	if !lineOK {
 		return Response{}, errors.New("requested line is unavailable")
 	}
@@ -709,12 +734,12 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	if useLineChunk {
 		chunkLimit := min(int(request.MaxBytes), MaxVisibleLineChunkBytes)
 		anchorByte := int(request.AnchorByte)
-		lines, startByte, lineByteLength, truncated, err = buffer.BoundedLineChunk(int(request.StartLine), anchorByte, chunkLimit)
+		lines, startByte, lineByteLength, truncated, err = buffer.BoundedLineChunk(startLine, anchorByte, chunkLimit)
 		describedLineByteLength = lineByteLength
-		endLine = int(request.StartLine) + 1
+		endLine = startLine + 1
 	} else {
 		lines, startByte, endLine, truncated, err = buffer.BoundedLines(
-			int(request.StartLine),
+			startLine,
 			int(request.MaxLines),
 			int(request.MaxBytes),
 		)
@@ -723,7 +748,7 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		// truncated when maxLines stops before later lines; in that case the
 		// returned first line can include its LF terminator, which is not part
 		// of LineRange's logical line length.
-		if truncated && endLine == int(request.StartLine)+1 && len(lines) < lineByteLength {
+		if truncated && endLine == startLine+1 && len(lines) < lineByteLength {
 			describedLineByteLength = lineEnd - lineStart
 		}
 	}
@@ -741,10 +766,10 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 		} else {
 			presentationRevision, ready = doc.Revision(), true
 		}
-		payload, err = encodeVisibleSliceV2(r.applicationRevision, doc.Revision(), request.StartLine, uint64(endLine), truncated, lines, presentationRevision, ready, metadataTruncated, spans, blocks)
+		payload, err = encodeVisibleSliceV2(r.applicationRevision, doc.Revision(), uint64(startLine), uint64(endLine), truncated, lines, presentationRevision, ready, metadataTruncated, spans, blocks)
 		metadataByteLen = uint64(presentationTrailerHeaderBytes + (len(spans)+len(blocks))*presentationRecordBytes)
 	} else {
-		payload, err = encodeVisibleSlice(r.applicationRevision, doc.Revision(), request.StartLine, uint64(endLine), truncated, lines)
+		payload, err = encodeVisibleSlice(r.applicationRevision, doc.Revision(), uint64(startLine), uint64(endLine), truncated, lines)
 	}
 	if err != nil {
 		return Response{}, err
@@ -756,18 +781,21 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	response := okResponse(request.RequestID, r.lifecycle, r.revision)
 	response.BasedOnRevision = request.BasedOnRevision
 	response.Resource = &ResourceDescriptor{
-		ResourceID:      resourceID,
-		Generation:      generation,
-		DocumentID:      request.DocumentID,
-		ApplicationRev:  r.applicationRevision,
-		EditorRevision:  doc.Revision(),
-		StartLine:       request.StartLine,
-		EndLine:         uint64(endLine),
-		ByteLen:         uint64(len(lines)),
-		Truncated:       truncated,
-		StartByte:       uint64(startByte),
-		LineByteLength:  uint64(describedLineByteLength),
-		MetadataByteLen: metadataByteLen,
+		ResourceID:       resourceID,
+		Generation:       generation,
+		DocumentID:       request.DocumentID,
+		ApplicationRev:   r.applicationRevision,
+		EditorRevision:   doc.Revision(),
+		StartLine:        uint64(startLine),
+		EndLine:          uint64(endLine),
+		ByteLen:          uint64(len(lines)),
+		Truncated:        truncated,
+		StartByte:        uint64(startByte),
+		LineByteLength:   uint64(describedLineByteLength),
+		MetadataByteLen:  metadataByteLen,
+		HasSourceAnchor:  anchorResolved,
+		SourceAnchorByte: resolvedAnchorByte,
+		SourceAnchorLine: resolvedAnchorLine,
 	}
 	return response, nil
 }

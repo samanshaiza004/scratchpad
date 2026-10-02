@@ -11,18 +11,20 @@ import (
 // Shirei supplies the visual mapping and native input transport above this
 // pure core.
 type ScratchEditor struct {
-	Buffer        Buffer
-	Cursor        int
-	Anchor        int
-	Affinity      Affinity
-	preedit       Composition
-	preferredX    float32
-	hasPreferredX bool
-	revision      uint64
-	nextRevision  uint64
-	undo          []editRecord
-	redo          []editRecord
-	editJournal   []SourceEdit
+	Buffer          Buffer
+	Cursor          int
+	Anchor          int
+	Affinity        Affinity
+	preedit         Composition
+	preferredX      float32
+	hasPreferredX   bool
+	revision        uint64
+	nextRevision    uint64
+	undo            []editRecord
+	redo            []editRecord
+	editJournal     []SourceEdit
+	typingGroupID   uint64
+	typingGroupOpen bool
 }
 
 // BytePoint is a UTF-8 byte position. Tree-sitter and the editor both use
@@ -104,6 +106,10 @@ func (e *ScratchEditor) CanRedo() bool { return e != nil && len(e.redo) != 0 }
 // the previous contents, and reusing revision zero would let that result
 // masquerade as a projection for the replacement bytes.
 func (e *ScratchEditor) Reset(source []byte) {
+	oldSource := e.Buffer.Text()
+	start, oldEnd, newEnd := commonSplice(oldSource, source)
+	edit := e.sourceEdit(start, oldEnd, source[start:newEnd], 0)
+	beforeRevision := e.revision
 	e.Buffer = NewBuffer(source)
 	e.Cursor, e.Anchor = 0, 0
 	e.Affinity = AffinityLeading
@@ -111,9 +117,60 @@ func (e *ScratchEditor) Reset(source []byte) {
 	e.ClearPreferredVerticalX()
 	e.revision = e.nextRevision
 	e.nextRevision++
+	edit.BeforeRevision = beforeRevision
+	edit.AfterRevision = e.revision
+	e.recordSourceEdit(edit)
 	e.undo = nil
 	e.redo = nil
-	e.editJournal = nil
+	e.BreakUndoGroup()
+}
+
+// MapSourcePosition rebases a byte position through the bounded authoritative
+// edit journal. It is used for disposable viewport anchors only; callers must
+// fall back to a fresh/nearest source boundary when the journal is ambiguous.
+func (e *ScratchEditor) MapSourcePosition(revision uint64, position int) (int, bool) {
+	if e == nil || position < 0 {
+		return 0, false
+	}
+	edits, ok := e.EditsSince(revision)
+	if !ok {
+		return 0, false
+	}
+	for _, edit := range edits {
+		position = mapPositionThroughEdit(position, edit)
+	}
+	position = clamp(position, e.Buffer.ByteLen())
+	return e.Buffer.boundary(position), true
+}
+
+func mapPositionThroughEdit(position int, edit SourceEdit) int {
+	shift := edit.NewEndByte - edit.OldEndByte
+	switch {
+	case position < edit.StartByte:
+		return position
+	case position >= edit.OldEndByte:
+		return position + shift
+	default:
+		// The anchored source was replaced. Select the closest surviving
+		// boundary, preferring the leading side on an exact tie.
+		if position-edit.StartByte <= edit.OldEndByte-position {
+			return edit.StartByte
+		}
+		return edit.NewEndByte
+	}
+}
+
+func commonSplice(before, after []byte) (start, oldEnd, newEnd int) {
+	limit := min(len(before), len(after))
+	for start < limit && before[start] == after[start] {
+		start++
+	}
+	suffix := 0
+	for suffix < len(before)-start && suffix < len(after)-start &&
+		before[len(before)-1-suffix] == after[len(after)-1-suffix] {
+		suffix++
+	}
+	return start, len(before) - suffix, len(after) - suffix
 }
 
 // EditsSince returns the contiguous edit chain from revision to the current
@@ -461,6 +518,7 @@ func (e *ScratchEditor) Paste(text string) error {
 }
 
 func (e *ScratchEditor) Undo() error {
+	e.BreakUndoGroup()
 	if len(e.undo) == 0 {
 		return nil
 	}
@@ -485,6 +543,7 @@ func (e *ScratchEditor) Undo() error {
 }
 
 func (e *ScratchEditor) Redo() error {
+	e.BreakUndoGroup()
 	if len(e.redo) == 0 {
 		return nil
 	}
@@ -632,6 +691,56 @@ func (e *ScratchEditor) replaceWithSelection(start, end int, text []byte, after 
 }
 
 func (e *ScratchEditor) replaceWithSelectionResult(start, end int, text []byte, after *selectionState) (SourceEdit, error) {
+	return e.replaceWithSelectionIntent(start, end, text, after, 0)
+}
+
+// ReplaceTypingWithSelectionStateResult records one ordinary text-input
+// insertion. Consecutive inserts can share one undo record only when the
+// caller supplies the same explicit typing-run identity and the byte/selection
+// geometry remains contiguous.
+func (e *ScratchEditor) ReplaceTypingWithSelectionStateResult(start, end int, text []byte,
+	beforeAnchor, beforeCursor, afterAnchor, afterCursor int, groupID uint64,
+) (AppliedEdit, error) {
+	if e == nil || start < 0 || end < start || end > e.Buffer.ByteLen() {
+		return AppliedEdit{}, errors.New("editor input replacement range outside buffer")
+	}
+	beforeLength := e.Buffer.ByteLen()
+	if beforeAnchor < 0 || beforeAnchor > beforeLength || beforeCursor < 0 || beforeCursor > beforeLength {
+		return AppliedEdit{}, errors.New("pre-edit selection outside buffer")
+	}
+	replacement := text
+	if len(text) == 1 && text[0] == '\n' {
+		replacement = e.newlineText(start)
+	}
+	afterLength := beforeLength - (end - start) + len(replacement)
+	if afterAnchor < 0 || afterAnchor > afterLength || afterCursor < 0 || afterCursor > afterLength {
+		return AppliedEdit{}, errors.New("post-edit selection outside normalized buffer")
+	}
+	e.SetSelection(beforeAnchor, beforeCursor)
+	sourceEdit, err := e.replaceWithSelectionIntent(
+		start, end, replacement,
+		&selectionState{anchor: afterAnchor, cursor: afterCursor}, groupID,
+	)
+	if err != nil {
+		return AppliedEdit{}, err
+	}
+	return AppliedEdit{SourceEdit: sourceEdit, Replacement: replacement}, nil
+}
+
+// BreakUndoGroup closes the active typing run without changing source or
+// selection. The next text-input run starts a distinct undo transaction.
+func (e *ScratchEditor) BreakUndoGroup() {
+	if e == nil {
+		return
+	}
+	e.typingGroupID = 0
+	e.typingGroupOpen = false
+}
+
+func (e *ScratchEditor) replaceWithSelectionIntent(start, end int, text []byte, after *selectionState, typingGroupID uint64) (SourceEdit, error) {
+	if typingGroupID == 0 {
+		e.BreakUndoGroup()
+	}
 	if start == end && len(text) == 0 {
 		if after != nil {
 			e.Anchor = e.Buffer.boundary(after.anchor)
@@ -675,14 +784,48 @@ func (e *ScratchEditor) replaceWithSelectionResult(start, end int, text []byte, 
 	}
 	e.Affinity = AffinityLeading
 	e.ClearPreferredVerticalX()
-	e.undo = append(e.undo, editRecord{
+	record := editRecord{
 		start: start, deleted: deleted, inserted: append([]byte(nil), text...),
 		beforeCursor: beforeCursor, beforeAnchor: beforeAnchor,
 		afterCursor: e.Cursor, afterAnchor: e.Anchor,
 		beforeRevision: beforeRevision, afterRevision: afterRevision,
-	})
+	}
+	canCoalesce := typingGroupID != 0 && start == end && len(text) > 0 &&
+		beforeAnchor == beforeCursor && beforeCursor == start &&
+		!containsLineBreak(text) && len(deleted) == 0 &&
+		e.typingGroupOpen && e.typingGroupID == typingGroupID && len(e.undo) > 0
+	if canCoalesce {
+		previous := &e.undo[len(e.undo)-1]
+		canCoalesce = len(previous.deleted) == 0 && len(previous.inserted) > 0 &&
+			previous.start+len(previous.inserted) == start &&
+			previous.afterAnchor == beforeAnchor && previous.afterCursor == beforeCursor &&
+			previous.afterRevision == beforeRevision
+		if canCoalesce {
+			previous.inserted = append(previous.inserted, text...)
+			previous.afterCursor, previous.afterAnchor = e.Cursor, e.Anchor
+			previous.afterRevision = afterRevision
+		}
+	}
+	if !canCoalesce {
+		e.undo = append(e.undo, record)
+	}
+	if typingGroupID != 0 && start == end && len(text) > 0 && !containsLineBreak(text) && len(deleted) == 0 {
+		e.typingGroupID = typingGroupID
+		e.typingGroupOpen = true
+	} else {
+		e.BreakUndoGroup()
+	}
 	e.redo = nil
 	return edit, nil
+}
+
+func containsLineBreak(text []byte) bool {
+	for _, value := range text {
+		if value == '\r' || value == '\n' {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *ScratchEditor) sourceEdit(start, end int, text []byte, afterRevision uint64) SourceEdit {

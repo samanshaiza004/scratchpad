@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:mem"
 import "core:strings"
+import "core:time"
 import "core:unicode/utf8"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
@@ -55,6 +56,9 @@ Editor_Window :: struct {
 	end_line:        u64,
 	start_byte:      u64,
 	line_byte_length: u64,
+	has_source_anchor: bool,
+	source_anchor_byte: u64,
+	source_anchor_line: u64,
 	truncated:       bool,
 	source:          []u8,
 	presentation_revision: u64,
@@ -125,6 +129,17 @@ Editor_View_State :: struct {
 	wrap_last_split_position: f32,
 	wrap_last_split_position_valid: bool,
 	authoritative_revision: u64,
+	undo_group_id: u64,
+	undo_group_editor_focus: bool,
+	last_typing_at: time.Time,
+	typing_group_active: bool,
+	viewport_anchor_byte: u64,
+	viewport_anchor_revision: u64,
+	viewport_anchor_line: u64,
+	viewport_anchor_offset: f32,
+	viewport_anchor_pending: bool,
+	viewport_anchor_resolved: bool,
+	viewport_anchor_skip_next_source_change: bool,
 	optimistic_window: Editor_Window,
 	optimistic_window_ready: bool,
 	optimistic_pending_edits: u64,
@@ -301,8 +316,29 @@ Editor_Edit_Intent :: struct {
 	before_cursor_byte: u64,
 	after_anchor_byte:  u64,
 	after_cursor_byte:  u64,
+	typing_group_id:    u64,
 	replacement:       []u8,
 	wire_replacement:  []u8,
+}
+
+EDITOR_TYPING_GROUP_PAUSE_NS :: i64(900_000_000)
+
+editor_undo_group_break :: proc(view: ^Editor_View_State) {
+	if view == nil { return }
+	view.undo_group_id += 1
+	if view.undo_group_id == 0 { view.undo_group_id = 1 }
+	view.typing_group_active = false
+}
+
+editor_typing_group_id :: proc(view: ^Editor_View_State) -> u64 {
+	if view == nil { return 0 }
+	now := time.now()
+	if !view.typing_group_active || time.duration_nanoseconds(time.since(view.last_typing_at)) > EDITOR_TYPING_GROUP_PAUSE_NS {
+		editor_undo_group_break(view)
+	}
+	view.last_typing_at = now
+	view.typing_group_active = true
+	return view.undo_group_id
 }
 
 Editor_Row_Target :: struct {
@@ -504,12 +540,13 @@ editor_view_ensure :: proc(views: ^[dynamic]Editor_View_State, document_id: stri
 	if existing := editor_view_find(views[:], document_id); existing >= 0 { return existing, true }
 	owned_id, clone_err := strings.clone(document_id, allocator)
 	if clone_err != nil { return -1, false }
-	append(views, Editor_View_State{document_id=owned_id})
+	append(views, Editor_View_State{document_id=owned_id, undo_group_id=1})
 	return len(views)-1, true
 }
 
 editor_view_mark_active :: proc(view: ^Editor_View_State) {
 	if view == nil { return }
+	editor_undo_group_break(view)
 	view.restore_y_pending = true
 	view.restore_x_pending = true
 }
@@ -1813,6 +1850,9 @@ editor_window_clone :: proc(source: ^Editor_Window, allocator := context.allocat
 		end_line=source.end_line,
 		start_byte=source.start_byte,
 		line_byte_length=source.line_byte_length,
+		has_source_anchor=source.has_source_anchor,
+		source_anchor_byte=source.source_anchor_byte,
+		source_anchor_line=source.source_anchor_line,
 		truncated=source.truncated,
 		source=bytes,
 	}

@@ -49,40 +49,45 @@ type StopRequest struct {
 }
 
 type CommandRequest struct {
-	Version             uint32 `json:"version"`
-	RequestID           uint64 `json:"request_id"`
-	BasedOnRevision     uint64 `json:"based_on_revision"`
-	Command             string `json:"command"`
-	ActionID            string `json:"action_id,omitempty"`
-	Path                string `json:"path,omitempty"`
-	Disposition         string `json:"disposition,omitempty"`
-	Name                string `json:"name,omitempty"`
-	DocumentID          string `json:"document_id,omitempty"`
-	Discard             bool   `json:"discard,omitempty"`
-	RelativePath        string `json:"relative_path,omitempty"`
-	Limit               int    `json:"limit,omitempty"`
-	StartLine           uint64 `json:"start_line,omitempty"`
-	AnchorByte          uint64 `json:"anchor_byte,omitempty"`
-	MaxLines            uint64 `json:"max_lines,omitempty"`
-	MaxBytes            uint64 `json:"max_bytes,omitempty"`
-	IncludePresentation bool   `json:"include_presentation,omitempty"`
-	IncludeIgnored      bool   `json:"include_ignored,omitempty"`
-	EditorRevision      uint64 `json:"editor_revision"`
-	EditorAnchorByte    uint64 `json:"editor_anchor_byte,omitempty"`
-	EditorCursorByte    uint64 `json:"editor_cursor_byte,omitempty"`
-	StartByte           uint64 `json:"start_byte,omitempty"`
-	EndByte             uint64 `json:"end_byte,omitempty"`
-	Replacement         []int  `json:"replacement,omitempty"`
-	HasSelectionState   bool   `json:"has_selection_state,omitempty"`
-	BeforeAnchorByte    uint64 `json:"before_anchor_byte,omitempty"`
-	BeforeCursorByte    uint64 `json:"before_cursor_byte,omitempty"`
-	AfterAnchorByte     uint64 `json:"after_anchor_byte,omitempty"`
-	AfterCursorByte     uint64 `json:"after_cursor_byte,omitempty"`
-	Query               string `json:"query,omitempty"`
-	MaxMatches          int    `json:"max_matches,omitempty"`
-	SearchGeneration    uint64 `json:"search_generation,omitempty"`
-	HasTargetByte       bool   `json:"has_target_byte,omitempty"`
-	TargetByte          uint64 `json:"target_byte,omitempty"`
+	Version              uint32 `json:"version"`
+	RequestID            uint64 `json:"request_id"`
+	BasedOnRevision      uint64 `json:"based_on_revision"`
+	Command              string `json:"command"`
+	ActionID             string `json:"action_id,omitempty"`
+	Path                 string `json:"path,omitempty"`
+	Disposition          string `json:"disposition,omitempty"`
+	Name                 string `json:"name,omitempty"`
+	DocumentID           string `json:"document_id,omitempty"`
+	Discard              bool   `json:"discard,omitempty"`
+	RelativePath         string `json:"relative_path,omitempty"`
+	Limit                int    `json:"limit,omitempty"`
+	StartLine            uint64 `json:"start_line,omitempty"`
+	AnchorByte           uint64 `json:"anchor_byte,omitempty"`
+	MaxLines             uint64 `json:"max_lines,omitempty"`
+	MaxBytes             uint64 `json:"max_bytes,omitempty"`
+	IncludePresentation  bool   `json:"include_presentation,omitempty"`
+	IncludeIgnored       bool   `json:"include_ignored,omitempty"`
+	EditorRevision       uint64 `json:"editor_revision"`
+	EditorAnchorByte     uint64 `json:"editor_anchor_byte,omitempty"`
+	EditorCursorByte     uint64 `json:"editor_cursor_byte,omitempty"`
+	StartByte            uint64 `json:"start_byte,omitempty"`
+	EndByte              uint64 `json:"end_byte,omitempty"`
+	Replacement          []int  `json:"replacement,omitempty"`
+	HasSelectionState    bool   `json:"has_selection_state,omitempty"`
+	BeforeAnchorByte     uint64 `json:"before_anchor_byte,omitempty"`
+	BeforeCursorByte     uint64 `json:"before_cursor_byte,omitempty"`
+	AfterAnchorByte      uint64 `json:"after_anchor_byte,omitempty"`
+	AfterCursorByte      uint64 `json:"after_cursor_byte,omitempty"`
+	TypingGroupID        uint64 `json:"typing_group_id,omitempty"`
+	Query                string `json:"query,omitempty"`
+	MaxMatches           int    `json:"max_matches,omitempty"`
+	SearchGeneration     uint64 `json:"search_generation,omitempty"`
+	HasTargetByte        bool   `json:"has_target_byte,omitempty"`
+	TargetByte           uint64 `json:"target_byte,omitempty"`
+	HasSourceAnchor      bool   `json:"has_source_anchor,omitempty"`
+	SourceAnchorRevision uint64 `json:"source_anchor_revision,omitempty"`
+	SourceAnchorByte     uint64 `json:"source_anchor_byte,omitempty"`
+	SourceAnchorLine     uint64 `json:"source_anchor_line,omitempty"`
 }
 
 type Response struct {
@@ -115,18 +120,21 @@ const (
 )
 
 type ResourceDescriptor struct {
-	ResourceID      uint64 `json:"resource_id"`
-	Generation      uint64 `json:"generation"`
-	DocumentID      string `json:"document_id"`
-	ApplicationRev  uint64 `json:"application_revision"`
-	EditorRevision  uint64 `json:"editor_revision"`
-	StartLine       uint64 `json:"start_line"`
-	EndLine         uint64 `json:"end_line"`
-	ByteLen         uint64 `json:"byte_len"`
-	Truncated       bool   `json:"truncated"`
-	StartByte       uint64 `json:"start_byte"`
-	LineByteLength  uint64 `json:"line_byte_length,omitempty"`
-	MetadataByteLen uint64 `json:"metadata_byte_len,omitempty"`
+	ResourceID       uint64 `json:"resource_id"`
+	Generation       uint64 `json:"generation"`
+	DocumentID       string `json:"document_id"`
+	ApplicationRev   uint64 `json:"application_revision"`
+	EditorRevision   uint64 `json:"editor_revision"`
+	StartLine        uint64 `json:"start_line"`
+	EndLine          uint64 `json:"end_line"`
+	ByteLen          uint64 `json:"byte_len"`
+	Truncated        bool   `json:"truncated"`
+	StartByte        uint64 `json:"start_byte"`
+	LineByteLength   uint64 `json:"line_byte_length,omitempty"`
+	MetadataByteLen  uint64 `json:"metadata_byte_len,omitempty"`
+	HasSourceAnchor  bool   `json:"has_source_anchor,omitempty"`
+	SourceAnchorByte uint64 `json:"source_anchor_byte,omitempty"`
+	SourceAnchorLine uint64 `json:"source_anchor_line,omitempty"`
 }
 
 type EditAck struct {
@@ -354,6 +362,9 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.HasSelectionState && (request.BeforeAnchorByte > uint64(^uint(0)>>1) || request.BeforeCursorByte > uint64(^uint(0)>>1) || request.AfterAnchorByte > uint64(^uint(0)>>1) || request.AfterCursorByte > uint64(^uint(0)>>1)) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_selection", "edit selection does not fit the host word size", false), false
 		}
+		if request.TypingGroupID != 0 && !request.HasSelectionState {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_edit_intent", "typing transactions require an explicit selection snapshot", false), false
+		}
 		if len(request.Replacement) > MaxEditBytes {
 			return request, errorResponse(request.RequestID, lifecycle, "edit_too_large", fmt.Sprintf("replacement exceeds %d bytes", MaxEditBytes), false), false
 		}
@@ -390,6 +401,9 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.StartLine > uint64(^uint(0)>>1) || request.AnchorByte > uint64(^uint(0)>>1) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_visible_range", "visible line or byte anchor does not fit the host word size", false), false
+		}
+		if request.HasSourceAnchor && (request.SourceAnchorRevision == 0 || request.SourceAnchorByte > uint64(^uint(0)>>1) || request.SourceAnchorLine > uint64(^uint(0)>>1)) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_source_anchor", "source anchor revision, byte, or line is invalid", false), false
 		}
 	case "list_directory":
 		if err := validateOptionalPath(request.RelativePath, "relative_path"); err != nil {

@@ -101,6 +101,7 @@ find_apply_active_match :: proc(app: ^App, rt: ^alicorn.Runtime, reveal := true)
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
+	editor_undo_group_break(view)
 	view.selection_anchor = u64(match.start)
 	view.caret_byte = u64(match.end)
 	view.anchor_affinity = .Leading

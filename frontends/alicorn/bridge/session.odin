@@ -151,6 +151,9 @@ Resource_Descriptor :: struct {
 	start_byte:      u64    `json:"start_byte"`,
 	line_byte_length: u64   `json:"line_byte_length"`,
 	metadata_byte_len: u64 `json:"metadata_byte_len"`,
+	has_source_anchor: bool `json:"has_source_anchor,omitempty"`,
+	source_anchor_byte: u64 `json:"source_anchor_byte,omitempty"`,
+	source_anchor_line: u64 `json:"source_anchor_line,omitempty"`,
 }
 
 PRESENTATION_MAX_RECORDS :: 4096
@@ -174,6 +177,9 @@ Visible_Window :: struct {
 	end_line:        u64,
 	start_byte:      u64,
 	line_byte_length: u64,
+	has_source_anchor: bool,
+	source_anchor_byte: u64,
+	source_anchor_line: u64,
 	truncated:       bool,
 	source:          []u8,
 	presentation_revision: u64,
@@ -342,6 +348,11 @@ Backend_Command_Request :: struct {
 	before_cursor_byte: u64    `json:"before_cursor_byte,omitempty"`,
 	after_anchor_byte:  u64    `json:"after_anchor_byte,omitempty"`,
 	after_cursor_byte:  u64    `json:"after_cursor_byte,omitempty"`,
+	typing_group_id:    u64    `json:"typing_group_id,omitempty"`,
+	has_source_anchor:  bool   `json:"has_source_anchor,omitempty"`,
+	source_anchor_revision: u64 `json:"source_anchor_revision,omitempty"`,
+	source_anchor_byte: u64    `json:"source_anchor_byte,omitempty"`,
+	source_anchor_line: u64    `json:"source_anchor_line,omitempty"`,
 }
 
 decode_state_envelope :: proc(data: []u8, allocator := context.allocator) -> (state: State_Envelope, ok: bool, message: string) {
@@ -827,6 +838,9 @@ visible_window_decode :: proc(
 		end_line=end_line,
 		start_byte=descriptor.start_byte,
 		line_byte_length=descriptor.line_byte_length,
+		has_source_anchor=descriptor.has_source_anchor,
+		source_anchor_byte=descriptor.source_anchor_byte,
+		source_anchor_line=descriptor.source_anchor_line,
 		truncated=descriptor.truncated,
 		source=source,
 	}
@@ -1005,6 +1019,11 @@ backend_command :: proc(
 	before_cursor_byte: u64 = 0,
 	after_anchor_byte: u64 = 0,
 	after_cursor_byte: u64 = 0,
+	typing_group_id: u64 = 0,
+	has_source_anchor := false,
+	source_anchor_revision: u64 = 0,
+	source_anchor_byte: u64 = 0,
+	source_anchor_line: u64 = 0,
 	include_presentation := false,
 	include_ignored := false,
 	query := "",
@@ -1056,6 +1075,11 @@ backend_command :: proc(
 		before_cursor_byte=before_cursor_byte,
 		after_anchor_byte=after_anchor_byte,
 		after_cursor_byte=after_cursor_byte,
+		typing_group_id=typing_group_id,
+		has_source_anchor=has_source_anchor,
+		source_anchor_revision=source_anchor_revision,
+		source_anchor_byte=source_anchor_byte,
+		source_anchor_line=source_anchor_line,
 		include_presentation=include_presentation,
 		include_ignored=include_ignored,
 		query=query,
@@ -1221,6 +1245,10 @@ Visible_Window_Request :: struct {
 	include_presentation: bool,
 	presentation_revision: u64,
 	presentation_ready: bool,
+	has_source_anchor: bool,
+	source_anchor_revision: u64,
+	source_anchor_byte: u64,
+	source_anchor_line: u64,
 	generation:        u64,
 }
 
@@ -1265,7 +1293,11 @@ visible_window_request_equal :: proc(a, b: Visible_Window_Request) -> bool {
 	       a.max_bytes == b.max_bytes &&
 	       a.include_presentation == b.include_presentation &&
 	       a.presentation_revision == b.presentation_revision &&
-	       a.presentation_ready == b.presentation_ready
+	       a.presentation_ready == b.presentation_ready &&
+	       a.has_source_anchor == b.has_source_anchor &&
+	       a.source_anchor_revision == b.source_anchor_revision &&
+	       a.source_anchor_byte == b.source_anchor_byte &&
+	       a.source_anchor_line == b.source_anchor_line
 }
 
 visible_window_result_is_current :: proc(stopping: u32, result_generation, latest_generation: u64) -> bool {
@@ -1303,6 +1335,10 @@ visible_window_lane_worker :: proc(t: ^thread.Thread) {
 			max_lines=request.max_lines,
 			max_bytes=request.max_bytes,
 			include_presentation=request.include_presentation,
+			has_source_anchor=request.has_source_anchor,
+			source_anchor_revision=request.source_anchor_revision,
+			source_anchor_byte=request.source_anchor_byte,
+			source_anchor_line=request.source_anchor_line,
 			based_on_revision=request.application_rev,
 			allocator=lane.allocator,
 		)
@@ -1382,6 +1418,10 @@ visible_window_lane_request :: proc(
 	include_presentation := false,
 	presentation_revision: u64 = 0,
 	presentation_ready := false,
+	has_source_anchor := false,
+	source_anchor_revision: u64 = 0,
+	source_anchor_byte: u64 = 0,
+	source_anchor_line: u64 = 0,
 ) -> (generation: u64, accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 {
 		return 0, false, "visible-window lane is not running or document identity is empty"
@@ -1400,6 +1440,8 @@ visible_window_lane_request :: proc(
 		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
 		include_presentation=include_presentation, presentation_revision=presentation_revision,
 		presentation_ready=presentation_ready,
+		has_source_anchor=has_source_anchor, source_anchor_revision=source_anchor_revision,
+		source_anchor_byte=source_anchor_byte, source_anchor_line=source_anchor_line,
 	}) {
 		generation = lane.pending_request.generation
 		sync.mutex_unlock(&lane.mutex)
@@ -1410,6 +1452,8 @@ visible_window_lane_request :: proc(
 		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
 		include_presentation=include_presentation, presentation_revision=presentation_revision,
 		presentation_ready=presentation_ready,
+		has_source_anchor=has_source_anchor, source_anchor_revision=source_anchor_revision,
+		source_anchor_byte=source_anchor_byte, source_anchor_line=source_anchor_line,
 	}) {
 		generation = lane.active_request.generation
 		sync.mutex_unlock(&lane.mutex)
@@ -1440,6 +1484,10 @@ visible_window_lane_request :: proc(
 		include_presentation=include_presentation,
 		presentation_revision=presentation_revision,
 		presentation_ready=presentation_ready,
+		has_source_anchor=has_source_anchor,
+		source_anchor_revision=source_anchor_revision,
+		source_anchor_byte=source_anchor_byte,
+		source_anchor_line=source_anchor_line,
 		generation=generation,
 	}
 	lane.pending = true
@@ -1508,6 +1556,7 @@ Editor_Edit_Request :: struct {
 	before_cursor_byte: u64,
 	after_anchor_byte:  u64,
 	after_cursor_byte:  u64,
+	typing_group_id:    u64,
 	replacement:       []u8,
 }
 
@@ -1590,6 +1639,7 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 				before_cursor_byte=request.before_cursor_byte,
 				after_anchor_byte=request.after_anchor_byte,
 				after_cursor_byte=request.after_cursor_byte,
+				typing_group_id=request.typing_group_id,
 				based_on_revision=request.based_on_revision,
 				read_latest_after=false,
 				allocator=lane.allocator,
@@ -1655,6 +1705,7 @@ editor_edit_lane_submit :: proc(
 	based_on_revision, editor_revision, start_byte, end_byte: u64,
 	replacement: []u8,
 	before_anchor_byte, before_cursor_byte, after_anchor_byte, after_cursor_byte: u64,
+	typing_group_id: u64 = 0,
 ) -> (accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 || sequence == 0 {
 		return false, "editor edit lane is not running or request identity is invalid"
@@ -1688,6 +1739,7 @@ editor_edit_lane_submit :: proc(
 		before_cursor_byte=before_cursor_byte,
 		after_anchor_byte=after_anchor_byte,
 		after_cursor_byte=after_cursor_byte,
+		typing_group_id=typing_group_id,
 		replacement=owned_bytes,
 	}
 	lane.pending = true

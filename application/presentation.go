@@ -40,6 +40,7 @@ type PresentationCommand struct {
 	BeforeCursorByte  int
 	AfterAnchorByte   int
 	AfterCursorByte   int
+	TypingGroupID     uint64
 }
 
 // PresentationDocument is the shell-visible portion of one open document.
@@ -190,7 +191,13 @@ func (a *Application) ReplaceDocument(command PresentationCommand) (editor.Appli
 	before := doc.Revision()
 	var applied editor.AppliedEdit
 	var err error
-	if command.HasSelectionState {
+	if command.HasSelectionState && command.TypingGroupID != 0 {
+		applied, err = doc.ReplaceTypingWithSelectionStateResult(
+			command.StartByte, command.EndByte, command.Replacement,
+			command.BeforeAnchorByte, command.BeforeCursorByte,
+			command.AfterAnchorByte, command.AfterCursorByte, command.TypingGroupID,
+		)
+	} else if command.HasSelectionState {
 		applied, err = doc.ReplaceWithSelectionStateResult(
 			command.StartByte, command.EndByte, command.Replacement,
 			command.BeforeAnchorByte, command.BeforeCursorByte,

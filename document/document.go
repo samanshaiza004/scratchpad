@@ -665,6 +665,34 @@ func (d *Document) ReplaceWithSelectionStateResult(start, end int, text []byte, 
 	return applied, nil
 }
 
+// ReplaceTypingWithSelectionStateResult applies one ordinary text-input
+// transaction with an explicit client typing-run identity. The core editor
+// validates contiguity and selection continuity before coalescing its undo
+// record, so transport acknowledgements cannot invent or split transactions.
+func (d *Document) ReplaceTypingWithSelectionStateResult(start, end int, text []byte,
+	beforeAnchor, beforeCursor, afterAnchor, afterCursor int, groupID uint64,
+) (editor.AppliedEdit, error) {
+	if d == nil || d.Editor == nil || start < 0 || end < start || end > d.Editor.Buffer.ByteLen() {
+		return editor.AppliedEdit{}, errors.New("document replace range outside buffer")
+	}
+	beforeLength := d.Editor.Buffer.ByteLen()
+	if beforeAnchor < 0 || beforeAnchor > beforeLength || beforeCursor < 0 || beforeCursor > beforeLength {
+		return editor.AppliedEdit{}, errors.New("pre-edit selection outside buffer")
+	}
+	before := d.Revision()
+	applied, err := d.Editor.ReplaceTypingWithSelectionStateResult(
+		start, end, text, beforeAnchor, beforeCursor, afterAnchor, afterCursor, groupID,
+	)
+	if err != nil {
+		return editor.AppliedEdit{}, err
+	}
+	if d.Revision() != before {
+		d.observedRevision = d.Revision()
+		d.InvalidateDerived()
+	}
+	return applied, nil
+}
+
 // Undo applies one editor-owned undo record and invalidates derived state if
 // the authoritative source revision changed. Cursor/selection restoration is
 // part of the editor's undo record and stays local to the document model.

@@ -868,6 +868,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	wrap_width := max(viewport_width-gutter_width-16, 80)
 	scroll_y := view.scroll_y
 	if !view.restore_y_pending && previous_scroll.id != 0 { scroll_y = previous_scroll.offset_y }
+	if view.viewport_anchor_pending && view.viewport_anchor_resolved && window_matches {
+		if anchor_line, anchor_found := editor_line_for_source(window, view.viewport_anchor_byte); anchor_found {
+			anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, int(anchor_line.logical_line))
+			scroll_y = max(anchor_top+view.viewport_anchor_offset, 0)
+			view.scroll_y = scroll_y
+			view.restore_y_pending = true
+		}
+	}
 	request_presentation := document.language == "markdown"
 	presentation_window_matches := document.presentation_ready && window_matches && window.presentation_ready &&
 	                              !window.presentation_stale &&
@@ -894,21 +902,40 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		                     view.wrap_measurement_start_line != window.start_line ||
 		                     view.wrap_measurement_end_line != window.end_line ||
 		                     view.wrap_measurement_pending_edits != view.optimistic_pending_edits ||
-	                     metadata_refresh_needed
+		                     metadata_refresh_needed || view.viewport_anchor_pending
 		if needs_measurement {
 			before := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll_y, viewport_height)
 			anchor_line := before.first
 			anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
+			anchor_byte := u64(0)
+			anchor_offset := scroll_y-anchor_top
+			if anchor_source_line, anchor_line_found := editor_window_line(window, u64(anchor_line)); anchor_line_found {
+				anchor_byte = anchor_source_line.source_start
+			}
+			if view.viewport_anchor_pending && view.viewport_anchor_resolved {
+				anchor_byte = view.viewport_anchor_byte
+				anchor_offset = view.viewport_anchor_offset
+			}
 			_ = editor_measure_window_wrapping(
 				rt, view, window, document.language, wrap_width,
 				presentation_visual,
 			)
-			new_anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
-			if !view.restore_y_pending && previous_scroll.id != 0 {
-				scroll_y = max(scroll_y+new_anchor_top-anchor_top, 0)
-				if abs(scroll_y-previous_scroll.offset_y) > 0.01 {
-					_ = alicorn.scroll_region_set_offset(rt, previous_scroll.id, scroll_y, "Scratchpad preserved the logical source anchor while text reflowed")
+			new_anchor_line := anchor_line
+			if mapped_line, mapped := editor_line_for_source(window, anchor_byte); mapped {
+				new_anchor_line = int(mapped_line.logical_line)
+			}
+			new_anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, new_anchor_line)
+			if previous_scroll.id != 0 {
+				scroll_y = max(new_anchor_top+anchor_offset, 0)
+				if view.restore_y_pending {
+					view.scroll_y = scroll_y
+				} else if abs(scroll_y-previous_scroll.offset_y) > 0.01 {
+					_ = alicorn.scroll_region_set_offset(rt, previous_scroll.id, scroll_y, "Scratchpad preserved the source-relative viewport anchor while text reflowed")
 				}
+			}
+			if view.viewport_anchor_pending && view.viewport_anchor_resolved {
+				view.viewport_anchor_pending = false
+				view.viewport_anchor_resolved = false
 			}
 			view.wrap_measurement_width = wrap_width
 			view.wrap_measurement_revision = window.editor_revision
@@ -943,6 +970,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		focusable=true,
 	)
 	horizontal_ready := window_matches && list.scroll.max_scroll_x > 0.5
+	editor_has_focus := rt.focused == list.scroll.id
+	if view.undo_group_editor_focus != editor_has_focus {
+		editor_undo_group_break(view)
+		view.undo_group_editor_focus = editor_has_focus
+	}
 	_ = editor_register_text_input_target(ui, list.scroll.id, view)
 	if rt != nil {
 		// Keep native text input away from stale source bytes. The editor input
@@ -1152,6 +1184,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		request_start = window.start_line
 		request_lines = 1
 	}
+	request_source_anchor := view.viewport_anchor_pending && !view.viewport_anchor_resolved && view.viewport_anchor_revision != 0
 	if document.line_count > 0 && (!window_covers_view || request_anchor > 0 || metadata_refresh_needed) {
 		if metadata_refresh_needed && window_matches && !editor_window_is_long_line_chunk(window) {
 			// Request the same source window so a returned parser projection can be
@@ -1171,6 +1204,10 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			include_presentation=request_presentation,
 			presentation_revision=document.presentation_revision,
 			presentation_ready=document.presentation_ready,
+			has_source_anchor=request_source_anchor,
+			source_anchor_revision=view.viewport_anchor_revision,
+			source_anchor_byte=view.viewport_anchor_byte,
+			source_anchor_line=view.viewport_anchor_line,
 		}
 		if !editor_window_request_is_rejected(app, request) {
 			generation, accepted, request_error := bridge.visible_window_lane_request(
@@ -1185,6 +1222,10 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				request_presentation,
 				document.presentation_revision,
 				document.presentation_ready,
+				request_source_anchor,
+				view.viewport_anchor_revision,
+				view.viewport_anchor_byte,
+				view.viewport_anchor_line,
 			)
 			if accepted {
 				app.editor_request_generation = generation
@@ -1596,6 +1637,39 @@ application_services :: proc(state: rawptr, services: host.Application_Services)
 	app.services = services
 }
 
+editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.editor_window_ready || app.editor_scroll_owner == 0 { return }
+	window := &app.editor_window
+	if window.document_id == "" || window.document_id != app.backend.state.active { return }
+	document, found := find_document(&app.backend.state, window.document_id)
+	if !found || document.editor_revision == window.editor_revision { return }
+	view_index := editor_view_find(app.editor_views[:], window.document_id)
+	if view_index < 0 { return }
+	view := &app.editor_views[view_index]
+	if view.optimistic_pending_edits > 0 { return }
+	if view.viewport_anchor_skip_next_source_change {
+		view.viewport_anchor_skip_next_source_change = false
+		view.viewport_anchor_pending = false
+		view.viewport_anchor_resolved = false
+		return
+	}
+	if !view.wrap_height_index_ready { return }
+	scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
+	if scroll.id == 0 { return }
+	_, viewport_height := editor_wrap_viewport_size(rt, view, scroll)
+	metrics := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll.offset_y, viewport_height)
+	line_number := max(metrics.first, 0)
+	line, line_found := editor_window_line(window, u64(line_number))
+	if !line_found { return }
+	line_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, line_number)
+	view.viewport_anchor_byte = line.source_start
+	view.viewport_anchor_revision = window.editor_revision
+	view.viewport_anchor_line = u64(line_number)
+	view.viewport_anchor_offset = scroll.offset_y-line_top
+	view.viewport_anchor_pending = true
+	view.viewport_anchor_resolved = false
+}
+
 application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^App)state
 	if !app.backend.started { return }
@@ -1604,6 +1678,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		changed, ok, message := bridge.backend_consume_wake(&app.backend)
 		if !ok { set_error(app, message); alicorn.invalidate_root(rt, "Scratchpad backend state read failed"); return }
 		if changed {
+			editor_capture_source_anchor_before_publication(app, rt)
 			sync_runtime_actions(app, rt)
 			sync_menu_states(app)
 			tree_sync_workspace(app, rt)
@@ -1623,6 +1698,18 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 				view_index := editor_view_find(app.editor_views[:], active.id)
 				pending_edits := view_index >= 0 && app.editor_views[view_index].optimistic_pending_edits > 0
 				window, converted, conversion_error := editor_window_from_visible(&window_result.window)
+				if view_index >= 0 && window_result.request.has_source_anchor {
+					view := &app.editor_views[view_index]
+					if converted && window.has_source_anchor {
+						view.viewport_anchor_byte = window.source_anchor_byte
+						view.viewport_anchor_line = window.source_anchor_line
+						view.viewport_anchor_revision = window.editor_revision
+						view.viewport_anchor_resolved = true
+					} else if converted {
+						view.viewport_anchor_pending = false
+						view.viewport_anchor_resolved = false
+					}
+				}
 				if converted && pending_edits {
 					view := &app.editor_views[view_index]
 					if editor_window_chase_pending_edits(app, &window, view) {
@@ -1890,6 +1977,11 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		alicorn.invalidate_root(rt, "Scratchpad command queued behind editor edits")
 		return
 	}
+	if document, found := find_document(&app.backend.state, app.backend.state.active); found {
+		if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
+			editor_undo_group_break(&app.editor_views[view_index])
+		}
+	}
 	command_token := action_id_for(action_id)
 	cause := alicorn.cause_begin(rt, .Application, "Scratchpad semantic action", command_token)
 	alicorn.trace_action(rt, command_token, entry.title)
@@ -1905,8 +1997,21 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			bridge.backend_command_result_destroy(&response, context.allocator)
 		}
 	case ACTION_EDIT_UNDO, ACTION_EDIT_REDO:
+		previous_editor_revision: u64 = 0
+		if document, found := find_document(&app.backend.state, app.backend.state.active); found {
+			previous_editor_revision = document.editor_revision
+		}
 		response := bridge.backend_command(&app.backend, action_id, document_id=app.backend.state.active)
 		handle_command_result(app, rt, &response)
+		if response.ok && response.editor_selection.editor_revision != 0 &&
+		   response.editor_selection.editor_revision != previous_editor_revision {
+			if view_index := editor_view_find(app.editor_views[:], response.editor_selection.document_id); view_index >= 0 {
+				view := &app.editor_views[view_index]
+				view.viewport_anchor_skip_next_source_change = true
+				view.viewport_anchor_pending = false
+				view.viewport_anchor_resolved = false
+			}
+		}
 		if response.ok && response.editor_selection.document_id != "" {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
 		}
@@ -1930,6 +2035,12 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			editor_cursor_byte=view.caret_byte,
 		)
 		handle_command_result(app, rt, &response)
+		if action_id == ACTION_DOCUMENT_FORMAT && response.ok &&
+		   response.editor_selection.editor_revision != 0 && response.editor_selection.editor_revision != document.editor_revision {
+			view.viewport_anchor_skip_next_source_change = true
+			view.viewport_anchor_pending = false
+			view.viewport_anchor_resolved = false
+		}
 		if action_id == ACTION_DOCUMENT_FORMAT && response.ok && response.command_outcome == "no_op" {
 			set_error(app, "Table is already aligned.")
 			alicorn.invalidate_root(rt, "Scratchpad reported an unchanged table format")
@@ -2493,6 +2604,7 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
 	if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y); ok {
+		editor_undo_group_break(view)
 		view.pending_document_edge = .None
 		view.pending_document_edge_shift = false
 		window, authoritative := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
@@ -2905,6 +3017,7 @@ editor_text_key :: proc(
 		view.preferred_x_set = false
 	}
 	if next_caret == old_caret && next_affinity == old_affinity { return true }
+	editor_undo_group_break(view)
 	if !shift {
 		view.selection_anchor = next_caret
 		view.anchor_affinity = next_affinity
@@ -2955,12 +3068,31 @@ editor_apply_local_replace :: proc(
 	)
 }
 
+editor_apply_local_typing_replace :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	start_byte, end_byte: u64,
+	replacement: []u8,
+	resulting_anchor, resulting_caret: u64,
+) -> bool {
+	if app == nil { return false }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { return false }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { return false }
+	group_id := editor_typing_group_id(&app.editor_views[view_index])
+	return editor_apply_local_replace_with_wire(
+		app, rt, start_byte, end_byte, replacement, {}, resulting_anchor, resulting_caret, group_id,
+	)
+}
+
 editor_apply_local_replace_with_wire :: proc(
 	app: ^App,
 	rt: ^alicorn.Runtime,
 	start_byte, end_byte: u64,
 	replacement, wire_replacement: []u8,
 	resulting_anchor, resulting_caret: u64,
+	typing_group_id: u64 = 0,
 ) -> bool {
 	if app == nil || rt == nil || !app.backend.started || end_byte < start_byte {
 		return false
@@ -2996,6 +3128,7 @@ editor_apply_local_replace_with_wire :: proc(
 		alicorn.invalidate_root(rt, "Scratchpad optimistic edit queue is full")
 		return false
 	}
+	if typing_group_id == 0 { editor_undo_group_break(view) }
 	local_start := int(start_byte-window.start_byte)
 	local_end := int(end_byte-window.start_byte)
 	removed_line_breaks := editor_count_line_breaks(window.source[local_start:local_end])
@@ -3031,6 +3164,9 @@ editor_apply_local_replace_with_wire :: proc(
 		}
 		mem.copy(rawptr(&wire_copy[0]), rawptr(&wire_replacement[0]), len(wire_replacement))
 	}
+	view.viewport_anchor_skip_next_source_change = true
+	view.viewport_anchor_pending = false
+	view.viewport_anchor_resolved = false
 	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
 	edit_base_revision := view.authoritative_revision
 	for pending in app.editor_edits {
@@ -3056,6 +3192,7 @@ editor_apply_local_replace_with_wire :: proc(
 		before_cursor_byte=selection_snapshot.before_cursor_byte,
 		after_anchor_byte=selection_snapshot.after_anchor_byte,
 		after_cursor_byte=selection_snapshot.after_cursor_byte,
+		typing_group_id=typing_group_id,
 		replacement=replacement_copy,
 		wire_replacement=wire_copy,
 	})
@@ -3180,6 +3317,7 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 		edit.before_cursor_byte,
 		edit.after_anchor_byte,
 		edit.after_cursor_byte,
+		edit.typing_group_id,
 	)
 }
 
@@ -3440,7 +3578,7 @@ editor_text_input :: proc(
 		}
 		replacement := view.preedit_text
 		resulting_caret := start_byte+u64(len(replacement))
-		if editor_apply_local_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
+		if editor_apply_local_typing_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
 			editor_preedit_clear(view)
 			editor_resume_text_input_target(app, rt, document.id)
 			sync_menu_states(app)
@@ -3465,7 +3603,7 @@ editor_text_input :: proc(
 	}
 	replacement := transmute([]u8)event.text
 	resulting_caret := start_byte+u64(len(replacement))
-	if editor_apply_local_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
+	if editor_apply_local_typing_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
 		editor_preedit_clear(view)
 		sync_menu_states(app)
 		sync_runtime_actions(app, rt)
@@ -3880,6 +4018,7 @@ editor_apply_backend_selection :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, selection.document_id)
 	if !view_ok { set_error(app, "Could not restore the document selection after a command."); return }
 	view := &app.editor_views[view_index]
+	editor_undo_group_break(view)
 	if !selection_only {
 		editor_preedit_clear(view)
 		editor_wrap_heights_reset(view, int(document.line_count))
