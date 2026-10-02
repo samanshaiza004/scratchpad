@@ -393,7 +393,7 @@ build_app :: proc(
 		&ui,
 		.Root,
 		label="scratchpad-alicorn-workbench",
-		style=alicorn.layout_style(.Column, grow=1, padding=18, gap=12, clip=true),
+		style=alicorn.layout_style(.Column, grow=1, gap=12, clip=true),
 		color=COLOR_BACKGROUND,
 	)
 
@@ -1080,16 +1080,44 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		)
 	}
 	content_width := max(viewport_width, visible_intrinsic_width)
-	list := alicorn.virtual_list_begin_variable(
+	// Keep editor rows in a fixed horizontal viewport. The scroll region still
+	// owns horizontal extent and its scrollbar, but only individual no-wrap
+	// source lanes consume scroll_x. This leaves the gutter and clipped text
+	// lane fixed while long source lines move inside that lane.
+	alicorn.virtual_list_height_index_rebuild_prefix(&view.wrap_height_index)
+	editor_scroll := alicorn.scroll_region_begin(
 		ui,
-		&view.wrap_height_index,
 		key=alicorn.key_string(fmt.tprintf("scratchpad-editor:%s", document.id)),
-		style=alicorn.layout_style(grow=1, clip=true),
+		content_height=view.wrap_height_index.total_height,
+		line_height=view.wrap_height_index.estimated_height,
 		content_width=content_width,
+		style=alicorn.layout_style(grow=1, clip=true),
 		label="scratchpad-visible-document-lines",
 		axes=.Both,
 		focusable=true,
 	)
+	list_metrics := alicorn.virtual_list_variable_metrics(
+		&view.wrap_height_index,
+		editor_scroll.offset_y,
+		editor_scroll.viewport_height,
+	)
+	list_content_style := alicorn.layout_style(width=-1, height=editor_scroll.viewport_height, clip=true)
+	if content_width > 0 { list_content_style.width = content_width }
+	alicorn.container_begin(
+		ui,
+		.Virtual_List,
+		label="scratchpad-visible-document-lines",
+		style=list_content_style,
+		scroll_offset_y=list_metrics.offset_y,
+		layout_scroll_offset_y=list_metrics.leading_offset_y,
+		scroll_offset_x=editor_scroll.offset_x,
+		layout_scroll_offset_x=0,
+	)
+	list := alicorn.Virtual_List_Handle{
+		scroll=editor_scroll,
+		first=list_metrics.first,
+		last=list_metrics.last,
+	}
 	horizontal_ready := window_matches && list.scroll.max_scroll_x > 0.5
 	editor_has_focus := rt.focused == list.scroll.id
 	if view.undo_group_editor_focus != editor_has_focus {
@@ -1162,9 +1190,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				.Virtual_List,
 				label="scratchpad-editor-line-number-gutter",
 				key=fmt.tprintf("scratchpad-gutter-lane:%s:%d", document.id, line.logical_line),
-				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center),
-				scroll_offset_x=-list.scroll.offset_x,
-				layout_scroll_offset_x=-list.scroll.offset_x,
+				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center, clip=true),
+				color=COLOR_BACKGROUND,
 			)
 			alicorn.container_begin(ui, .Container, label="scratchpad-editor-line-number-spacer", style=alicorn.layout_style(.Row, grow=1))
 			alicorn.container_end(ui)
@@ -1187,17 +1214,15 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				_ = alicorn.text_paint_spans(ui, line_number_node, gutter_paint[:])
 			}
 			alicorn.container_end(ui)
-			if line_wraps {
-				alicorn.container_begin_ex(
-					ui,
-					.Virtual_List,
-					label="scratchpad-stationary-prose-lane",
-					key=fmt.tprintf("scratchpad-prose-lane:%s:%d", document.id, line.logical_line),
-					style=alicorn.layout_style(.Row, width=wrap_width, height=row_height),
-					scroll_offset_x=-list.scroll.offset_x,
-					layout_scroll_offset_x=-list.scroll.offset_x,
-				)
-			}
+			alicorn.container_begin_ex(
+				ui,
+				.Virtual_List,
+				label="scratchpad-editor-source-lane",
+				key=fmt.tprintf("scratchpad-source-lane:%s:%d", document.id, line.logical_line),
+				style=alicorn.layout_style(.Row, width=wrap_width, height=row_height, clip=true),
+				scroll_offset_x=list.scroll.offset_x if !line_wraps else 0,
+				layout_scroll_offset_x=list.scroll.offset_x if !line_wraps else 0,
+			)
 			if table_wrap_active {
 				paint_table := window_covers_view && presentation_visual &&
 				               window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
@@ -1318,7 +1343,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				show_caret,
 			)
 			}
-			if line_wraps { alicorn.container_end(ui) }
+			alicorn.container_end(ui)
 			alicorn.container_end(ui)
 		} else if window_matches || !window_available {
 			label := fmt.tprintf("Loading line %d…", line_number+1)
