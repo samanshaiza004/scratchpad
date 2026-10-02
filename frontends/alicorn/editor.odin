@@ -150,6 +150,10 @@ Editor_View_State :: struct {
 	viewport_anchor_pending: bool,
 	viewport_anchor_resolved: bool,
 	viewport_anchor_skip_next_source_change: bool,
+	workspace_search_match_active: bool,
+	workspace_search_match_start: u64,
+	workspace_search_match_end: u64,
+	workspace_search_match_revision: u64,
 	optimistic_window: Editor_Window,
 	optimistic_window_ready: bool,
 	optimistic_pending_edits: u64,
@@ -436,6 +440,51 @@ editor_temporary_text_run :: proc(
 		editable=true,
 		text_style_spans=style_spans,
 	)
+}
+
+// Return the exact visual line containing a displayed caret position. This
+// uses the same Runa shaping inputs as the retained editor node, so the active
+// row follows wrapped prose and table cells without changing layout state.
+editor_visual_row_display_range :: proc(
+	rt: ^alicorn.Runtime,
+	line: ^Editor_Display_Line,
+	display_byte: int,
+	affinity: alicorn.Text_Affinity,
+	width: f32,
+	wrap: bool,
+	style_spans: []alicorn.Text_Style_Span = nil,
+) -> (start, end: int, ok: bool) {
+	if rt == nil || line == nil { return }
+	overflow := alicorn.Text_Overflow.Clip
+	max_width := f32(0)
+	if wrap {
+		overflow = .Wrap
+		max_width = width
+	}
+	run, built := editor_temporary_text_run(rt, line, max_width, overflow, style_spans)
+	if !built { return }
+	defer alicorn.text_run_destroy(&run)
+	geometry := alicorn.text_run_caret_geometry(
+		&run,
+		alicorn.Text_Position{byte=display_byte, affinity=affinity},
+		rt.scratch_allocator,
+	)
+	if !geometry.valid || geometry.line_index < 0 || geometry.line_index >= len(run.lines) { return }
+	visual_line := run.lines[geometry.line_index]
+	start = clamp(visual_line.byte_start, 0, len(line.display))
+	end = clamp(visual_line.byte_end, start, len(line.display))
+	return start, end, true
+}
+
+editor_merge_text_paint_spans :: proc(
+	base, additions: []alicorn.Text_Paint_Span,
+	allocator := context.temp_allocator,
+) -> []alicorn.Text_Paint_Span {
+	if len(additions) == 0 { return base }
+	result := make([dynamic]alicorn.Text_Paint_Span, 0, len(base)+len(additions), allocator=allocator)
+	for span in base { append(&result, span) }
+	for span in additions { append(&result, span) }
+	return result[:]
 }
 
 editor_navigation_text_run :: proc(

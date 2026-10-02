@@ -9,6 +9,11 @@ import bridge "./bridge"
 FIND_QUERY_KEY :: "scratchpad-find-query"
 WORKSPACE_SEARCH_QUERY_KEY :: "scratchpad-workspace-search-query"
 
+workspace_search_match_clear_all :: proc(app: ^App) {
+	if app == nil { return }
+	for &view in app.editor_views { workspace_search_match_clear(&view) }
+}
+
 find_capture_text_field :: proc(rt: ^alicorn.Runtime, node_id: alicorn.Node_ID, value: ^string) -> bool {
 	if rt == nil || value == nil || node_id == 0 { return false }
 	node, found := rt.nodes[node_id]
@@ -63,6 +68,7 @@ find_capture_editor_selection :: proc(app: ^App) {
 
 find_open_surface :: proc(app: ^App) {
 	if app == nil { return }
+	workspace_search_match_clear_all(app)
 	if !app.find_open { find_capture_editor_selection(app) }
 	app.find_open = true
 	app.find_focus_pending = true
@@ -496,6 +502,7 @@ workspace_search_start_query :: proc(app: ^App, rt: ^alicorn.Runtime, force := f
 	if !app.backend.state.has_workspace { return }
 	if !force && app.workspace_search_started_query == app.workspace_search_query &&
 	   app.workspace_search_started_root == root { return }
+	workspace_search_match_clear_all(app)
 	old_generation := app.workspace_search_view.generation
 	next_generation := max(app.workspace_search_generation, app.backend.state.workspace_search_generation)+1
 	if next_generation == 0 { next_generation = 1 }
@@ -566,6 +573,7 @@ workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result
 		alicorn.invalidate_root(rt, "Scratchpad could not resolve a workspace search result path")
 		return true
 	}
+	workspace_search_match_clear_all(app)
 	response := bridge.backend_command(
 		&app.backend,
 		"open_path",
@@ -581,6 +589,20 @@ workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result
 		handle_command_result(app, rt, &response)
 		if response.editor_selection.document_id != "" {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
+			if result.start_byte >= 0 && result.end_byte > result.start_byte && result.line >= 0 {
+				view_index, view_ok := editor_view_ensure(&app.editor_views, response.editor_selection.document_id)
+				if view_ok {
+					view := &app.editor_views[view_index]
+					document, document_found := find_document(&app.backend.state, response.editor_selection.document_id)
+					if document_found {
+						view.workspace_search_match_active = true
+						view.workspace_search_match_start = u64(result.start_byte)
+						view.workspace_search_match_end = u64(result.end_byte)
+						view.workspace_search_match_revision = document.editor_revision
+						_ = find_reveal_match_line(rt, view, app.editor_scroll_owner, result.line)
+					}
+				}
+			}
 		}
 	} else {
 		find_set_message(&app.workspace_search_error, response.message)

@@ -275,20 +275,35 @@ editor_render_table_cells :: proc(
 			font=.Monospace,
 			text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=cell_overflow},
 		)
-		paint_spans: []alicorn.Text_Paint_Span
-		text_style_spans: []alicorn.Text_Style_Span
-		if paint_current {
-			paint_spans = editor_presentation_spans_for_line(window, &cell, rt.scratch_allocator)
-			if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, rt.scratch_allocator) }
-			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, rt.scratch_allocator)
-		}
-		_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
-		_ = alicorn.text_style_spans(ui, cell_node, text_style_spans)
 		anchor_source := min(max(view.selection_anchor, cell.source_start), cell.source_end)
 		caret_source := min(max(view.caret_byte, cell.source_start), cell.source_end)
 		anchor_display := editor_source_to_display(&cell, anchor_source)
 		caret_display := editor_source_to_display(&cell, caret_source)
 		show_caret := window_matches && rt.focused == scroll_owner && view.caret_byte >= cell.source_start && view.caret_byte <= cell.source_end
+		paint_spans: []alicorn.Text_Paint_Span
+		text_style_spans: []alicorn.Text_Style_Span
+		if paint_current {
+			paint_spans = editor_presentation_spans_for_line(window, &cell, rt.scratch_allocator)
+			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, rt.scratch_allocator)
+		}
+		if show_caret && !view.preedit_active && !view.preedit_recoverable {
+			if row_start, row_end, row_ok := editor_visual_row_display_range(
+				rt, &cell, caret_display, view.caret_affinity, table.widths[cell_index], true, text_style_spans,
+			); row_ok {
+				caret_row := [?]alicorn.Text_Paint_Span{{
+					start=row_start,
+					end=row_end,
+					background=EDITOR_CARET_ROW_BACKGROUND,
+					background_set=true,
+				}}
+				paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], rt.scratch_allocator)
+			}
+		}
+		search_spans := workspace_search_match_paint_spans_for_line(window, &cell, view, rt.scratch_allocator)
+		paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, rt.scratch_allocator)
+		if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, rt.scratch_allocator) }
+		_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
+		_ = alicorn.text_style_spans(ui, cell_node, text_style_spans)
 		if !window_matches { anchor_display = caret_display }
 		_ = alicorn.text_interaction(
 			ui,
@@ -393,6 +408,7 @@ build_app :: proc(
 		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=32, gap=6))
 		if alicorn.button(&ui, "Files", key=alicorn.key_string("workspace-panel-files"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{selected=!app.workspace_search_mode}) {
 			workspace_search_cancel_active(app)
+			workspace_search_match_clear_all(app)
 			app.workspace_search_mode = false
 			app.workspace_search_query_node = 0
 			app.editor_focus_pending = true
@@ -851,6 +867,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		return
 	}
 	view := &app.editor_views[view_index]
+	if view.workspace_search_match_active && view.workspace_search_match_revision != document.editor_revision {
+		workspace_search_match_clear(view)
+	}
 	if app.editor_presented_document_id != document.id {
 		if old_view_index := editor_view_find(app.editor_views[:], app.editor_presented_document_id); old_view_index >= 0 {
 			editor_preedit_clear_for_document_switch(&app.editor_views[old_view_index])
@@ -1107,12 +1126,24 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			)
 			alicorn.container_begin(ui, .Container, label="scratchpad-editor-line-number-spacer", style=alicorn.layout_style(.Row, grow=1))
 			alicorn.container_end(ui)
-			alicorn.text(
+			line_number_text := editor_line_number_text(line.logical_line+1)
+			line_number_node := alicorn.text(
 				ui,
-				editor_line_number_text(line.logical_line+1),
+				line_number_text,
 				key=alicorn.key_string(fmt.tprintf("scratchpad-line-number:%s:%d", document.id, line.logical_line)),
 				font=.Monospace,
 			)
+			if window_matches && rt.focused == list.scroll.id &&
+			   view.caret_byte >= line.source_start && view.caret_byte <= line.source_end &&
+			   !view.preedit_active && !view.preedit_recoverable {
+				gutter_paint := [?]alicorn.Text_Paint_Span{{
+					start=0,
+					end=len(line_number_text),
+					background=EDITOR_CARET_GUTTER_BACKGROUND,
+					background_set=true,
+				}}
+				_ = alicorn.text_paint_spans(ui, line_number_node, gutter_paint[:])
+			}
 			alicorn.container_end(ui)
 			if line_wraps {
 				alicorn.container_begin_ex(
@@ -1183,6 +1214,27 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current {
 				paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator)
+			}
+			text_style_spans: []alicorn.Text_Style_Span
+			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, rt.scratch_allocator) }
+			decoration_current := window_covers_view && window.document_id == document.id &&
+			                      !view.preedit_active && !view.preedit_recoverable
+			if decoration_current && show_caret {
+				if row_start, row_end, row_ok := editor_visual_row_display_range(
+					rt, line, caret_display, view.caret_affinity, wrap_width, line_wraps, text_style_spans,
+				); row_ok {
+					caret_row := [?]alicorn.Text_Paint_Span{{
+						start=row_start,
+						end=row_end,
+						background=EDITOR_CARET_ROW_BACKGROUND,
+						background_set=true,
+					}}
+					paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], rt.scratch_allocator)
+				}
+			}
+			if decoration_current {
+				search_spans := workspace_search_match_paint_spans_for_line(window, line, view, rt.scratch_allocator)
+				paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, rt.scratch_allocator)
 				if app.find_open { paint_spans = find_merge_paint_spans(window, line, &app.find_presentation, paint_spans, rt.scratch_allocator) }
 			}
 			if bracket_match_found {
@@ -1203,8 +1255,6 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				paint_spans = combined_spans[:]
 			}
 			_ = alicorn.text_paint_spans(ui, line_node, paint_spans)
-			text_style_spans: []alicorn.Text_Style_Span
-			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, rt.scratch_allocator) }
 			_ = alicorn.text_style_spans(ui, line_node, text_style_spans)
 			append(&app.editor_row_targets, Editor_Row_Target{node=line_node, logical_line=line.logical_line})
 			composition_row := false
@@ -2605,6 +2655,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	}
 	if key == .Escape && app.workspace_search_mode {
 		workspace_search_cancel_active(app)
+		workspace_search_match_clear_all(app)
 		app.workspace_search_mode = false
 		app.workspace_search_query_node = 0
 		app.editor_focus_pending = true
@@ -3416,6 +3467,7 @@ editor_apply_local_replace_with_wire :: proc(
 		return false
 	}
 	if typing_group_id == 0 { editor_undo_group_break(view) }
+	workspace_search_match_clear(view)
 	local_start := int(start_byte-window.start_byte)
 	local_end := int(end_byte-window.start_byte)
 	if view.auto_pair_valid {
@@ -4482,6 +4534,9 @@ editor_apply_backend_selection :: proc(
 	if !view_ok { set_error(app, "Could not restore the document selection after a command."); return }
 	view := &app.editor_views[view_index]
 	editor_undo_group_break(view)
+	if view.workspace_search_match_active && selection.editor_revision != view.workspace_search_match_revision {
+		workspace_search_match_clear(view)
+	}
 	if !selection_only {
 		editor_preedit_clear(view)
 		editor_wrap_heights_reset(view, int(document.line_count))

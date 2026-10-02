@@ -8,6 +8,8 @@ import bridge "./bridge"
 
 FIND_PASSIVE_BACKGROUND :: alicorn.Color{0.42, 0.34, 0.12, 0.34}
 FIND_ACTIVE_BACKGROUND  :: alicorn.Color{0.72, 0.48, 0.12, 0.62}
+EDITOR_CARET_ROW_BACKGROUND :: alicorn.Color{0.12, 0.15, 0.21, 0.42}
+EDITOR_CARET_GUTTER_BACKGROUND :: alicorn.Color{0.15, 0.19, 0.27, 0.48}
 
 // Find_Presentation owns only bounded match coordinates and frontend-local
 // navigation state. Source text and match computation stay in Go.
@@ -112,6 +114,38 @@ find_presentation_destroy :: proc(presentation: ^Find_Presentation, allocator: m
 	delete(presentation.query, allocator)
 	delete(presentation.matches, allocator)
 	presentation^ = Find_Presentation{active_match=-1}
+}
+
+workspace_search_match_clear :: proc(view: ^Editor_View_State) {
+	if view == nil { return }
+	view.workspace_search_match_active = false
+	view.workspace_search_match_start = 0
+	view.workspace_search_match_end = 0
+	view.workspace_search_match_revision = 0
+}
+
+workspace_search_match_paint_spans_for_line :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	view: ^Editor_View_State,
+	allocator := context.temp_allocator,
+) -> []alicorn.Text_Paint_Span {
+	result := make([dynamic]alicorn.Text_Paint_Span, 0, 1, allocator=allocator)
+	if window == nil || line == nil || view == nil || !view.workspace_search_match_active { return result[:] }
+	if window.editor_revision != view.workspace_search_match_revision ||
+	   view.workspace_search_match_end <= view.workspace_search_match_start { return result[:] }
+	start_byte := max(view.workspace_search_match_start, line.source_start)
+	if start_byte >= line.source_end { return result[:] }
+	end_byte := min(view.workspace_search_match_end, line.source_end)
+	start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
+	if !mapped { return result[:] }
+	append(&result, alicorn.Text_Paint_Span{
+		start=start,
+		end=end,
+		background=FIND_ACTIVE_BACKGROUND,
+		background_set=true,
+	})
+	return result[:]
 }
 
 // Match ranges are source-byte offsets. Intersect against a logical line and
