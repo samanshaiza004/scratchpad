@@ -225,6 +225,7 @@ type StateEnvelope struct {
 	HasWorkspace                 bool            `json:"has_workspace"`
 	WorkspaceRoot                string          `json:"workspace_root,omitempty"`
 	Active                       string          `json:"active,omitempty"`
+	StartupNotice                string          `json:"startup_notice,omitempty"`
 	Documents                    []StateDocument `json:"documents"`
 	Actions                      []ActionState   `json:"actions,omitempty"`
 	WorkspaceSearchGeneration    uint64          `json:"workspace_search_generation,omitempty"`
@@ -384,9 +385,12 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.Disposition != "" && request.Disposition != "preview" {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "open_path disposition must be empty or preview", false), false
 		}
-	case "select_document", "save_document", "close_document", string(commands.EditUndo), string(commands.EditRedo):
+	case "select_document", "save_document", "close_document", "reload_conflict", "keep_mine_conflict", string(commands.EditUndo), string(commands.EditRedo):
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id must be valid UTF-8", false), false
+		}
+		if (request.Command == "reload_conflict" || request.Command == "keep_mine_conflict") && request.DocumentID == "" {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "document_id is required", false), false
 		}
 	case "replace_document", "find_replace_current", "find_replace_all", "paste_document":
 		if request.DocumentID == "" {

@@ -293,6 +293,16 @@ func (a *Application) SetWatcher(watcher workspace.Watcher) error {
 	return nil
 }
 
+// WatchEvents returns the single advisory event stream established by
+// SetWatcher. Consumers must share it rather than call Watcher.Events again,
+// which may create a competing reader and lose notifications.
+func (a *Application) WatchEvents() <-chan workspace.WatchEvent {
+	if a == nil {
+		return nil
+	}
+	return a.watchEvents
+}
+
 // SetTrasher installs the platform-specific, reversible delete adapter. It
 // is intentionally independent from Workspace so ordinary path mutations can
 // remain portable and testable without pretending that rename is trash.
@@ -404,6 +414,7 @@ func (a *Application) ReloadDisk(id DocumentID) error {
 			delete(a.derived, id)
 		}
 	}
+	a.refreshRecoverySnapshot()
 	return nil
 }
 
@@ -490,14 +501,14 @@ func (a *Application) OverwriteDisk(id DocumentID) error {
 			doc.MarkOverwritten(version)
 			delete(a.Conflicts, id)
 			delete(a.Stale, id)
-			a.refreshRecoveryAfterSave()
+			a.refreshRecoverySnapshot()
 		}
 		return err
 	}
 	doc.MarkOverwritten(version)
 	delete(a.Conflicts, id)
 	delete(a.Stale, id)
-	a.refreshRecoveryAfterSave()
+	a.refreshRecoverySnapshot()
 	return nil
 }
 
@@ -525,12 +536,12 @@ func (a *Application) SaveActive() error {
 		if !committedDurabilityWarning(err, doc, beforePath, beforeVersion, beforeDirty) {
 			return err
 		}
-		a.refreshRecoveryAfterSave()
+		a.refreshRecoverySnapshot()
 		a.touchPresentation()
 		a.PinPreview(a.Active)
 		return err
 	}
-	a.refreshRecoveryAfterSave()
+	a.refreshRecoverySnapshot()
 	a.touchPresentation()
 	a.PinPreview(a.Active)
 	return nil
@@ -588,7 +599,7 @@ func (a *Application) saveAs(id DocumentID, path string, expected *workspace.Dis
 			return saveErr
 		}
 		a.completeSaveAs(id, doc, beforePath)
-		a.refreshRecoveryAfterSave()
+		a.refreshRecoverySnapshot()
 		return saveErr
 	}
 	if newID != id {
@@ -630,7 +641,7 @@ func (a *Application) saveAs(id DocumentID, path string, expected *workspace.Dis
 		return saveErr
 	}
 	a.completeSaveAs(id, doc, beforePath)
-	a.refreshRecoveryAfterSave()
+	a.refreshRecoverySnapshot()
 	return saveErr
 }
 
@@ -771,6 +782,9 @@ func (a *Application) closeDocument(id DocumentID, discard bool, rememberClosed 
 		a.recordClosed(doc.Path)
 	}
 	a.touchPresentation()
+	if doc.Dirty() && discard {
+		a.refreshRecoverySnapshot()
+	}
 	return nil
 }
 

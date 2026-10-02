@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -13,6 +15,7 @@ import (
 
 	"scratchpad/application"
 	"scratchpad/commands"
+	"scratchpad/document"
 	"scratchpad/editor"
 	"scratchpad/workspace"
 )
@@ -36,19 +39,100 @@ type Runtime struct {
 	generation          uint64
 	asyncError          string
 	workspaceSearch     *workspaceSearchSession
-    pendingSaveAs       *pendingSaveAsConfirmation
-    nextSaveAsToken     uint64
+	pendingSaveAs       *pendingSaveAsConfirmation
+	nextSaveAsToken     uint64
+	recoveryDir         string
+	startupNotice       string
+	watcher             *workspace.OSWatcher
+	stateDirOverride    string
 }
 
 type pendingSaveAsConfirmation struct {
-    token      uint64
-    documentID application.DocumentID
-    path       string
-    version    workspace.DiskVersion
+	token      uint64
+	documentID application.DocumentID
+	path       string
+	version    workspace.DiskVersion
 }
 
 func NewRuntime() *Runtime {
 	return &Runtime{lifecycle: lifecycleStopped}
+}
+
+func restoreRuntimeRecovery(app *application.Application, dir string) string {
+	if app == nil || dir == "" {
+		if app != nil {
+			app.SetRecoveryWritesBlocked(true)
+		}
+		return "Recovery storage is unavailable. Unsaved changes will not be recoverable after a crash."
+	}
+	app.RecoveryDir = dir
+	app.SetRecoveryWritesBlocked(true)
+	_, err := os.Stat(filepath.Join(dir, "manifest.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		app.SetRecoveryWritesBlocked(false)
+		return ""
+	}
+	if err != nil {
+		return fmt.Sprintf("Could not inspect unsaved recovery data: %v. Existing recovery files were preserved.", err)
+	}
+	if err := app.RestoreRecovery(dir); err != nil {
+		// Preserve the original snapshot for a later retry. In particular, do
+		// not allow the first running frame to replace a damaged manifest.
+		app.SetRecoveryWritesBlocked(true)
+		return fmt.Sprintf("Could not restore unsaved recovery data: %v. Existing recovery files were preserved.", err)
+	}
+	recovered := 0
+	for _, id := range app.Order {
+		if doc := app.Documents[id]; doc != nil && doc.Dirty() {
+			recovered++
+		}
+	}
+	if recovered == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Recovered unsaved changes in %d document(s) from the previous session. Review any external-change conflicts before saving.", recovered)
+}
+
+func joinStartupNotice(current, next string) string {
+	if current == "" {
+		return next
+	}
+	if next == "" {
+		return current
+	}
+	return current + " " + next
+}
+
+func (r *Runtime) watchWorkspace(generation uint64, app *application.Application, events <-chan workspace.WatchEvent) {
+	for event := range events {
+		r.mu.Lock()
+		if r.lifecycle != lifecycleRunning || r.generation != generation || r.app != app {
+			r.mu.Unlock()
+			return
+		}
+		app.HandleWatchEvent(event)
+		app.ReconcileStale()
+		next := stateFromApplication(r.revision+1, app.Snapshot(), r.presentationEnabled)
+		next.StartupNotice = r.startupNotice
+		if !samePublishedDocuments(r.state, next) {
+			if err := r.publishApplicationState(); err != nil {
+				r.asyncError = err.Error()
+			}
+		}
+		r.mu.Unlock()
+	}
+}
+
+func samePublishedDocuments(left, right StateEnvelope) bool {
+	if left.Active != right.Active || left.HasWorkspace != right.HasWorkspace || left.WorkspaceRoot != right.WorkspaceRoot || len(left.Documents) != len(right.Documents) {
+		return false
+	}
+	for i := range left.Documents {
+		if left.Documents[i] != right.Documents[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runtime) Start(input []byte) []byte {
@@ -74,8 +158,37 @@ func (r *Runtime) Start(input []byte) []byte {
 			return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "application_error", err.Error(), false))
 		}
 	}
+	stateDir := r.stateDirOverride
+	var stateDirErr error
+	if stateDir == "" {
+		stateDir, stateDirErr = application.DefaultStateDir()
+	}
+	recoveryDir := ""
+	startupNotice := ""
+	if stateDirErr != nil {
+		app.SetRecoveryWritesBlocked(true)
+		startupNotice = fmt.Sprintf("Recovery storage is unavailable: %v. Unsaved changes will not be recoverable after a crash.", stateDirErr)
+	} else {
+		recoveryDir = filepath.Join(stateDir, "recovery")
+		app.RecoveryDir = recoveryDir
+		startupNotice = restoreRuntimeRecovery(app, recoveryDir)
+	}
+	watcher, watcherErr := workspace.NewOSWatcher()
+	if watcherErr == nil {
+		if err := app.SetWatcher(watcher); err != nil {
+			_ = watcher.Close()
+			_ = app.SetWatcher(nil)
+			watcher = nil
+			startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("External file-change monitoring is unavailable: %v. Save and workspace refresh will still recheck files.", err))
+		}
+	} else {
+		startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("External file-change monitoring is unavailable: %v. Save and workspace refresh will still recheck files.", watcherErr))
+	}
 	r.caliber = caliber
 	r.app = app
+	r.watcher = watcher
+	r.recoveryDir = recoveryDir
+	r.startupNotice = startupNotice
 	r.lifecycle = lifecycleRunning
 	r.revision = 0
 	r.applicationRevision = 0
@@ -89,11 +202,18 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.pendingSaveAs = nil
 	r.nextSaveAsToken = 0
 	if err := r.publishApplicationState(); err != nil {
+		if r.watcher != nil {
+			_ = r.watcher.Close()
+			r.watcher = nil
+		}
 		r.caliber.close()
 		r.caliber = nil
 		r.app = nil
 		r.lifecycle = lifecycleStopped
 		return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "caliber_error", err.Error(), true))
+	}
+	if watcher != nil {
+		go r.watchWorkspace(r.generation, app, app.WatchEvents())
 	}
 	response = okResponse(request.RequestID, r.lifecycle, r.revision)
 	return marshalResponse(response)
@@ -116,10 +236,19 @@ func (r *Runtime) Stop(input []byte) []byte {
 	if r.resourceLeases != 0 {
 		return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "outstanding_resource_leases", fmt.Sprintf("cannot stop with %d outstanding resource lease(s)", r.resourceLeases), false))
 	}
+	if r.app != nil && r.recoveryDir != "" {
+		if err := r.app.FlushRecovery(r.recoveryDir); err != nil {
+			return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "recovery_flush_failed", fmt.Sprintf("could not preserve unsaved recovery data: %v", err), true))
+		}
+	}
 	r.generation++
 	r.cancelWorkspaceSearchLocked()
 	if r.app != nil {
 		r.app.CloseDerived()
+	}
+	if r.watcher != nil {
+		_ = r.watcher.Close()
+		r.watcher = nil
 	}
 	r.caliber.close()
 	r.caliber = nil
@@ -133,6 +262,8 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.presentationEnabled = false
 	r.asyncError = ""
 	r.pendingSaveAs = nil
+	r.recoveryDir = ""
+	r.startupNotice = ""
 	return marshalResponse(Response{
 		Version:   ProtocolVersion,
 		RequestID: request.RequestID,
@@ -231,6 +362,9 @@ func (r *Runtime) Pump() []byte {
 	if r.lifecycle != lifecycleRunning {
 		return marshalResponse(errorResponse(0, lifecycleStopped, "not_running", "backend is not running", false))
 	}
+	if r.recoveryDir != "" {
+		r.app.MaybeWriteRecovery(r.recoveryDir)
+	}
 	if r.presentationEnabled && r.asyncError == "" {
 		if err := r.pollDerivedLocked(); err != nil {
 			r.asyncError = err.Error()
@@ -265,6 +399,9 @@ func (r *Runtime) Pump() []byte {
 		}
 	}
 	response = r.applyCommand(request)
+	if r.recoveryDir != "" {
+		r.app.MaybeWriteRecovery(r.recoveryDir)
+	}
 	if r.presentationEnabled {
 		r.app.PollDerived(time.Now())
 		if err := r.publishPresentationReadinessIfChanged(); err != nil {
@@ -382,11 +519,14 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if !r.app.HasWorkspace {
 			return commandError(request, "no_workspace", errors.New("no workspace is open"))
 		}
-		// Watch events are advisory; a refresh consumes them and asks the
-		// application to reconcile authoritative disk state before returning a
-		// fresh bounded root listing. Tree focus/selection remains frontend-local.
-		r.app.PollWatcher()
-		r.app.ReconcileStale()
+		// Watch events normally reconcile immediately on the runtime's watcher
+		// lane. A user-requested refresh also checks every open document so
+		// conflict discovery remains available if native watching is unavailable.
+		for _, id := range r.app.Order {
+			if _, err := r.app.Reconcile(id); err != nil {
+				return commandError(request, "application_error", err)
+			}
+		}
 		entries, err := r.app.Workspace.ListWithOptions("", workspace.ListOptions{IncludeIgnored: request.IncludeIgnored})
 		if err != nil {
 			return commandError(request, "application_error", err)
@@ -457,6 +597,32 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			Kind:       application.PresentationSaveDocument,
 			DocumentID: application.DocumentID(request.DocumentID),
 		}); err != nil {
+			if errors.Is(err, application.ErrConflict) {
+				if publishErr := r.publishApplicationState(); publishErr != nil {
+					return commandError(request, "caliber_error", publishErr)
+				}
+			}
+			return commandError(request, "application_error", err)
+		}
+	case "reload_conflict":
+		documentID := application.DocumentID(request.DocumentID)
+		status, err := r.app.Reconcile(documentID)
+		if err != nil {
+			return commandError(request, "application_error", err)
+		}
+		if status == application.StatusMissing {
+			return commandError(request, "application_error", errors.New("file is missing on disk; recovered or local edits remain preserved"))
+		}
+		if err := r.app.ReloadDisk(documentID); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "keep_mine_conflict":
+		if err := r.app.OverwriteDisk(application.DocumentID(request.DocumentID)); err != nil {
+			if errors.Is(err, document.ErrDiskChanged) {
+				if publishErr := r.publishApplicationState(); publishErr != nil {
+					return commandError(request, "caliber_error", publishErr)
+				}
+			}
 			return commandError(request, "application_error", err)
 		}
 	case "save_as_document":
@@ -944,6 +1110,7 @@ func commandError(request CommandRequest, code string, err error) Response {
 func (r *Runtime) publishApplicationState() error {
 	snapshot := r.app.Snapshot()
 	state := stateFromApplication(r.revision+1, snapshot, r.presentationEnabled)
+	state.StartupNotice = r.startupNotice
 	if search := r.workspaceSearch; search != nil {
 		state.WorkspaceSearchGeneration = search.generation
 		state.WorkspaceSearchSequence = search.sequence

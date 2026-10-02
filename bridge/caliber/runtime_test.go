@@ -1404,6 +1404,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 func newStartedRuntime(tb testing.TB, workspace string) *Runtime {
 	tb.Helper()
 	runtime := NewRuntime()
+	runtime.stateDirOverride = filepath.Join(tb.TempDir(), "scratchpad-state")
 	start := decodeResponse(tb, runtime.Start(mustJSON(tb, StartRequest{
 		Version:       ProtocolVersion,
 		RequestID:     12,

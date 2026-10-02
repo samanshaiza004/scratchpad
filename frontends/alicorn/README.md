@@ -6,6 +6,8 @@ Quick Open is available from **File → Quick Open**, **Ctrl/Cmd+P**, or the wor
 
 The command palette is available from **View → Command Palette**, **Ctrl/Cmd+Shift+P**, or the visible **Commands…** entry point. It fuzzy-searches command names, categories, shortcut labels, and common aliases; an empty query prioritizes recent commands, while unavailable commands remain visible but disabled. Alicorn publishes the existing Scratchpad line-editing and Markdown command vocabulary, including line movement/duplication/join, Markdown transforms, and code comments. Markdown smart paste passes clipboard text only as a bounded command argument.
 
+External changes and crash recovery are surfaced in the document UI. Clean files reload from watcher notifications; dirty files retain local bytes and show **Reload from Disk**, **Keep Mine**, and **Save As…** actions. Reload revalidates the disk version before replacing local bytes, while Keep Mine uses Scratchpad's version-checked overwrite. Dirty recovery snapshots are restored at startup; changed or retargeted files return as conflicts, and failed recovery data is preserved with a dismissible startup notice.
+
 It uses the same Go application and `bridge/caliber/cshared` backend as GPUI. Alicorn does not have a frontend-specific Go backend. Canonical Scratchpad command IDs are published in the shared `StateEnvelope`; the Alicorn frontend maps them to host action tokens for native menus while Go remains the state and command authority. The OS file store probes before loading and rejects recognized binary content and files above 64 MiB with an ordinary open error, leaving the running editor and current preview intact.
 
 From the repository root:

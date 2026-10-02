@@ -98,6 +98,8 @@ Deferred_Action_Kind :: enum {
 	Close_With_Discard,
 	Cancel_Close_Prompt,
 	Save_As_Path,
+	Conflict_Reload,
+	Conflict_Keep_Mine,
 }
 
 Deferred_Action :: struct {
@@ -148,6 +150,7 @@ App :: struct {
 	workspace_path:         string,
 	backend_library:        string,
 	error_message:          string,
+	recovery_notice_dismissed: bool,
 	close_document_id:      string,
 	save_as_confirmation_open: bool,
 	save_as_confirmation_document_id: string,
@@ -600,6 +603,7 @@ build_app :: proc(
 		}
 
 		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=COLOR_PANEL)
+		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			build_document_editor(app, &ui, rt, active)
 		} else {
@@ -1003,6 +1007,22 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	alicorn.text(ui, heading)
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
+	if document.status == "conflict" {
+		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string(fmt.tprintf("document-conflict:%s", document.id)), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=COLOR_SUBTLE)
+		alicorn.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
+		alicorn.container_begin(ui, .Container, label="document-conflict-buttons", style=alicorn.layout_style(.Row, height=30, gap=8, align=.Center))
+		if alicorn.button(ui, "Reload from Disk", key=alicorn.key_string(fmt.tprintf("conflict-reload:%s", document.id)), style=alicorn.layout_style(.Row, width=140, height=28)) {
+			editor_resolve_conflict(app, rt, document.id, false)
+		}
+		if alicorn.button(ui, "Keep Mine", key=alicorn.key_string(fmt.tprintf("conflict-keep:%s", document.id)), style=alicorn.layout_style(.Row, width=104, height=28)) {
+			editor_resolve_conflict(app, rt, document.id, true)
+		}
+		if alicorn.button(ui, "Save As…", key=alicorn.key_string(fmt.tprintf("conflict-save-as:%s", document.id)), style=alicorn.layout_style(.Row, width=100, height=28)) {
+			request_file_dialog(app, rt, .Save_File, "Save As")
+		}
+		alicorn.container_end(ui)
+		alicorn.container_end(ui)
+	}
 
 	window, window_matches := editor_presentation_window(
 		view,
@@ -1901,6 +1921,7 @@ start_backend :: proc(app: ^App) {
 			set_error(app, "Could not start the asynchronous Quick Open file index worker.")
 			return
 		}
+	app.recovery_notice_dismissed = false
 		set_error(app, "")
 		tree_sync_workspace(app)
 	}
@@ -2458,6 +2479,40 @@ go_to_line_submit :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	return true
 }
 
+build_startup_notice :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+	if app == nil || ui == nil || app.recovery_notice_dismissed || app.backend.state.startup_notice == "" { return }
+	alicorn.container_begin(ui, .Container, label="scratchpad-startup-notice", style=alicorn.layout_style(.Column, height=72, padding=6, gap=4), color=COLOR_SUBTLE)
+	alicorn.text(ui, app.backend.state.startup_notice, style=alicorn.layout_style(.Row, height=42), text_style=alicorn.Text_Style{overflow=.Wrap})
+	if alicorn.button(ui, "Dismiss", key=alicorn.key_string("scratchpad-startup-notice-dismiss"), style=alicorn.layout_style(.Row, width=82, height=24)) {
+		app.recovery_notice_dismissed = true
+		alicorn.invalidate_root(rt, "Scratchpad recovery notice dismissed")
+	}
+	alicorn.container_end(ui)
+}
+
+editor_resolve_conflict :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string, keep_mine: bool) {
+	if app == nil || rt == nil || document_id == "" { return }
+	if len(app.editor_edits) > 0 {
+		kind := Deferred_Action_Kind.Conflict_Reload
+		if keep_mine { kind = .Conflict_Keep_Mine }
+		if !deferred_action_enqueue(app, kind, value=document_id) {
+			set_error(app, "Could not queue conflict resolution behind pending edits.")
+		}
+		alicorn.invalidate_root(rt, "Scratchpad conflict resolution queued behind pending edits")
+		return
+	}
+	editor_resolve_conflict_now(app, rt, document_id, keep_mine)
+}
+
+editor_resolve_conflict_now :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string, keep_mine: bool) {
+	command := "reload_conflict"
+	if keep_mine { command = "keep_mine_conflict" }
+	response := bridge.backend_command(&app.backend, command, document_id=document_id)
+	handle_command_result(app, rt, &response)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	deferred_actions_run(app, rt)
+}
+
 build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
 	if app == nil || ui == nil { return }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
@@ -2871,8 +2926,12 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 				handle_command_result(app, rt, &response)
 				bridge.backend_command_result_destroy(&response, context.allocator)
 			}
-        case .Save_As_Path:
-            save_as_to_path(app, rt, action.value, action.path)
+		case .Save_As_Path:
+			save_as_to_path(app, rt, action.value, action.path)
+		case .Conflict_Reload:
+			editor_resolve_conflict_now(app, rt, action.value, false)
+		case .Conflict_Keep_Mine:
+			editor_resolve_conflict_now(app, rt, action.value, true)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(
@@ -4514,12 +4573,6 @@ handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.B
 		alicorn.invalidate_root(rt, "Scratchpad requested a dirty-close decision")
 		return
 	}
-	if !result.ok {
-		set_error(app, result.message)
-		alicorn.invalidate_root(rt, "Scratchpad command failed")
-		return
-	}
-	set_error(app, "")
 	if result.state_changed {
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
@@ -4531,6 +4584,12 @@ handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.B
 		}
 		alicorn.invalidate_root(rt, "Scratchpad command published new state")
 	}
+	if !result.ok {
+		set_error(app, result.message)
+		alicorn.invalidate_root(rt, "Scratchpad command failed")
+		return
+	}
+	set_error(app, "")
 	if app.close_document_id != "" && !document_is_open(&app.backend.state, app.close_document_id) {
 		clear_close_prompt(app)
 		alicorn.invalidate_root(rt, "Scratchpad closed prompted document")

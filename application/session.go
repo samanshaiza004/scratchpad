@@ -195,8 +195,8 @@ func (a *Application) WriteRecovery(dir string) error {
 // MaybeWriteRecovery captures immutable buffer snapshots on the UI goroutine
 // and performs materialization plus filesystem work asynchronously, keeping
 // large recovery copies out of the keystroke-to-frame path. A clean payload also goes through the throttled
-// async path so writeRecovery can clear stale files; saves additionally call
-// refreshRecoveryAfterSave for an immediate synchronous rewrite (see below).
+// async path so writeRecovery can clear stale files; authoritative document
+// transitions additionally call refreshRecoverySnapshot (see below).
 func (a *Application) MaybeWriteRecovery(dir string) {
 	if dir == "" {
 		return
@@ -230,13 +230,13 @@ func (a *Application) SetRecoveryWritesBlocked(blocked bool) {
 	}
 }
 
-// refreshRecoveryAfterSave rewrites recovery synchronously after a successful
-// save so a crash cannot resurrect stale bytes. Saves are rare user gestures
-// (not the keystroke path), so blocking disk IO here is acceptable; it drains
-// any in-flight MaybeWriteRecovery snapshot first to avoid concurrent writers,
-// then captures the current (post-save) state. Best-effort: recovery errors
-// never fail the save. Callers must invoke it only after the save succeeded.
-func (a *Application) refreshRecoveryAfterSave() {
+// refreshRecoverySnapshot rewrites recovery synchronously after an
+// authoritative document transition so a crash cannot resurrect stale bytes
+// after save, reload, or explicit discard. These are user gestures, not the
+// keystroke path, so blocking disk IO here is acceptable. It drains any
+// in-flight MaybeWriteRecovery snapshot first, then captures current state.
+// Best-effort: recovery errors never roll back the authoritative transition.
+func (a *Application) refreshRecoverySnapshot() {
 	dir := a.RecoveryDir
 	if dir == "" {
 		return

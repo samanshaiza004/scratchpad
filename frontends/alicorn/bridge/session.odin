@@ -206,6 +206,7 @@ State_Envelope :: struct {
 	has_workspace:   bool             `json:"has_workspace"`,
 	workspace_root:  string           `json:"workspace_root"`,
 	active:          string           `json:"active"`,
+	startup_notice: string           `json:"startup_notice"`,
 	documents:       []State_Document `json:"documents"`,
 	actions:         []Action_State   `json:"actions"`,
 	workspace_search_generation: u64 `json:"workspace_search_generation"`,
@@ -401,6 +402,7 @@ state_destroy :: proc(state: ^State_Envelope, allocator: mem.Allocator) {
 	if state == nil { return }
 	delete(state.workspace_root, allocator)
 	delete(state.active, allocator)
+	delete(state.startup_notice, allocator)
 	for &document in state.documents {
 		delete(document.id, allocator)
 		delete(document.path, allocator)
@@ -1236,25 +1238,27 @@ backend_command :: proc(
 		result.visible_window_owned = true
 	}
 	backend_response_destroy(&response, allocator)
-	if !result.ok {
-		if result.message == "" { result.message = result.code }
+	if command == "read_visible_lines" { return result }
+	if !read_latest_after {
+		if !result.ok && result.message == "" { result.message = result.code }
 		return result
 	}
-	if command == "read_visible_lines" { return result }
-	if !read_latest_after { return result }
 	changed, read_ok, read_message := backend_read_latest(backend, allocator)
 	if !read_ok {
-		result.ok = false
-		if result.code_owned { delete(result.code, allocator) }
-		result.code = "state_read_failed"
-		result.code_owned = false
-		if result.message_owned { delete(result.message, allocator) }
-		message_copy, message_clone_err := strings.clone(read_message, allocator)
-		result.message = message_copy
-		result.message_owned = message_clone_err == nil && len(result.message) > 0
-		return result
+		if result.ok {
+			result.ok = false
+			if result.code_owned { delete(result.code, allocator) }
+			result.code = "state_read_failed"
+			result.code_owned = false
+			if result.message_owned { delete(result.message, allocator) }
+			message_copy, message_clone_err := strings.clone(read_message, allocator)
+			result.message = message_copy
+			result.message_owned = message_clone_err == nil && len(result.message) > 0
+		}
+	} else {
+		result.state_changed = changed
 	}
-	result.state_changed = changed
+	if !result.ok && result.message == "" { result.message = result.code }
 	return result
 }
 

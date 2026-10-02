@@ -568,6 +568,11 @@ func TestCloseDocumentRequiresExplicitDirtyDecision(t *testing.T) {
 	if err := a.Documents[id].Insert([]byte("!")); err != nil {
 		t.Fatal(err)
 	}
+	recoveryDir := filepath.Join(t.TempDir(), "recovery")
+	a.RecoveryDir = recoveryDir
+	if err := a.WriteRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.CloseDocument(id, false); err != ErrDirty {
 		t.Fatalf("close dirty error = %v, want ErrDirty", err)
 	}
@@ -579,6 +584,9 @@ func TestCloseDocumentRequiresExplicitDirtyDecision(t *testing.T) {
 	}
 	if len(a.Documents) != 0 || len(a.Order) != 0 {
 		t.Fatalf("documents=%d order=%d after discard", len(a.Documents), len(a.Order))
+	}
+	if _, err := os.Stat(filepath.Join(recoveryDir, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("explicit discard left stale recovery manifest, stat error = %v", err)
 	}
 }
 
