@@ -62,6 +62,7 @@ Deferred_Action_Kind :: enum {
 	Workspace_Mutation,
 	Close_After_Save,
 	Close_With_Discard,
+	Cancel_Close_Prompt,
 }
 
 Deferred_Action :: struct {
@@ -133,6 +134,8 @@ App :: struct {
 	workspace_mutation_source_is_dir: bool,
 	workspace_mutation_dirty: bool,
 	workspace_mutation_queued: bool,
+	frame_deferred_action: Deferred_Action,
+	frame_deferred_action_pending: bool,
 	show_ignored_files:     bool,
 	settings_surface_open:  bool,
 	workspace_search_mode:  bool,
@@ -427,10 +430,16 @@ build_app :: proc(
 			if document.dirty { title = fmt.tprintf("%s •", title) }
 			selected := state.active == document.id
 			if alicorn.button(&ui, title, key=alicorn.key_string(fmt.tprintf("tab:%s", document.id)), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
-				select_document(app, rt, document.id)
+				if !frame_deferred_action_schedule(app, .Select_Document, document.id) {
+					set_error(app, "Could not queue document selection until the current frame is complete.")
+					alicorn.invalidate_root(rt, "Scratchpad could not defer tab selection")
+				}
 			}
 			if alicorn.button(&ui, "×", key=alicorn.key_string(fmt.tprintf("tab-close:%s", document.id)), style=alicorn.layout_style(.Row, width=30, height=32)) {
-				request_close_document(app, rt, document.id)
+				if !frame_deferred_action_schedule(app, .Close_Document, document.id) {
+					set_error(app, "Could not queue document close until the current frame is complete.")
+					alicorn.invalidate_root(rt, "Scratchpad could not defer tab close")
+				}
 			}
 		}
 		if len(state.documents) == 0 {
@@ -498,36 +507,41 @@ build_app :: proc(
 		if recovery_pending {
 			if alicorn.button(&ui, "Copy Recovery", key=alicorn.key_string("recovery-close-copy"), style=alicorn.layout_style(.Row, width=130, height=34)) {
 				if editor_copy_recoverable_preedit(app, rt, app.close_document_id) {
-					document_id, clone_err := strings.clone(app.close_document_id, context.allocator)
-					if clone_err == nil {
+					if frame_deferred_action_schedule(app, .Close_Document, app.close_document_id) {
 						clear_close_prompt(app)
-						request_close_document(app, rt, document_id)
-						delete(document_id, context.allocator)
+					} else {
+						set_error(app, "Could not queue document close until the current frame is complete.")
 					}
 				}
 			}
 			if alicorn.button(&ui, "Discard Recovery", key=alicorn.key_string("recovery-close-discard"), style=alicorn.layout_style(.Row, width=140, height=34)) {
 				if editor_discard_recoverable_preedit(app, rt, app.close_document_id) {
-					document_id, clone_err := strings.clone(app.close_document_id, context.allocator)
-					if clone_err == nil {
+					if frame_deferred_action_schedule(app, .Close_Document, app.close_document_id) {
 						clear_close_prompt(app)
-						request_close_document(app, rt, document_id)
-						delete(document_id, context.allocator)
+					} else {
+						set_error(app, "Could not queue document close until the current frame is complete.")
 					}
 				}
 			}
 		} else {
 			if alicorn.button(&ui, "Save & Close", key=alicorn.key_string("dirty-close-save"), style=alicorn.layout_style(.Row, width=130, height=34)) {
-				close_after_save(app, rt)
+				if !frame_deferred_action_schedule(app, .Close_After_Save) {
+					set_error(app, "Could not queue save-and-close until the current frame is complete.")
+					alicorn.invalidate_root(rt, "Scratchpad could not defer save-and-close")
+				}
 			}
 			if alicorn.button(&ui, "Discard", key=alicorn.key_string("dirty-close-discard"), style=alicorn.layout_style(.Row, width=100, height=34)) {
-				close_with_discard(app, rt)
+				if !frame_deferred_action_schedule(app, .Close_With_Discard) {
+					set_error(app, "Could not queue discard-and-close until the current frame is complete.")
+					alicorn.invalidate_root(rt, "Scratchpad could not defer discard-and-close")
+				}
 			}
 		}
 		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("dirty-close-cancel"), style=alicorn.layout_style(.Row, width=90, height=34)) {
-			clear_close_prompt(app)
-			deferred_actions_run(app, rt)
-			alicorn.invalidate_root(rt, "dirty close cancelled")
+			if !frame_deferred_action_schedule(app, .Cancel_Close_Prompt) {
+				set_error(app, "Could not queue close cancellation until the current frame is complete.")
+				alicorn.invalidate_root(rt, "Scratchpad could not defer close cancellation")
+			}
 		}
 		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
@@ -539,6 +553,7 @@ build_app :: proc(
 	}
 
 	alicorn.end_frame(&ui)
+	frame_deferred_action_run(app, rt)
 	find_restore_after_frame(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.editor_restore_scroll && app.editor_scroll_owner != 0 {
@@ -2016,6 +2031,44 @@ deferred_action_destroy :: proc(action: ^Deferred_Action) {
 	action^ = Deferred_Action{}
 }
 
+frame_deferred_action_schedule :: proc(app: ^App, kind: Deferred_Action_Kind, value: string = "") -> bool {
+	if app == nil || app.frame_deferred_action_pending { return false }
+	action := Deferred_Action{kind=kind}
+	if len(value) > 0 {
+		value_copy, err := strings.clone(value, context.allocator)
+		if err != nil { return false }
+		action.value = value_copy
+	}
+	app.frame_deferred_action = action
+	app.frame_deferred_action_pending = true
+	return true
+}
+
+frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || !app.frame_deferred_action_pending { return }
+	action := app.frame_deferred_action
+	app.frame_deferred_action = Deferred_Action{}
+	app.frame_deferred_action_pending = false
+	#partial switch action.kind {
+	case .Select_Document:
+		select_document(app, rt, action.value)
+	case .Close_Document:
+		request_close_document(app, rt, action.value)
+	case .Close_After_Save:
+		close_after_save(app, rt)
+	case .Close_With_Discard:
+		close_with_discard(app, rt)
+	case .Cancel_Close_Prompt:
+		clear_close_prompt(app)
+		deferred_actions_run(app, rt)
+		alicorn.invalidate_root(rt, "dirty close cancelled")
+	case:
+		set_error(app, "Scratchpad received an unsupported deferred frame action.")
+		alicorn.invalidate_root(rt, "Scratchpad rejected an unsupported deferred frame action")
+	}
+	deferred_action_destroy(&action)
+}
+
 deferred_actions_clear :: proc(app: ^App) {
 	if app == nil { return }
 	for index := len(app.deferred_actions)-1; index >= 0; index -= 1 {
@@ -2025,9 +2078,28 @@ deferred_actions_clear :: proc(app: ^App) {
 }
 
 deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || rt == nil || !app.backend.started || len(app.editor_edits) > 0 ||
-	   app.dialog_action != "" || app.close_document_id != "" {
+	if app == nil || rt == nil || !app.backend.started || len(app.editor_edits) > 0 || app.dialog_action != "" {
 		return
+	}
+	if app.close_document_id != "" {
+		// A close decision owns the modal until Save & Close or Discard is
+		// chosen. Let that decision pass queued work so it cannot deadlock
+		// behind actions that the modal itself prevents from running.
+		close_action_index := -1
+		for action, index in app.deferred_actions {
+			if action.kind == .Close_After_Save || action.kind == .Close_With_Discard {
+				close_action_index = index
+				break
+			}
+		}
+		if close_action_index < 0 { return }
+		if close_action_index > 0 {
+			close_action := app.deferred_actions[close_action_index]
+			for index := close_action_index; index > 0; index -= 1 {
+				app.deferred_actions[index] = app.deferred_actions[index-1]
+			}
+			app.deferred_actions[0] = close_action
+		}
 	}
 	for len(app.deferred_actions) > 0 {
 		action := app.deferred_actions[0]
@@ -2066,6 +2138,9 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			close_after_save(app, rt)
 		case .Close_With_Discard:
 			close_with_discard(app, rt)
+		case .Cancel_Close_Prompt:
+			clear_close_prompt(app)
+			alicorn.invalidate_root(rt, "dirty close cancelled")
 		}
 		deferred_action_destroy(&action)
 		if app.dialog_action != "" || app.close_document_id != "" || app.workspace_mutation_kind != .None { break }
@@ -4046,6 +4121,8 @@ application_stop :: proc(state: rawptr) {
 	deferred_actions_clear(app)
 	delete(app.deferred_actions)
 	app.deferred_actions = {}
+	deferred_action_destroy(&app.frame_deferred_action)
+	app.frame_deferred_action_pending = false
 	if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 	app.editor_presented_document_id = ""
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
