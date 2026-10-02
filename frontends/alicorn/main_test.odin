@@ -1730,9 +1730,13 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	first_path := fmt.tprintf("%s/src/nested/first.txt", workspace)
 	second_path := fmt.tprintf("%s/src/nested/second.txt", workspace)
 	stable_path := fmt.tprintf("%s/stable.txt", workspace)
+	collision_path := fmt.tprintf("%s/archive/stable.txt", workspace)
+	move_file_path := fmt.tprintf("%s/move-me.txt", workspace)
 	if err := os.write_entire_file_from_string(first_path, "first\n"); err != nil { testing.expect(t, false, "could not create first open fixture"); return }
 	if err := os.write_entire_file_from_string(second_path, "second\n"); err != nil { testing.expect(t, false, "could not create second open fixture"); return }
 	if err := os.write_entire_file_from_string(stable_path, "stable\n"); err != nil { testing.expect(t, false, "could not create unaffected sibling fixture"); return }
+	if err := os.write_entire_file_from_string(collision_path, "keep destination\n"); err != nil { testing.expect(t, false, "could not create move collision fixture"); return }
+	if err := os.write_entire_file_from_string(move_file_path, "move me\n"); err != nil { testing.expect(t, false, "could not create file drag fixture"); return }
 	backend_library, found_library := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.temp_allocator)
 	if !found_library { testing.expect(t, false, "workspace mutation integration test requires the staged shared backend"); return }
 	defer delete(backend_library, context.temp_allocator)
@@ -1908,6 +1912,38 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		}
 	}
 	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "archive/src/nested/first.txt"), fmt.tprintf("tree focus should follow a moved descendant by component-aware path remapping (got %s)", app.tree_focused_path))
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Started,
+		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
+		source=tree_semantic_id("stable.txt", false),
+	})
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Dropped,
+		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
+		source=tree_semantic_id("stable.txt", false),
+		target=tree_semantic_id("archive", true),
+		position=.On,
+	})
+	testing.expect(t, strings.contains(app.error_message, "already exists"),
+		fmt.tprintf("a rejected file drop should explain the destination collision in the workbench banner (got %s)", app.error_message))
+	collision_entry := tree_normalize_separators("archive/stable.txt", tree_preferred_separator(&app))
+	testing.expect(t, tree_directory_has_entry(&app, "", "stable.txt") && tree_directory_has_entry(&app, "archive", collision_entry),
+		"a file-drop collision should preserve both source and destination entries")
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Started,
+		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
+		source=tree_semantic_id("move-me.txt", false),
+	})
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Dropped,
+		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
+		source=tree_semantic_id("move-me.txt", false),
+		target=tree_semantic_id("archive", true),
+		position=.On,
+	})
+	moved_file_entry := tree_normalize_separators("archive/move-me.txt", tree_preferred_separator(&app))
+	testing.expect(t, tree_directory_has_entry(&app, "archive", moved_file_entry) && !tree_directory_has_entry(&app, "", "move-me.txt"),
+		"dropping a file onto a directory should move it under that directory")
 	archive_path := tree_normalize_separators("archive/src", tree_preferred_separator(&app))
 	nested_path := tree_normalize_separators("archive/src/nested", tree_preferred_separator(&app))
 	archive_index := tree_directory_index(&app, archive_path)

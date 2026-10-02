@@ -373,7 +373,13 @@ workspace_mutation_execute :: proc(
 			workspace_mutation_set_error(app, "")
 			alicorn.invalidate_root(rt, "Scratchpad requires a dirty-document trash decision")
 		} else {
-			workspace_mutation_set_error(app, response.message if response.message != "" else "The workspace operation failed.")
+			message := response.message if response.message != "" else "The workspace operation failed."
+			workspace_mutation_set_error(app, message)
+			// Drag-and-drop executes without opening the mutation dialog, where
+			// workspace_mutation_error is normally shown. Surface refusals such
+			// as destination collisions in the workbench banner instead of making
+			// a rejected drop look like an ignored gesture.
+			if app.workspace_mutation_kind == .None { set_error(app, message) }
 			app.workspace_mutation_focus_pending = true
 			alicorn.invalidate_root(rt, "Scratchpad workspace operation failed")
 		}

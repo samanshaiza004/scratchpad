@@ -114,6 +114,10 @@ workspace_drag_apply_drop :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicor
 			tree_preferred_separator(app),
 		)
 		if !should_move { return }
+		// A prior refused drop may have left its reason in the workbench banner.
+		// Clear it before this attempt so a successful tree refresh is not
+		// mistaken for a failed one and a new refusal can report its own reason.
+		set_error(app, "")
 		workspace_mutation_execute(
 			app, rt, .Move,
 			app.workspace_drag_source_path, "", destination,
