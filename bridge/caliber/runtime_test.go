@@ -83,6 +83,93 @@ func TestLifecycleDeterminism(t *testing.T) {
 	}
 }
 
+func TestReorderDocumentsUsesAuthoritativeOrderAndPromotesPreview(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{filepath.Join(root, "a.txt"), filepath.Join(root, "b.txt"), filepath.Join(root, "c.txt")}
+	for _, path := range paths {
+		writeFile(t, path, filepath.Base(path))
+	}
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	requestID := uint64(20)
+	for index, path := range paths {
+		state := latestStateForTest(t, runtime)
+		disposition := ""
+		if index == 2 {
+			disposition = "preview"
+		}
+		dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+			Version: ProtocolVersion, RequestID: requestID, BasedOnRevision: state.ApplicationRev,
+			Command: "open_path", Path: path, Disposition: disposition,
+		}))
+		opened := decodeResponse(t, runtime.Pump())
+		if !opened.OK {
+			t.Fatalf("open %q response = %+v", path, opened)
+		}
+		requestID++
+	}
+
+	state := latestStateForTest(t, runtime)
+	if len(state.Documents) != 3 || state.Documents[2].Path != paths[2] || !state.Documents[2].Preview {
+		t.Fatalf("initial open document state = %+v", state.Documents)
+	}
+	ids := []string{state.Documents[0].ID, state.Documents[1].ID, state.Documents[2].ID}
+	active := state.Active
+
+	// A preview drag is an intentional promotion even when it does not change
+	// the visual order.
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: requestID, BasedOnRevision: state.ApplicationRev,
+		Command: "reorder_documents", DocumentOrder: ids,
+	}))
+	promoted := decodeResponse(t, runtime.Pump())
+	if !promoted.OK {
+		t.Fatalf("same-position preview reorder response = %+v", promoted)
+	}
+	requestID++
+	state = latestStateForTest(t, runtime)
+	if state.Active != active || state.Documents[2].Preview {
+		t.Fatalf("preview drag should pin without changing active document: active=%q docs=%+v", state.Active, state.Documents)
+	}
+
+	newOrder := []string{ids[2], ids[0], ids[1]}
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: requestID, BasedOnRevision: state.ApplicationRev,
+		Command: "reorder_documents", DocumentOrder: newOrder,
+	}))
+	reordered := decodeResponse(t, runtime.Pump())
+	if !reordered.OK {
+		t.Fatalf("reorder response = %+v", reordered)
+	}
+	state = latestStateForTest(t, runtime)
+	if state.Active != active || len(state.Documents) != len(newOrder) {
+		t.Fatalf("reordered state lost the active document or a tab: %+v", state)
+	}
+	for index, want := range newOrder {
+		if state.Documents[index].ID != want {
+			t.Fatalf("tab %d ID = %q, want %q; order=%+v", index, state.Documents[index].ID, want, state.Documents)
+		}
+	}
+
+	beforeInvalid := append([]StateDocument(nil), state.Documents...)
+	duplicateOrder := []string{newOrder[0], newOrder[0], newOrder[2]}
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: requestID + 1, BasedOnRevision: state.ApplicationRev,
+		Command: "reorder_documents", DocumentOrder: duplicateOrder,
+	}))
+	invalid := decodeResponse(t, runtime.Pump())
+	if invalid.OK {
+		t.Fatal("duplicate document IDs should not be accepted")
+	}
+	state = latestStateForTest(t, runtime)
+	for index := range beforeInvalid {
+		if state.Documents[index].ID != beforeInvalid[index].ID {
+			t.Fatalf("invalid reorder mutated authoritative order: before=%+v after=%+v", beforeInvalid, state.Documents)
+		}
+	}
+}
+
 func TestTrashDirtyUsesTypedDecisionWithoutChangingFilesystemOrDocuments(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "note.txt")

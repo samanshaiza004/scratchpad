@@ -553,6 +553,27 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if err := r.app.MovePath(request.Path, request.RelativePath); err != nil {
 			return commandError(request, "application_error", err)
 		}
+	case "reorder_documents":
+		order := make([]application.DocumentID, len(request.DocumentOrder))
+		orderChanged := len(order) != len(r.app.Order)
+		for index, id := range request.DocumentOrder {
+			order[index] = application.DocumentID(id)
+			if index >= len(r.app.Order) || r.app.Order[index] != order[index] {
+				orderChanged = true
+			}
+		}
+		if orderChanged {
+			if err := r.app.Reorder(order); err != nil {
+				return commandError(request, "application_error", err)
+			}
+		}
+		// Reordering is an explicit tab interaction, so dragging a preview tab
+		// promotes it even when it is dropped back into its original position.
+		previewPinned := r.app.PinPreview(r.app.Preview)
+		if !orderChanged && !previewPinned {
+			commandOutcome = CommandOutcomeNoOp
+			publishState = false
+		}
 	case "trash_path":
 		if err := r.app.TrashPath(request.Path, request.Discard); err != nil {
 			if errors.Is(err, application.ErrDirty) {
