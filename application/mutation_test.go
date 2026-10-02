@@ -150,6 +150,45 @@ func TestMoveDirectoryMigratesAllOpenDescendants(t *testing.T) {
 	}
 }
 
+func TestMoveDirectoryReleasesOpenDocumentWatcherHandles(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "src", "nested", "note.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "archive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil)
+	if err := a.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OpenPath(path); err != nil {
+		t.Fatal(err)
+	}
+	watcher, err := workspace.NewOSWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+	if err := a.SetWatcher(watcher); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.MovePath("src", "archive/src"); err != nil {
+		t.Fatalf("MovePath with an OS watcher: %v", err)
+	}
+	moved := filepath.Join(root, "archive", "src", "nested", "note.md")
+	if _, err := os.Stat(moved); err != nil {
+		t.Fatalf("moved document path %q: %v", moved, err)
+	}
+	if got := a.Documents[documentID(moved)]; got == nil || got.Path != moved {
+		t.Fatalf("document registry did not migrate to %q: %#v", moved, got)
+	}
+}
+
 func TestMovePreflightRejectsConflictAndCollisionWithoutDiskChange(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {

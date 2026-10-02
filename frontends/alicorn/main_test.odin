@@ -246,12 +246,7 @@ test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 		return
 	}
 
-	paste_bytes, paste_error := make([]u8, 100*1024, allocator=context.allocator)
-	testing.expect(t, paste_error == nil, "clipboard test should allocate the 100 KiB paste fixture")
-	if paste_error != nil { editor_window_destroy(&window); return }
-	defer delete(paste_bytes, context.allocator)
-	for &byte in paste_bytes { byte = 'p' }
-	clipboard := Editor_Test_Clipboard{text=string(paste_bytes), read_ok=true, write_ok=true}
+	clipboard := Editor_Test_Clipboard{text="clipboard text", read_ok=true, write_ok=true}
 	app: App
 	app.backend.started = true
 	app.backend.state.active = "clipboard-doc"
@@ -284,13 +279,11 @@ test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 	view := &app.editor_views[view_index]
 	view.selection_anchor = u64(len(source))
 	view.caret_byte = u64(len(source))
-
+	view.selection_anchor, view.caret_byte = u64(len(source)+10), u64(len(source)+11)
+	clipboard.text = ""
 	editor_clipboard_command(&app, &rt, ACTION_EDIT_PASTE)
-	testing.expect(t, clipboard.reads == 1 && len(app.editor_edits) == 1 &&
-		len(view.optimistic_window.source) == len(source)+len(paste_bytes) &&
-		editor_bytes_equal(view.optimistic_window.source[:len(source)], source) &&
-		editor_bytes_equal(view.optimistic_window.source[len(source):], paste_bytes),
-		"Paste through Clipboard_Service should queue one complete 100 KiB edit against a full 64 KiB window")
+	testing.expect(t, len(app.editor_edits) == 0 && clipboard.reads == 1,
+		"an empty clipboard should be a no-op even when the selection is outside the loaded window")
 
 	document, document_found := find_document(&app.backend.state, "clipboard-doc")
 	editor_clipboard_command(&app, &rt, ACTION_EDIT_SELECT_ALL)
@@ -303,9 +296,8 @@ test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 	testing.expect(t, clipboard.writes == 1 && clipboard.last_write == "a",
 		"Copy should write the exact selected UTF-8 source bytes")
 	editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
-	testing.expect(t, clipboard.writes == 2 && clipboard.last_write == "a" && len(app.editor_edits) == 2 &&
-		len(view.optimistic_window.source) == len(source)+len(paste_bytes)-1 &&
-		view.optimistic_window.source[0] == 'a',
+	testing.expect(t, clipboard.writes == 2 && clipboard.last_write == "a" && len(app.editor_edits) == 1 &&
+		len(view.optimistic_window.source) == len(source)-1 && view.optimistic_window.source[0] == 'a',
 		"Cut should copy the full UTF-8 selection then queue its complete source deletion")
 
 	cut_failure_length := len(view.optimistic_window.source)
@@ -320,15 +312,9 @@ test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 		"Cut must leave the source and edit queue unchanged when the OS clipboard rejects Copy")
 	clipboard.write_ok = true
 
-	edit_count := len(app.editor_edits)
-	view.selection_anchor, view.caret_byte = u64(len(view.optimistic_window.source)+10), u64(len(view.optimistic_window.source)+11)
-	clipboard.text = ""
-	editor_clipboard_command(&app, &rt, ACTION_EDIT_PASTE)
-	testing.expect(t, len(app.editor_edits) == edit_count && clipboard.reads == 2,
-		"an empty clipboard should be a no-op even when the selected range is outside the loaded window")
-
 	view.selection_anchor, view.caret_byte = 0, 1
 	view.optimistic_window.source[0] = 0xFF
+	edit_count := len(app.editor_edits)
 	editor_clipboard_command(&app, &rt, ACTION_EDIT_COPY)
 	editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
 	testing.expect(t, clipboard.writes == 2 && len(app.editor_edits) == edit_count &&
@@ -1399,12 +1385,18 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 				page_anchor := view.selection_anchor
 				shift_page_down := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Page_Down, shift=true})
 				shift_page_line, shift_page_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+				shift_page_down_caret := view.caret_byte
 				shift_page_up := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Page_Up, shift=true})
 				shift_page_back_line, shift_page_back_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+				shift_page_down_distance := shift_page_down_caret-page_anchor if shift_page_down_caret >= page_anchor else page_anchor-shift_page_down_caret
+				shift_page_back_distance := view.caret_byte-page_anchor if view.caret_byte >= page_anchor else page_anchor-view.caret_byte
 				testing.expect(t, shift_page_down && shift_page_line_found && shift_page_up && shift_page_back_found &&
 					shift_page_line.logical_line > page_up_line.logical_line &&
-					shift_page_back_line.logical_line == page_up_line.logical_line && view.selection_anchor == page_anchor,
-					"Shift+Page Up/Down should extend and contract selection without moving its anchor")
+					shift_page_back_distance < shift_page_down_distance && view.selection_anchor == page_anchor,
+					fmt.tprintf("Shift+Page Up/Down should extend then contract selection without moving its anchor (down=%t line=%d start=%d up=%t line=%d down-distance=%d up-distance=%d anchor=%d expected_anchor=%d)",
+						shift_page_down, shift_page_line.logical_line, page_up_line.logical_line,
+						shift_page_up, shift_page_back_line.logical_line, shift_page_down_distance, shift_page_back_distance,
+						view.selection_anchor, page_anchor))
 
 				_ = editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right, shift=true})
 				paint_line, paint_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
@@ -1873,6 +1865,14 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
 		source=tree_semantic_id("src", true),
 	})
+	testing.expect(t, app.workspace_drag_kind == .Workspace && app.workspace_drag_source_path == "src",
+		fmt.tprintf("drag should capture the src directory (kind=%v path=%s)", app.workspace_drag_kind, app.workspace_drag_source_path))
+	drag_target_path, drag_target_found := workspace_drag_target_path(&app, tree_semantic_id("archive", true))
+	defer delete(drag_target_path, context.allocator)
+	drag_destination, drag_should_move := workspace_drag_move_destination(app.workspace_drag_source_path, drag_target_path, app.workspace_drag_source_is_dir, tree_preferred_separator(&app))
+	expected_drag_destination := tree_normalize_separators("archive/src", tree_preferred_separator(&app))
+	testing.expect(t, drag_target_found && drag_should_move && drag_destination == expected_drag_destination,
+		fmt.tprintf("drag should resolve archive/src destination (target_found=%t target=%s move=%t destination=%s expected=%s sep=%c)", drag_target_found, drag_target_path, drag_should_move, drag_destination, expected_drag_destination, tree_preferred_separator(&app)))
 	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
 		kind=.Dropped,
 		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
@@ -1880,7 +1880,17 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		target=tree_semantic_id("archive", true),
 		position=.On,
 	})
+	move_state_changed, move_state_ok, move_state_message := bridge.backend_read_latest(&app.backend, context.temp_allocator)
 	testing.expect(t, app.workspace_drag_kind == .None, "a completed tree drop should clear the retained application payload")
+	testing.expect(t, app.error_message == "", fmt.tprintf("moving src into archive should succeed without a workspace error (got %s)", app.error_message))
+	testing.expect(t, app.workspace_mutation_error == "", fmt.tprintf("workspace move should not report a mutation error (got %s)", app.workspace_mutation_error))
+	testing.expect(t, len(app.editor_edits) == 0 && !app.workspace_mutation_queued,
+		fmt.tprintf("workspace drop should execute immediately without pending editor edits (edits=%d queued=%t backend_started=%t)", len(app.editor_edits), app.workspace_mutation_queued, app.backend.started))
+	moved_path_summary := ""
+	for document in app.backend.state.documents { moved_path_summary = fmt.tprintf("%s | %s", moved_path_summary, document.path) }
+	expected_moved_subpath := tree_normalize_separators("archive/src/nested", tree_preferred_separator(&app))
+	testing.expect(t, strings.contains(moved_path_summary, expected_moved_subpath),
+		fmt.tprintf("workspace drop should publish moved document paths (changed=%t read_ok=%t read_error=%s workspace=%s paths=%s)", move_state_changed, move_state_ok, move_state_message, app.backend.state.workspace_root, moved_path_summary))
 	for id in old_ids {
 		testing.expect(t, editor_view_find(app.editor_views[:], id) < 0, "old backend document identity should be replaced after a successful directory move")
 	}

@@ -161,7 +161,26 @@ func (a *Application) MovePath(source, destination string) error {
 			return ErrDocumentMissing
 		}
 	}
+	var unwatched []string
+	if unwatcher, ok := a.Watcher.(workspace.DirectoryUnwatcher); ok {
+		seen := make(map[string]bool)
+		for _, relocation := range plan.Documents {
+			parent := filepath.Dir(relocation.OldPath)
+			if seen[parent] {
+				continue
+			}
+			seen[parent] = true
+			if err := unwatcher.UnwatchDirectory(parent); err == nil {
+				unwatched = append(unwatched, parent)
+			}
+		}
+	}
 	if err := a.Workspace.Move(plan.Source, plan.Destination); err != nil {
+		if a.Watcher != nil {
+			for _, parent := range unwatched {
+				_ = a.Watcher.WatchDirectory(parent)
+			}
+		}
 		return err
 	}
 	a.applyPathMutation(plan)

@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -146,7 +145,7 @@ func TestMarkdownSmartPasteReceivesFrontendClipboardArgument(t *testing.T) {
 	runtime := newStartedRuntime(t, root)
 	defer stopRuntime(t, runtime)
 
-	opened := dispatchSearchCommand(t, runtime, CommandRequest{Command: "open_path", Path: "note.md"})
+	opened := dispatchSearchCommand(t, runtime, CommandRequest{Command: "open_path", Path: path})
 	if !opened.OK {
 		t.Fatalf("open Markdown document = %+v", opened)
 	}
@@ -170,12 +169,16 @@ func TestMarkdownSmartPasteReceivesFrontendClipboardArgument(t *testing.T) {
 	if !response.OK {
 		t.Fatalf("smart paste = %+v", response)
 	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	doc := runtime.app.Documents[application.DocumentID(state.Active)]
+	if doc == nil || doc.Editor == nil {
+		t.Fatal("Markdown document was not retained after smart paste")
 	}
+	got := doc.Editor.Buffer.Text()
 	if string(got) != "[selected text](https://example.test/page)" {
 		t.Fatalf("smart-paste result = %q", got)
+	}
+	if !doc.Dirty() {
+		t.Fatal("smart paste should mark the in-memory document dirty until it is saved")
 	}
 }
 

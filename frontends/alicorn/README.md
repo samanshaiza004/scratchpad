@@ -20,11 +20,11 @@ From the repository root:
 
 The wrapper synchronizes the exact Caliber and Alicorn revisions in `dependencies.lock.json`. It requires Go 1.25.5 or newer, Odin, Rust/Cargo, and platform build tools. Windows requires 64-bit Go with cgo and 64-bit MinGW-w64 GCC, plus Odin's Windows linker/SDK prerequisites. macOS requires SDL3 (for example, `brew install sdl3`).
 
-`build` creates the native artifact under `out/alicorn`. `test` runs Go/Caliber ABI checks, Odin type-checking, Alicorn bridge tests, and frontend behavior tests. `smoke` builds and launches a native window for a bounded run and checks publication, host wake, presentation, and ordered shutdown. Native IME, dialogs, clipboard, OS trash, DPI, and pointer feel still need hands-on verification on the target operating systems.
+`build` creates the native artifact under `out/alicorn`. `test` runs Go/Caliber ABI checks, Odin type-checking, Alicorn bridge tests, and frontend behavior tests. `smoke` builds and launches a native window for a bounded run and checks publication, host wake, presentation, and ordered shutdown. Native IME, dialogs, clipboard, OS trash, DPI, pointer feel, and tab/workspace drag-and-drop still need hands-on verification on the target operating systems.
 
 ## Included behavior
 
-Alicorn provides native File/Workspace/Edit/View menus; document tabs and dirty-close decisions; deferred app shutdown with Save All / Discard All / Cancel; a virtualized workspace tree with search, quick open, create, rename, move, and OS trash; current-file Find/Replace and Go to Line; clipboard, undo/redo, IME composition, recovery, conflict resolution, and Save As; a command palette; live Markdown typography and editing commands; table navigation/formatting; prose and cell-aware table wrapping; and per-document wrap override.
+Alicorn provides native File/Workspace/Edit/View menus; reorderable document tabs and tab drag-and-drop; dirty-close decisions and deferred app shutdown with Save All / Discard All / Cancel; a virtualized workspace tree with search, quick open, create, rename, move, OS trash, and file/directory drag-and-drop; current-file Find/Replace and Go to Line; clipboard, undo/redo, IME composition, recovery, conflict resolution, and Save As; a command palette; live Markdown typography and editing commands; Tree-sitter syntax highlighting for Go, TypeScript, and TSX; table navigation/formatting; prose and cell-aware table wrapping; and per-document wrap override.
 
 The editor reads a bounded source window, maps displayed bytes back to source offsets, and keeps edits optimistic while Go remains authoritative. Markdown meaning comes from the Go projection; the frontend renders transported ranges and does not parse Markdown.
 

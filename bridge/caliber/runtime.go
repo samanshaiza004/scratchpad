@@ -161,12 +161,19 @@ func (r *Runtime) Start(input []byte) []byte {
 	}
 	stateDir := r.stateDirOverride
 	var stateDirErr error
-	if stateDir == "" {
+	if os.Getenv("SCRATCHPAD_DISABLE_RECOVERY") == "1" {
+		// The Alicorn integration harness reuses the c-shared singleton across
+		// many test cases. Keep test fixtures out of the user's real recovery
+		// store and prevent one test's unsaved files from leaking into another.
+		app.SetRecoveryWritesBlocked(true)
+	} else if stateDir == "" {
 		stateDir, stateDirErr = application.DefaultStateDir()
 	}
 	recoveryDir := ""
 	startupNotice := ""
-	if stateDirErr != nil {
+	if os.Getenv("SCRATCHPAD_DISABLE_RECOVERY") == "1" {
+		// Recovery is intentionally disabled for isolated frontend tests.
+	} else if stateDirErr != nil {
 		app.SetRecoveryWritesBlocked(true)
 		startupNotice = fmt.Sprintf("Recovery storage is unavailable: %v. Unsaved changes will not be recoverable after a crash.", stateDirErr)
 	} else {

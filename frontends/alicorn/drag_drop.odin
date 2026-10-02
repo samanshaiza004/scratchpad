@@ -106,6 +106,7 @@ workspace_drag_apply_drop :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicor
 		if event.drag_type != SCRATCHPAD_DRAG_WORKSPACE { return }
 		target_path, found := workspace_drag_target_path(app, event.target)
 		if !found { return }
+		defer delete(target_path, context.allocator)
 		destination, should_move := workspace_drag_move_destination(
 			app.workspace_drag_source_path,
 			target_path,
@@ -140,7 +141,10 @@ workspace_drag_target_path :: proc(app: ^App, target: alicorn.Semantic_ID) -> (p
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)
 	for row in rows {
-		if row.is_dir && tree_semantic_id(row.path, true) == target { return row.path, true }
+		if row.is_dir && tree_semantic_id(row.path, true) == target {
+			path_copy, err := strings.clone(row.path, context.allocator)
+			return path_copy, err == nil
+		}
 	}
 	return
 }
@@ -154,7 +158,10 @@ workspace_drag_move_destination :: proc(source, target_directory: string, source
 		_, target_is_inside_source := tree_path_rewrite(target_path, source_path, "", true)
 		if target_is_inside_source { return }
 	}
-	destination = tree_join_relative_path(target_path, tree_basename(source_path))
+	destination = tree_normalize_separators(
+		tree_join_relative_path(target_path, tree_basename(source_path)),
+		separator,
+	)
 	if destination == source_path { return "", false }
 	return destination, true
 }

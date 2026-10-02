@@ -381,10 +381,16 @@ workspace_mutation_execute :: proc(
 		return
 	}
 	if kind == .Rename || kind == .Move {
+		// Publish the backend's new document identities and paths before looking
+		// them up to migrate frontend-local editor state, while retaining the old
+		// views long enough to transfer their caret and viewport state.
+		handle_command_result(app, rt, &response, prune_editor_state=false)
 		workspace_mutation_migrate_editor_views(app, rt, migrations[:])
+		editor_views_prune(app)
+	} else {
+		handle_command_result(app, rt, &response)
 	}
 	quick_open_invalidate_index(app)
-	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
 	refresh_ok := workspace_mutation_refresh_tree(app, rt, kind, source, dest, source_is_dir)
 	app.workspace_mutation_restore_pending = true

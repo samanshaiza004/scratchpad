@@ -14,6 +14,13 @@ type Watcher interface {
 	Close() error
 }
 
+// DirectoryUnwatcher is implemented by watchers that can release a watched
+// directory before a filesystem mutation. Windows may reject moving a watched
+// directory while the watcher holds its handle open.
+type DirectoryUnwatcher interface {
+	UnwatchDirectory(path string) error
+}
+
 type OSWatcher struct {
 	watcher *fsnotify.Watcher
 }
@@ -28,6 +35,10 @@ func NewOSWatcher() (*OSWatcher, error) {
 
 func (w *OSWatcher) WatchDirectory(path string) error {
 	return w.watcher.Add(path)
+}
+
+func (w *OSWatcher) UnwatchDirectory(path string) error {
+	return w.watcher.Remove(path)
 }
 
 func (w *OSWatcher) Events() <-chan WatchEvent {

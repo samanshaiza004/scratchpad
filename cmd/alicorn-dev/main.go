@@ -178,8 +178,9 @@ func run(args []string) error {
 		}
 		testEnv := setEnv(env, "SCRATCHPAD_BACKEND_LIBRARY", backendPath)
 		testEnv = setRuntimePath(testEnv, out)
+		testEnv = setEnv(testEnv, "SCRATCHPAD_DISABLE_RECOVERY", "1")
 		testExe := filepath.Join(out, "scratchpad-alicorn-bridge-tests"+exeSuffix())
-		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn", "bridge"), "-out:"+testExe); err != nil {
+		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn", "bridge"), "-define:ODIN_TEST_THREADS=1", "-out:"+testExe); err != nil {
 			return fmt.Errorf("Alicorn Caliber bridge/lifecycle tests: %w", err)
 		}
 		if runtime.GOOS == "windows" {
@@ -189,7 +190,7 @@ func run(args []string) error {
 			}
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
-		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn"), "-out:"+frontendTestExe, collectionArg); err != nil {
+		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:"+frontendTestExe, collectionArg); err != nil {
 			return fmt.Errorf("Alicorn workbench integration tests: %w", err)
 		}
 		return nil

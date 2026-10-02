@@ -22,6 +22,8 @@ The wrapper synchronizes the pinned Alicorn and Caliber dependencies. It require
 
 Run the Alicorn integration suite with `test` instead of `run`; `build` creates a native artifact and `smoke` checks launch, publication, wake, presentation, and shutdown.
 
+Alicorn includes draggable/reorderable document tabs, file and directory drag-and-drop in the workspace, and restrained Tree-sitter syntax highlighting for Go, TypeScript, and TSX alongside live Markdown presentation.
+
 ## Checks
 
 ```sh

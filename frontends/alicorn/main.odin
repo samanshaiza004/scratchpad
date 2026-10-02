@@ -4567,7 +4567,7 @@ close_with_discard :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	deferred_actions_run(app, rt)
 }
 
-handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Backend_Command_Result) {
+handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Backend_Command_Result, prune_editor_state := true) {
 	if result == nil { return }
 	if len(result.close_decision.document_id) > 0 && result.close_decision.dirty {
 		clear_close_prompt(app)
@@ -4580,7 +4580,7 @@ handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.B
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
 		tree_sync_workspace(app, rt)
-		editor_views_prune(app)
+		if prune_editor_state { editor_views_prune(app) }
 		if app.editor_window_ready && !document_is_open(&app.backend.state, app.editor_window.document_id) {
 			editor_window_destroy(&app.editor_window)
 			app.editor_window_ready = false
