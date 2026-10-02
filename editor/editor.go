@@ -106,10 +106,6 @@ func (e *ScratchEditor) CanRedo() bool { return e != nil && len(e.redo) != 0 }
 // the previous contents, and reusing revision zero would let that result
 // masquerade as a projection for the replacement bytes.
 func (e *ScratchEditor) Reset(source []byte) {
-	oldSource := e.Buffer.Text()
-	start, oldEnd, newEnd := commonSplice(oldSource, source)
-	edit := e.sourceEdit(start, oldEnd, source[start:newEnd], 0)
-	beforeRevision := e.revision
 	e.Buffer = NewBuffer(source)
 	e.Cursor, e.Anchor = 0, 0
 	e.Affinity = AffinityLeading
@@ -117,9 +113,9 @@ func (e *ScratchEditor) Reset(source []byte) {
 	e.ClearPreferredVerticalX()
 	e.revision = e.nextRevision
 	e.nextRevision++
-	edit.BeforeRevision = beforeRevision
-	edit.AfterRevision = e.revision
-	e.recordSourceEdit(edit)
+	// A load/reset is not a source edit within the same document identity.
+	// Positions from an earlier buffer must not be rebased into these bytes.
+	e.editJournal = nil
 	e.undo = nil
 	e.redo = nil
 	e.BreakUndoGroup()
