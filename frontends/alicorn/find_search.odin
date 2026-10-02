@@ -114,6 +114,35 @@ find_presentation_install :: proc(
 	return true
 }
 
+// The bridge owns command-result match storage until it is destroyed. Install
+// copies that data into the retained presentation before releasing the result;
+// callers must not keep a slice alias from Backend_Command_Result past this
+// boundary.
+find_presentation_install_result :: proc(
+	presentation: ^Find_Presentation,
+	response: ^bridge.Backend_Command_Result,
+	document_id, query: string,
+	match_case, whole_word: bool,
+	editor_revision: u64,
+	source_cursor: u64,
+	allocator := context.allocator,
+) -> bool {
+	if response == nil { return false }
+	defer bridge.backend_command_result_destroy(response, allocator)
+	return find_presentation_install(
+		presentation,
+		document_id,
+		query,
+		match_case,
+		whole_word,
+		editor_revision,
+		response.matches,
+		response.matches_truncated,
+		source_cursor,
+		allocator,
+	)
+}
+
 find_presentation_destroy :: proc(presentation: ^Find_Presentation, allocator: mem.Allocator) {
 	if presentation == nil { return }
 	delete(presentation.document_id, allocator)

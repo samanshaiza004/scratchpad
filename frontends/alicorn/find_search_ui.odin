@@ -515,13 +515,23 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	   app.find_presentation.match_case == app.find_match_case &&
 	   app.find_presentation.whole_word == app.find_whole_word { return }
 
-	matches: []bridge.Current_Match
-	truncated := false
+	view := &app.editor_views[view_index]
+	source_cursor := view.caret_byte
+	if app.find_presentation.document_id == document.id &&
+	   app.find_presentation.query == app.find_query &&
+	   app.find_presentation.active_match >= 0 &&
+	   app.find_presentation.active_match < len(app.find_presentation.matches) {
+		// When an option changes, keep the user's current result if it still
+		// qualifies; otherwise select the next result at or after it.
+		active := app.find_presentation.matches[app.find_presentation.active_match]
+		if active.start >= 0 { source_cursor = u64(active.start) }
+	}
+
 	if len(app.find_query) > 0 {
 		if len(app.find_query) > bridge.MAX_FIND_QUERY_BYTES {
 			if find_presentation_install(&app.find_presentation, document.id, app.find_query,
-			   app.find_match_case, app.find_whole_word, document.editor_revision, matches, false,
-			   app.editor_views[view_index].caret_byte) {
+			   app.find_match_case, app.find_whole_word, document.editor_revision, nil, false,
+			   source_cursor) {
 				find_set_message(&app.find_error, "Find query exceeds the 4096 byte limit.")
 			} else {
 				find_set_message(&app.find_error, "Could not retain the bounded Find query state.")
@@ -539,26 +549,28 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			read_latest_after=false,
 		)
 		if response.ok {
-			matches = response.matches
-			truncated = response.matches_truncated
 			find_set_message(&app.find_error, "")
+			if !find_presentation_install_result(
+				&app.find_presentation,
+				&response,
+				document.id,
+				app.find_query,
+				app.find_match_case,
+				app.find_whole_word,
+				document.editor_revision,
+				source_cursor,
+			) {
+				find_set_message(&app.find_error, "Could not retain the bounded Find matches.")
+				return
+			}
+			if len(app.find_presentation.matches) > 0 { _ = find_apply_active_match(app, rt) }
+			return
 		} else {
 			find_set_message(&app.find_error, response.message)
 		}
 		bridge.backend_command_result_destroy(&response, context.allocator)
 	} else {
 		find_set_message(&app.find_error, "")
-	}
-	view := &app.editor_views[view_index]
-	source_cursor := view.caret_byte
-	if app.find_presentation.document_id == document.id &&
-	   app.find_presentation.query == app.find_query &&
-	   app.find_presentation.active_match >= 0 &&
-	   app.find_presentation.active_match < len(app.find_presentation.matches) {
-		// When an option changes, keep the user's current result if it still
-		// qualifies; otherwise select the next result at or after it.
-		active := app.find_presentation.matches[app.find_presentation.active_match]
-		if active.start >= 0 { source_cursor = u64(active.start) }
 	}
 	if !find_presentation_install(
 		&app.find_presentation,
@@ -567,8 +579,8 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		app.find_match_case,
 		app.find_whole_word,
 		document.editor_revision,
-		matches,
-		truncated,
+		nil,
+		false,
 		source_cursor,
 	) {
 		find_set_message(&app.find_error, "Could not retain the bounded Find matches.")

@@ -78,6 +78,37 @@ test_find_paint_uses_markdown_source_coordinates_across_wrap_boundary :: proc(t:
 }
 
 @(test)
+test_find_presentation_copies_bridge_matches_before_releasing_result :: proc(t: ^testing.T) {
+	response := bridge.Backend_Command_Result{
+		ok=true,
+		matches=make([]bridge.Current_Match, 1, allocator=context.allocator),
+		matches_owned=true,
+	}
+	response.matches[0] = bridge.Current_Match{start=1_234, end=1_239, line=29, column=8}
+	presentation: Find_Presentation
+	defer find_presentation_destroy(&presentation, context.allocator)
+
+	installed := find_presentation_install_result(
+		&presentation,
+		&response,
+		"doc",
+		"needle",
+		false,
+		false,
+		7,
+		0,
+	)
+	testing.expect(t, installed, "Find should install results while the bridge still owns their storage")
+	testing.expect(t, len(response.matches) == 0, "installing should release the bridge-owned match array")
+	testing.expect(t, len(presentation.matches) == 1, "Find presentation should own an independent match copy")
+	if len(presentation.matches) == 1 {
+		match := presentation.matches[0]
+		testing.expect(t, match.start == 1_234 && match.end == 1_239 && match.line == 29 && match.column == 8,
+			"match offsets and line must remain intact after the bridge result is destroyed")
+	}
+}
+
+@(test)
 test_workspace_search_view_discards_stale_or_duplicate_pages :: proc(t: ^testing.T) {
 	view: Workspace_Search_View
 	workspace_search_view_begin(&view, 2, context.temp_allocator)
