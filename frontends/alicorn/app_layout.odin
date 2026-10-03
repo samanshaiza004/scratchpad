@@ -73,15 +73,6 @@ build_app :: proc(
 			app.workspace_search_focus_pending = true
 		}
 		alicorn.container_end(&ui)
-		alicorn.container_begin(&ui, .Container, label="workspace-panel-heading", style=alicorn.layout_style(.Row, height=30, gap=6, align=.Center))
-		alicorn.text(&ui, "SEARCH" if app.workspace_search_mode else "FILES", style=alicorn.layout_style(.Row, grow=1, height=26))
-		if alicorn.button(&ui, "Quick Open", key=alicorn.key_string("workspace-quick-open"), style=alicorn.layout_style(.Row, width=84, height=28)) {
-			quick_open_open_surface(app, rt)
-		}
-		if alicorn.button(&ui, "Commands…", key=alicorn.key_string("workspace-command-palette-open"), style=alicorn.layout_style(.Row, width=100, height=28)) {
-			command_palette_open_surface(app, rt)
-		}
-		alicorn.container_end(&ui)
 		if app.workspace_search_mode {
 			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=34))
 			app.workspace_search_query_node = query_node
