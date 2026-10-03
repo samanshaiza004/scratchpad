@@ -19,11 +19,29 @@ These are follow-up product gaps, not reasons to retain Shirei as a second front
 
 Alicorn now covers the core v0.1.0 file/editor path: open/save/Save As, reorderable tabs with drag-and-drop, dirty-close decisions, workspace browsing and mutations with file/directory drag-and-drop, quick open, workspace search, Find/Replace with match-case and whole-word options, Go to Line, undo/redo, clipboard, IME composition, conflict resolution and recovery, Markdown editing commands, Tree-sitter syntax highlighting for Go/TypeScript/TSX, table formatting/navigation, prose and cell-aware wrapping, and per-document wrap override. The Go application owns document bytes and product commands; Alicorn owns transient interaction and presentation through the Caliber boundary.
 
-## Native validation still required
+## Native validation record and remaining checks
 
-These are implementation checks rather than known missing features: verify Windows and macOS file dialogs, OS trash, clipboard, IME composition/candidate positioning, pointer selection and drag autoscroll, tab reordering, file/directory drag-and-drop (including invalid targets and preview-tab promotion), DPI/resizing, and shutdown behavior on real desktop builds. Headless tests and CI smoke checks do not replace those platform checks.
+The project owner manually verified on macOS (2026-10-02) that AppKit menu
+commands and keyboard shortcuts work, IME works, and native window resizing
+works. The owner had previously confirmed that the file/folder picker works.
+The latest local macOS native smoke also passed launch, rendered publication,
+wake, and ordered shutdown with SDL 3.4.16 and Metal.
+macOS verification for this pass is complete; the broader parity items below
+are explicitly deferred and are not claimed as tested.
 
-Validation record for 2026-10-02: the Windows native lifecycle smoke passed (`publication_rendered`, `wake_observed`, and `ordered_shutdown` all true). The full automated Go/Caliber/Alicorn test suite and `go vet ./...` also passed locally. This does not certify the manual interaction matrix above; macOS and hands-on Windows checks remain open release-gate work.
+Still to verify on real desktop builds: Windows native menu/title-bar behavior;
+OS trash and clipboard; IME composition and candidate positioning beyond the
+reported Mac check; pointer selection and drag autoscroll; tab reordering;
+file/directory drag-and-drop (including invalid targets and preview-tab
+promotion); DPI/display movement beyond the reported resize check; and full
+Monitor, History, and Scope operation on both platforms. Headless tests and CI
+smoke checks do not replace these interaction checks.
+
+Validation record for 2026-10-02: the Windows native lifecycle smoke passed
+(`publication_rendered`, `wake_observed`, and `ordered_shutdown` all true). The
+full automated Go/Caliber/Alicorn test suite and `go vet ./...` also passed
+locally. The owner-reported macOS checks above are manual evidence; hands-on
+Windows and the remaining platform/app matrix are still open release-gate work.
 
 ## Historical design evidence
 
