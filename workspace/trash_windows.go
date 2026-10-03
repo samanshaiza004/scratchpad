@@ -117,7 +117,7 @@ func (windowsTrasher) Trash(path string) error {
 
 	performResult := callCOM(operation, iFileOperationPerformOperations)
 	var aborted uint32
-	checkResult := callCOM(operation, iFileOperationGetAnyOperationsAborted, uintptr(unsafe.Pointer(&aborted)))
+	checkResult := getAnyOperationsAborted(operation, &aborted)
 	if hresultFailed(checkResult) {
 		return hresultError("check Recycle Bin operation result", checkResult)
 	}
@@ -131,13 +131,25 @@ func (windowsTrasher) Trash(path string) error {
 }
 
 func callCOM(iface unsafe.Pointer, method uintptr, args ...uintptr) uintptr {
-	vtable := *(*uintptr)(iface)
-	address := *(*uintptr)(unsafe.Pointer(vtable + method*unsafe.Sizeof(uintptr(0))))
+	address := comMethodAddress(iface, method)
 	callArgs := make([]uintptr, 1, len(args)+1)
 	callArgs[0] = uintptr(iface)
 	callArgs = append(callArgs, args...)
 	result, _, _ := syscall.SyscallN(address, callArgs...)
 	return result
+}
+
+func getAnyOperationsAborted(iface unsafe.Pointer, aborted *uint32) uintptr {
+	address := comMethodAddress(iface, iFileOperationGetAnyOperationsAborted)
+	result, _, _ := syscall.SyscallN(address, uintptr(iface), uintptr(unsafe.Pointer(aborted)))
+	runtime.KeepAlive(aborted)
+	return result
+}
+
+func comMethodAddress(iface unsafe.Pointer, method uintptr) uintptr {
+	vtable := *(*unsafe.Pointer)(iface)
+	entry := (*uintptr)(unsafe.Add(vtable, method*unsafe.Sizeof(uintptr(0))))
+	return *entry
 }
 
 func releaseCOM(iface unsafe.Pointer) {

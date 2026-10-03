@@ -83,10 +83,12 @@ type FileStore interface {
 	Save(path string, data []byte, mode fs.FileMode) (DiskVersion, error)
 }
 
-// ConditionalFileStore can replace a file only when it still has the
-// supplied verified version. It is optional for read-only and recovery
+// ConditionalFileStore verifies the supplied file version immediately before
+// atomically replacing the file. The separate version check and replacement
+// leave a narrow race with concurrent external writers, so this is not a
+// filesystem compare-and-swap. It is optional for read-only and recovery
 // FileStore implementations; writable document workflows fail closed when
-// the store cannot provide this compare-and-replace guarantee.
+// the store cannot provide this late version-checked replacement.
 type ConditionalFileStore interface {
 	SaveIfVersion(path string, data []byte, mode fs.FileMode, expected DiskVersion) (DiskVersion, error)
 }

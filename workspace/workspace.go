@@ -73,8 +73,10 @@ func AtomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 
 // AtomicWriteFileIfVersion performs the same atomic replacement as
 // AtomicWriteFile, but checks the destination's verified content identity
-// immediately before replacing it. The replacement is refused if the
-// destination was created, removed, or changed since expected was observed.
+// immediately before replacing it. This is a late version-checked atomic
+// replacement, not a filesystem compare-and-swap: an external writer can
+// still change the destination in the narrow interval between the check and
+// the replacement.
 func AtomicWriteFileIfVersion(path string, data []byte, mode fs.FileMode, expected DiskVersion) error {
 	return atomicWriteFile(path, data, mode, &expected, nil)
 }
