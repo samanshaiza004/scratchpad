@@ -248,16 +248,16 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	tree_flatten_directory(&app, "", 0, &rows)
 	for row, index in rows {
-		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "src/nested") && row.is_dir {
+		if tree_test_paths_equal(row.path, "src/nested") && row.is_dir {
 			tree_set_focused_row(&app, &rt, row, index)
 			break
 		}
 	}
 	delete(rows)
 	_ = application_key(rawptr(&app), &rt, .Right)
-	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "src/nested/first.txt"), "Right on an expanded folder should focus its first child")
+	testing.expect(t, tree_test_paths_equal(app.tree_focused_path, "src/nested/first.txt"), "Right on an expanded folder should focus its first child")
 	_ = application_key(rawptr(&app), &rt, .Left)
-	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "src/nested"), "Left on a child should focus its parent folder")
+	testing.expect(t, tree_test_paths_equal(app.tree_focused_path, "src/nested"), "Left on a child should focus its parent folder")
 	_ = application_key(rawptr(&app), &rt, .Left)
 	navigation_nested_index := tree_directory_index(&app, nested_source_path)
 	testing.expect(t, navigation_nested_index >= 0 && !app.tree_directories[navigation_nested_index].expanded, "Left on an expanded folder should collapse it")
@@ -267,7 +267,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	rows = make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	tree_flatten_directory(&app, "", 0, &rows)
 	for row, index in rows {
-		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "src/nested/first.txt") {
+		if tree_test_paths_equal(row.path, "src/nested/first.txt") {
 			tree_set_focused_row(&app, &rt, row, index)
 			break
 		}
@@ -289,7 +289,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		alicorn.Pointer_Event{kind=.Down, x=context_x, y=context_y, button=alicorn.POINTER_BUTTON_SECONDARY},
 		context_row,
 	)
-	testing.expect(t, alicorn.context_menu_is_open(&rt) && tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.workspace_context_path), "src/nested/first.txt"),
+	testing.expect(t, alicorn.context_menu_is_open(&rt) && tree_test_paths_equal(app.workspace_context_path, "src/nested/first.txt"),
 		"secondary-click should open the context menu for the row under the pointer")
 	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "context menu should describe after secondary-click"); return }
 	rename_item := test_workspace_context_menu_item(&rt, "Rename")
@@ -298,7 +298,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	testing.expect(t, alicorn.context_menu_handle_key(&rt, .Activate), "Enter should activate the focused workspace context-menu action")
 	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "Rename action should dispatch through the existing mutation flow"); return }
 	testing.expect(t, app.workspace_mutation_kind == .Rename &&
-		tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.workspace_mutation_source), "src/nested/first.txt") &&
+		tree_test_paths_equal(app.workspace_mutation_source, "src/nested/first.txt") &&
 		app.workspace_mutation_name == "first.txt",
 		"context-menu Rename should open the existing dialog for the exact right-clicked item")
 	workspace_mutation_cancel(&app, &rt)
@@ -306,7 +306,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	if !test_render_workspace_tree(t, &app, &rt) { return }
 	_ = application_key(rawptr(&app), &rt, .Context_Menu)
 	testing.expect(t, alicorn.context_menu_is_open(&rt), "Shift+F10 should open the context menu for the focused tree item")
-	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.workspace_context_path), "src/nested/first.txt"),
+	testing.expect(t, tree_test_paths_equal(app.workspace_context_path, "src/nested/first.txt"),
 		"keyboard invocation should preserve the focused semantic tree target")
 	alicorn.context_menu_close(&rt)
 	if !test_render_workspace_tree(t, &app, &rt) { return }
@@ -323,7 +323,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	rows = make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	tree_flatten_directory(&app, "", 0, &rows)
 	for row, index in rows {
-		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "src/nested/first.txt") {
+		if tree_test_paths_equal(row.path, "src/nested/first.txt") {
 			tree_set_focused_row(&app, &rt, row, index)
 			break
 		}
@@ -381,7 +381,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 			testing.expect(t, false, fmt.tprintf("unexpected moved document path %s", document.path))
 		}
 	}
-	testing.expect(t, tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "archive/src/nested/first.txt"), fmt.tprintf("tree focus should follow a moved descendant by component-aware path remapping (got %s)", app.tree_focused_path))
+	testing.expect(t, tree_test_paths_equal(app.tree_focused_path, "archive/src/nested/first.txt"), fmt.tprintf("tree focus should follow a moved descendant by component-aware path remapping (got %s)", app.tree_focused_path))
 	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
 		kind=.Started,
 		drag_type=SCRATCHPAD_DRAG_WORKSPACE,

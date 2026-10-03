@@ -5,12 +5,12 @@ import "core:strings"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
-editor_render_table_pipe :: proc(ui: ^alicorn.UI, document_id: string, logical_line: u64, pipe_index: int, row_height: f32) {
+editor_render_table_pipe :: proc(ui: ^alicorn.UI, pipe_index: int, row_height: f32) {
 	if ui == nil { return }
 	pipe := alicorn.text(
 		ui,
 		"|",
-		key=alicorn.key_string(fmt.tprintf("scratchpad-table-pipe:%s:%d:%d", document_id, logical_line, pipe_index)),
+		key=alicorn.key_u64(u64(pipe_index)),
 		style=alicorn.layout_style(.Row, width=10, height=row_height, align=.Start),
 		font=.Monospace,
 		text_style=alicorn.Text_Style{overflow=.Clip},
@@ -28,7 +28,6 @@ editor_render_table_cells :: proc(
 	ui: ^alicorn.UI,
 	app: ^App,
 	rt: ^alicorn.Runtime,
-	document_id: string,
 	view: ^Editor_View_State,
 	window: ^Editor_Window,
 	line: ^Editor_Display_Line,
@@ -42,12 +41,12 @@ editor_render_table_cells :: proc(
 		ui,
 		.Container,
 		label="scratchpad-table-visual-row",
-		key=alicorn.key_string(fmt.tprintf("scratchpad-table-row:%s:%d", document_id, line.logical_line)),
+		key=alicorn.key_u64(line.logical_line),
 		style=alicorn.layout_style(.Row, width=wrap_width, height=row_height, gap=0, align=.Start, clip=true),
 	)
 	pipe_index := 0
 	if table.leading_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, document_id, line.logical_line, pipe_index, row_height)
+		editor_render_table_pipe(ui, pipe_index, row_height)
 		pipe_index += 1
 	}
 	for &cell, cell_index in table.cells {
@@ -56,7 +55,7 @@ editor_render_table_cells :: proc(
 		cell_node := alicorn.text(
 			ui,
 			cell.display,
-			key=alicorn.key_string(fmt.tprintf("scratchpad-table-cell:%s:%d:%d", document_id, line.logical_line, cell_index)),
+			key=alicorn.key_u64(u64(cell_index)),
 			style=alicorn.layout_style(.Row, width=table.widths[cell_index], height=row_height, align=.Start, clip=true),
 			font=.Monospace,
 			text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=cell_overflow},
@@ -114,12 +113,12 @@ editor_render_table_cells :: proc(
 			app.editor_input_anchor_affinity = view.caret_affinity
 		}
 		if cell_index+1 < len(table.cells) && pipe_index < len(table.pipes) {
-			editor_render_table_pipe(ui, document_id, line.logical_line, pipe_index, row_height)
+			editor_render_table_pipe(ui, pipe_index, row_height)
 			pipe_index += 1
 		}
 	}
 	if table.trailing_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, document_id, line.logical_line, pipe_index, row_height)
+		editor_render_table_pipe(ui, pipe_index, row_height)
 	}
 	alicorn.container_end(ui)
 }
@@ -200,16 +199,16 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
 	if document.status == "conflict" {
-		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string(fmt.tprintf("document-conflict:%s", document.id)), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=COLOR_SUBTLE)
+		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string("document-conflict-actions"), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=COLOR_SUBTLE)
 		alicorn.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
 		alicorn.container_begin(ui, .Container, label="document-conflict-buttons", style=alicorn.layout_style(.Row, height=30, gap=8, align=.Center))
-		if alicorn.button(ui, "Reload from Disk", key=alicorn.key_string(fmt.tprintf("conflict-reload:%s", document.id)), style=alicorn.layout_style(.Row, width=140, height=28)) {
+		if alicorn.button(ui, "Reload from Disk", key=alicorn.key_string("conflict-reload"), style=alicorn.layout_style(.Row, width=140, height=28)) {
 			editor_resolve_conflict(app, rt, document.id, false)
 		}
-		if alicorn.button(ui, "Keep Mine", key=alicorn.key_string(fmt.tprintf("conflict-keep:%s", document.id)), style=alicorn.layout_style(.Row, width=104, height=28)) {
+		if alicorn.button(ui, "Keep Mine", key=alicorn.key_string("conflict-keep"), style=alicorn.layout_style(.Row, width=104, height=28)) {
 			editor_resolve_conflict(app, rt, document.id, true)
 		}
-		if alicorn.button(ui, "Save As…", key=alicorn.key_string(fmt.tprintf("conflict-save-as:%s", document.id)), style=alicorn.layout_style(.Row, width=100, height=28)) {
+		if alicorn.button(ui, "Save As…", key=alicorn.key_string("conflict-save-as"), style=alicorn.layout_style(.Row, width=100, height=28)) {
 			request_file_dialog(app, rt, .Save_File, "Save As")
 		}
 		alicorn.container_end(ui)
@@ -388,7 +387,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	alicorn.virtual_list_height_index_rebuild_prefix(&view.wrap_height_index)
 	editor_scroll := alicorn.scroll_region_begin(
 		ui,
-		key=alicorn.key_string(fmt.tprintf("scratchpad-editor:%s", document.id)),
+		key=alicorn.key_string("editor-scroll-region"),
 		content_height=view.wrap_height_index.total_height,
 		line_height=view.wrap_height_index.estimated_height,
 		content_width=content_width,
@@ -474,12 +473,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			                           !view.preedit_active && !view.preedit_recoverable
 			markdown_row := editor_markdown_row_presentation(window, line, row_presentation_current)
 			row_background := editor_markdown_row_background(markdown_row)
-			row_key := alicorn.key_string(fmt.tprintf("scratchpad-row:%s:%d", document.id, line.logical_line))
 			editor_row_node := alicorn.container_begin(
 				ui,
 				.Container,
 				label="scratchpad-editor-logical-line",
-				key=row_key,
+				key=alicorn.key_u64(line.logical_line),
 				style=alicorn.layout_style(.Row, height=row_height, gap=8, align=.Center, clip=true),
 				color=row_background,
 			)
@@ -490,7 +488,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				ui,
 				.Virtual_List,
 				label="scratchpad-editor-line-number-gutter",
-				key=fmt.tprintf("scratchpad-gutter-lane:%s:%d", document.id, line.logical_line),
+				key="gutter",
 				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center, clip=true),
 				color=COLOR_BACKGROUND,
 			)
@@ -500,7 +498,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			line_number_node := alicorn.text(
 				ui,
 				line_number_text,
-				key=alicorn.key_string(fmt.tprintf("scratchpad-line-number:%s:%d", document.id, line.logical_line)),
+				key=alicorn.key_u64(line.logical_line),
 				font=.Monospace,
 			)
 			if editor_table_line_is_projected(window, line) && window_matches && rt.focused == list.scroll.id &&
@@ -519,7 +517,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				ui,
 				.Virtual_List,
 				label="scratchpad-editor-source-lane",
-				key=fmt.tprintf("scratchpad-source-lane:%s:%d", document.id, line.logical_line),
+				key="source",
 				style=alicorn.layout_style(.Row, width=wrap_width, height=row_height, clip=true),
 				scroll_offset_x=list.scroll.offset_x if !line_wraps else 0,
 				layout_scroll_offset_x=list.scroll.offset_x if !line_wraps else 0,
@@ -528,7 +526,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				paint_table := window_covers_view && presentation_visual &&
 				               window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 				editor_render_table_cells(
-					ui, app, rt, document.id, view, window, line, table_row,
+					ui, app, rt, view, window, line, table_row,
 					row_height, wrap_width, list.scroll.id, window_matches, paint_table,
 				)
 			} else {
@@ -572,7 +570,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			line_node := alicorn.text(
 				ui,
 				display_text,
-				key=alicorn.key_string(fmt.tprintf("scratchpad-line:%s:%d", document.id, line.logical_line)),
+				key=alicorn.key_u64(line.logical_line),
 				style=line_text_style,
 				font=.Monospace,
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=text_overflow},
@@ -643,7 +641,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			alicorn.text(
 				ui,
 				label,
-				key=alicorn.key_string(fmt.tprintf("scratchpad-loading-line:%s:%d", document.id, line_number)),
+				key=alicorn.key_u64(line_number),
 				style=alicorn.layout_style(.Row, height=row_height),
 			)
 		} else {
@@ -653,7 +651,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			alicorn.text(
 				ui,
 				"",
-				key=alicorn.key_string(fmt.tprintf("scratchpad-stale-line:%s:%d", document.id, line_number)),
+				key=alicorn.key_u64(line_number),
 				style=alicorn.layout_style(.Row, height=row_height),
 			)
 		}
@@ -771,12 +769,12 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	case .Off: wrap_label = "Off"
 	case .Auto: wrap_label = "Auto"
 	}
-	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string(fmt.tprintf("document-status:%s", document.id)), style=alicorn.layout_style(.Row, height=28, gap=14, padding=8, align=.Center), color=COLOR_SUBTLE)
+	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=28, gap=14, padding=8, align=.Center), color=COLOR_SUBTLE)
 	alicorn.text(ui, fmt.tprintf("%s%s  ·  %s  ·  %d lines", location, modified, document.language, line_count))
-	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string(fmt.tprintf("document-wrap:%s", document.id)), style=alicorn.layout_style(.Row, width=96, height=24)) {
+	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=96, height=24)) {
 		editor_toggle_wrap_mode(app, rt)
 	}
-	if alicorn.button(ui, "Go to Line…", key=alicorn.key_string(fmt.tprintf("document-goto:%s", document.id)), style=alicorn.layout_style(.Row, width=106, height=24)) {
+	if alicorn.button(ui, "Go to Line…", key=alicorn.key_string("document-goto-line"), style=alicorn.layout_style(.Row, width=106, height=24)) {
 		go_to_line_open_surface(app, rt)
 	}
 	alicorn.container_end(ui)

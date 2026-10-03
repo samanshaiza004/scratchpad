@@ -102,7 +102,7 @@ build_app :: proc(
 				for position := search_list.first; position < search_list.last; position += 1 {
 					result := app.workspace_search_view.results[position]
 					label := workspace_search_result_label(result)
-					if alicorn.button(&ui, label, key=alicorn.key_string(fmt.tprintf("workspace-search-result:%d:%d", app.workspace_search_view.generation, position)), style=alicorn.layout_style(.Row, height=68), state=alicorn.Button_State{selected=app.workspace_search_selected == position}, text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Wrap}, content_style=alicorn.button_content_style(.Start, padding_x=7, padding_y=5)) {
+					if alicorn.button(&ui, label, key=alicorn.key_pair(app.workspace_search_view.generation, u64(position)), style=alicorn.layout_style(.Row, height=68), state=alicorn.Button_State{selected=app.workspace_search_selected == position}, text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Wrap}, content_style=alicorn.button_content_style(.Start, padding_x=7, padding_y=5)) {
 						app.workspace_search_selected = position
 						_ = workspace_search_activate_result(app, rt, position)
 					}
@@ -121,11 +121,12 @@ build_app :: proc(
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=COLOR_PANEL)
 		alicorn.container_begin(&ui, .Container, label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), color=COLOR_SUBTLE)
 		for document in state.documents {
+			if !alicorn.component_begin(&ui, alicorn.key_string(document.id)) { continue }
 			title := document_title(document.path)
 			if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
 			if document.dirty { title = fmt.tprintf("%s •", title) }
 			selected := state.active == document.id
-			if alicorn.button(&ui, title, key=alicorn.key_string(fmt.tprintf("tab:%s", document.id)), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
+			if alicorn.button(&ui, title, key=alicorn.key_string("document-tab"), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected}, content_style=alicorn.button_content_style(.Start, padding_x=10)) {
 				if !frame_deferred_action_schedule(app, .Select_Document, document.id) {
 					set_error(app, "Could not queue document selection until the current frame is complete.")
 					alicorn.invalidate_root(rt, "Scratchpad could not defer tab selection")
@@ -133,12 +134,13 @@ build_app :: proc(
 			}
 			_ = alicorn.drag_source(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(document.id))
 			_ = alicorn.drop_target(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(document.id), .Between_Horizontal)
-			if alicorn.button(&ui, "×", key=alicorn.key_string(fmt.tprintf("tab-close:%s", document.id)), style=alicorn.layout_style(.Row, width=30, height=32)) {
+			if alicorn.button(&ui, "×", key=alicorn.key_string("document-tab-close"), style=alicorn.layout_style(.Row, width=30, height=32)) {
 				if !frame_deferred_action_schedule(app, .Close_Document, document.id) {
 					set_error(app, "Could not queue document close until the current frame is complete.")
 					alicorn.invalidate_root(rt, "Scratchpad could not defer tab close")
 				}
 			}
+			alicorn.component_end(&ui)
 		}
 		if len(state.documents) == 0 {
 			alicorn.text(&ui, "No documents open")
@@ -192,7 +194,10 @@ build_app :: proc(
 		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=COLOR_PANEL)
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
-			build_document_editor(app, &ui, rt, active)
+			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
+				build_document_editor(app, &ui, rt, active)
+				alicorn.component_end(&ui)
+			}
 		} else {
 			alicorn.text(&ui, "Open a file to begin")
 			alicorn.text(&ui, "Open a document to view its bounded source window.")

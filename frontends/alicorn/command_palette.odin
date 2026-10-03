@@ -493,7 +493,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 			if alicorn.button(
 				ui,
 				label,
-				key=alicorn.key_string(fmt.tprintf("scratchpad-command-palette-result:%s", result.action_id)),
+				key=alicorn.key_string(result.action_id),
 				state=alicorn.Button_State{selected=index == app.command_palette_selected_index, disabled=!result.enabled, quiet=index != app.command_palette_selected_index},
 				style=alicorn.layout_style(.Row, height=COMMAND_PALETTE_ROW_HEIGHT),
 				text_style=alicorn.Text_Style{overflow=.Ellipsis},

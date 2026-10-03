@@ -210,7 +210,7 @@ test_editor_pointer_autoscrolls_both_axes_and_repeats_for_stationary_drag :: pro
 		line, found := editor_window_line(&app.editor_window, u64(position))
 		if !found { continue }
 		text_node := alicorn.text(&ui, line.display,
-			key=alicorn.key_string(fmt.tprintf("pointer-autoscroll-row:%d", position)),
+			key=alicorn.key_u64(u64(position)),
 			style=alicorn.layout_style(.Row, height=EDITOR_ROW_HEIGHT),
 			font=.Monospace,
 		)

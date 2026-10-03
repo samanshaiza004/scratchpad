@@ -67,7 +67,7 @@ test_workspace_tree_ignore_toggle_preserves_expansion_and_focus :: proc(t: ^test
 	tree_flatten_directory(&app, "", 0, &rows)
 	focused_index := -1
 	for row, index in rows {
-		if tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", row.path), "ordinary/keep.txt") {
+		if tree_test_paths_equal(row.path, "ordinary/keep.txt") {
 			focused_index = index
 			tree_set_focused_row(&app, &rt, row, index)
 			break
@@ -90,7 +90,7 @@ test_workspace_tree_ignore_toggle_preserves_expansion_and_focus :: proc(t: ^test
 	focus_after := alicorn.semantic_focus_state(&rt)
 	testing.expect(t, ignored_visible, "the ignored folder should appear when visibility is enabled")
 	testing.expect(t, keep_visible, "the previously expanded ordinary folder should remain visible")
-	focused_path_preserved := tree_test_key_matches_path(fmt.tprintf("workspace-entry:%s", app.tree_focused_path), "ordinary/keep.txt")
+	focused_path_preserved := tree_test_paths_equal(app.tree_focused_path, "ordinary/keep.txt")
 	testing.expect(t, focus_after.id == focus_before.id && focused_path_preserved,
 		"toggling ignored-file visibility should preserve semantic focus")
 	_ = tree_load_directory(&app, "ignored", true)
@@ -219,7 +219,7 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	testing.expect(t, rt.invalidated, "changing the active file during description should retain its follow-up invalidation")
 	avar_id, _ = test_workspace_tree_row(&rt, "Runa/parse/avar.odin")
 	cff2_id, _ = test_workspace_tree_row(&rt, "Runa/parse/cff2.odin")
-	avar_path := rt.nodes[avar_id].key[len("workspace-entry:"):]
+	avar_path := app.tree_focused_path
 	focus_before_followup := alicorn.semantic_focus_state(&rt)
 	testing.expect(t, focus_before_followup.id == tree_semantic_id(avar_path, false),
 		"semantic focus should move to avar in the click frame")
@@ -268,21 +268,20 @@ test_click_workspace_tree_row :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Run
 }
 test_workspace_tree_row :: proc(rt: ^alicorn.Runtime, path: string) -> (id: alicorn.Node_ID, found: bool) {
 	for node_id in rt.order {
-		if node, exists := rt.nodes[node_id]; exists && tree_test_key_matches_path(node.key, path) {
+		if node, exists := rt.nodes[node_id]; exists && tree_test_paths_equal(node.key, path) {
 			return node_id, true
 		}
 	}
 	return 0, false
 }
-tree_test_key_matches_path :: proc(key, path: string) -> bool {
-	prefix := "workspace-entry:"
-	if !strings.has_prefix(key, prefix) { return false }
-	actual := key[len(prefix):]
-	if len(actual) != len(path) { return false }
-	for i in 0..<len(path) {
+tree_test_paths_equal :: proc(actual, expected: string) -> bool {
+	if len(actual) != len(expected) { return false }
+	for i in 0..<len(expected) {
 		actual_byte := actual[i]
+		expected_byte := expected[i]
 		if actual_byte == '\\' { actual_byte = '/' }
-		if actual_byte != path[i] { return false }
+		if expected_byte == '\\' { expected_byte = '/' }
+		if actual_byte != expected_byte { return false }
 	}
 	return true
 }

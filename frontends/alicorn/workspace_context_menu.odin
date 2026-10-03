@@ -38,8 +38,8 @@ workspace_context_menu_set_target :: proc(app: ^App, rt: ^alicorn.Runtime, targe
 workspace_context_menu_target_for_node :: proc(app: ^App, rt: ^alicorn.Runtime, node: alicorn.Node_ID) -> (target: Workspace_Tree_Row_Target, found: bool) {
 	if app == nil || rt == nil || node == 0 { return }
 	retained, retained_found := rt.nodes[node]
-	if !retained_found || !strings.has_prefix(retained.key, "workspace-entry:") { return }
-	path := retained.key[len("workspace-entry:"):]
+	if !retained_found || retained.key == "" { return }
+	path := retained.key
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)

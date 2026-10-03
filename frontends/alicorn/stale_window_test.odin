@@ -23,11 +23,11 @@ editor_stale_window_test_render :: proc(app: ^App, rt: ^alicorn.Runtime, documen
 	alicorn.end_frame(&ui)
 }
 
-editor_stale_window_test_line :: proc(rt: ^alicorn.Runtime, key: string) -> (id: alicorn.Node_ID, text: string, found: bool) {
-	if rt == nil { return }
-	for node_id in rt.order {
-		node, node_found := rt.nodes[node_id]
-		if node_found && node.key == key { return node_id, node.text, true }
+editor_stale_window_test_line :: proc(app: ^App, rt: ^alicorn.Runtime, logical_line: u64) -> (id: alicorn.Node_ID, text: string, found: bool) {
+	if app == nil || rt == nil { return }
+	for target in app.editor_row_targets {
+		if target.logical_line != logical_line { continue }
+		if node, node_found := rt.nodes[target.node]; node_found { return target.node, node.text, true }
 	}
 	return
 }
@@ -91,8 +91,8 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 	}
 	document := app.backend.state.documents[0]
 	editor_stale_window_test_render(&app, &rt, document)
-	old_line_0, old_text_0, old_found_0 := editor_stale_window_test_line(&rt, "scratchpad-line:stale-doc:0")
-	old_line_1, old_text_1, old_found_1 := editor_stale_window_test_line(&rt, "scratchpad-line:stale-doc:1")
+	old_line_0, old_text_0, old_found_0 := editor_stale_window_test_line(&app, &rt, 0)
+	old_line_1, old_text_1, old_found_1 := editor_stale_window_test_line(&app, &rt, 1)
 	testing.expect(t, old_found_0 && old_found_1 && old_text_0 == "alpha" && old_text_1 == "beta",
 		"the first authoritative presentation should retain the existing visible source rows")
 	if !old_found_0 || !old_found_1 { return }
@@ -136,8 +136,8 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 	app.backend.state.documents[0].byte_length = u64(len("alpha!\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta"))
 	document = app.backend.state.documents[0]
 	editor_stale_window_test_render(&app, &rt, document)
-	stale_line_0, stale_text_0, stale_found_0 := editor_stale_window_test_line(&rt, "scratchpad-line:stale-doc:0")
-	stale_line_1, stale_text_1, stale_found_1 := editor_stale_window_test_line(&rt, "scratchpad-line:stale-doc:1")
+	stale_line_0, stale_text_0, stale_found_0 := editor_stale_window_test_line(&app, &rt, 0)
+	stale_line_1, stale_text_1, stale_found_1 := editor_stale_window_test_line(&app, &rt, 1)
 	loading_found := false
 	for node_id in rt.order {
 		if node, node_found := rt.nodes[node_id]; node_found && strings.has_prefix(node.text, "Loading line ") {
@@ -152,7 +152,8 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 		"stale-while-revalidate should preserve the retained line subtree identities")
 	stale_placeholder_count := 0
 	for node_id in rt.order {
-		if node, node_found := rt.nodes[node_id]; node_found && strings.has_prefix(node.key, "scratchpad-stale-line:stale-doc:") {
+		if node, node_found := rt.nodes[node_id]; node_found && node.kind == .Text &&
+		   node.identity_key_numeric && node.identity_key_u64 >= 3 && node.identity_key_u64 < 8 && node.text == "" {
 			stale_placeholder_count += 1
 		}
 	}
@@ -210,8 +211,8 @@ test_stale_document_window_remains_visible_and_read_only_until_fresh_revision ::
 	app.backend.state.documents[0].byte_length = u64(len(new_source))
 	document = app.backend.state.documents[0]
 	editor_stale_window_test_render(&app, &rt, document)
-	new_line_0, new_text_0, new_found_0 := editor_stale_window_test_line(&rt, "scratchpad-line:stale-doc:0")
-	new_line_1, new_text_1, new_found_1 := editor_stale_window_test_line(&rt, "scratchpad-line:stale-doc:1")
+	new_line_0, new_text_0, new_found_0 := editor_stale_window_test_line(&app, &rt, 0)
+	new_line_1, new_text_1, new_found_1 := editor_stale_window_test_line(&app, &rt, 1)
 	fresh_window, fresh_is_authoritative := editor_view_window(
 		view,
 		&app.editor_window,

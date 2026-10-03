@@ -563,12 +563,13 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	chrome_became_disabled := false
 	for node_id in rt.order {
 		if node, found := rt.nodes[node_id]; found {
-			if node.key == fmt.tprintf("scratchpad-line:%s:0", document.id) {
-				optimistic_text_rendered = node.text == "hello worXldsecondthird"
+			if node.kind == .Text && node.text == "hello worXldsecondthird" {
+				optimistic_text_rendered = true
 			}
 			if node.key == "action-file-open" || node.key == "action-workspace-open" ||
-			   node.key == "action-document-close" || node.key == fmt.tprintf("tab:%s", typing_document_id) ||
-			   node.key == fmt.tprintf("tab-close:%s", typing_document_id) {
+			   node.key == "action-document-close" ||
+			   (node.key == "document-tab" && node.identity_key == typing_document_id) ||
+			   (node.key == "document-tab-close" && node.identity_key == typing_document_id) {
 				chrome_became_disabled = chrome_became_disabled || node.disabled
 			}
 		}

@@ -175,7 +175,7 @@ test_editor_short_document_rows_keep_fixed_height :: proc(t: ^testing.T) {
 			&ui,
 			.Container,
 			label="short-editor-logical-row",
-			key=alicorn.key_string(fmt.tprintf("short-editor-row:%d", position)),
+			key=alicorn.key_u64(u64(position)),
 			style=editor_logical_row_style(),
 		)
 		if position >= 0 && position < len(row_ids) { row_ids[position] = id }
@@ -336,9 +336,9 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	realized_rows := 0
 	first_row_found := false
 	last_fixture_row_found := false
-	for node_id in rt.order {
-		node, node_found := rt.nodes[node_id]
-		if !node_found || !strings.has_prefix(node.key, "scratchpad-line:") { continue }
+	for target in app.editor_row_targets {
+		node, node_found := rt.nodes[target.node]
+		if !node_found { continue }
 		realized_rows += 1
 		if node.font != .Monospace { testing.expect(t, false, "source lines should use Alicorn's monospace/Runa role") }
 	if strings.contains(node.text, "line-00000") { first_row_found = true }
