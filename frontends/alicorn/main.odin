@@ -132,6 +132,7 @@ App :: struct {
 	workspace_mutation_restore_semantic: alicorn.Semantic_Focus_State,
 	workspace_mutation_source_is_dir: bool,
 	workspace_mutation_dirty: bool,
+	workspace_editor_split_node: alicorn.Node_ID,
 	workspace_mutation_queued: bool,
 	frame_deferred_action: Deferred_Action,
 	frame_deferred_action_pending: bool,
@@ -350,7 +351,7 @@ editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.
 	if !view.wrap_height_index_ready { return }
 	scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
 	if scroll.id == 0 { return }
-	_, viewport_height := editor_wrap_viewport_size(rt, view, scroll)
+	_, viewport_height := editor_wrap_viewport_size(app, rt, view, scroll)
 	metrics := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll.offset_y, viewport_height)
 	line_number := max(metrics.first, 0)
 	line, line_found := editor_window_line(window, u64(line_number))
@@ -712,7 +713,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return workspace_context_menu_open_focused(app, rt)
 	}
 	if key == .Workspace_Rename {
-		if app.tree_scroll_owner != 0 && rt.focused == app.tree_scroll_owner && app.tree_focused_path != "" {
+		if app.tree_scroll_owner != 0 && alicorn.focused_node(rt) == app.tree_scroll_owner && app.tree_focused_path != "" {
 			workspace_mutation_open_selected(app, rt, .Rename)
 			return true
 		}
@@ -731,7 +732,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		alicorn.invalidate_root(rt, "Scratchpad Workspace Search opened")
 		return true
 	}
-	if app.workspace_search_mode && rt.focused == app.workspace_search_query_node {
+	if app.workspace_search_mode && alicorn.focused_node(rt) == app.workspace_search_query_node {
 		#partial switch key {
 		case .Up:
 			return workspace_search_move_selection(app, rt, -1)
@@ -760,13 +761,13 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		alicorn.invalidate_root(rt, "Scratchpad Workspace Search closed")
 		return true
 	}
-	if key == .Return && app.find_open && rt.focused == app.find_query_node {
+	if key == .Return && app.find_open && alicorn.focused_node(rt) == app.find_query_node {
 		return find_move_match(app, rt, 1)
 	}
-	if key == .Return && app.find_open && rt.focused == app.find_replace_node {
+	if key == .Return && app.find_open && alicorn.focused_node(rt) == app.find_replace_node {
 		return find_replace_current(app, rt)
 	}
-	if key == .Return && app.workspace_search_mode && rt.focused == app.workspace_search_query_node {
+	if key == .Return && app.workspace_search_mode && alicorn.focused_node(rt) == app.workspace_search_query_node {
 		if len(app.workspace_search_view.results) > 0 {
 			index := app.workspace_search_selected
 			if index < 0 || index >= len(app.workspace_search_view.results) { index = 0 }
@@ -775,7 +776,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		if !app.workspace_search_view.done { workspace_search_start_query(app, rt) }
 		return true
 	}
-	if key == .Return && app.editor_scroll_owner != 0 && rt.focused == app.editor_scroll_owner {
+	if key == .Return && app.editor_scroll_owner != 0 && alicorn.focused_node(rt) == app.editor_scroll_owner {
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found && document.language == "markdown" {
 			if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
 				view := &app.editor_views[view_index]
@@ -788,7 +789,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		}
 		return editor_insert_newline(app, rt)
 	}
-	if app.tree_scroll_owner != 0 && rt.focused == app.tree_scroll_owner {
+	if app.tree_scroll_owner != 0 && alicorn.focused_node(rt) == app.tree_scroll_owner {
 		#partial switch key {
 		case .Left, .Right:
 			return tree_move_horizontal_focus(app, rt, key)
@@ -809,7 +810,7 @@ editor_source_at_pointer :: proc(
 	clamp_to_viewport := false,
 ) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
 	if app == nil || rt == nil || app.editor_scroll_owner == 0 { return }
-	owner, owner_found := rt.nodes[app.editor_scroll_owner]
+	owner, owner_found := alicorn.node_info(rt, app.editor_scroll_owner)
 	if !owner_found || owner.scroll_viewport_width <= 0 || owner.scroll_viewport_height <= 0 { return }
 	left, top := owner.bounds.x, owner.bounds.y
 	right, bottom := left+owner.scroll_viewport_width, top+owner.scroll_viewport_height
@@ -835,7 +836,7 @@ editor_source_at_pointer :: proc(
 	best_line: u64
 	best_y := hit_y
 	for row_target in app.editor_row_targets {
-		row_node, row_found := rt.nodes[row_target.node]
+		row_node, row_found := alicorn.node_info(rt, row_target.node)
 		if !row_found || row_node.bounds.h <= 0 { continue }
 		if hit_y >= row_node.bounds.y && hit_y < row_node.bounds.y+row_node.bounds.h {
 			best_line, best_y = row_target.logical_line, hit_y
@@ -855,7 +856,7 @@ editor_source_at_pointer :: proc(
 	best_hit_x := hit_x
 	for target in app.editor_row_targets {
 		if target.logical_line != best_line { continue }
-		node, node_found := rt.nodes[target.node]
+		node, node_found := alicorn.node_info(rt, target.node)
 		if !node_found { continue }
 		distance: f32 = 0
 		if hit_x < node.bounds.x { distance = node.bounds.x-hit_x }
@@ -893,7 +894,7 @@ editor_ensure_line_visible :: proc(
 
 editor_pointer_outside_viewport :: proc(rt: ^alicorn.Runtime, owner_id: alicorn.Node_ID, x, y: f32) -> (outside: bool, dx, dy: f32) {
 	if rt == nil || owner_id == 0 { return }
-	owner, found := rt.nodes[owner_id]
+	owner, found := alicorn.node_info(rt, owner_id)
 	if !found || owner.scroll_viewport_width <= 0 || owner.scroll_viewport_height <= 0 { return }
 	left, top := owner.bounds.x, owner.bounds.y
 	right, bottom := left+owner.scroll_viewport_width, top+owner.scroll_viewport_height
@@ -926,7 +927,7 @@ editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^
 	outside, dx, dy := editor_pointer_outside_viewport(rt, app.editor_scroll_owner, view.drag_pointer_x, view.drag_pointer_y)
 	scrolled := false
 	if outside {
-		if owner, found := rt.nodes[app.editor_scroll_owner]; found {
+		if owner, found := alicorn.node_info(rt, app.editor_scroll_owner); found {
 			if dy != 0 { scrolled = alicorn.scroll_region_set_offset(rt, app.editor_scroll_owner, owner.scroll_offset_y+dy, "Scratchpad selection drag autoscrolled vertically") || scrolled }
 			if dx != 0 { scrolled = alicorn.scroll_region_set_offset_x(rt, app.editor_scroll_owner, owner.scroll_offset_x+dx, "Scratchpad selection drag autoscrolled horizontally") || scrolled }
 		}
@@ -972,15 +973,14 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	app := cast(^App)state
 	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 { return }
 	if event.kind == .Move {
-		if captured, found := rt.nodes[rt.captured_node]; found && captured.kind == .Split_Handle {
-			if owner, owner_found := rt.nodes[captured.split_owner]; owner_found && owner.label == "scratchpad-workspace-editor-split" {
-				// Alicorn marks retained layout dirty immediately, but Scratchpad's
-				// sparse wrapped-row heights are application-owned and must be
-				// remeasured for the new editor width. That measurement visits only
-				// the bounded visible source window.
-				alicorn.invalidate_root(rt, "Scratchpad editor width changed during split resize")
-				return
-			}
+		if captured, found := alicorn.node_info(rt, alicorn.captured_node(rt)); found &&
+		   captured.kind == .Split_Handle && captured.split_owner == app.workspace_editor_split_node {
+			// Alicorn marks retained layout dirty immediately, but Scratchpad's
+			// sparse wrapped-row heights are application-owned and must be
+			// remeasured for the new editor width. That measurement visits only
+			// the bounded visible source window.
+			alicorn.invalidate_root(rt, "Scratchpad editor width changed during split resize")
+			return
 		}
 	}
 	if event.kind == .Cancel || event.kind == .Up {
@@ -1002,7 +1002,7 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found {
 			if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
 				view := &app.editor_views[view_index]
-				if view.dragging_selection && rt.captured_node == app.editor_scroll_owner {
+				if view.dragging_selection && alicorn.captured_node(rt) == app.editor_scroll_owner {
 					view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
 					view.drag_pointer_valid = true
 					_ = editor_update_pointer_selection(app, rt, view)
@@ -1300,7 +1300,7 @@ editor_text_key :: proc(
 			}
 		case .Up, .Down, .Page_Up, .Page_Down:
 			current_line := line.logical_line
-			owner_node, owner_found := rt.nodes[owner]
+			owner_node, owner_found := alicorn.node_info(rt, owner)
 			gutter_width := editor_line_number_gutter_width(document.line_count)
 			wrap_width := f32(0)
 			if owner_found { wrap_width = max(owner_node.scroll_viewport_width-gutter_width-16, 80) }
@@ -1464,7 +1464,7 @@ editor_text_key :: proc(
 		if caret_target, target_available := editor_row_target_for_source(app.editor_row_targets[:], target_line.logical_line, next_caret); target_available {
 			if display_line, display_ok := editor_display_line_for_target(window, target_line, caret_target); display_ok {
 			if geometry := alicorn.text_node_caret_geometry(rt, caret_target.node, alicorn.Text_Position{byte=editor_source_to_display(&display_line, next_caret), affinity=next_affinity}); geometry.valid {
-				if owner_node, owner_found := rt.nodes[owner]; owner_found {
+				if owner_node, owner_found := alicorn.node_info(rt, owner); owner_found {
 					top, bottom := owner_node.scroll_viewport_bounds.y, owner_node.scroll_viewport_bounds.y+owner_node.scroll_viewport_height
 					next_y := owner_node.scroll_offset_y
 					if geometry.rect.y < top { next_y -= top-geometry.rect.y }
@@ -2452,13 +2452,13 @@ editor_line_fully_visible :: proc(
 	logical_line: u64,
 ) -> bool {
 	if rt == nil || owner == 0 { return false }
-	viewport, viewport_found := rt.nodes[owner]
+	viewport, viewport_found := alicorn.node_info(rt, owner)
 	if !viewport_found || viewport.scroll_viewport_height <= 0 { return false }
 	top := viewport.bounds.y
 	bottom := top+viewport.scroll_viewport_height
 	for target in rows {
 		if target.logical_line != logical_line { continue }
-		row, row_found := rt.nodes[target.node]
+		row, row_found := alicorn.node_info(rt, target.node)
 		if row_found && row.bounds.h > 0 && row.bounds.y >= top && row.bounds.y+row.bounds.h <= bottom {
 			return true
 		}

@@ -43,7 +43,7 @@ workspace_mutation_begin :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspac
 	workspace_mutation_clear(app)
 	app.workspace_mutation_restore_pending = false
 	app.workspace_mutation_restore_editor = false
-	app.workspace_mutation_restore_node = rt.focused
+	app.workspace_mutation_restore_node = alicorn.focused_node(rt)
 	app.workspace_mutation_restore_semantic = alicorn.semantic_focus_state(rt)
 	source_copy, source_error := strings.clone(source, context.allocator)
 	if source_error != nil {
@@ -69,7 +69,7 @@ workspace_mutation_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host
 		return true
 	case .Return:
 		if app.workspace_mutation_kind != .Trash && !app.workspace_mutation_queued &&
-		   app.workspace_mutation_name_node != 0 && rt.focused == app.workspace_mutation_name_node {
+		   app.workspace_mutation_name_node != 0 && alicorn.focused_node(rt) == app.workspace_mutation_name_node {
 			workspace_mutation_submit(app, rt, false)
 			return true
 		}
@@ -90,16 +90,14 @@ workspace_mutation_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		if app.workspace_mutation_queued || app.workspace_mutation_kind == .Trash {
 			key := "workspace-mutation-cancel"
 			if app.workspace_mutation_kind == .Trash { key = "workspace-trash-cancel" }
-			for id, node in rt.nodes {
-				if node.active && node.kind == .Button && node.key == key && alicorn.focus(rt, id) {
-					app.workspace_mutation_focus_pending = false
-					return
-				}
+			if id, found := alicorn.node_by_key(rt, alicorn.key_string(key), .Button); found && alicorn.focus(rt, id) {
+				app.workspace_mutation_focus_pending = false
+				return
 			}
 		} else if app.workspace_mutation_name_node != 0 && alicorn.focus(rt, app.workspace_mutation_name_node) {
 			if app.workspace_mutation_kind == .Rename {
-				if node, found := rt.nodes[app.workspace_mutation_name_node]; found {
-					_ = alicorn.set_text_selection(rt, app.workspace_mutation_name_node, 0, workspace_mutation_stem_end(node.text))
+				if value, found := alicorn.text_field_value(rt, app.workspace_mutation_name_node); found {
+					_ = alicorn.set_text_selection(rt, app.workspace_mutation_name_node, 0, workspace_mutation_stem_end(value))
 				}
 			}
 			app.workspace_mutation_focus_pending = false
@@ -117,7 +115,7 @@ workspace_mutation_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		target = semantic.owner
 	}
 	if target != 0 {
-		if node, found := rt.nodes[target]; !found || !node.active { return }
+		if node, found := alicorn.node_info(rt, target); !found || !node.active { return }
 		if !alicorn.focus(rt, target) { return }
 	}
 	if semantic.id.namespace != 0 && semantic.owner != 0 {

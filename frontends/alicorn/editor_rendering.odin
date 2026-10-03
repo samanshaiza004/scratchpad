@@ -75,18 +75,18 @@ editor_temporary_text_run :: proc(
 	style_spans: []alicorn.Text_Style_Span = nil,
 ) -> (run: alicorn.Text_Run, ok: bool) {
 	if rt == nil || line == nil { return }
-	return alicorn.text_run_build_with_overflow(
-		&rt.text_engine,
+	return alicorn.runtime_text_run_build(
+		rt,
 		line.display,
-		16,
-		max_width,
-		context.temp_allocator,
-		context.temp_allocator,
-		.Monospace,
-		alicorn.FONT_WEIGHT_REGULAR,
-		overflow,
+		size=alicorn.DEFAULT_TEXT_SIZE,
+		max_width=max_width,
+		font=.Monospace,
+		font_weight=alicorn.FONT_WEIGHT_REGULAR,
+		overflow=overflow,
 		editable=true,
 		text_style_spans=style_spans,
+		allocator=context.temp_allocator,
+		scratch_allocator=alicorn.runtime_scratch_allocator(rt),
 	)
 }
 
@@ -115,7 +115,7 @@ editor_visual_row_display_range :: proc(
 	geometry := alicorn.text_run_caret_geometry(
 		&run,
 		alicorn.Text_Position{byte=display_byte, affinity=affinity},
-		rt.scratch_allocator,
+		alicorn.runtime_scratch_allocator(rt),
 	)
 	if !geometry.valid || geometry.line_index < 0 || geometry.line_index >= len(run.lines) { return }
 	visual_line := run.lines[geometry.line_index]
@@ -175,10 +175,14 @@ editor_line_visual_caret_metrics :: proc(
 ) -> (geometry: alicorn.Text_Caret_Geometry, visual_rows: int, run_height: f32, ok: bool) {
 	if rt == nil || line == nil { return }
 	position := alicorn.Text_Position{byte=editor_source_to_display(line, source_byte), affinity=affinity}
-	if node, found := rt.nodes[text_node]; found && text_node != 0 {
-		if node.active && node.text_run_valid && len(node.text_run.lines) > 0 {
-			visual_rows, run_height = len(node.text_run.lines), node.text_run.height
-			if measure_caret { geometry = alicorn.text_run_caret_geometry(&node.text_run, position, rt.scratch_allocator) }
+	if node, found := alicorn.node_info(rt, text_node); found && text_node != 0 {
+		if node.active && node.text_geometry_available {
+			visual_rows, run_height = alicorn.text_node_line_count(rt, text_node), node.text_content_height
+			if measure_caret {
+				geometry = alicorn.text_node_caret_geometry(rt, text_node, position)
+				geometry.rect.x -= node.bounds.x
+				geometry.rect.y -= node.bounds.y
+			}
 			ok = visual_rows > 0
 			return
 		}
@@ -187,7 +191,7 @@ editor_line_visual_caret_metrics :: proc(
 	if !built { return }
 	defer alicorn.text_run_destroy(&run)
 	visual_rows, run_height = len(run.lines), run.height
-	if measure_caret { geometry = alicorn.text_run_caret_geometry(&run, position, rt.scratch_allocator) }
+	if measure_caret { geometry = alicorn.text_run_caret_geometry(&run, position, alicorn.runtime_scratch_allocator(rt)) }
 	ok = visual_rows > 0
 	return
 }
@@ -208,13 +212,17 @@ editor_source_at_visual_point :: proc(
 ) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
 	if rt == nil || line == nil { return }
 	position: alicorn.Text_Position
-	if node, found := rt.nodes[text_node]; found && text_node != 0 && node.active && node.text_run_valid && len(node.text_run.lines) > 0 {
+	if node, found := alicorn.node_info(rt, text_node); found && text_node != 0 && node.active && node.text_geometry_available {
 		y := visual_y
 		if visual_row >= 0 {
-			row := node.text_run.lines[clamp(visual_row, 0, len(node.text_run.lines)-1)]
-			y = row.y+row.height*0.5
+			row, row_found := alicorn.text_node_line_geometry(rt, text_node, clamp(visual_row, 0, alicorn.text_node_line_count(rt, text_node)-1))
+			if !row_found { return }
+			y = row.bounds.y+row.bounds.h*0.5
+		} else {
+			y += node.bounds.y
 		}
-		position = alicorn.text_run_hit_test(&node.text_run, visual_x, y, rt.scratch_allocator)
+		position, ok = alicorn.text_node_hit_test(rt, text_node, node.bounds.x+visual_x, y)
+		if !ok { return }
 	} else {
 		run, built := editor_navigation_text_run(rt, window, line, language, width, presentation_current, wrap_mode)
 		if !built { return }
@@ -224,7 +232,7 @@ editor_source_at_visual_point :: proc(
 			row := run.lines[clamp(visual_row, 0, len(run.lines)-1)]
 			y = row.y+row.height*0.5
 		}
-		position = alicorn.text_run_hit_test(&run, visual_x, y, rt.scratch_allocator)
+		position = alicorn.text_run_hit_test(&run, visual_x, y, alicorn.runtime_scratch_allocator(rt))
 	}
 	source_byte = editor_normalize_source_position(line, editor_display_to_source(line, position.byte))
 	affinity = position.affinity
@@ -772,18 +780,18 @@ editor_measure_line_height :: proc(
 			visual_rows := 1
 			for &cell, cell_index in layout.cells {
 				style_spans := editor_presentation_text_styles_for_line(window, &cell, context.temp_allocator) if presentation_current else nil
-				run, built := alicorn.text_run_build_with_overflow(
-					&rt.text_engine,
+				run, built := alicorn.runtime_text_run_build(
+					rt,
 					cell.display,
-					16,
-					layout.widths[cell_index],
-					context.temp_allocator,
-					context.temp_allocator,
-					.Monospace,
-					alicorn.FONT_WEIGHT_REGULAR,
-					.Wrap,
-					true,
-					style_spans,
+					size=alicorn.DEFAULT_TEXT_SIZE,
+					max_width=layout.widths[cell_index],
+					font=.Monospace,
+					font_weight=alicorn.FONT_WEIGHT_REGULAR,
+					overflow=.Wrap,
+					editable=true,
+					text_style_spans=style_spans,
+					allocator=context.temp_allocator,
+					scratch_allocator=alicorn.runtime_scratch_allocator(rt),
 				)
 				if !built { continue }
 				tallest = max(tallest, run.height)

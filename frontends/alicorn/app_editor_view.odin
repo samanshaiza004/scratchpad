@@ -64,12 +64,12 @@ editor_render_table_cells :: proc(
 		caret_source := min(max(view.caret_byte, cell.source_start), cell.source_end)
 		anchor_display := editor_source_to_display(&cell, anchor_source)
 		caret_display := editor_source_to_display(&cell, caret_source)
-		show_caret := window_matches && rt.focused == scroll_owner && view.caret_byte >= cell.source_start && view.caret_byte <= cell.source_end
+		show_caret := window_matches && alicorn.focused_node(rt) == scroll_owner && view.caret_byte >= cell.source_start && view.caret_byte <= cell.source_end
 		paint_spans: []alicorn.Text_Paint_Span
 		text_style_spans: []alicorn.Text_Style_Span
 		if paint_current {
-			paint_spans = editor_presentation_spans_for_line(window, &cell, rt.scratch_allocator)
-			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, rt.scratch_allocator)
+			paint_spans = editor_presentation_spans_for_line(window, &cell, alicorn.runtime_scratch_allocator(rt))
+			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, alicorn.runtime_scratch_allocator(rt))
 		}
 		if show_caret && !view.preedit_active && !view.preedit_recoverable {
 			if row_start, row_end, row_ok := editor_visual_row_display_range(
@@ -81,12 +81,12 @@ editor_render_table_cells :: proc(
 					background=EDITOR_CARET_ROW_BACKGROUND,
 					background_set=true,
 				}}
-				paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], rt.scratch_allocator)
+				paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], alicorn.runtime_scratch_allocator(rt))
 			}
 		}
-		search_spans := workspace_search_match_paint_spans_for_line(window, &cell, view, rt.scratch_allocator)
-		paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, rt.scratch_allocator)
-		if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, rt.scratch_allocator) }
+		search_spans := workspace_search_match_paint_spans_for_line(window, &cell, view, alicorn.runtime_scratch_allocator(rt))
+		paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, alicorn.runtime_scratch_allocator(rt))
+		if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, alicorn.runtime_scratch_allocator(rt)) }
 		_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
 		_ = alicorn.text_style_spans(ui, cell_node, text_style_spans)
 		if !window_matches { anchor_display = caret_display }
@@ -107,7 +107,7 @@ editor_render_table_cells :: proc(
 			cell_origin_x=table.origins[cell_index],
 			is_cell=true,
 		})
-		if window_matches && rt.focused == scroll_owner && show_caret {
+		if window_matches && alicorn.focused_node(rt) == scroll_owner && show_caret {
 			app.editor_input_anchor_node = cell_node
 			app.editor_input_anchor_byte = caret_display
 			app.editor_input_anchor_affinity = view.caret_affinity
@@ -124,12 +124,14 @@ editor_render_table_cells :: proc(
 }
 
 editor_wrap_viewport_size :: proc(
+	app: ^App,
 	rt: ^alicorn.Runtime,
 	view: ^Editor_View_State,
 	previous: alicorn.Scroll_Region_Handle,
 ) -> (width, height: f32) {
 	if rt == nil || view == nil { return 240, EDITOR_ROW_HEIGHT }
-	outer_width, outer_height := rt.viewport.w, rt.viewport.h
+	viewport := alicorn.viewport_bounds(rt)
+	outer_width, outer_height := viewport.w, viewport.h
 	width, height = previous.viewport_width, previous.viewport_height
 	if previous.id == 0 || width <= 0 {
 		width = max(outer_width-320, 240)
@@ -141,20 +143,20 @@ editor_wrap_viewport_size :: proc(
 	} else if view.wrap_last_outer_height > 0 {
 		height += outer_height-view.wrap_last_outer_height
 	}
-	for node_id in rt.order {
-		node, found := rt.nodes[node_id]
-		if !found || node.kind != .Split || node.label != "scratchpad-workspace-editor-split" { continue }
-		// If retained layout has already applied the drag, the scroll region
-		// width includes the split movement. While layout is pending, its saved
-		// viewport is still from the previous split position, so apply the delta
-		// exactly once. This avoids both stale row heights and double-counting
-		// when the editor narrows during a drag.
-		if view.wrap_last_split_position_valid && (!node.split_dragging || rt.layout_pending) {
-			width -= node.split_position-view.wrap_last_split_position
+	if app != nil && app.workspace_editor_split_node != 0 {
+		node, found := alicorn.node_info(rt, app.workspace_editor_split_node)
+		if found && node.kind == .Split {
+			// If retained layout has already applied the drag, the scroll region
+			// width includes the split movement. While layout is pending, its saved
+			// viewport is still from the previous split position, so apply the delta
+			// exactly once. This avoids both stale row heights and double-counting
+			// when the editor narrows during a drag.
+			if view.wrap_last_split_position_valid && (!node.split_dragging || alicorn.layout_is_pending(rt)) {
+				width -= node.split_position-view.wrap_last_split_position
+			}
+			view.wrap_last_split_position = node.split_position
+			view.wrap_last_split_position_valid = true
 		}
-		view.wrap_last_split_position = node.split_position
-		view.wrap_last_split_position_valid = true
-		break
 	}
 	view.wrap_last_outer_width = outer_width
 	view.wrap_last_outer_height = outer_height
@@ -257,7 +259,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		_ = alicorn.virtual_list_height_index_set_count(&view.wrap_height_index, line_count)
 	}
 	previous_scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
-	viewport_width, viewport_height := editor_wrap_viewport_size(rt, view, previous_scroll)
+	viewport_width, viewport_height := editor_wrap_viewport_size(app, rt, view, previous_scroll)
 	wrap_width := max(viewport_width-gutter_width-16, 80)
 	scroll_y := view.scroll_y
 	if !view.restore_y_pending && previous_scroll.id != 0 { scroll_y = previous_scroll.offset_y }
@@ -419,7 +421,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		last=list_metrics.last,
 	}
 	horizontal_ready := window_matches && list.scroll.max_scroll_x > 0.5
-	editor_has_focus := rt.focused == list.scroll.id
+	editor_has_focus := alicorn.focused_node(rt) == list.scroll.id
 	if view.undo_group_editor_focus != editor_has_focus {
 		editor_undo_group_break(view)
 		view.undo_group_editor_focus = editor_has_focus
@@ -484,11 +486,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			// The parent virtual list shifts the whole row for horizontal scroll.
 			// Counter-shift fixed chrome and wrapped prose; no-wrap text stays in
 			// the parent's scrolling lane.
-			editor_gutter_node := alicorn.container_begin_ex(
+			editor_gutter_node := alicorn.container_begin(
 				ui,
 				.Virtual_List,
 				label="scratchpad-editor-line-number-gutter",
-				key="gutter",
+				key=alicorn.key_string("gutter"),
 				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center, clip=true),
 				color=COLOR_BACKGROUND,
 			)
@@ -501,7 +503,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				key=alicorn.key_u64(line.logical_line),
 				font=.Monospace,
 			)
-			if editor_table_line_is_projected(window, line) && window_matches && rt.focused == list.scroll.id &&
+			if editor_table_line_is_projected(window, line) && window_matches && alicorn.focused_node(rt) == list.scroll.id &&
 			   view.caret_byte >= line.source_start && view.caret_byte <= line.source_end &&
 			   !view.preedit_active && !view.preedit_recoverable {
 				gutter_paint := [?]alicorn.Text_Paint_Span{{
@@ -513,11 +515,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				_ = alicorn.text_paint_spans(ui, line_number_node, gutter_paint[:])
 			}
 			alicorn.container_end(ui)
-			alicorn.container_begin_ex(
+			alicorn.container_begin(
 				ui,
 				.Virtual_List,
 				label="scratchpad-editor-source-lane",
-				key="source",
+				key=alicorn.key_string("source"),
 				style=alicorn.layout_style(.Row, width=wrap_width, height=row_height, clip=true),
 				scroll_offset_x=list.scroll.offset_x if !line_wraps else 0,
 				layout_scroll_offset_x=list.scroll.offset_x if !line_wraps else 0,
@@ -537,7 +539,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			caret_display := editor_source_to_display(line, caret_source)
 			caret_area_byte := caret_display
 			caret_area_affinity := view.caret_affinity
-			show_caret := window_matches && rt.focused == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
+			show_caret := window_matches && alicorn.focused_node(rt) == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
 			if window_matches {
 				if composition_display, composition_start, composition_end, applies := editor_preedit_display_for_line(view, window, line); applies {
 				display_text = composition_display
@@ -553,7 +555,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				caret_area_byte = composition_end
 				caret_area_affinity = .Trailing
 				composition_start_line, start_found := editor_line_for_source(window, view.preedit_replace_start)
-				show_caret = start_found && composition_start_line.logical_line == line.logical_line && rt.focused == list.scroll.id
+				show_caret = start_found && composition_start_line.logical_line == line.logical_line && alicorn.focused_node(rt) == list.scroll.id
 				}
 			} else {
 				// The last authoritative selection may not describe the last-good
@@ -579,19 +581,19 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			paint_current := window_covers_view && presentation_visual &&
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current {
-				paint_spans = editor_presentation_spans_for_line(window, line, rt.scratch_allocator)
+				paint_spans = editor_presentation_spans_for_line(window, line, alicorn.runtime_scratch_allocator(rt))
 			}
 			text_style_spans: []alicorn.Text_Style_Span
-			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, rt.scratch_allocator) }
+			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, alicorn.runtime_scratch_allocator(rt)) }
 			decoration_current := window_covers_view && window.document_id == document.id &&
 			                      !view.preedit_active && !view.preedit_recoverable
 			if decoration_current {
-				search_spans := workspace_search_match_paint_spans_for_line(window, line, view, rt.scratch_allocator)
-				paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, rt.scratch_allocator)
-				if app.find_open { paint_spans = find_merge_paint_spans(window, line, &app.find_presentation, paint_spans, rt.scratch_allocator) }
+				search_spans := workspace_search_match_paint_spans_for_line(window, line, view, alicorn.runtime_scratch_allocator(rt))
+				paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, alicorn.runtime_scratch_allocator(rt))
+				if app.find_open { paint_spans = find_merge_paint_spans(window, line, &app.find_presentation, paint_spans, alicorn.runtime_scratch_allocator(rt)) }
 			}
 			if bracket_match_found {
-				combined_spans := make([dynamic]alicorn.Text_Paint_Span, 0, len(paint_spans)+2, allocator=rt.scratch_allocator)
+				combined_spans := make([dynamic]alicorn.Text_Paint_Span, 0, len(paint_spans)+2, allocator=alicorn.runtime_scratch_allocator(rt))
 				for span in paint_spans { append(&combined_spans, span) }
 				bracket_bytes := [2]u64{bracket_match.first, bracket_match.second}
 				for source_byte in bracket_bytes {
@@ -616,7 +618,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 					composition_row = composition_line.logical_line == line.logical_line
 				}
 			}
-			if window_matches && rt.focused == list.scroll.id && ((view.caret_byte >= line.source_start && view.caret_byte <= line.source_end) || composition_row) {
+			if window_matches && alicorn.focused_node(rt) == list.scroll.id && ((view.caret_byte >= line.source_start && view.caret_byte <= line.source_end) || composition_row) {
 				app.editor_input_anchor_node = line_node
 				app.editor_input_anchor_byte = caret_area_byte
 				app.editor_input_anchor_affinity = caret_area_affinity

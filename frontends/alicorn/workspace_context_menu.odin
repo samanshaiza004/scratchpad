@@ -35,45 +35,68 @@ workspace_context_menu_set_target :: proc(app: ^App, rt: ^alicorn.Runtime, targe
 	return true
 }
 
-workspace_context_menu_target_for_node :: proc(app: ^App, rt: ^alicorn.Runtime, node: alicorn.Node_ID) -> (target: Workspace_Tree_Row_Target, found: bool) {
-	if app == nil || rt == nil || node == 0 { return }
-	retained, retained_found := rt.nodes[node]
-	if !retained_found || retained.key == "" { return }
-	path := retained.key
+workspace_context_menu_target_for_key :: proc(app: ^App, key: alicorn.UI_Key) -> (target: Workspace_Tree_Row_Target, found: bool) {
+	if app == nil { return }
+	path := ""
+	#partial switch value in key {
+	case string:
+		path = value
+	}
+	if path == "" { return }
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)
 	for row, index in rows {
 		if row.path == path {
-			return Workspace_Tree_Row_Target{node=node, path=row.path, is_dir=row.is_dir, index=index}, true
+			return Workspace_Tree_Row_Target{path=row.path, is_dir=row.is_dir, index=index}, true
 		}
 	}
+	return
+}
+
+workspace_context_menu_target_for_node :: proc(app: ^App, rt: ^alicorn.Runtime, node: alicorn.Node_ID) -> (target: Workspace_Tree_Row_Target, found: bool) {
+	if rt == nil || node == 0 { return }
+	key, key_found := alicorn.node_identity_key(rt, node)
+	if !key_found { return }
+	target, found = workspace_context_menu_target_for_key(app, key)
+	if found { target.node = node }
 	return
 }
 
 workspace_context_menu_open_node :: proc(app: ^App, rt: ^alicorn.Runtime, node: alicorn.Node_ID, anchor: alicorn.Rect) -> bool {
 	target, found := workspace_context_menu_target_for_node(app, rt, node)
 	if !found { return false }
-	row, row_found := rt.nodes[node]
+	row, row_found := alicorn.node_info(rt, node)
 	if !row_found || !row.active { return false }
 	return workspace_context_menu_set_target(app, rt, target, anchor)
 }
 
 workspace_context_menu_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target_node: alicorn.Node_ID) -> bool {
 	if event.kind != .Down || event.button != alicorn.POINTER_BUTTON_SECONDARY { return false }
-	if !workspace_context_menu_open_node(app, rt, target_node, alicorn.Rect{event.x, event.y, 0, 0}) { return false }
+	if app == nil || rt == nil || target_node == 0 { return false }
+	key := event.target_key
+	if !alicorn.ui_key_is_explicit(key) {
+		key_found: bool
+		key, key_found = alicorn.node_identity_key(rt, target_node)
+		if !key_found { return false }
+	}
+	target, found := workspace_context_menu_target_for_key(app, key)
+	row, row_found := alicorn.node_info(rt, target_node)
+	if !found || !row_found || !row.active { return false }
+	target.node = target_node
+	if !workspace_context_menu_set_target(app, rt, target, alicorn.Rect{event.x, event.y, 0, 0}) { return false }
 	return true
 }
 
 workspace_context_menu_open_focused :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
-	if app == nil || rt == nil || app.tree_scroll_owner == 0 || rt.focused != app.tree_scroll_owner || app.tree_focused_path == "" {
+	if app == nil || rt == nil || app.tree_scroll_owner == 0 || alicorn.focused_node(rt) != app.tree_scroll_owner || app.tree_focused_path == "" {
 		return false
 	}
 	semantic := alicorn.semantic_focus_state(rt)
 	if semantic.realized_node == 0 { return false }
 	target, found := workspace_context_menu_target_for_node(app, rt, semantic.realized_node)
 	if !found || target.path != app.tree_focused_path || target.is_dir != app.tree_focused_is_dir { return false }
-	row, row_found := rt.nodes[semantic.realized_node]
+	row, row_found := alicorn.node_info(rt, semantic.realized_node)
 	if !row_found { return false }
 	return workspace_context_menu_open_node(app, rt, semantic.realized_node, row.bounds)
 }

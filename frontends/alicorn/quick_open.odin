@@ -110,7 +110,7 @@ quick_open_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		return
 	}
 	if app.command_palette_open { command_palette_close_surface(app, rt, false) }
-	app.quick_open_previous_focus = rt.focused
+	app.quick_open_previous_focus = alicorn.focused_node(rt)
 	app.quick_open_open = true
 	app.quick_open_focus_pending = true
 	app.quick_open_restore_pending = false
@@ -139,8 +139,8 @@ quick_open_restore_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app.quick_open_open && app.quick_open_focus_pending && app.quick_open_node != 0 {
 		if alicorn.focus(rt, app.quick_open_node) {
 			app.quick_open_focus_pending = false
-			if node, found := rt.nodes[app.quick_open_node]; found && node.kind == .Text_Field {
-				_ = alicorn.set_text_selection(rt, app.quick_open_node, 0, len(node.text))
+			if text, found := alicorn.text_field_value(rt, app.quick_open_node); found {
+				_ = alicorn.set_text_selection(rt, app.quick_open_node, 0, len(text))
 			}
 		}
 	}
@@ -149,7 +149,7 @@ quick_open_restore_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	focus := app.quick_open_previous_focus
 	app.quick_open_previous_focus = 0
 	if focus != 0 {
-		if _, found := rt.nodes[focus]; found { _ = alicorn.focus(rt, focus) }
+		if _, found := alicorn.node_info(rt, focus); found { _ = alicorn.focus(rt, focus) }
 	}
 }
 
@@ -275,7 +275,7 @@ quick_open_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alic
 quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil || !app.quick_open_open { return }
 	quick_open_request_index(app)
-	results := quick_open_filter(app.quick_open_paths, app.quick_open_query, rt.scratch_allocator)
+	results := quick_open_filter(app.quick_open_paths, app.quick_open_query, alicorn.runtime_scratch_allocator(rt))
 	defer delete(results)
 	if len(results) == 0 { app.quick_open_selected_index = 0
 	} else { app.quick_open_selected_index = clamp(app.quick_open_selected_index, 0, len(results)-1) }
@@ -326,7 +326,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 quick_open_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) -> bool {
 	if app == nil || rt == nil || !app.quick_open_open { return false }
 	if event.kind == .Down && event.button == alicorn.POINTER_BUTTON_PRIMARY && target == app.quick_open_overlay_node {
-		panel, found := rt.nodes[app.quick_open_panel_node]
+		panel, found := alicorn.node_info(rt, app.quick_open_panel_node)
 		inside := found && event.x >= panel.bounds.x && event.x < panel.bounds.x+panel.bounds.w && event.y >= panel.bounds.y && event.y < panel.bounds.y+panel.bounds.h
 		if !inside { quick_open_close_surface(app, rt, true) }
 		return true

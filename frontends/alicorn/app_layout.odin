@@ -58,6 +58,7 @@ build_app :: proc(
 			style=alicorn.layout_style(.Row, grow=1, gap=12, clip=true),
 			label="scratchpad-workspace-editor-split",
 		)
+		app.workspace_editor_split_node = workspace_split.id
 		alicorn.split_first_begin(&ui, workspace_split)
 		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=COLOR_PANEL)
 		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=32, gap=6))
@@ -314,8 +315,8 @@ build_app :: proc(
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
 		if alicorn.focus(rt, app.go_to_line_query_node) {
-			if node, found := rt.nodes[app.go_to_line_query_node]; found && node.kind == .Text_Field {
-				_ = alicorn.set_text_selection(rt, app.go_to_line_query_node, 0, len(node.text))
+			if text, found := alicorn.text_field_value(rt, app.go_to_line_query_node); found {
+				_ = alicorn.set_text_selection(rt, app.go_to_line_query_node, 0, len(text))
 			}
 			app.go_to_line_focus_pending = false
 		}

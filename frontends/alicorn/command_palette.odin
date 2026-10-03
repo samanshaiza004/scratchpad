@@ -317,7 +317,7 @@ command_palette_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		command_palette_close_surface(app, rt, true)
 		return
 	}
-	app.command_palette_previous_focus = rt.focused
+	app.command_palette_previous_focus = alicorn.focused_node(rt)
 	app.command_palette_open = true
 	app.command_palette_focus_pending = true
 	app.command_palette_restore_pending = false
@@ -344,8 +344,8 @@ command_palette_restore_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtim
 	if app.command_palette_open && app.command_palette_focus_pending && app.command_palette_node != 0 {
 		if alicorn.focus(rt, app.command_palette_node) {
 			app.command_palette_focus_pending = false
-			if node, found := rt.nodes[app.command_palette_node]; found && node.kind == .Text_Field {
-				_ = alicorn.set_text_selection(rt, app.command_palette_node, 0, len(node.text))
+			if text, found := alicorn.text_field_value(rt, app.command_palette_node); found {
+				_ = alicorn.set_text_selection(rt, app.command_palette_node, 0, len(text))
 			}
 		}
 	}
@@ -354,7 +354,7 @@ command_palette_restore_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtim
 	focus := app.command_palette_previous_focus
 	app.command_palette_previous_focus = 0
 	if focus != 0 {
-		if _, found := rt.nodes[focus]; found { _ = alicorn.focus(rt, focus) }
+		if _, found := alicorn.node_info(rt, focus); found { _ = alicorn.focus(rt, focus) }
 	}
 }
 
@@ -439,9 +439,9 @@ command_palette_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change:
 
 command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil || !app.command_palette_open { return }
-	results := command_palette_collect_results(app, rt.scratch_allocator)
+	results := command_palette_collect_results(app, alicorn.runtime_scratch_allocator(rt))
 	defer delete(results)
-	filtered := command_palette_filter_results(results[:], app.command_palette_query, app.command_palette_recent[:app.command_palette_recent_count], rt.scratch_allocator)
+	filtered := command_palette_filter_results(results[:], app.command_palette_query, app.command_palette_recent[:app.command_palette_recent_count], alicorn.runtime_scratch_allocator(rt))
 	defer delete(filtered)
 	if len(filtered) == 0 { app.command_palette_selected_index = 0
 	} else { app.command_palette_selected_index = clamp(app.command_palette_selected_index, 0, len(filtered)-1) }
@@ -512,7 +512,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 command_palette_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) -> bool {
 	if app == nil || rt == nil || !app.command_palette_open { return false }
 	if event.kind == .Down && event.button == alicorn.POINTER_BUTTON_PRIMARY && target == app.command_palette_overlay_node {
-		panel, found := rt.nodes[app.command_palette_panel_node]
+		panel, found := alicorn.node_info(rt, app.command_palette_panel_node)
 		inside := found && event.x >= panel.bounds.x && event.x < panel.bounds.x+panel.bounds.w &&
 		         event.y >= panel.bounds.y && event.y < panel.bounds.y+panel.bounds.h
 		if !inside { command_palette_close_surface(app, rt, true) }

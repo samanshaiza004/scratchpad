@@ -18,6 +18,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check Alicorn public API boundary
+        run: go run ./tools/check-alicorn-boundary
       - uses: dtolnay/rust-toolchain@stable
       - uses: laytan/setup-odin@v2
         with:
@@ -79,6 +81,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check Alicorn public API boundary
+        run: go run ./tools/check-alicorn-boundary
       - uses: dtolnay/rust-toolchain@stable
       - uses: laytan/setup-odin@v2
         with:

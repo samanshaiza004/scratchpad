@@ -16,9 +16,10 @@ workspace_search_match_clear_all :: proc(app: ^App) {
 
 find_capture_text_field :: proc(rt: ^alicorn.Runtime, node_id: alicorn.Node_ID, value: ^string) -> bool {
 	if rt == nil || value == nil || node_id == 0 { return false }
-	node, found := rt.nodes[node_id]
-	if !found || !node.active || node.kind != .Text_Field || node.text == value^ { return false }
-	copy, err := strings.clone(node.text, context.allocator)
+	node, found := alicorn.node_info(rt, node_id)
+	text, value_found := alicorn.text_field_value(rt, node_id)
+	if !found || !value_found || !node.active || text == value^ { return false }
+	copy, err := strings.clone(text, context.allocator)
 	if err != nil { return false }
 	if len(value^) > 0 { delete(value^, context.allocator) }
 	value^ = copy
@@ -339,8 +340,8 @@ editor_reveal_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		app.editor_row_targets[:], line.logical_line, request.source_start,
 	)
 	if !target_found { return }
-	target_node, node_found := rt.nodes[target.node]
-	owner, owner_found := rt.nodes[app.editor_scroll_owner]
+	target_node, node_found := alicorn.node_info(rt, target.node)
+	owner, owner_found := alicorn.node_info(rt, app.editor_scroll_owner)
 	if !node_found || !owner_found || !target_node.active || !owner.active ||
 	   target_node.bounds.h <= 0 || owner.kind != .Scroll_Region { return }
 
@@ -587,8 +588,8 @@ find_restore_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	}
 	if app.find_focus_pending && app.find_query_node != 0 {
 		if alicorn.focus(rt, app.find_query_node) && app.find_select_query_pending {
-			if node, found := rt.nodes[app.find_query_node]; found && node.kind == .Text_Field {
-				_ = alicorn.set_text_selection(rt, app.find_query_node, 0, len(node.text))
+			if text, found := alicorn.text_field_value(rt, app.find_query_node); found {
+				_ = alicorn.set_text_selection(rt, app.find_query_node, 0, len(text))
 			}
 		}
 		app.find_focus_pending = false
