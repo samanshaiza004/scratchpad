@@ -283,11 +283,23 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	if !context_row_found { testing.expect(t, false, "context-menu target row should be realized"); return }
 	context_bounds := rt.nodes[context_row].bounds
 	context_x, context_y := context_bounds.x+context_bounds.w/2, context_bounds.y+context_bounds.h/2
+	context_event := alicorn.Pointer_Event{kind=.Down, x=context_x, y=context_y, button=alicorn.POINTER_BUTTON_SECONDARY}
+	context_target := alicorn.process_pointer(&rt, context_event)
+	context_key, context_key_found := alicorn.node_identity_key(&rt, context_target)
+	testing.expect(t, context_target == context_row && context_key_found,
+		"Alicorn pointer hit testing should resolve the context-menu row and its semantic key")
+	resolved_context, resolved_context_found := workspace_context_menu_target_for_key(&app, context_key)
+	testing.expect(t, resolved_context_found && tree_test_paths_equal(resolved_context.path, "src/nested/first.txt"),
+		"the pointer target key should resolve to the matching workspace path")
+	context_node_info, context_node_found := alicorn.node_info(&rt, context_target)
+	testing.expect(t, context_node_found && context_node_info.active,
+		"the context-menu pointer target should remain active after hit testing")
+	context_event.target_key = context_key
 	application_pointer(
 		rawptr(&app),
 		&rt,
-		alicorn.Pointer_Event{kind=.Down, x=context_x, y=context_y, button=alicorn.POINTER_BUTTON_SECONDARY},
-		context_row,
+		context_event,
+		context_target,
 	)
 	testing.expect(t, alicorn.context_menu_is_open(&rt) && tree_test_paths_equal(app.workspace_context_path, "src/nested/first.txt"),
 		"secondary-click should open the context menu for the row under the pointer")
