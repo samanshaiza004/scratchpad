@@ -9,6 +9,8 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 
+SCRATCHPAD_STATIC_SHIPPING :: #config(SCRATCHPAD_STATIC_SHIPPING, false)
+
 Caliber_Status :: enum i32 {
 	OK = 0,
 	Invalid_Argument = 1,
@@ -120,6 +122,20 @@ Backend_Get_Pointer_Proc :: #type proc "c" () -> rawptr
 Backend_Lease_Proc :: #type proc "c" () -> i32
 Backend_Free_Proc :: #type proc "c" (rawptr)
 Backend_Pump_Proc :: #type proc "c" (^^u8, ^uintptr) -> i32
+
+@(default_calling_convention = "c")
+foreign {
+	scratchpad_backend_start :: proc (input: ^u8, input_len: uintptr, out: ^^u8, out_len: ^uintptr) -> i32 ---
+	scratchpad_backend_stop :: proc (input: ^u8, input_len: uintptr, out: ^^u8, out_len: ^uintptr) -> i32 ---
+	scratchpad_backend_caliber_api :: proc () -> rawptr ---
+	scratchpad_backend_caliber_context :: proc () -> rawptr ---
+	scratchpad_backend_state_lease_acquired :: proc () -> i32 ---
+	scratchpad_backend_state_lease_released :: proc () -> i32 ---
+	scratchpad_backend_resource_lease_acquired :: proc () -> i32 ---
+	scratchpad_backend_resource_lease_released :: proc () -> i32 ---
+	scratchpad_backend_free :: proc (input: rawptr) ---
+	scratchpad_backend_pump :: proc (out: ^^u8, out_len: ^uintptr) -> i32 ---
+}
 Application_Wake_Proc :: #type proc (rawptr)
 
 State_Document :: struct {
@@ -526,6 +542,20 @@ Backend :: struct {
 backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, message: string) {
 	if backend == nil { return false, "backend state is nil" }
 	if backend.library_loaded { return backend.load_error == "", backend.load_error }
+	when SCRATCHPAD_STATIC_SHIPPING {
+		backend.start_fn = scratchpad_backend_start
+		backend.stop_fn = scratchpad_backend_stop
+		backend.api_fn = scratchpad_backend_caliber_api
+		backend.context_fn = scratchpad_backend_caliber_context
+		backend.lease_acquired_fn = scratchpad_backend_state_lease_acquired
+		backend.lease_released_fn = scratchpad_backend_state_lease_released
+		backend.resource_lease_acquired_fn = scratchpad_backend_resource_lease_acquired
+		backend.resource_lease_released_fn = scratchpad_backend_resource_lease_released
+		backend.free_fn = scratchpad_backend_free
+		backend.pump_fn = scratchpad_backend_pump
+		backend.library_loaded = true
+		return true, ""
+	}
 	resolved_library_path := library_path
 	owned_library_path := false
 	if library_path == "" {
