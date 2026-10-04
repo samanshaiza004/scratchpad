@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/tooltip-issue-39",
-    "revision": "6e4738bd8b67f07c12831ab9bf89d5236efd5ae6"
+    "ref": "codex/style-environment-palette",
+    "revision": "844805a9864dc6fa9874b073db8f28a92736ad17"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

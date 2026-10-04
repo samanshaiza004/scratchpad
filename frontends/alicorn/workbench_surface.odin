@@ -6,7 +6,7 @@ import host "alicorn:native/sdl_gpu"
 build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-screen", style=alicorn.layout_style(.Column, grow=1, align=.Center, gap=12))
-	alicorn.container_begin(ui, .Container, label="scratchpad-start-content", style=alicorn.layout_style(.Column, width=360, padding=28, gap=12), color=COLOR_PANEL)
+	alicorn.container_begin(ui, .Container, label="scratchpad-start-content", style=alicorn.layout_style(.Column, width=360, padding=28, gap=12), color=alicorn.style_color(ui, .Surface))
 	alicorn.text(ui, "Scratchpad")
 	alicorn.text(ui, "Open a file or choose a workspace to get started.")
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-actions", style=alicorn.layout_style(.Row, height=38, gap=8))
@@ -27,7 +27,7 @@ build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-settings-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=480, height=250, padding=22, gap=12, align=.Start, clip=true), color=COLOR_PANEL)
+	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=480, height=250, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
 	alicorn.text(ui, "Settings")
 	alicorn.text(ui, "Workspace")
 	ignored_change := alicorn.checkbox(

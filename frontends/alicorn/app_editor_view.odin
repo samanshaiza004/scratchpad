@@ -204,7 +204,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
 	if document.status == "conflict" {
-		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string("document-conflict-actions"), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=COLOR_SUBTLE)
+		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string("document-conflict-actions"), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=alicorn.style_color(ui, .Subtle_Surface))
 		alicorn.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
 		alicorn.container_begin(ui, .Container, label="document-conflict-buttons", style=alicorn.layout_style(.Row, height=30, gap=8, align=.Center))
 		if alicorn.button(ui, "Reload from Disk", key=alicorn.key_string("conflict-reload"), style=alicorn.layout_style(.Row, width=140, height=28)) {
@@ -497,7 +497,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				label="scratchpad-editor-line-number-gutter",
 				key=alicorn.key_string("gutter"),
 				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center, clip=true),
-				color=COLOR_BACKGROUND,
+				color=alicorn.style_color(ui, .Subtle_Surface),
 			)
 			alicorn.container_begin(ui, .Container, label="scratchpad-editor-line-number-spacer", style=alicorn.layout_style(.Row, grow=1))
 			alicorn.container_end(ui)
@@ -777,7 +777,7 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	case .Off: wrap_label = "Off"
 	case .Auto: wrap_label = "Auto"
 	}
-	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=28, gap=14, padding=8, align=.Center), color=COLOR_SUBTLE)
+	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=28, gap=14, padding=8, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
 	alicorn.text(ui, fmt.tprintf("%s%s  ·  %s  ·  %d lines", location, modified, document.language, line_count))
 	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=96, height=24)) {
 		editor_toggle_wrap_mode(app, rt)

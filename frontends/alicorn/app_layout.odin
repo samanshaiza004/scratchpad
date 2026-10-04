@@ -24,6 +24,7 @@ build_app :: proc(
 	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
 	clear(&app.editor_row_targets)
 	app.editor_input_anchor_node = 0
+	if !scratchpad_styles_ensure(app, rt) { set_error(app, "Could not initialize the warm style palette.") }
 	if app.backend.started {
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
@@ -34,8 +35,9 @@ build_app :: proc(
 		.Root,
 		label="scratchpad-alicorn-workbench",
 		style=alicorn.layout_style(.Column, grow=1, gap=12, clip=true),
-		color=COLOR_BACKGROUND,
+		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
 	)
+	workbench_style_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme})
 
 	if app.error_message != "" {
 		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.Color{0.28, 0.11, 0.12, 1})
@@ -60,7 +62,7 @@ build_app :: proc(
 		)
 		app.workspace_editor_split_node = workspace_split.id
 		alicorn.split_first_begin(&ui, workspace_split)
-		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=COLOR_PANEL)
+		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=alicorn.style_color(&ui, .Surface))
 		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=32, gap=6))
 		if alicorn.button(&ui, "Files", key=alicorn.key_string("workspace-panel-files"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{selected=!app.workspace_search_mode}) {
 			workspace_search_cancel_active(app)
@@ -110,8 +112,8 @@ build_app :: proc(
 		alicorn.split_divider(&ui, workspace_split)
 		alicorn.split_second_begin(&ui, workspace_split)
 
-		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=COLOR_PANEL)
-		alicorn.container_begin(&ui, .Container, label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), color=COLOR_SUBTLE)
+		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
+		alicorn.container_begin(&ui, .Container, label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), color=alicorn.style_color(&ui, .Subtle_Surface))
 		for document in state.documents {
 			if !alicorn.component_begin(&ui, alicorn.key_string(document.id)) { continue }
 			title := document_title(document.path)
@@ -139,7 +141,7 @@ build_app :: proc(
 		}
 		alicorn.container_end(&ui)
 		if app.find_open {
-			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=78, gap=4, padding=5), color=COLOR_SUBTLE)
+			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=78, gap=4, padding=5), color=alicorn.style_color(&ui, .Subtle_Surface))
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=32, gap=8, align=.Center))
 			alicorn.text(&ui, "Find")
 			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=30))
@@ -185,7 +187,8 @@ build_app :: proc(
 			alicorn.container_end(&ui)
 		}
 
-		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=COLOR_PANEL)
+		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=alicorn.style_theme_color(rt, app.editor_theme, .Editor_Background))
+		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
@@ -196,6 +199,7 @@ build_app :: proc(
 			alicorn.text(&ui, "Open a file to begin")
 			alicorn.text(&ui, "Open a document to view its bounded source window.")
 		}
+		alicorn.style_environment_pop(&ui, editor_theme_scope)
 		alicorn.container_end(&ui)
 		if active, found := find_document(state, state.active); found {
 			build_document_status(app, &ui, rt, active)
@@ -204,7 +208,7 @@ build_app :: proc(
 		alicorn.split_second_end(&ui, workspace_split)
 		alicorn.split_end(&ui, workspace_split)
 	} else {
-		alicorn.container_begin(&ui, .Container, label="backend-starting-card", style=alicorn.layout_style(.Column, grow=1, padding=24, gap=12), color=COLOR_PANEL)
+		alicorn.container_begin(&ui, .Container, label="backend-starting-card", style=alicorn.layout_style(.Column, grow=1, padding=24, gap=12), color=alicorn.style_color(&ui, .Surface))
 		alicorn.text(&ui, "Starting Scratchpad…")
 		alicorn.container_end(&ui)
 	}
@@ -218,7 +222,7 @@ build_app :: proc(
 		build_shutdown_dialog(app, &ui, rt)
 	} else if app.close_document_id != "" {
 		alicorn.modal_overlay_begin(&ui, alicorn.key_string("dirty-close-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-		alicorn.container_begin(&ui, .Container, label="dirty-close-dialog", style=alicorn.layout_style(.Column, width=440, height=190, padding=22, gap=14, align=.Start, clip=true), color=COLOR_PANEL)
+		alicorn.container_begin(&ui, .Container, label="dirty-close-dialog", style=alicorn.layout_style(.Column, width=440, height=190, padding=22, gap=14, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
 		recovery_pending := editor_document_has_recoverable_preedit(app, app.close_document_id)
 		if recovery_pending {
 			alicorn.text(&ui, "A committed text composition is waiting for recovery.")
@@ -274,7 +278,7 @@ build_app :: proc(
 		alicorn.modal_overlay_end(&ui)
 	} else if app.save_as_confirmation_open {
 		alicorn.modal_overlay_begin(&ui, alicorn.key_string("save-as-confirmation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-dialog", style=alicorn.layout_style(.Column, width=480, height=176, padding=22, gap=12, align=.Start, clip=true), color=COLOR_PANEL)
+		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-dialog", style=alicorn.layout_style(.Column, width=480, height=176, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
 		alicorn.text(&ui, "Replace the existing file?")
 		alicorn.text(&ui, app.save_as_confirmation_path, style=alicorn.layout_style(.Row, height=52), text_style=alicorn.Text_Style{overflow=.Wrap})
 		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
@@ -291,7 +295,7 @@ build_app :: proc(
 		workspace_mutation_build_dialog(app, &ui, rt)
 	} else if app.go_to_line_open {
 		alicorn.modal_overlay_begin(&ui, alicorn.key_string("go-to-line-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-		alicorn.container_begin(&ui, .Container, label="go-to-line-dialog", style=alicorn.layout_style(.Column, width=420, height=150, padding=20, gap=10, align=.Start, clip=true), color=COLOR_PANEL)
+		alicorn.container_begin(&ui, .Container, label="go-to-line-dialog", style=alicorn.layout_style(.Column, width=420, height=150, padding=20, gap=10, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
 		alicorn.text(&ui, "Go to Line")
 		app.go_to_line_query_node = alicorn.text_field(&ui, app.go_to_line_query, key=alicorn.key_string("go-to-line-query"), style=alicorn.layout_style(.Row, height=34))
 		if app.go_to_line_error != "" { alicorn.text(&ui, app.go_to_line_error) }
@@ -308,6 +312,7 @@ build_app :: proc(
 	} else if app.command_palette_open {
 		command_palette_build(app, &ui, rt)
 	}
+	alicorn.style_environment_pop(&ui, workbench_style_scope)
 
 	alicorn.end_frame(&ui)
 	frame_deferred_action_run(app, rt)
@@ -355,7 +360,7 @@ build_app :: proc(
 
 build_startup_notice :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || app.recovery_notice_dismissed || app.backend.state.startup_notice == "" { return }
-	alicorn.container_begin(ui, .Container, label="scratchpad-startup-notice", style=alicorn.layout_style(.Column, height=72, padding=6, gap=4), color=COLOR_SUBTLE)
+	alicorn.container_begin(ui, .Container, label="scratchpad-startup-notice", style=alicorn.layout_style(.Column, height=72, padding=6, gap=4), color=alicorn.style_color(ui, .Subtle_Surface))
 	alicorn.text(ui, app.backend.state.startup_notice, style=alicorn.layout_style(.Row, height=42), text_style=alicorn.Text_Style{overflow=.Wrap})
 	if alicorn.button(ui, "Dismiss", key=alicorn.key_string("scratchpad-startup-notice-dismiss"), style=alicorn.layout_style(.Row, width=82, height=24)) {
 		app.recovery_notice_dismissed = true

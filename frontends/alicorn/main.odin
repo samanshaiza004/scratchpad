@@ -8,10 +8,6 @@ import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
-COLOR_BACKGROUND :: alicorn.Color{0.055, 0.065, 0.09, 1}
-COLOR_PANEL      :: alicorn.Color{0.08, 0.095, 0.13, 1}
-COLOR_SUBTLE     :: alicorn.Color{0.10, 0.12, 0.16, 1}
-
 ACTION_FILE_OPEN       :: "file.open"
 ACTION_FILE_QUICK_OPEN :: "file.quick-open"
 ACTION_WORKSPACE_OPEN  :: "workspace.open"
@@ -74,6 +70,9 @@ ACTION_VIEW_EDITOR_ZOOM_OUT :: "view.editor-zoom-out"
 ACTION_VIEW_EDITOR_ZOOM_RESET :: "view.editor-zoom-reset"
 
 App :: struct {
+	workbench_theme: alicorn.Style_Theme_ID,
+	editor_theme:    alicorn.Style_Theme_ID,
+	style_theme_runtime: ^alicorn.Runtime,
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	editor_edit_lane:       bridge.Editor_Edit_Lane,

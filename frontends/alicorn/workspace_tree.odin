@@ -29,14 +29,14 @@ Tree_Row :: struct {
 
 build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if !app.backend.state.has_workspace {
-		alicorn.container_begin(ui, .Container, label="workspace-tree-empty", style=alicorn.layout_style(grow=1, padding=12), color=COLOR_SUBTLE)
+		alicorn.container_begin(ui, .Container, label="workspace-tree-empty", style=alicorn.layout_style(grow=1, padding=12), color=alicorn.style_color(ui, .Subtle_Surface))
 		alicorn.text(ui, "Open a folder to browse files.")
 		alicorn.container_end(ui)
 		return
 	}
 	root_index := tree_directory_index(app, "")
 	if root_index < 0 {
-		alicorn.container_begin(ui, .Container, label="workspace-tree-loading", style=alicorn.layout_style(grow=1, padding=12), color=COLOR_SUBTLE)
+		alicorn.container_begin(ui, .Container, label="workspace-tree-loading", style=alicorn.layout_style(grow=1, padding=12), color=alicorn.style_color(ui, .Subtle_Surface))
 		alicorn.text(ui, "Loading workspace…")
 		alicorn.container_end(ui)
 		return

@@ -6,10 +6,10 @@ import "core:strings"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
-FIND_PASSIVE_BACKGROUND :: alicorn.Color{0.42, 0.34, 0.12, 0.34}
-FIND_ACTIVE_BACKGROUND  :: alicorn.Color{0.72, 0.48, 0.12, 0.62}
-EDITOR_CARET_ROW_BACKGROUND :: alicorn.Color{0.12, 0.15, 0.21, 0.42}
-EDITOR_CARET_GUTTER_BACKGROUND :: alicorn.Color{0.15, 0.19, 0.27, 0.48}
+FIND_PASSIVE_BACKGROUND :: alicorn.Color{0.79, 0.68, 0.43, 0.34}
+FIND_ACTIVE_BACKGROUND  :: alicorn.Color{0.89, 0.69, 0.36, 0.58}
+EDITOR_CARET_ROW_BACKGROUND :: alicorn.Color{0.83, 0.79, 0.68, 0.42}
+EDITOR_CARET_GUTTER_BACKGROUND :: alicorn.Color{0.76, 0.71, 0.56, 0.48}
 
 // Find_Presentation owns only bounded match coordinates and frontend-local
 // navigation state. Source text and match computation stay in Go.

@@ -460,7 +460,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		label="scratchpad-command-palette-panel",
 		key=alicorn.key_string("scratchpad-command-palette-panel"),
 		style=alicorn.layout_style(.Column, max_width=760, height=panel_height, padding=12, gap=8, clip=true),
-		color=COLOR_PANEL,
+		color=alicorn.style_color(ui, .Surface),
 	)
 	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=40, gap=8, align=.Center))
 	alicorn.text(ui, ">", style=alicorn.layout_style(.Row, width=18, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
