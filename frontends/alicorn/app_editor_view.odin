@@ -5,13 +5,13 @@ import "core:strings"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
-editor_render_table_pipe :: proc(ui: ^alicorn.UI, pipe_index: int, row_height: f32) {
+editor_render_table_pipe :: proc(ui: ^alicorn.UI, pipe_index: int, row_height, text_scale: f32) {
 	if ui == nil { return }
 	pipe := alicorn.text(
 		ui,
 		"|",
 		key=alicorn.key_u64(u64(pipe_index)),
-		style=alicorn.layout_style(.Row, width=10, height=row_height, align=.Start),
+		style=alicorn.layout_style(.Row, width=10*text_scale, height=row_height, align=.Start),
 		font=.Monospace,
 		text_style=alicorn.Text_Style{overflow=.Clip},
 	)
@@ -37,6 +37,7 @@ editor_render_table_cells :: proc(
 	window_matches, paint_current: bool,
 ) {
 	if ui == nil || app == nil || rt == nil || view == nil || window == nil || line == nil || !table.ok || !table.wraps { return }
+	text_scale := editor_text_scale_effective(app)
 	alicorn.container_begin(
 		ui,
 		.Container,
@@ -46,7 +47,7 @@ editor_render_table_cells :: proc(
 	)
 	pipe_index := 0
 	if table.leading_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, pipe_index, row_height)
+		editor_render_table_pipe(ui, pipe_index, row_height, text_scale)
 		pipe_index += 1
 	}
 	for &cell, cell_index in table.cells {
@@ -73,7 +74,7 @@ editor_render_table_cells :: proc(
 		}
 		if show_caret && !view.preedit_active && !view.preedit_recoverable {
 			if row_start, row_end, row_ok := editor_visual_row_display_range(
-				rt, &cell, caret_display, view.caret_affinity, table.widths[cell_index], true, text_style_spans,
+				rt, &cell, caret_display, view.caret_affinity, table.widths[cell_index], true, text_style_spans, text_scale,
 			); row_ok {
 				caret_row := [?]alicorn.Text_Paint_Span{{
 					start=row_start,
@@ -113,12 +114,12 @@ editor_render_table_cells :: proc(
 			app.editor_input_anchor_affinity = view.caret_affinity
 		}
 		if cell_index+1 < len(table.cells) && pipe_index < len(table.pipes) {
-			editor_render_table_pipe(ui, pipe_index, row_height)
+			editor_render_table_pipe(ui, pipe_index, row_height, text_scale)
 			pipe_index += 1
 		}
 	}
 	if table.trailing_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, pipe_index, row_height)
+		editor_render_table_pipe(ui, pipe_index, row_height, text_scale)
 	}
 	alicorn.container_end(ui)
 }
@@ -129,7 +130,8 @@ editor_wrap_viewport_size :: proc(
 	view: ^Editor_View_State,
 	previous: alicorn.Scroll_Region_Handle,
 ) -> (width, height: f32) {
-	if rt == nil || view == nil { return 240, EDITOR_ROW_HEIGHT }
+	text_scale := editor_text_scale_effective(app)
+	if rt == nil || view == nil { return 240, EDITOR_ROW_HEIGHT*text_scale }
 	viewport := alicorn.viewport_bounds(rt)
 	outer_width, outer_height := viewport.w, viewport.h
 	width, height = previous.viewport_width, previous.viewport_height
@@ -139,7 +141,7 @@ editor_wrap_viewport_size :: proc(
 		width += outer_width-view.wrap_last_outer_width
 	}
 	if previous.id == 0 || height <= 0 {
-		height = max(outer_height-220, EDITOR_ROW_HEIGHT)
+		height = max(outer_height-220, EDITOR_ROW_HEIGHT*text_scale)
 	} else if view.wrap_last_outer_height > 0 {
 		height += outer_height-view.wrap_last_outer_height
 	}
@@ -160,7 +162,7 @@ editor_wrap_viewport_size :: proc(
 	}
 	view.wrap_last_outer_width = outer_width
 	view.wrap_last_outer_height = outer_height
-	return max(width, 240), max(height, EDITOR_ROW_HEIGHT)
+	return max(width, 240), max(height, EDITOR_ROW_HEIGHT*text_scale)
 }
 
 build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
@@ -170,6 +172,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		return
 	}
 	view := &app.editor_views[view_index]
+	text_scale := editor_text_scale_effective(app)
 	if view.workspace_search_match_active && view.workspace_search_match_revision != document.editor_revision {
 		workspace_search_match_clear(view)
 	}
@@ -247,12 +250,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.selection_anchor = editor_normalize_source_position(line, view.selection_anchor)
 		}
 	}
-	gutter_width := editor_line_number_gutter_width(display_line_count)
+	gutter_width := editor_line_number_gutter_width(display_line_count, text_scale)
 	line_count := int(display_line_count)
 	if line_count < 1 { line_count = 1 }
 	if !view.wrap_height_index_ready {
 		view.wrap_height_index_ready = alicorn.virtual_list_height_index_init(
-			&view.wrap_height_index, line_count, EDITOR_ROW_HEIGHT, context.allocator,
+			&view.wrap_height_index, line_count, EDITOR_ROW_HEIGHT*text_scale, context.allocator,
 		)
 	}
 	if view.wrap_height_index_ready {
@@ -260,7 +263,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	previous_scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
 	viewport_width, viewport_height := editor_wrap_viewport_size(app, rt, view, previous_scroll)
-	wrap_width := max(viewport_width-gutter_width-16, 80)
+	wrap_width := max(viewport_width-gutter_width-16*text_scale, 80*text_scale)
 	scroll_y := view.scroll_y
 	if !view.restore_y_pending && previous_scroll.id != 0 { scroll_y = previous_scroll.offset_y }
 	if view.viewport_anchor_pending && view.viewport_anchor_resolved && window_matches {
@@ -316,7 +319,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			}
 			_ = editor_measure_window_wrapping(
 				rt, view, window, document.language, wrap_width,
-				presentation_visual,
+				presentation_visual, text_scale,
 			)
 			new_anchor_line := anchor_line
 			if mapped_line, mapped := editor_line_for_source(window, anchor_byte); mapped {
@@ -354,7 +357,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		target_line := int(request.logical_line)
 		target_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, target_line)
 		target_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, target_line)
-		if target_height <= 0 { target_height = EDITOR_ROW_HEIGHT }
+		if target_height <= 0 { target_height = EDITOR_ROW_HEIGHT*text_scale }
 		desired_y, _ := editor_reveal_content_offset(
 			scroll_y, viewport_height, target_top, target_height, request.alignment,
 		)
@@ -379,6 +382,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			presentation_visual,
 			wrap_width,
 			view.wrap_mode,
+			text_scale,
 		)
 	}
 	content_width := max(viewport_width, visible_intrinsic_width)
@@ -415,6 +419,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		scroll_offset_x=editor_scroll.offset_x,
 		layout_scroll_offset_x=0,
 	)
+	style_scope := alicorn.style_environment_push(ui, alicorn.Style_Environment{text_scale=text_scale})
 	list := alicorn.Virtual_List_Handle{
 		scroll=editor_scroll,
 		first=list_metrics.first,
@@ -465,11 +470,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	for position := list.first; position < list.last; position += 1 {
 		line_number := u64(position)
 		row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, position)
-		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT }
+		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT*text_scale }
 		if line, found := editor_window_line(window, line_number); window_available && found {
-			table_row := editor_table_row_layout(window, line, wrap_width)
+			table_row := editor_table_row_layout(window, line, wrap_width, text_scale=text_scale)
 			table_wrap_active := table_row.ok && table_row.wraps && !view.preedit_active && !view.preedit_recoverable
-			line_wraps := editor_line_should_wrap_for_view(document.language, window, line, presentation_visual, wrap_width, view.wrap_mode)
+			line_wraps := editor_line_should_wrap_for_view(document.language, window, line, presentation_visual, wrap_width, view.wrap_mode, text_scale)
 			if editor_table_line_is_projected(window, line) && !table_wrap_active { line_wraps = false }
 			row_presentation_current := document.language == "markdown" && presentation_visual &&
 			                           !view.preedit_active && !view.preedit_recoverable
@@ -659,6 +664,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		}
 	}
 	alicorn.virtual_list_end(ui, list)
+	alicorn.style_environment_pop(ui, style_scope)
 
 	request_start := visible_start
 	if request_start > 64 { request_start -= 64 } else { request_start = 0 }
