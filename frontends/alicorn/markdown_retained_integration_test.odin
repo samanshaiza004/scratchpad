@@ -306,6 +306,61 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 		)
 		before_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, int(wrapped_line.logical_line))
 		before_wrap_width := view.wrap_measurement_width
+		before_zoom_node, before_zoom_node_found := rt.nodes[wrapped_target.node]
+		before_zoom_scale := app.editor_text_scale
+		before_zoom_style_scale := before_zoom_node.style_environment.text_scale
+		before_zoom_text_size := before_zoom_node.text_run.size
+		before_zoom_text_generation := before_zoom_node.text_run_generation
+		before_zoom_run_valid := before_zoom_node.text_run_valid
+		before_zoom_revision := app.editor_window.editor_revision
+		before_zoom_caret := view.caret_byte
+		zoom_changed := editor_text_zoom_set(&app, &rt, 1.3)
+		_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+		_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+		zoom_scroll := alicorn.scroll_region_state(&rt, app.editor_scroll_owner)
+		zoom_metrics := alicorn.virtual_list_variable_metrics(
+			&view.wrap_height_index, zoom_scroll.offset_y, zoom_scroll.viewport_height,
+		)
+		zoom_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, int(wrapped_line.logical_line))
+		zoom_node, zoom_node_found := rt.nodes[wrapped_target.node]
+		zoom_line, zoom_line_found := editor_line_for_source(&app.editor_window, view.caret_byte)
+		zoom_document, zoom_document_found := find_document(&app.backend.state, document_id)
+		zoom_revision_unchanged := zoom_document_found && zoom_document.editor_revision == before_zoom_revision
+		zoom_caret := alicorn.text_node_caret_geometry(
+			&rt,
+			wrapped_target.node,
+			alicorn.Text_Position{byte=editor_source_to_display(wrapped_line, view.caret_byte), affinity=view.caret_affinity},
+		)
+		testing.expect(t, zoom_changed && abs(app.editor_text_scale-1.3) < 0.001,
+			fmt.tprintf("zoom command state should change (changed=%v scale=%v)", zoom_changed, app.editor_text_scale))
+		testing.expect(t, before_zoom_node_found && zoom_node_found && before_zoom_run_valid && zoom_node.text_run_valid &&
+			zoom_node.text_run.size > before_zoom_text_size && zoom_node.text_run_generation > before_zoom_text_generation,
+			fmt.tprintf("editor zoom should reshape retained text (scale=%v->%v env=%v->%v valid=%v/%v before=%v/%v after=%v/%v)",
+				before_zoom_scale, app.editor_text_scale, before_zoom_style_scale, zoom_node.style_environment.text_scale,
+				before_zoom_run_valid, zoom_node.text_run_valid,
+				before_zoom_text_size, before_zoom_text_generation,
+				zoom_node.text_run.size, zoom_node.text_run_generation))
+		testing.expect(t, zoom_height > before_height,
+			fmt.tprintf("editor zoom should increase wrapped row geometry (before=%v after=%v)", before_height, zoom_height))
+		testing.expect(t, before_metrics.first == int(wrapped_line.logical_line) &&
+			zoom_metrics.first == before_metrics.first && abs(zoom_metrics.leading_offset_y-before_metrics.leading_offset_y) < 1,
+			"editor zoom should preserve the visible source row and its intra-row viewport anchor")
+		testing.expect(t, view.caret_byte == before_zoom_caret && zoom_line_found &&
+			zoom_line.logical_line == wrapped_line.logical_line && zoom_caret.valid,
+			fmt.tprintf("editor zoom should preserve caret mapping (before=%v after=%v line_found=%v line=%v valid=%v)",
+				before_zoom_caret, view.caret_byte, zoom_line_found,
+				zoom_line.logical_line if zoom_line_found else u64(0), zoom_caret.valid))
+		testing.expect(t, zoom_revision_unchanged,
+			"editor zoom should leave document source bytes and revision unchanged")
+		_ = editor_text_zoom_set(&app, &rt, 1)
+		_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+		_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+		before_scroll = alicorn.scroll_region_state(&rt, app.editor_scroll_owner)
+		before_metrics = alicorn.virtual_list_variable_metrics(
+			&view.wrap_height_index, before_scroll.offset_y, before_scroll.viewport_height,
+		)
+		before_height = alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, int(wrapped_line.logical_line))
+		before_wrap_width = view.wrap_measurement_width
 		rt.viewport.w = 820
 		alicorn.invalidate_root(&rt, "soft-wrap width reflow regression")
 		_ = build_app(rawptr(&app), &rt, 820, 680, 1)

@@ -69,6 +69,9 @@ ACTION_EDIT_MOVE_LINE_DOWN :: "edit.move-line-down"
 ACTION_EDIT_DUPLICATE_LINE :: "edit.duplicate-line"
 ACTION_EDIT_JOIN_LINES :: "edit.join-lines"
 ACTION_COMMENT_TOGGLE :: "comment.toggle"
+ACTION_VIEW_EDITOR_ZOOM_IN :: "view.editor-zoom-in"
+ACTION_VIEW_EDITOR_ZOOM_OUT :: "view.editor-zoom-out"
+ACTION_VIEW_EDITOR_ZOOM_RESET :: "view.editor-zoom-reset"
 
 App :: struct {
 	backend:                bridge.Backend,
@@ -82,6 +85,7 @@ App :: struct {
 	editor_row_targets:     [dynamic]Editor_Row_Target,
 	editor_window:          Editor_Window,
 	editor_window_ready:    bool,
+	editor_text_scale:      f32,
 	editor_request_generation: u64,
 	editor_scroll_owner:    alicorn.Node_ID,
 	editor_restore_scroll:  bool,
@@ -210,7 +214,7 @@ App :: struct {
 	edit_items:             [10]host.Application_Menu_Item,
 	workspace_items:        [6]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
-	view_items:             [1]host.Application_Menu_Item,
+	view_items:             [5]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -441,7 +445,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 							view := &app.editor_views[view_index]
 							if view.optimistic_pending_edits == 0 && view.authoritative_revision != 0 &&
 							   view.authoritative_revision != window.editor_revision {
-								editor_wrap_heights_reset(view, int(active.line_count))
+								editor_wrap_heights_reset(view, int(active.line_count), editor_text_scale_effective(app))
 							}
 							view.authoritative_revision = window.editor_revision
 							if view.position_reconcile_pending {
@@ -705,6 +709,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	if app.settings_surface_open {
 		return settings_surface_handle_key(app, rt, key)
 	}
+	if key == .Zoom_In { return editor_text_zoom_step(app, rt, 1) }
+	if key == .Zoom_Out { return editor_text_zoom_step(app, rt, -1) }
+	if key == .Zoom_Reset { return editor_text_zoom_set(app, rt, 1) }
 	if key == .Open_Command_Palette {
 		command_palette_open_surface(app, rt)
 		return true
@@ -850,7 +857,7 @@ editor_source_at_pointer :: proc(
 			best_line, best_y = row_target.logical_line, row_y
 		}
 	}
-	if best_distance == 1e30 || (!clamp_to_viewport && best_distance > EDITOR_ROW_HEIGHT) { return }
+	if best_distance == 1e30 || (!clamp_to_viewport && best_distance > EDITOR_ROW_HEIGHT*editor_text_scale_effective(app)) { return }
 	best_target: Editor_Row_Target
 	best_x_distance := f32(1e30)
 	best_hit_x := hit_x
@@ -1301,9 +1308,10 @@ editor_text_key :: proc(
 		case .Up, .Down, .Page_Up, .Page_Down:
 			current_line := line.logical_line
 			owner_node, owner_found := alicorn.node_info(rt, owner)
-			gutter_width := editor_line_number_gutter_width(document.line_count)
+			text_scale := editor_text_scale_effective(app)
+			gutter_width := editor_line_number_gutter_width(document.line_count, text_scale)
 			wrap_width := f32(0)
-			if owner_found { wrap_width = max(owner_node.scroll_viewport_width-gutter_width-16, 80) }
+			if owner_found { wrap_width = max(owner_node.scroll_viewport_width-gutter_width-16*text_scale, 80*text_scale) }
 			presentation_current := window.presentation_ready &&
 			                       (window.presentation_stale ||
 			                        (window.presentation_revision == window.editor_revision &&
@@ -1322,7 +1330,7 @@ editor_text_key :: proc(
 			}
 			current_geometry, current_visual_rows, _, current_measured := editor_line_visual_caret_metrics(
 				rt, window, &current_display_line, document.language, current_width, presentation_current,
-				current_node, old_caret, old_affinity, true, view.wrap_mode,
+				current_node, old_caret, old_affinity, true, view.wrap_mode, text_scale,
 			)
 			if !current_measured || !current_geometry.valid { return true }
 			if !view.preferred_x_set {
@@ -1364,7 +1372,7 @@ editor_text_key :: proc(
 				} else {
 					step := u64(1)
 					if owner_found {
-						step = u64(max(int(owner_node.scroll_viewport_height/EDITOR_ROW_HEIGHT)-1, 1))
+					step = u64(max(int(owner_node.scroll_viewport_height/(EDITOR_ROW_HEIGHT*text_scale))-1, 1))
 					}
 					if event.key == .Page_Up {
 						target_line = current_line-step if current_line > step else 0
@@ -1387,8 +1395,8 @@ editor_text_key :: proc(
 			target_target: Editor_Row_Target
 			target_target_found := false
 			target_origin_x: f32 = 0
-			if editor_table_line_is_projected(window, target) && editor_table_line_fit(window, target, wrap_width) {
-				target_layout := editor_table_row_layout(window, target, wrap_width)
+			if editor_table_line_is_projected(window, target) && editor_table_line_fit(window, target, wrap_width, text_scale) {
+				target_layout := editor_table_row_layout(window, target, wrap_width, text_scale=text_scale)
 				target_cell_index := editor_table_cell_for_x(target_layout, view.preferred_x)
 				if current_target_found && current_target.is_cell { target_cell_index = current_target.cell_index }
 				if target_cell_index >= 0 && target_cell_index < len(target_layout.cells) {
@@ -1419,7 +1427,7 @@ editor_text_key :: proc(
 				if target_line != current_line {
 					_, target_visual_rows, _, target_measured := editor_line_visual_caret_metrics(
 						rt, window, &target_display_line, document.language, target_width, presentation_current,
-						target_node, 0, .Leading, false, view.wrap_mode,
+						target_node, 0, .Leading, false, view.wrap_mode, text_scale,
 					)
 					if !target_measured { return true }
 					mapped_visual_row = 0 if event.key == .Down else target_visual_rows-1
@@ -1433,7 +1441,7 @@ editor_text_key :: proc(
 			}
 			mapped_caret, mapped_affinity, moved := editor_source_at_visual_point(
 				rt, window, &target_display_line, document.language, target_width, presentation_current,
-				target_node, target_visual_x, target_visual_y, mapped_visual_row, view.wrap_mode,
+				target_node, target_visual_x, target_visual_y, mapped_visual_row, view.wrap_mode, text_scale,
 			)
 			if !moved { return true }
 			next_caret, next_affinity = mapped_caret, mapped_affinity
@@ -1637,7 +1645,7 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	app.editor_edit_sequence += 1
 	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
-	editor_wrap_heights_apply_edit(view, window, start_byte, end_byte, replacement, removed_line_breaks)
+	editor_wrap_heights_apply_edit(view, window, start_byte, end_byte, replacement, removed_line_breaks, editor_text_scale_effective(app))
 	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
 	view.optimistic_window = new_window
 	view.optimistic_window_ready = true
@@ -1752,7 +1760,7 @@ editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 		}
 		if document, found := find_document(&app.backend.state, document_id); found {
 			view.authoritative_revision = document.editor_revision
-			editor_wrap_heights_reset(view, int(document.line_count))
+			editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
 		}
 	}
 	if app.editor_window_ready && app.editor_window.document_id == document_id {
@@ -2346,9 +2354,10 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 				next_window, projected, _ := editor_window_replace_bytes(window, start_byte, end_byte, applied)
 				view_index := editor_view_find(app.editor_views[:], document_id)
 				if projected && view_index >= 0 {
-					editor_wrap_heights_apply_edit(
+						editor_wrap_heights_apply_edit(
 						&app.editor_views[view_index], window, start_byte, end_byte, applied,
 						editor_count_line_breaks(window.source[int(start_byte-window.start_byte):int(end_byte-window.start_byte)]),
+							editor_text_scale_effective(app),
 					)
 					view = &app.editor_views[view_index]
 					if view.optimistic_window_ready {
@@ -2415,7 +2424,7 @@ editor_apply_backend_selection :: proc(
 	}
 	if !selection_only {
 		editor_preedit_clear(view)
-		editor_wrap_heights_reset(view, int(document.line_count))
+		editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
 		view.authoritative_revision = selection.editor_revision
 	}
 	view.selection_anchor = selection.anchor_byte
@@ -2607,6 +2616,7 @@ main :: proc() {
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
 	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
+	app.editor_text_scale = 1
 	init_menus(&app)
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }

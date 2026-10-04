@@ -369,7 +369,7 @@ editor_reveal_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if !start_geometry.valid || !end_geometry.valid { return }
 	match_top := min(start_geometry.rect.y, end_geometry.rect.y)
 	match_bottom := max(start_geometry.rect.y+start_geometry.rect.h, end_geometry.rect.y+end_geometry.rect.h)
-	if match_bottom <= match_top { match_bottom = match_top+max(start_geometry.rect.h, EDITOR_ROW_HEIGHT) }
+	if match_bottom <= match_top { match_bottom = match_top+max(start_geometry.rect.h, EDITOR_ROW_HEIGHT*editor_text_scale_effective(app)) }
 	content_top := owner.scroll_offset_y+(match_top-viewport_top)
 	content_height := match_bottom-match_top
 	next_y, should_scroll_y := editor_reveal_content_offset(

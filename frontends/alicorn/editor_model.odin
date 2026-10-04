@@ -87,6 +87,7 @@ Editor_Window :: struct {
 	table_plan_cache_revision: u64,
 	table_plan_cache_presentation_revision: u64,
 	table_plan_cache_width: f32,
+	table_plan_cache_text_scale: f32,
 	table_plan_cache_stale: bool,
 	table_plan_cache_wraps: bool,
 	table_plan_cache_width_count: int,
@@ -862,6 +863,7 @@ editor_wrap_heights_apply_edit :: proc(
 	start_byte, end_byte: u64,
 	replacement: []u8,
 	removed_line_breaks: u64,
+	text_scale: f32 = 1,
 ) {
 	if view == nil || window == nil || !view.wrap_height_index_ready { return }
 	first, first_found := editor_line_for_source(window, start_byte)
@@ -886,20 +888,20 @@ editor_wrap_heights_apply_edit :: proc(
 		view.wrap_height_index_ready = alicorn.virtual_list_height_index_init(
 			&view.wrap_height_index,
 			max(result_count, 1),
-			EDITOR_ROW_HEIGHT,
+			EDITOR_ROW_HEIGHT*text_scale,
 			context.allocator,
 		)
 	}
 	view.wrap_measurement_revision = 0
 }
 
-editor_wrap_heights_reset :: proc(view: ^Editor_View_State, item_count: int) {
+editor_wrap_heights_reset :: proc(view: ^Editor_View_State, item_count: int, text_scale: f32 = 1) {
 	if view == nil || !view.wrap_height_index_ready { return }
 	alicorn.virtual_list_height_index_destroy(&view.wrap_height_index)
 	view.wrap_height_index_ready = alicorn.virtual_list_height_index_init(
 		&view.wrap_height_index,
 		max(item_count, 1),
-		EDITOR_ROW_HEIGHT,
+		EDITOR_ROW_HEIGHT*text_scale,
 		context.allocator,
 	)
 	view.wrap_measurement_width = -1
