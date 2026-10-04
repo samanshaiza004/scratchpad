@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/style-environment-text-scale",
-    "revision": "ebf3435ff2073fa2c344699f75b8d0f045854863"
+    "ref": "master",
+    "revision": "130aebdec01c232b76c6ac1d2854c2fd62ad218c"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
