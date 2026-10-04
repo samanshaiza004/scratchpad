@@ -149,11 +149,13 @@ build_app :: proc(
 				app.find_presentation.editor_revision = 0
 				find_refresh_if_needed(app, rt)
 			}
-			if alicorn.button(&ui, "W", key=alicorn.key_string("find-whole-word"), style=alicorn.layout_style(.Row, width=34, height=28), state=alicorn.Button_State{selected=app.find_whole_word}) {
+			_ = alicorn.tooltip(&ui, "Match case")
+			if alicorn.button(&ui, "ab", key=alicorn.key_string("find-whole-word"), style=alicorn.layout_style(.Row, width=34, height=28), state=alicorn.Button_State{selected=app.find_whole_word}) {
 				app.find_whole_word = !app.find_whole_word
 				app.find_presentation.editor_revision = 0
 				find_refresh_if_needed(app, rt)
 			}
+			_ = alicorn.tooltip(&ui, "Whole word")
 			find_status := ""
 			if app.find_query == "" { find_status = "Type to find" }
 			else if app.find_error != "" { find_status = app.find_error }
