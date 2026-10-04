@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/style-environment-palette",
-    "revision": "844805a9864dc6fa9874b073db8f28a92736ad17"
+    "ref": "master",
+    "revision": "09cae06611da89606d65c8919fa53df60a12e0d5"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
