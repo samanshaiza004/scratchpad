@@ -117,6 +117,45 @@ ALICORN_TEST_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonH
 
 
 @(test)
+test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 400})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	expect_fonts := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA)
+	testing.expect(t, expect_fonts, "warm palette integration test should load the UI font")
+	if !expect_fonts { return }
+	testing.expect(t, scratchpad_styles_ensure(&app, &rt), "Scratchpad should register both warm palettes for its runtime")
+
+	ui, should_build := alicorn.begin_frame(&rt)
+	testing.expect(t, should_build, "warm palette fixture should build its first frame")
+	if !should_build { return }
+	root := alicorn.container_begin(&ui, .Root, key="palette-root", style=alicorn.layout_style(grow=1), color=alicorn.style_theme_color(&rt, app.workbench_theme, .Window_Background))
+	workbench_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme})
+	shell_text := alicorn.text_ex(&ui, "Workbench", key="palette-shell-text", explicit_key=true)
+	paper := alicorn.container_begin(&ui, .Container, key="palette-paper", style=alicorn.layout_style(width=300, height=220), color=alicorn.style_theme_color(&rt, app.editor_theme, .Editor_Background))
+	editor_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
+	paper_text := alicorn.text_ex(&ui, "Paper text", key="palette-paper-text", explicit_key=true)
+	alicorn.style_environment_pop(&ui, editor_scope)
+	alicorn.container_end(&ui)
+	alicorn.style_environment_pop(&ui, workbench_scope)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+
+	workbench_ink := alicorn.style_theme_color(&rt, app.workbench_theme, .Text)
+	paper_ink := alicorn.style_theme_color(&rt, app.editor_theme, .Text)
+	paper_color := alicorn.style_theme_color(&rt, app.editor_theme, .Editor_Background)
+	testing.expect(t, root != 0 && paper != 0, "palette fixture should retain the shell and paper surfaces")
+	testing.expect(t, rt.nodes[shell_text].color == workbench_ink && rt.nodes[paper_text].color == paper_ink,
+		"text should resolve to the active workbench or paper theme role")
+	testing.expect(t, rt.nodes[paper].color == paper_color && paper_color.r > paper_ink.r,
+		"the editor paper surface should be light with dark readable text")
+	testing.expect(t, rt.nodes[shell_text].style_environment.theme == app.workbench_theme &&
+		rt.nodes[paper_text].style_environment.theme == app.editor_theme,
+		"theme scopes should stay local and must not leak across the editor boundary")
+}
+
+
+@(test)
 test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T) {
 	app: App
 	app.backend.started = true

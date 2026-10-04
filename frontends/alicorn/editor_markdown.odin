@@ -7,57 +7,57 @@ editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, co
 	case EDITOR_PRESENTATION_HEADING:
 		return {}, false
 	case EDITOR_PRESENTATION_STRONG:
-		return alicorn.Color{0.86, 0.9, 1.0, 1}, true
+		return alicorn.Color{0.31, 0.29, 0.25, 1}, true
 	case EDITOR_PRESENTATION_EMPHASIS:
-		return alicorn.Color{0.72, 0.79, 0.91, 1}, true
+		return alicorn.Color{0.43, 0.38, 0.30, 1}, true
 	case EDITOR_PRESENTATION_INLINE_CODE:
-		return alicorn.Color{0.76, 0.84, 1.0, 1}, true
+		return alicorn.Color{0.49, 0.34, 0.17, 1}, true
 	case EDITOR_PRESENTATION_LINK:
-		return alicorn.Color{0.38, 0.72, 1.0, 1}, true
+		return alicorn.Color{0.14, 0.38, 0.51, 1}, true
 	case EDITOR_PRESENTATION_CODE_BLOCK:
-		return alicorn.Color{0.73, 0.82, 0.95, 1}, true
+		return alicorn.Color{0.32, 0.33, 0.30, 1}, true
 	case 9, 28, 31: // quote marker, thematic break, table delimiter
-		return alicorn.Color{0.57, 0.63, 0.74, 1}, true
+		return alicorn.Color{0.47, 0.46, 0.41, 1}, true
 	case EDITOR_PRESENTATION_LIST_MARKER:
-		return alicorn.Color{0.62, 0.75, 0.94, 1}, true
+		return alicorn.Color{0.35, 0.43, 0.29, 1}, true
 	case EDITOR_PRESENTATION_TASK_MARKER:
-		return alicorn.Color{0.44, 0.8, 1.0, 1}, true
+		return alicorn.Color{0.19, 0.43, 0.38, 1}, true
 	case EDITOR_PRESENTATION_CODE_COMMENT:
-		return alicorn.Color{0.48, 0.69, 0.57, 1}, true
+		return alicorn.Color{0.34, 0.46, 0.34, 1}, true
 	case EDITOR_PRESENTATION_CODE_KEYWORD:
-		return alicorn.Color{0.78, 0.62, 1.0, 1}, true
+		return alicorn.Color{0.43, 0.30, 0.53, 1}, true
 	case EDITOR_PRESENTATION_CODE_STRING:
-		return alicorn.Color{0.86, 0.72, 0.49, 1}, true
+		return alicorn.Color{0.56, 0.34, 0.14, 1}, true
 	case EDITOR_PRESENTATION_CODE_NUMBER:
-		return alicorn.Color{0.54, 0.78, 0.9, 1}, true
+		return alicorn.Color{0.20, 0.43, 0.49, 1}, true
 	case EDITOR_PRESENTATION_CODE_TYPE:
-		return alicorn.Color{0.42, 0.8, 0.76, 1}, true
+		return alicorn.Color{0.16, 0.43, 0.39, 1}, true
 	case EDITOR_PRESENTATION_CODE_FUNCTION, EDITOR_PRESENTATION_CODE_METHOD:
-		return alicorn.Color{0.48, 0.72, 0.98, 1}, true
+		return alicorn.Color{0.18, 0.38, 0.59, 1}, true
 	case EDITOR_PRESENTATION_CODE_VARIABLE:
-		return alicorn.Color{0.78, 0.83, 0.92, 1}, true
+		return alicorn.Color{0.29, 0.30, 0.28, 1}, true
 	case EDITOR_PRESENTATION_CODE_CONSTANT:
-		return alicorn.Color{0.91, 0.72, 0.48, 1}, true
+		return alicorn.Color{0.55, 0.36, 0.14, 1}, true
 	case EDITOR_PRESENTATION_CODE_PROPERTY:
-		return alicorn.Color{0.62, 0.78, 0.98, 1}, true
+		return alicorn.Color{0.20, 0.38, 0.56, 1}, true
 	case EDITOR_PRESENTATION_CODE_OPERATOR:
-		return alicorn.Color{0.73, 0.77, 0.86, 1}, true
+		return alicorn.Color{0.39, 0.39, 0.36, 1}, true
 	case EDITOR_PRESENTATION_CODE_PUNCTUATION:
-		return alicorn.Color{0.61, 0.68, 0.8, 1}, true
+		return alicorn.Color{0.43, 0.43, 0.39, 1}, true
 	case EDITOR_PRESENTATION_CODE_BUILTIN:
-		return alicorn.Color{0.4, 0.79, 0.86, 1}, true
+		return alicorn.Color{0.16, 0.44, 0.48, 1}, true
 	case EDITOR_PRESENTATION_CODE_PARAMETER:
-		return alicorn.Color{0.83, 0.76, 0.91, 1}, true
+		return alicorn.Color{0.43, 0.34, 0.47, 1}, true
 	case EDITOR_PRESENTATION_CODE_TAG:
-		return alicorn.Color{0.88, 0.58, 0.64, 1}, true
+		return alicorn.Color{0.56, 0.26, 0.31, 1}, true
 	case EDITOR_PRESENTATION_CODE_ATTRIBUTE:
-		return alicorn.Color{0.84, 0.74, 0.51, 1}, true
+		return alicorn.Color{0.55, 0.41, 0.19, 1}, true
 	case 29: // table
-		return alicorn.Color{0.76, 0.81, 0.9, 1}, true
+		return alicorn.Color{0.36, 0.37, 0.34, 1}, true
 	case 30: // table header
-		return alicorn.Color{0.87, 0.9, 1.0, 1}, true
+		return alicorn.Color{0.24, 0.24, 0.21, 1}, true
 	case 32: // table pipe
-		return alicorn.Color{0.43, 0.5, 0.63, 1}, true
+		return alicorn.Color{0.54, 0.52, 0.45, 1}, true
 	case:
 		return {}, false
 	}
@@ -127,13 +127,13 @@ editor_markdown_row_presentation :: proc(
 
 editor_markdown_heading_color :: proc(level: u32) -> alicorn.Color {
 	switch level {
-	case 1: return alicorn.Color{0.58, 0.78, 1.0, 1}
-	case 2: return alicorn.Color{0.55, 0.74, 0.96, 1}
-	case 3: return alicorn.Color{0.58, 0.73, 0.91, 1}
-	case 4: return alicorn.Color{0.63, 0.74, 0.88, 1}
-	case 5: return alicorn.Color{0.66, 0.74, 0.85, 1}
-	case 6: return alicorn.Color{0.69, 0.75, 0.84, 1}
-	case: return alicorn.Color{0.55, 0.76, 1.0, 1}
+	case 1: return alicorn.Color{0.14, 0.32, 0.45, 1}
+	case 2: return alicorn.Color{0.18, 0.34, 0.46, 1}
+	case 3: return alicorn.Color{0.22, 0.37, 0.47, 1}
+	case 4: return alicorn.Color{0.27, 0.39, 0.48, 1}
+	case 5: return alicorn.Color{0.31, 0.40, 0.47, 1}
+	case 6: return alicorn.Color{0.35, 0.41, 0.46, 1}
+	case: return alicorn.Color{0.18, 0.35, 0.46, 1}
 	}
 }
 
@@ -239,13 +239,13 @@ editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor
 		paint := alicorn.Text_Paint_Span{start=start, end=end}
 		switch record.kind {
 		case EDITOR_PRESENTATION_BLOCK_CODE:
-			paint.background = alicorn.Color{0.09, 0.11, 0.16, 0.48}
+			paint.background = alicorn.Color{0.82, 0.80, 0.74, 0.62}
 			paint.background_set = true
 		case EDITOR_PRESENTATION_BLOCK_QUOTE:
-			paint.background = alicorn.Color{0.18, 0.22, 0.31, 0.34}
+			paint.background = alicorn.Color{0.84, 0.81, 0.74, 0.48}
 			paint.background_set = true
 		case EDITOR_PRESENTATION_BLOCK_THEMATIC:
-			paint.background = alicorn.Color{0.22, 0.26, 0.35, 0.32}
+			paint.background = alicorn.Color{0.77, 0.73, 0.64, 0.28}
 			paint.background_set = true
 		}
 		if paint.background_set { append(&result, paint) }
@@ -268,10 +268,10 @@ editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor
 		paint := alicorn.Text_Paint_Span{start=start, end=end, color=color, color_set=color_set}
 		switch record.kind {
 		case EDITOR_PRESENTATION_INLINE_CODE:
-			paint.background = alicorn.Color{0.2, 0.24, 0.34, 0.76}
+			paint.background = alicorn.Color{0.78, 0.73, 0.62, 0.62}
 			paint.background_set = true
 		case EDITOR_PRESENTATION_TASK_MARKER:
-			paint.background = alicorn.Color{0.12, 0.25, 0.38, 0.84}
+			paint.background = alicorn.Color{0.78, 0.67, 0.44, 0.58}
 			paint.background_set = true
 		case EDITOR_PRESENTATION_LINK:
 			paint.underline = true
