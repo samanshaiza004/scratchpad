@@ -7,6 +7,9 @@ import bridge "./bridge"
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) { _ = editor_text_zoom_step(app, rt, 1); return }
+	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) { _ = editor_text_zoom_step(app, rt, -1); return }
+	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET) { _ = editor_text_zoom_set(app, rt, 1); return }
 	if command == action_id_for(ACTION_VIEW_COMMAND_PALETTE) { command_palette_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { go_to_line_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) { editor_toggle_wrap_mode(app, rt); return }
@@ -426,6 +429,7 @@ action_id_for :: proc(name: string) -> host.Application_Command_ID {
 }
 
 init_menus :: proc(app: ^App) {
+	if app.editor_text_scale <= 0 { app.editor_text_scale = 1 }
 	app.file_items = [7]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_FILE_OPEN), label="Open File…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'O', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_FILE_QUICK_OPEN), label="Quick Open…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary}}},
@@ -468,7 +472,11 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 	}
-	app.view_items = [1]host.Application_Menu_Item{
+	app.view_items = [5]host.Application_Menu_Item{
+		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN), label="Zoom In", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+' , {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT), label="Zoom Out", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Editor Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},
+		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_COMMAND_PALETTE), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}},
 	}
 	app.menus = [5]host.Application_Menu{

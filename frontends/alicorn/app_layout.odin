@@ -342,7 +342,7 @@ build_app :: proc(
 		)
 		if geometry.valid {
 			area := alicorn.Text_Input_Area{
-				rect=alicorn.Rect{geometry.rect.x, geometry.rect.y, 1, max(geometry.rect.h, EDITOR_ROW_HEIGHT)},
+				rect=alicorn.Rect{geometry.rect.x, geometry.rect.y, 1, max(geometry.rect.h, EDITOR_ROW_HEIGHT*editor_text_scale_effective(app))},
 				cursor_x=0,
 			}
 			_ = alicorn.text_input_target_area_set(rt, app.editor_scroll_owner, area)
