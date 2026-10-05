@@ -131,6 +131,7 @@ build_app :: proc(
 			}
 			tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
 			tab_options.height = 32
+			tab_options.close_policy = .Selected_Or_Hover
 			tab_options.drag_type = SCRATCHPAD_DRAG_TABS
 			tab_result := alicorn.tab_bar(
 				&ui,
