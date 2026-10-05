@@ -187,7 +187,7 @@ build_app :: proc(
 			alicorn.container_end(&ui)
 		}
 
-		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=alicorn.style_theme_color(rt, app.editor_theme, .Editor_Background))
+		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=scratchpad_editor_paper_surface(rt, app.editor_theme))
 		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {

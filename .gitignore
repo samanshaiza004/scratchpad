@@ -21,3 +21,6 @@ testdata/generated/
 /frontends/alicorn/build/
 /bridge/caliber/build/
 /out/
+
+# Generated static theme data from themes/*.json
+/frontends/alicorn/style_palette_generated.odin

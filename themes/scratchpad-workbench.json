@@ -1,0 +1,257 @@
+{
+  "schema": 1,
+  "contract": "0.2",
+  "extends": "alicorn.base",
+  "tokens": {
+    "scratchpad.palette.window_background": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.43662706741680085,
+          0.43662706741680085,
+          0.4100209022976479
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.surface": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.5063864292846207,
+          0.5063864292846207,
+          0.4731206227190587
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.subtle_surface": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.5657284334090101,
+          0.5657284334090101,
+          0.5271127928256164
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.editor_background": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.9639762327436437,
+          0.9499974559901158,
+          0.9162735561025954
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.text": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.9405249485549947,
+          0.9309245449811874,
+          0.8962438838245138
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.muted_text": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.8378605352620079,
+          0.8266570641175989,
+          0.7857769370994929
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.accent": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.773573051530877,
+          0.6180314235705168,
+          0.46135612950044164
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.accent_hover": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.8266570641175989,
+          0.6726330213458496,
+          0.5063864292846207
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.accent_pressed": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.7152408841330303,
+          0.5563933274981757,
+          0.42358287124447963
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.accent_text": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.9911565001783055,
+          0.9776915620885503,
+          0.9405249485549947
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.selection": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.8650420277517009,
+          0.7483790817974855,
+          0.5563933274981757
+        ],
+        "alpha": 0.38
+      }
+    },
+    "scratchpad.palette.focus": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.921191446778721,
+          0.8152506478027833,
+          0.6262096812245096
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.semantic_focus": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.7152408841330303,
+          0.8094681498655941,
+          0.7152408841330303
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.border": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.6576277214849644,
+          0.649956455014496,
+          0.609711615498214
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.danger": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.7673756580558262,
+          0.5271127928256164,
+          0.48452920448170694
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.success": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.6180314235705168,
+          0.7220273554858574,
+          0.6180314235705168
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.scrollbar_track": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.4731206227190587,
+          0.4731206227190587,
+          0.44920387244804644
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.palette.scrollbar_thumb": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.7220273554858574,
+          0.708369650344471,
+          0.6576277214849644
+        ],
+        "alpha": 1.0
+      }
+    },
+    "scratchpad.semantic.text.primary": {
+      "$type": "color",
+      "$value": "{scratchpad.palette.text}"
+    },
+    "scratchpad.semantic.text.muted": {
+      "$type": "color",
+      "$value": "{scratchpad.palette.muted_text}"
+    },
+    "scratchpad.semantic.paper.surface": {
+      "$type": "color",
+      "$value": "{scratchpad.palette.editor_background}"
+    }
+  },
+  "roles": {
+    "core": {
+      "window_background": "{scratchpad.palette.window_background}",
+      "surface": "{scratchpad.palette.surface}",
+      "subtle_surface": "{scratchpad.palette.subtle_surface}",
+      "editor_background": "{scratchpad.semantic.paper.surface}",
+      "text": "{scratchpad.semantic.text.primary}",
+      "muted_text": "{scratchpad.semantic.text.muted}",
+      "accent": "{scratchpad.palette.accent}",
+      "accent_hover": "{scratchpad.palette.accent_hover}",
+      "accent_pressed": "{scratchpad.palette.accent_pressed}",
+      "accent_text": "{scratchpad.palette.accent_text}",
+      "selection": "{scratchpad.palette.selection}",
+      "focus": "{scratchpad.palette.focus}",
+      "semantic_focus": "{scratchpad.palette.semantic_focus}",
+      "border": "{scratchpad.palette.border}",
+      "danger": "{scratchpad.palette.danger}",
+      "success": "{scratchpad.palette.success}",
+      "scrollbar_track": "{scratchpad.palette.scrollbar_track}",
+      "scrollbar_thumb": "{scratchpad.palette.scrollbar_thumb}"
+    }
+  }
+}

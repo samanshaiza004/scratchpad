@@ -157,6 +157,10 @@ func run(args []string) error {
 	}
 	collectionArg := "-collection:alicorn=" + filepath.ToSlash(alicornRoot)
 
+	if err := generateScratchpadThemes(root, out, odinExe, collectionArg); err != nil {
+		return err
+	}
+
 	switch command {
 	case "build":
 		frontendEnv, err := prepareNativeFrontendEnv(root, env)
@@ -450,6 +454,25 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+// generateScratchpadThemes compiles authored JSON with Alicorn's compiler and
+// emits static Odin runtime data before any frontend check/build. The shipped
+// application never parses theme files or depends on the compiler package.
+func generateScratchpadThemes(root, out, odinExe, collectionArg string) error {
+	output := filepath.Join(root, "frontends", "alicorn", "style_palette_generated.odin")
+	workbench := filepath.Join(root, "themes", "scratchpad-workbench.json")
+	paper := filepath.Join(root, "themes", "scratchpad-paper.json")
+	codegen := filepath.Join(root, "tools", "theme_codegen")
+	args := []string{
+		"run", codegen, collectionArg,
+		"-out:" + filepath.Join(out, "scratchpad-theme-codegen"+exeSuffix()),
+		"--", workbench, paper, output,
+	}
+	if err := runCommand(root, nil, "compile Scratchpad theme sources", odinExe, args...); err != nil {
+		return fmt.Errorf("generate static Scratchpad theme data: %w", err)
+	}
+	return nil
 }
 
 func buildFrontend(root, out, odinExe, collectionArg string, release bool, env []string) (string, error) {
