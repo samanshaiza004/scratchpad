@@ -309,7 +309,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		app.quick_open_results_scroll_node = list.scroll.id
 		for index := list.first; index < list.last; index += 1 {
 			result := results[index]
-			if alicorn.button(ui, result.path, key=alicorn.key_string(result.path), style=alicorn.layout_style(.Row, height=QUICK_OPEN_ROW_HEIGHT), state=alicorn.Button_State{selected=index == app.quick_open_selected_index, quiet=index != app.quick_open_selected_index}, text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
+			if alicorn.button(ui, result.path, key=alicorn.key_string(result.path), style=alicorn.layout_style(.Row, height=QUICK_OPEN_ROW_HEIGHT), state=alicorn.Button_State{selected=index == app.quick_open_selected_index}, variant=.Quiet, text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
 				app.quick_open_selected_index = index
 				_ = quick_open_execute(app, rt, result.path, true)
 			}

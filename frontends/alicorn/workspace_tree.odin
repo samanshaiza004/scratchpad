@@ -72,6 +72,7 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT),
 			state=alicorn.Button_State{selected=selected},
 			content_style=alicorn.button_content_style(.Start, padding_x=8),
+			variant=.Quiet,
 		)
 		_ = alicorn.semantic_bind(ui, semantic_id)
 		_ = alicorn.drag_source(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id)

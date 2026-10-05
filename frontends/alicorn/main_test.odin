@@ -562,3 +562,86 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	for &id in old_ids { delete(id, context.temp_allocator) }
 	delete(old_ids)
 }
+
+scratchpad_test_recipe_button :: proc(rt: ^alicorn.Runtime, label: string) -> (variant: alicorn.Button_Variant, selected: bool, found: bool) {
+	for node_id in rt.order {
+		node, exists := rt.nodes[node_id]
+		if exists && node.active && node.kind == .Button && node.label == label {
+			return node.button_variant, node.selected, true
+		}
+	}
+	return .Default, false, false
+}
+
+@(test)
+test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
+	app: App
+	app.backend.started = true
+	app.backend.state.has_workspace = true
+	app.backend.state.workspace_root = "C:/recipe-fixture"
+	documents := [?]bridge.State_Document{{
+		id="recipe-doc", path="notes.md", status="synced", preview=false,
+		editor_revision=1, line_count=0, language="markdown",
+	}}
+	app.backend.state.documents = documents[:]
+	app.backend.state.active = "recipe-doc"
+	app.tree_root_path = app.backend.state.workspace_root
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	entries := [?]bridge.Directory_Entry{{name="sample.md", path="sample.md", dir=false}}
+	append(&app.tree_directories, Tree_Directory{path="", entries=entries[:], expanded=true})
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
+	app.find_open = true
+	app.find_match_case = true
+	app.find_presentation = Find_Presentation{
+		document_id="recipe-doc", editor_revision=1, query="", match_case=true,
+		active_match=-1,
+	}
+	app.workspace_mutation_kind = .Create_File
+	app.workspace_mutation_name = "draft.md"
+	init_menus(&app)
+
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 600})
+	defer {
+		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
+		editor_views_destroy(&app.editor_views)
+		delete(app.editor_edits)
+		delete(app.editor_row_targets)
+		delete(app.tree_directories)
+		alicorn.destroy_runtime(&rt)
+	}
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
+		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
+	testing.expect(t, fonts_loaded, "recipe dogfood test should load the bundled UI fonts")
+	if !fonts_loaded { return }
+
+	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
+	files_variant, files_selected, files_found := scratchpad_test_recipe_button(&rt, "Files")
+	search_variant, _, search_found := scratchpad_test_recipe_button(&rt, "Search")
+	tab_variant, tab_selected, tab_found := scratchpad_test_recipe_button(&rt, "notes.md")
+	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "   sample.md")
+	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
+	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
+
+	testing.expect(t, files_found && files_variant == .Tab && files_selected,
+		"the active Files workspace tab should retain Tab recipe intent and selected state")
+	testing.expect(t, search_found && search_variant == .Tab,
+		"the Search workspace tab should retain Tab recipe intent")
+	testing.expect(t, tab_found && tab_variant == .Tab && tab_selected,
+		"the active document tab should retain Tab recipe intent and selected state")
+	testing.expect(t, tree_found && tree_variant == .Quiet,
+		"the workspace tree item should retain Quiet recipe intent")
+	testing.expect(t, find_found && find_variant == .Toolbar && find_selected,
+		"the selected Match Case find control should retain Toolbar recipe intent and selected state")
+	testing.expect(t, primary_found && primary_variant == .Primary,
+		"the workspace mutation confirmation should retain Primary recipe intent")
+
+	inspection := alicorn.inspect(&rt)
+	testing.expect(t, strings.contains(inspection, "button recipe: variant=tab") &&
+		strings.contains(inspection, "button recipe: variant=quiet") &&
+		strings.contains(inspection, "button recipe: variant=toolbar") &&
+		strings.contains(inspection, "button recipe: variant=primary"),
+		"the Alicorn inspector should explain the resolved recipe provenance for dogfood controls")
+	delete(inspection, context.allocator)
+}

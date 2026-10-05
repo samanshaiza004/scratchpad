@@ -494,10 +494,11 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 				ui,
 				label,
 				key=alicorn.key_string(result.action_id),
-				state=alicorn.Button_State{selected=index == app.command_palette_selected_index, disabled=!result.enabled, quiet=index != app.command_palette_selected_index},
+				state=alicorn.Button_State{selected=index == app.command_palette_selected_index, disabled=!result.enabled},
 				style=alicorn.layout_style(.Row, height=COMMAND_PALETTE_ROW_HEIGHT),
 				text_style=alicorn.Text_Style{overflow=.Ellipsis},
 				content_style=alicorn.button_content_style(horizontal=.Start, vertical=.Center, padding_x=10, padding_y=5),
+				variant=.Quiet,
 			) {
 				_ = command_palette_execute(app, rt, result, true)
 			}

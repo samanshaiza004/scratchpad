@@ -541,9 +541,11 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 				row_node, row_found = rt.nodes[paint_node_id]
 				selection_commands, caret_commands := 0, 0
 				if row_found {
+					selection_color := alicorn.style_environment_color(&rt, row_node.style_environment, .Selection)
+					caret_color := alicorn.style_environment_color(&rt, row_node.style_environment, .Accent)
 					for command in row_node.paint {
-						if command.kind == .Text_Selection { selection_commands += 1 }
-						if command.kind == .Text_Caret { caret_commands += 1 }
+						if color, is_surface := alicorn.paint_surface_color(command); is_surface && color == selection_color { selection_commands += 1 }
+						if color, is_surface := alicorn.paint_surface_color(command); is_surface && color == caret_color && command.bounds.w <= 2 { caret_commands += 1 }
 					}
 				}
 				testing.expect(t, selection_commands > 0 && caret_commands == 1,
