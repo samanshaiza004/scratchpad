@@ -114,29 +114,40 @@ build_app :: proc(
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
 		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=app.raised_surface_material, physical_height=0.3)
-		for document in state.documents {
-			if !alicorn.component_begin(&ui, alicorn.key_string(document.id)) { continue }
-			title := document_title(document.path)
-			if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
-			if document.dirty { title = fmt.tprintf("%s •", title) }
-			selected := state.active == document.id
-			if alicorn.button(&ui, title, key=alicorn.key_string("document-tab"), style=alicorn.layout_style(.Row, width=180, height=32), state=alicorn.Button_State{selected=selected}, content_style=alicorn.button_content_style(.Start, padding_x=10), variant=.Tab) {
-				if !frame_deferred_action_schedule(app, .Select_Document, document.id) {
-					set_error(app, "Could not queue document selection until the current frame is complete.")
-					alicorn.invalidate_root(rt, "Scratchpad could not defer tab selection")
+		if len(state.documents) > 0 {
+			tab_items := make([]alicorn.Tab_Bar_Item, len(state.documents), allocator=context.temp_allocator)
+			defer delete(tab_items, context.temp_allocator)
+			for document, index in state.documents {
+				title := document_title(document.path)
+				if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
+				tab_items[index] = alicorn.Tab_Bar_Item{
+					key=alicorn.key_string(document.id),
+					label=title,
+					selected=state.active == document.id,
+					closable=true,
+					dirty=document.dirty,
+					semantic_id=document_tab_semantic_id(document.id),
 				}
 			}
-			_ = alicorn.drag_source(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(document.id))
-			_ = alicorn.drop_target(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(document.id), .Between_Horizontal)
-			if alicorn.button(&ui, "×", key=alicorn.key_string("document-tab-close"), style=alicorn.layout_style(.Row, width=30, height=32), variant=.Quiet) {
-				if !frame_deferred_action_schedule(app, .Close_Document, document.id) {
-					set_error(app, "Could not queue document close until the current frame is complete.")
-					alicorn.invalidate_root(rt, "Scratchpad could not defer tab close")
+			tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
+			tab_options.height = 32
+			tab_options.drag_type = SCRATCHPAD_DRAG_TABS
+			tab_result := alicorn.tab_bar(
+				&ui,
+				alicorn.key_string("scratchpad-document-tab-bar"),
+				tab_items[:],
+				tab_options,
+				alicorn.layout_style(.Row, grow=1, height=32, clip=true),
+			)
+			if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(state.documents) {
+				document_id := state.documents[tab_result.item_index].id
+				action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
+				if !frame_deferred_action_schedule(app, action, document_id) {
+					set_error(app, "Could not queue the document tab action until the current frame is complete.")
+					alicorn.invalidate_root(rt, "Scratchpad could not defer a document tab action")
 				}
 			}
-			alicorn.component_end(&ui)
-		}
-		if len(state.documents) == 0 {
+		} else {
 			alicorn.text(&ui, "No documents open")
 		}
 		alicorn.surface_end(&ui)

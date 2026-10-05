@@ -19,12 +19,14 @@ select_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 navigate_tab :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) {
 	documents := app.backend.state.documents
 	if len(documents) < 2 { return }
-	index := 0
+	selected_index := -1
 	for document, i in documents {
-		if document.id == app.backend.state.active { index = i; break }
+		if document.id == app.backend.state.active { selected_index = i; break }
 	}
-	index = (index + direction + len(documents)) % len(documents)
-	select_document(app, rt, documents[index].id)
+	navigation := alicorn.Tab_Bar_Navigation.Next
+	if direction < 0 { navigation = .Previous }
+	index, found := alicorn.tab_bar_navigate(len(documents), selected_index, navigation)
+	if found { select_document(app, rt, documents[index].id) }
 }
 
 document_title :: proc(path: string) -> string {

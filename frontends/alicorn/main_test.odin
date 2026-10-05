@@ -672,7 +672,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 scratchpad_test_recipe_button :: proc(rt: ^alicorn.Runtime, label: string) -> (variant: alicorn.Button_Variant, selected: bool, found: bool) {
 	for node_id in rt.order {
 		node, exists := rt.nodes[node_id]
-		if exists && node.active && node.kind == .Button && node.label == label {
+		if exists && node.active && (node.kind == .Button || node.kind == .Tab) && node.label == label {
 			return node.button_variant, node.selected, true
 		}
 	}
@@ -726,6 +726,16 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	files_variant, files_selected, files_found := scratchpad_test_recipe_button(&rt, "Files")
 	search_variant, _, search_found := scratchpad_test_recipe_button(&rt, "Search")
 	tab_variant, tab_selected, tab_found := scratchpad_test_recipe_button(&rt, "notes.md")
+	tab_bar_found := false
+	tab_bar_fills_viewport := false
+	for node_id in rt.order {
+		node, exists := rt.nodes[node_id]
+		if exists && node.active && node.kind == .Scroll_Region && node.label == "tab-bar" {
+			tab_bar_found = true
+			tab_bar_fills_viewport = node.bounds.w > 0 && abs(node.bounds.w-node.scroll_viewport_width) < 1
+			break
+		}
+	}
 	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "   sample.md")
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
@@ -735,7 +745,9 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	testing.expect(t, search_found && search_variant == .Tab,
 		"the Search workspace tab should retain Tab recipe intent")
 	testing.expect(t, tab_found && tab_variant == .Tab && tab_selected,
-		"the active document tab should retain Tab recipe intent and selected state")
+		"the active document should be represented by a selected semantic Tab control")
+	testing.expect(t, tab_bar_found && tab_bar_fills_viewport,
+		"the composite tab bar should size its scroll viewport from the resolved workbench width on its first description")
 	testing.expect(t, tree_found && tree_variant == .Quiet,
 		"the workspace tree item should retain Quiet recipe intent")
 	testing.expect(t, find_found && find_variant == .Toolbar && find_selected,
