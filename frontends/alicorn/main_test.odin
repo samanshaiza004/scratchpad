@@ -208,6 +208,53 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 	paper_role_color, paper_role_found := alicorn.style_extension_color(&rt, app.editor_theme, scratchpad_editor_paper_surface_role())
 	testing.expect(t, paper_role_found && paper_role_color == paper_color,
 		"Scratchpad's app-namespaced paper role should resolve to the paper surface token")
+	testing.expect(t, paper_role_found && paper_fill == paper_role_color,
+		"the paper surface paint fill should equal its resolved app-namespaced role")
+
+	paper_paint: alicorn.Surface_Paint
+	if len(rt.nodes[paper].paint) > 0 {
+		paper_paint, paper_paint_ok = rt.nodes[paper].paint[0].payload.(alicorn.Surface_Paint)
+	}
+	testing.expect(t, paper_paint_ok &&
+		paper_paint.material == app.paper_surface_material &&
+		paper_paint.material != alicorn.MATERIAL_FLAT &&
+		paper_paint.physical_height == -0.4,
+		"the paper surface paint should retain its non-flat material and optical height")
+	resolved_paper_material, paper_material_ok := alicorn.style_material_resolve(&rt, paper_paint.material)
+	testing.expect(t, paper_material_ok &&
+		resolved_paper_material.kind == .Analytic_Relief &&
+		resolved_paper_material.bevel_strength > 0 &&
+		resolved_paper_material.inner_shadow_strength > 0,
+		"the paper material should resolve to its registered analytic relief treatment")
+
+	paper_description, paper_description_found := rt.semantic_surfaces[paper]
+	paper_role_retained := false
+	if paper_description_found {
+		switch retained_role in paper_description.role {
+		case alicorn.Style_Color_Role:
+			paper_role_retained = false
+		case alicorn.Style_Extension_Color_Role_ID:
+			paper_role_retained = retained_role == scratchpad_editor_paper_surface_role()
+		}
+	}
+	testing.expect(t, paper_role_retained,
+		"the retained surface description should preserve the app paper role identity")
+
+	inspection := alicorn.inspect(&rt)
+	testing.expect(t, strings.contains(inspection, "semantic surface: role=extension.") &&
+		strings.contains(inspection, "analytic-relief) height=-0.40") &&
+		strings.contains(inspection, "resolution=retained-cache dependencies=paint,material"),
+		"the inspector should explain paper-role provenance, material, optical height, and invalidation ownership")
+	delete(inspection, context.allocator)
+
+	cached_workbench_theme := app.workbench_theme
+	cached_editor_theme := app.editor_theme
+	cached_paper_material := app.paper_surface_material
+	testing.expect(t, scratchpad_styles_ensure(&app, &rt) &&
+		app.workbench_theme == cached_workbench_theme &&
+		app.editor_theme == cached_editor_theme &&
+		app.paper_surface_material == cached_paper_material,
+		"reusing a Runtime should retain the registered theme and paper-material identities")
 	testing.expect(t, rt.nodes[shell_text].style_environment.theme == app.workbench_theme &&
 		rt.nodes[paper_text].style_environment.theme == app.editor_theme,
 		"theme scopes should stay local and must not leak across the editor boundary")
