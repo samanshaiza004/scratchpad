@@ -183,11 +183,11 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 	root := alicorn.container_begin(&ui, .Root, key="palette-root", style=alicorn.layout_style(grow=1), color=alicorn.style_theme_color(&rt, app.workbench_theme, .Window_Background))
 	workbench_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme})
 	shell_text := alicorn.text_ex(&ui, "Workbench", key="palette-shell-text", explicit_key=true)
-	paper := alicorn.container_begin(&ui, .Container, key="palette-paper", style=alicorn.layout_style(width=300, height=220), color=scratchpad_editor_paper_surface(&rt, app.editor_theme))
 	editor_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
+	paper := alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("palette-paper"), style=alicorn.layout_style(width=300, height=220), material=app.paper_surface_material, physical_height=-0.4)
 	paper_text := alicorn.text_ex(&ui, "Paper text", key="palette-paper-text", explicit_key=true)
+	alicorn.surface_end(&ui)
 	alicorn.style_environment_pop(&ui, editor_scope)
-	alicorn.container_end(&ui)
 	alicorn.style_environment_pop(&ui, workbench_scope)
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
@@ -198,9 +198,14 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 	testing.expect(t, root != 0 && paper != 0, "palette fixture should retain the shell and paper surfaces")
 	testing.expect(t, rt.nodes[shell_text].color == workbench_ink && rt.nodes[paper_text].color == paper_ink,
 		"text should resolve to the active workbench or paper theme role")
-	testing.expect(t, rt.nodes[paper].color == paper_color && paper_color.r > paper_ink.r,
+	paper_fill: alicorn.Color
+	paper_paint_ok := false
+	if len(rt.nodes[paper].paint) > 0 {
+		paper_fill, paper_paint_ok = alicorn.paint_surface_color(rt.nodes[paper].paint[0])
+	}
+	testing.expect(t, paper_paint_ok && paper_fill == paper_color && paper_color.r > paper_ink.r,
 		"the editor paper surface should be light with dark readable text")
-	paper_role_color, paper_role_found := alicorn.style_extension_color(&rt, app.editor_theme, SCRATCHPAD_EDITOR_PAPER_SURFACE_ROLE)
+	paper_role_color, paper_role_found := alicorn.style_extension_color(&rt, app.editor_theme, scratchpad_editor_paper_surface_role())
 	testing.expect(t, paper_role_found && paper_role_color == paper_color,
 		"Scratchpad's app-namespaced paper role should resolve to the paper surface token")
 	testing.expect(t, rt.nodes[shell_text].style_environment.theme == app.workbench_theme &&

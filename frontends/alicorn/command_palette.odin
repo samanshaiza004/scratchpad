@@ -454,13 +454,14 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		style=alicorn.layout_style(.Column, grow=1, padding=48, align=.Center, clip=true),
 		backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72},
 	)
-	app.command_palette_panel_node = alicorn.container_begin(
+	app.command_palette_panel_node = alicorn.surface_begin(
 		ui,
-		.Container,
+		alicorn.surface_core_color_role(.Surface),
 		label="scratchpad-command-palette-panel",
 		key=alicorn.key_string("scratchpad-command-palette-panel"),
 		style=alicorn.layout_style(.Column, max_width=760, height=panel_height, padding=12, gap=8, clip=true),
-		color=alicorn.style_color(ui, .Surface),
+		material=app.floating_surface_material,
+		physical_height=1,
 	)
 	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=40, gap=8, align=.Center))
 	alicorn.text(ui, ">", style=alicorn.layout_style(.Row, width=18, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
@@ -506,7 +507,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		alicorn.virtual_list_end(ui, list)
 	}
 	alicorn.text(ui, fmt.tprintf("%d commands  ·  ↑/↓ navigate  ·  Enter run  ·  Esc close", len(filtered)), style=alicorn.layout_style(.Row, height=20))
-	alicorn.container_end(ui)
+	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }
 

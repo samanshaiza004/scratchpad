@@ -23,4 +23,5 @@ testdata/generated/
 /out/
 
 # Generated static theme data from themes/*.json
-/frontends/alicorn/style_palette_generated.odin
+/frontends/alicorn/style_workbench_generated.odin
+/frontends/alicorn/style_paper_generated.odin

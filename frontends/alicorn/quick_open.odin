@@ -288,13 +288,14 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		style=alicorn.layout_style(.Column, grow=1, padding=48, align=.Center, clip=true),
 		backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72},
 	)
-	app.quick_open_panel_node = alicorn.container_begin(
+	app.quick_open_panel_node = alicorn.surface_begin(
 		ui,
-		.Container,
+		alicorn.surface_core_color_role(.Surface),
 		label="scratchpad-quick-open-panel",
 		key=alicorn.key_string("scratchpad-quick-open-panel"),
 		style=alicorn.layout_style(.Column, max_width=760, height=panel_height, padding=12, gap=8, clip=true),
-		color=alicorn.style_color(ui, .Surface),
+		material=app.floating_surface_material,
+		physical_height=1,
 	)
 	alicorn.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22))
 	app.quick_open_node = alicorn.text_field(ui, app.quick_open_query, key=alicorn.key_string("scratchpad-quick-open-query"), style=alicorn.layout_style(.Row, height=38), text_style=alicorn.Text_Style{overflow=.Ellipsis})
@@ -319,7 +320,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	footer := fmt.tprintf("%d files  ·  ↑/↓ navigate  ·  Enter open  ·  Esc close", len(results))
 	if app.quick_open_truncated { footer = fmt.tprintf("%s  ·  index capped at 5,000 files", footer) }
 	alicorn.text(ui, footer, style=alicorn.layout_style(.Row, height=20))
-	alicorn.container_end(ui)
+	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }
 

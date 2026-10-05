@@ -113,7 +113,7 @@ build_app :: proc(
 		alicorn.split_second_begin(&ui, workspace_split)
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
-		alicorn.container_begin(&ui, .Container, label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), color=alicorn.style_color(&ui, .Subtle_Surface))
+		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=app.raised_surface_material, physical_height=0.3)
 		for document in state.documents {
 			if !alicorn.component_begin(&ui, alicorn.key_string(document.id)) { continue }
 			title := document_title(document.path)
@@ -139,7 +139,7 @@ build_app :: proc(
 		if len(state.documents) == 0 {
 			alicorn.text(&ui, "No documents open")
 		}
-		alicorn.container_end(&ui)
+		alicorn.surface_end(&ui)
 		if app.find_open {
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=78, gap=4, padding=5), color=alicorn.style_color(&ui, .Subtle_Surface))
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=32, gap=8, align=.Center))
@@ -187,8 +187,8 @@ build_app :: proc(
 			alicorn.container_end(&ui)
 		}
 
-		alicorn.container_begin(&ui, .Container, label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), color=scratchpad_editor_paper_surface(rt, app.editor_theme))
 		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
+		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), material=app.paper_surface_material, physical_height=-0.4)
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
@@ -200,7 +200,7 @@ build_app :: proc(
 			alicorn.text(&ui, "Open a document to view its bounded source window.")
 		}
 		alicorn.style_environment_pop(&ui, editor_theme_scope)
-		alicorn.container_end(&ui)
+		alicorn.surface_end(&ui)
 		if active, found := find_document(state, state.active); found {
 			build_document_status(app, &ui, rt, active)
 		}

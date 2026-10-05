@@ -157,7 +157,7 @@ func run(args []string) error {
 	}
 	collectionArg := "-collection:alicorn=" + filepath.ToSlash(alicornRoot)
 
-	if err := generateScratchpadThemes(root, out, odinExe, collectionArg); err != nil {
+	if err := generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg); err != nil {
 		return err
 	}
 
@@ -456,21 +456,41 @@ func envValue(env []string, key string) string {
 	return ""
 }
 
-// generateScratchpadThemes compiles authored JSON with Alicorn's compiler and
-// emits static Odin runtime data before any frontend check/build. The shipped
-// application never parses theme files or depends on the compiler package.
-func generateScratchpadThemes(root, out, odinExe, collectionArg string) error {
-	output := filepath.Join(root, "frontends", "alicorn", "style_palette_generated.odin")
-	workbench := filepath.Join(root, "themes", "scratchpad-workbench.json")
-	paper := filepath.Join(root, "themes", "scratchpad-paper.json")
-	codegen := filepath.Join(root, "tools", "theme_codegen")
-	args := []string{
-		"run", codegen, collectionArg,
-		"-out:" + filepath.Join(out, "scratchpad-theme-codegen"+exeSuffix()),
-		"--", workbench, paper, output,
+// generateScratchpadThemes uses Alicorn's first-party compiler to emit static
+// Odin runtime data before any frontend check/build. The shipped application
+// never parses theme files or depends on the compiler package.
+func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg string) error {
+	themeTool := filepath.Join(out, "alicorn-theme"+exeSuffix())
+	if err := runCommand(root, nil, "build Alicorn theme compiler", odinExe,
+		"build", filepath.Join(alicornRoot, "tools", "theme"), collectionArg,
+		"-out:"+themeTool); err != nil {
+		return fmt.Errorf("build Alicorn theme compiler: %w", err)
 	}
-	if err := runCommand(root, nil, "compile Scratchpad theme sources", odinExe, args...); err != nil {
-		return fmt.Errorf("generate static Scratchpad theme data: %w", err)
+
+	themes := []struct {
+		file   string
+		output string
+		symbol string
+	}{
+		{"scratchpad-workbench.json", "style_workbench_generated.odin", "scratchpad_workbench_theme"},
+		{"scratchpad-paper.json", "style_paper_generated.odin", "scratchpad_editor_theme"},
+	}
+	for _, item := range themes {
+		args := []string{
+			"compile", filepath.Join(root, "themes", item.file),
+			"--output", filepath.Join(root, "frontends", "alicorn", item.output),
+			"--symbol", item.symbol,
+			"--runtime-import", "alicorn:runtime",
+		}
+		if err := runCommand(root, nil, "compile Scratchpad "+item.file, themeTool, args...); err != nil {
+			return fmt.Errorf("generate static theme data from %s: %w", item.file, err)
+		}
+	}
+	// Remove output from the retired Scratchpad-specific serializer after both
+	// first-party compiler invocations succeeded.
+	legacyOutput := filepath.Join(root, "frontends", "alicorn", "style_palette_generated.odin")
+	if err := os.Remove(legacyOutput); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale Scratchpad-specific theme output: %w", err)
 	}
 	return nil
 }
