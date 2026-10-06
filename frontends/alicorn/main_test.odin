@@ -184,7 +184,7 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 	workbench_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme})
 	shell_text := alicorn.text_ex(&ui, "Workbench", key="palette-shell-text", explicit_key=true)
 	editor_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
-	paper := alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("palette-paper"), style=alicorn.layout_style(width=300, height=220), material=app.paper_surface_material, physical_height=-0.4)
+	paper := alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("palette-paper"), style=alicorn.layout_style(width=300, height=220), material=app.paper_surface_material, physical_height=-0.75)
 	paper_text := alicorn.text_ex(&ui, "Paper text", key="palette-paper-text", explicit_key=true)
 	alicorn.surface_end(&ui)
 	alicorn.style_environment_pop(&ui, editor_scope)
@@ -218,7 +218,7 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 	testing.expect(t, paper_paint_ok &&
 		paper_paint.material == app.paper_surface_material &&
 		paper_paint.material != alicorn.MATERIAL_FLAT &&
-		paper_paint.physical_height == -0.4,
+		paper_paint.physical_height == -0.75,
 		"the paper surface paint should retain its non-flat material and optical height")
 	resolved_paper_material, paper_material_ok := alicorn.style_material_resolve(&rt, paper_paint.material)
 	testing.expect(t, paper_material_ok &&
@@ -242,7 +242,7 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 
 	inspection := alicorn.inspect(&rt)
 	testing.expect(t, strings.contains(inspection, "semantic surface: role=app.scratchpad.editor.paper_surface") &&
-		strings.contains(inspection, "analytic-relief) height=-0.40") &&
+		strings.contains(inspection, "analytic-relief) height=-0.75") &&
 		strings.contains(inspection, "resolution=retained-cache dependencies=paint,material"),
 		"the inspector should explain paper-role provenance, material, optical height, and invalidation ownership")
 	delete(inspection, context.allocator)
@@ -679,6 +679,23 @@ scratchpad_test_recipe_button :: proc(rt: ^alicorn.Runtime, label: string) -> (v
 	return .Default, false, false
 }
 
+scratchpad_test_tab_button_for_label :: proc(rt: ^alicorn.Runtime, label: string, semantic_id: alicorn.Semantic_ID) -> (variant: alicorn.Button_Variant, selected: bool, found: bool) {
+	for node_id in rt.order {
+		label_node, exists := rt.nodes[node_id]
+		if !exists || !label_node.active || label_node.kind != .Text || label_node.text != label { continue }
+		parent_id := label_node.parent
+		for parent_id != 0 {
+			parent, parent_exists := rt.nodes[parent_id]
+			if !parent_exists { break }
+			if parent.kind == .Button && parent.button_variant == .Tab {
+				return parent.button_variant, parent.selected, parent.semantic_id == semantic_id
+			}
+			parent_id = parent.parent
+		}
+	}
+	return .Default, false, false
+}
+
 @(test)
 test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	app: App
@@ -725,7 +742,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
 	files_variant, files_selected, files_found := scratchpad_test_recipe_button(&rt, "Files")
 	search_variant, _, search_found := scratchpad_test_recipe_button(&rt, "Search")
-	tab_variant, tab_selected, tab_found := scratchpad_test_recipe_button(&rt, "notes.md")
+	tab_variant, tab_selected, tab_found := scratchpad_test_tab_button_for_label(&rt, "notes.md", document_tab_semantic_id("recipe-doc"))
 	tab_bar_found := false
 	tab_bar_fills_viewport := false
 	for node_id in rt.order {

@@ -24,21 +24,21 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	}
 	if app.paper_surface_material == alicorn.MATERIAL_FLAT {
 		app.paper_surface_material = alicorn.style_material_register(rt, alicorn.Style_Material{
-			kind=.Analytic_Relief, bevel_width=1, bevel_strength=0.16,
-			inner_shadow_strength=0.12,
+			kind=.Analytic_Relief, bevel_width=1, bevel_strength=0.36,
+			inner_shadow_strength=0.18,
 		})
 	}
 	if app.raised_surface_material == alicorn.MATERIAL_FLAT {
 		app.raised_surface_material = alicorn.style_material_register(rt, alicorn.Style_Material{
-			kind=.Analytic_Relief, bevel_width=1, bevel_strength=0.12,
-			inner_shadow_strength=0.04, outer_shadow_strength=0.08,
-			outer_shadow_radius=2,
+			kind=.Analytic_Relief, bevel_width=1, bevel_strength=0.42,
+			inner_shadow_strength=0.14, outer_shadow_strength=0.18,
+			outer_shadow_radius=3,
 		})
 	}
 	if app.floating_surface_material == alicorn.MATERIAL_FLAT {
 		app.floating_surface_material = alicorn.style_material_register(rt, alicorn.Style_Material{
-			kind=.Analytic_Relief, bevel_width=1.5, bevel_strength=0.16,
-			inner_shadow_strength=0.06, outer_shadow_strength=0.28,
+			kind=.Analytic_Relief, bevel_width=1.5, bevel_strength=0.48,
+			inner_shadow_strength=0.2, outer_shadow_strength=0.36,
 			outer_shadow_radius=7,
 		})
 	}
