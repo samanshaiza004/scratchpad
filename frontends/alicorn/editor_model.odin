@@ -4,6 +4,7 @@ import "core:mem"
 import "core:strings"
 import "core:time"
 import alicorn "alicorn:runtime"
+import text_selection "alicorn:text_interaction"
 import bridge "./bridge"
 
 EDITOR_ROW_HEIGHT :: f32(22)
@@ -196,7 +197,7 @@ Editor_Document_Edge :: enum { None, Start, End }
 
 // Pointer selection keeps its original granularity for the duration of a
 // captured drag, as native text views do for character/word/line selection.
-Editor_Selection_Granularity :: enum { Character, Word, Line }
+Editor_Selection_Granularity :: text_selection.Text_Selection_Granularity
 
 EDITOR_SELECTION_AUTOSCROLL_INTERVAL_NS :: u64(16_000_000)
 EDITOR_SELECTION_AUTOSCROLL_MAX_STEP :: f32(32)

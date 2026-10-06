@@ -1,6 +1,7 @@
 package main
 
 import alicorn "alicorn:runtime"
+import text_selection "alicorn:text_interaction"
 
 editor_selection_autoscroll_step :: proc(distance: f32) -> f32 {
 	if distance <= 0 { return 0 }
@@ -25,7 +26,7 @@ editor_word_selection_range :: proc(window: ^Editor_Window, source_byte: u64) ->
 	display_byte := editor_source_to_display(line, source_byte)
 	// Alicorn owns the Unicode selection boundary; this editor only maps it
 	// through its bounded display/source projection.
-	range, word_range_found := alicorn.text_selection_word_range_at(line.display, int(display_byte), context.temp_allocator)
+	range, word_range_found := text_selection.text_selection_word_range_at(line.display, int(display_byte))
 	if !word_range_found { return }
 	start = editor_normalize_source_position(line, editor_display_to_source(line, range.start))
 	end = editor_normalize_source_position(line, editor_display_to_source(line, range.end))
@@ -41,7 +42,7 @@ editor_apply_pointer_selection :: proc(
 	shift: bool,
 ) -> bool {
 	if view == nil || window == nil { return false }
-	granularity := alicorn.text_selection_granularity_for_click_count(click_count)
+	granularity := text_selection.text_selection_granularity_for_click_count(click_count)
 	view.preferred_x_set = false
 	if granularity == .Line {
 		line, found := editor_line_for_source(window, source_byte)
@@ -87,9 +88,9 @@ editor_extend_pointer_selection :: proc(
 	case .Word:
 		start, end, range_ok := editor_word_selection_range(window, source_byte)
 		if !range_ok { return false }
-		endpoints := alicorn.text_selection_range_extend(
-			alicorn.Text_Selection_Range{int(view.drag_selection_start), int(view.drag_selection_end)},
-			alicorn.Text_Selection_Range{int(start), int(end)},
+		endpoints := text_selection.text_selection_range_extend(
+			text_selection.Text_Selection_Range{int(view.drag_selection_start), int(view.drag_selection_end)},
+			text_selection.Text_Selection_Range{int(start), int(end)},
 		)
 		view.selection_anchor, view.caret_byte = u64(endpoints.anchor), u64(endpoints.focus)
 		if endpoints.anchor <= endpoints.focus {
@@ -102,9 +103,9 @@ editor_extend_pointer_selection :: proc(
 		if !found { return false }
 		start, end, range_ok := editor_line_selection_range(window, line.logical_line)
 		if !range_ok { return false }
-		endpoints := alicorn.text_selection_range_extend(
-			alicorn.Text_Selection_Range{int(view.drag_selection_start), int(view.drag_selection_end)},
-			alicorn.Text_Selection_Range{int(start), int(end)},
+		endpoints := text_selection.text_selection_range_extend(
+			text_selection.Text_Selection_Range{int(view.drag_selection_start), int(view.drag_selection_end)},
+			text_selection.Text_Selection_Range{int(start), int(end)},
 		)
 		view.selection_anchor, view.caret_byte = u64(endpoints.anchor), u64(endpoints.focus)
 		if endpoints.anchor <= endpoints.focus {
