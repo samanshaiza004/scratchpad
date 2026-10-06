@@ -72,6 +72,8 @@ ACTION_VIEW_EDITOR_ZOOM_RESET :: "view.editor-zoom-reset"
 App :: struct {
 	workbench_theme: alicorn.Style_Theme_ID,
 	editor_theme:    alicorn.Style_Theme_ID,
+	accessibility_appearance: alicorn.Accessibility_Appearance_Preferences,
+	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
 	paper_surface_material: alicorn.Material_ID,
 	raised_surface_material: alicorn.Material_ID,

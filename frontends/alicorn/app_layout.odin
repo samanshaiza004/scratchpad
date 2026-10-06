@@ -37,7 +37,7 @@ build_app :: proc(
 		style=alicorn.layout_style(.Column, grow=1, gap=12, clip=true),
 		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
 	)
-	workbench_style_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme})
+	workbench_style_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
 
 	if app.error_message != "" {
 		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.Color{0.28, 0.11, 0.12, 1})

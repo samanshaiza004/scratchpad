@@ -262,6 +262,129 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 
 
 @(test)
+test_workbench_accessibility_preferences_reach_recipe_and_material_consumers :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA)
+	testing.expect(t, fonts_loaded, "accessibility dogfood fixture should load the UI font")
+	if !fonts_loaded { return }
+	if !scratchpad_styles_ensure(&app, &rt) { testing.expect(t, false, "accessibility dogfood fixture should register Scratchpad styles"); return }
+	app.accessibility_appearance_override_enabled = true
+	app.accessibility_appearance = alicorn.Accessibility_Appearance_Preferences{
+		increased_contrast=true,
+		reduce_motion=true,
+		reduce_transparency=true,
+		differentiate_without_color=true,
+	}
+
+	ui, should_build := alicorn.begin_frame(&rt)
+	testing.expect(t, should_build, "accessibility dogfood fixture should build its first frame")
+	if !should_build { return }
+	alicorn.container_begin(&ui, .Root, key="appearance-root", style=alicorn.layout_style(grow=1), color=alicorn.style_theme_color(&rt, app.workbench_theme, .Window_Background))
+	workbench_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(&app))
+	workbench_text := alicorn.text_ex(&ui, "Workbench accessibility sample", key="appearance-workbench-text", explicit_key=true)
+	_ = alicorn.button(
+		&ui,
+		"Selected state sample",
+		key=alicorn.key_string("appearance-selected-button"),
+		style=alicorn.layout_style(.Row, width=220, height=36),
+		state=alicorn.Button_State{selected=true},
+		variant=.Quiet,
+	)
+	surface := alicorn.surface_begin(
+		&ui,
+		alicorn.surface_core_color_role(.Subtle_Surface),
+		key=alicorn.key_string("appearance-material-sample"),
+		label="appearance-material-sample",
+		style=alicorn.layout_style(.Column, width=240, height=64, padding=8),
+		material=app.floating_surface_material,
+		physical_height=0.5,
+	)
+	alicorn.text(&ui, "Surface alpha and relief")
+	alicorn.surface_end(&ui)
+	editor_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
+	editor_text := alicorn.text_ex(&ui, "Editor inherits appearance", key="appearance-editor-text", explicit_key=true)
+	alicorn.style_environment_pop(&ui, editor_scope)
+	alicorn.style_environment_pop(&ui, workbench_scope)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+
+	selected_button_node: alicorn.Node_ID
+	for node_id in rt.order {
+		if node, found := rt.nodes[node_id]; found && node.key == "appearance-selected-button" {
+			selected_button_node = node_id
+			break
+		}
+	}
+	preferences := app.accessibility_appearance
+	appearance_nodes := [4]alicorn.Node_ID{workbench_text, selected_button_node, surface, editor_text}
+	for node_id in appearance_nodes {
+		node, found := rt.nodes[node_id]
+		testing.expect(t, found &&
+			node.style_environment.accessibility.increased_contrast == preferences.increased_contrast &&
+			node.style_environment.accessibility.reduce_motion == preferences.reduce_motion &&
+			node.style_environment.accessibility.reduce_transparency == preferences.reduce_transparency &&
+			node.style_environment.accessibility.differentiate_without_color == preferences.differentiate_without_color,
+			"all four app appearance preferences should reach retained workbench and nested editor consumers")
+	}
+	button_underline_found := false
+	if button_node, found := rt.nodes[selected_button_node]; found {
+		button_style := alicorn.style_button_resolve_retained(&rt, button_node, alicorn.Button_Visual_State{selected=true})
+		button_underline_found = button_style.selected_indicator == .Underline
+	}
+	testing.expect(t, button_underline_found,
+		"differentiate-without-color should expose the generic selected-button underline in Scratchpad's style scope")
+
+	surface_paint: alicorn.Surface_Paint
+	surface_paint_found := false
+	if len(rt.nodes[surface].paint) > 0 {
+		surface_paint, surface_paint_found = rt.nodes[surface].paint[0].payload.(alicorn.Surface_Paint)
+	}
+	resolved_material, material_found := alicorn.style_material_resolve(&rt, surface_paint.material)
+	testing.expect(t, surface_paint_found && surface_paint.fill.a == 1 &&
+		surface_paint.material != app.floating_surface_material && material_found &&
+		resolved_material.outer_shadow_strength == 0 && resolved_material.bevel_strength >= 0.75,
+		"reduced transparency and increased contrast should adapt the real Scratchpad relief sample through Alicorn")
+}
+
+@(test)
+test_workbench_uses_system_accessibility_appearance_by_default :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA)
+	testing.expect(t, fonts_loaded, "system appearance fixture should load the UI font")
+	if !fonts_loaded { return }
+	if !scratchpad_styles_ensure(&app, &rt) { testing.expect(t, false, "system appearance fixture should register Scratchpad styles"); return }
+	host_preferences := alicorn.Accessibility_Appearance_Preferences{
+		increased_contrast=true,
+		reduce_motion=true,
+		differentiate_without_color=true,
+	}
+	testing.expect(t, alicorn.style_root_accessibility_set(&rt, host_preferences),
+		"the fixture should install a simulated native host appearance")
+
+	environment := scratchpad_workbench_style_environment(&app)
+	testing.expect(t, !app.accessibility_appearance_override_enabled && !environment.accessibility_set,
+		"the workbench should inherit Alicorn's host accessibility appearance unless an explicit app override is enabled")
+	ui, should_build := alicorn.begin_frame(&rt)
+	testing.expect(t, should_build, "system appearance fixture should build its first frame")
+	if !should_build { return }
+	workbench_scope := alicorn.style_environment_push(&ui, environment)
+	text_node := alicorn.text_ex(&ui, "Host appearance is inherited", key="system-appearance-text", explicit_key=true)
+	alicorn.style_environment_pop(&ui, workbench_scope)
+	alicorn.end_frame(&ui)
+	if node, found := rt.nodes[text_node]; found {
+		testing.expect(t, node.style_environment.accessibility == host_preferences,
+			"system preferences from Alicorn should flow through Scratchpad's theme-only workbench scope")
+	} else {
+		testing.expect(t, false, "system appearance fixture should retain its text node")
+	}
+}
+
+
+@(test)
 test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T) {
 	app: App
 	app.backend.started = true
@@ -312,15 +435,28 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	alicorn.invalidate_root(&rt, "show settings in workbench cleanup test")
 	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
 	settings_checkbox_found := false
+	accessibility_controls_found := 0
+	appearance_material_sample_found := false
+	appearance_selected_sample_found := false
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
 		if found && node.key == "settings-show-ignored-files" { settings_checkbox_found = true }
+		if found && (node.key == "settings-accessibility-increased-contrast" ||
+		   node.key == "settings-accessibility-reduce-motion" ||
+		   node.key == "settings-accessibility-reduce-transparency" ||
+		   node.key == "settings-accessibility-differentiate-without-color") {
+			accessibility_controls_found += 1
+		}
+		if found && node.key == "settings-accessibility-material-sample" { appearance_material_sample_found = true }
+		if found && node.key == "settings-accessibility-selected-sample" { appearance_selected_sample_found = true }
 		if found && node.key == "workspace-show-ignored" {
 			testing.expect(t, false, "ignored-file visibility should not remain as a tree checkbox")
 		}
 	}
 	testing.expect(t, settings_checkbox_found,
 		"Show ignored files should be available from the Settings surface")
+	testing.expect(t, accessibility_controls_found == 4 && appearance_material_sample_found && appearance_selected_sample_found,
+		"Settings should expose all four appearance overrides plus live relief and selected-state samples")
 }
 
 tree_test_wake :: proc(data: rawptr) {}
