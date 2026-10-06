@@ -483,6 +483,43 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	} else {
 		testing.expect(t, false, "focused source row should be retained for candidate-area geometry")
 	}
+	other_document_id_for_navigation := app.backend.state.documents[1].id
+	testing.expect(t, alicorn.focus(&rt, app.editor_scroll_owner),
+		"the editor owner should accept focus before testing document shortcuts")
+	testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Next) &&
+		app.backend.state.active == other_document_id_for_navigation,
+		"Tab_Next should select the next open document")
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	testing.expect(t, alicorn.focused_node(&rt) == app.editor_scroll_owner,
+		"switching documents with the editor focused should keep focus in the editor")
+	testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Previous) &&
+		app.backend.state.active == typing_document_id,
+		"Tab_Previous should wrap back to the prior document")
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	testing.expect(t, alicorn.focused_node(&rt) == app.editor_scroll_owner,
+		"reverse document navigation should also preserve editor focus")
+	tree_focus_owner := app.tree_scroll_owner
+	testing.expect(t, tree_focus_owner != 0 && alicorn.focus(&rt, tree_focus_owner),
+		"the workspace tree should accept focus before checking non-editor tab cycling")
+	if tree_focus_owner != 0 {
+		testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Next) &&
+			app.backend.state.active == other_document_id_for_navigation,
+			"Tab_Next should also work while the workspace tree has focus")
+		_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+		testing.expect(t, alicorn.focused_node(&rt) == app.tree_scroll_owner,
+			"tab cycling from the workspace tree should not steal focus into the editor")
+		testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Previous) &&
+			app.backend.state.active == typing_document_id,
+			"Tab_Previous should return to the original document from the workspace tree")
+		_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+		testing.expect(t, alicorn.focused_node(&rt) == app.tree_scroll_owner,
+			"reverse tab cycling from the workspace tree should preserve its focus role")
+	}
+	_ = alicorn.focus(&rt, app.editor_scroll_owner)
+	base_application_revision = app.backend.state.application_rev
+	view_index, view_ok = editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { testing.expect(t, false, "the original editor view should survive tab cycling"); return }
+	view = &app.editor_views[view_index]
 	commits := [7]string{"x", "a", "b", "c", "d", "e", "f"}
 	for text in commits {
 		editor_text_input(

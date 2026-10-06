@@ -711,6 +711,14 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	if app.settings_surface_open {
 		return settings_surface_handle_key(app, rt, key)
 	}
+	if key == .Tab_Next {
+		navigate_tab(app, rt, 1)
+		return true
+	}
+	if key == .Tab_Previous {
+		navigate_tab(app, rt, -1)
+		return true
+	}
 	if key == .Zoom_In { return editor_text_zoom_step(app, rt, 1) }
 	if key == .Zoom_Out { return editor_text_zoom_step(app, rt, -1) }
 	if key == .Zoom_Reset { return editor_text_zoom_set(app, rt, 1) }

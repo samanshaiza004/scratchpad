@@ -19,6 +19,8 @@ select_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 navigate_tab :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) {
 	documents := app.backend.state.documents
 	if len(documents) < 2 { return }
+	editor_was_focused := app.editor_scroll_owner != 0 &&
+		alicorn.focused_node(rt) == app.editor_scroll_owner
 	selected_index := -1
 	for document, i in documents {
 		if document.id == app.backend.state.active { selected_index = i; break }
@@ -26,7 +28,10 @@ navigate_tab :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) {
 	navigation := alicorn.Tab_Bar_Navigation.Next
 	if direction < 0 { navigation = .Previous }
 	index, found := alicorn.tab_bar_navigate(len(documents), selected_index, navigation)
-	if found { select_document(app, rt, documents[index].id) }
+	if found {
+		select_document(app, rt, documents[index].id)
+		if editor_was_focused { app.editor_focus_pending = true }
+	}
 }
 
 document_title :: proc(path: string) -> string {
