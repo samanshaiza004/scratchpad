@@ -24,7 +24,7 @@ The wrapper synchronizes the exact Caliber and Alicorn revisions in `dependencie
 
 ## Theme authoring
 
-Scratchpad's workbench and paper palettes are authored in `themes/scratchpad-workbench.json` and `themes/scratchpad-paper.json`. Both extend `alicorn.base` and use semantic aliases; the paper theme also defines the app-specific `app.scratchpad.editor.paper_surface` role. The sRGB source values round-trip to the existing runtime colors exactly.
+Scratchpad's workbench and paper palettes are authored in `themes/scratchpad-workbench.json` and `themes/scratchpad-paper.json`. Both extend `alicorn.base` and use semantic aliases; the paper theme defines app-specific paper-surface and editor-padding roles. The editor padding dimension flows through `style_metric` in the paper scope, so Alicorn environment density scales a real Scratchpad layout metric. The sRGB source values round-trip to the existing runtime colors exactly.
 
 The build, test, smoke, and run commands use Alicorn's `theme compile` command to generate static Odin theme data before checking or building the frontend. The application registers those immutable values at runtime; it does not read theme files or include the JSON compiler in the shipped binary. The paper surface uses its namespaced role, while Alicorn's core editor-background role remains available as the fallback. The repository has no Scratchpad-specific theme serializer.
 

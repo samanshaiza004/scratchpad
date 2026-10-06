@@ -200,7 +200,8 @@ build_app :: proc(
 		}
 
 		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
-		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=10, gap=6, align=.Start, clip=true), material=app.paper_surface_material, physical_height=-0.75)
+		paper_padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
+		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=app.paper_surface_material, physical_height=-0.75)
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {

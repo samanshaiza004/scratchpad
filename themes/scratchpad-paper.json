@@ -195,6 +195,17 @@
         "alpha": 1.0
       }
     },
+    "scratchpad.dimension.editor_padding": {
+      "$type": "dimension",
+      "$value": {
+        "value": 10,
+        "unit": "px"
+      }
+    },
+    "scratchpad.semantic.editor.padding": {
+      "$type": "dimension",
+      "$value": "{scratchpad.dimension.editor_padding}"
+    },
     "scratchpad.palette.scrollbar_track": {
       "$type": "color",
       "$value": {
@@ -257,6 +268,10 @@
       "app.scratchpad.editor.paper_surface": {
         "$type": "color",
         "$value": "{scratchpad.semantic.paper.surface}"
+      },
+      "app.scratchpad.editor.padding": {
+        "$type": "dimension",
+        "$value": "{scratchpad.semantic.editor.padding}"
       }
     }
   }
