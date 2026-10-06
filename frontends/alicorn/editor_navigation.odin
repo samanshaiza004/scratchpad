@@ -23,22 +23,10 @@ editor_word_selection_range :: proc(window: ^Editor_Window, source_byte: u64) ->
 	line, found := editor_line_for_source(window, source_byte)
 	if !found { return }
 	display_byte := editor_source_to_display(line, source_byte)
-	// Use Runa's UAX #29 word segmentation, matching the runtime's word
-	// navigation policy instead of introducing byte/ASCII heuristics here.
-	ranges := alicorn.text_word_ranges(line.display, context.temp_allocator)
-	defer delete(ranges)
-	selected := -1
-	for range, index in ranges {
-		if display_byte >= range.start && display_byte < range.end {
-			selected = index
-			break
-		}
-	}
-	if selected < 0 && display_byte == len(line.display) && len(ranges) > 0 {
-		selected = len(ranges)-1
-	}
-	if selected < 0 { return }
-	range := ranges[selected]
+	// Alicorn owns the Unicode selection boundary; this editor only maps it
+	// through its bounded display/source projection.
+	range, word_range_found := alicorn.text_selection_word_range_at(line.display, int(display_byte), context.temp_allocator)
+	if !word_range_found { return }
 	start = editor_normalize_source_position(line, editor_display_to_source(line, range.start))
 	end = editor_normalize_source_position(line, editor_display_to_source(line, range.end))
 	return start, end, end > start
@@ -53,10 +41,9 @@ editor_apply_pointer_selection :: proc(
 	shift: bool,
 ) -> bool {
 	if view == nil || window == nil { return false }
-	normalized_click_count := click_count
-	if normalized_click_count == 0 { normalized_click_count = 1 }
+	granularity := alicorn.text_selection_granularity_for_click_count(click_count)
 	view.preferred_x_set = false
-	if normalized_click_count >= 3 {
+	if granularity == .Line {
 		line, found := editor_line_for_source(window, source_byte)
 		if !found { return false }
 		start, end, range_ok := editor_line_selection_range(window, line.logical_line)
@@ -67,7 +54,7 @@ editor_apply_pointer_selection :: proc(
 		view.drag_selection_start, view.drag_selection_end = start, end
 		return true
 	}
-	if normalized_click_count == 2 {
+	if granularity == .Word {
 		start, end, range_ok := editor_word_selection_range(window, source_byte)
 		if !range_ok {
 			view.selection_anchor, view.caret_byte = source_byte, source_byte
@@ -100,30 +87,30 @@ editor_extend_pointer_selection :: proc(
 	case .Word:
 		start, end, range_ok := editor_word_selection_range(window, source_byte)
 		if !range_ok { return false }
-		if end <= view.drag_selection_start {
-			view.selection_anchor, view.anchor_affinity = view.drag_selection_end, .Trailing
-			view.caret_byte, view.caret_affinity = start, .Leading
-		} else if start >= view.drag_selection_end {
-			view.selection_anchor, view.anchor_affinity = view.drag_selection_start, .Leading
-			view.caret_byte, view.caret_affinity = end, .Trailing
-		} else {
-			view.selection_anchor, view.caret_byte = view.drag_selection_start, view.drag_selection_end
+		endpoints := alicorn.text_selection_range_extend(
+			alicorn.Text_Selection_Range{int(view.drag_selection_start), int(view.drag_selection_end)},
+			alicorn.Text_Selection_Range{int(start), int(end)},
+		)
+		view.selection_anchor, view.caret_byte = u64(endpoints.anchor), u64(endpoints.focus)
+		if endpoints.anchor <= endpoints.focus {
 			view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+		} else {
+			view.anchor_affinity, view.caret_affinity = .Trailing, .Leading
 		}
 	case .Line:
 		line, found := editor_line_for_source(window, source_byte)
 		if !found { return false }
 		start, end, range_ok := editor_line_selection_range(window, line.logical_line)
 		if !range_ok { return false }
-		if end <= view.drag_selection_start {
-			view.selection_anchor, view.anchor_affinity = view.drag_selection_end, .Trailing
-			view.caret_byte, view.caret_affinity = start, .Leading
-		} else if start >= view.drag_selection_end {
-			view.selection_anchor, view.anchor_affinity = view.drag_selection_start, .Leading
-			view.caret_byte, view.caret_affinity = end, .Trailing
-		} else {
-			view.selection_anchor, view.caret_byte = view.drag_selection_start, view.drag_selection_end
+		endpoints := alicorn.text_selection_range_extend(
+			alicorn.Text_Selection_Range{int(view.drag_selection_start), int(view.drag_selection_end)},
+			alicorn.Text_Selection_Range{int(start), int(end)},
+		)
+		view.selection_anchor, view.caret_byte = u64(endpoints.anchor), u64(endpoints.focus)
+		if endpoints.anchor <= endpoints.focus {
 			view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+		} else {
+			view.anchor_affinity, view.caret_affinity = .Trailing, .Leading
 		}
 	case .Character:
 		view.caret_byte, view.caret_affinity = source_byte, affinity
