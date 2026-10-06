@@ -241,7 +241,7 @@ test_workbench_and_editor_use_registered_warm_palettes :: proc(t: ^testing.T) {
 		"the retained surface description should preserve the app paper role identity")
 
 	inspection := alicorn.inspect(&rt)
-	testing.expect(t, strings.contains(inspection, "semantic surface: role=extension.") &&
+	testing.expect(t, strings.contains(inspection, "semantic surface: role=app.scratchpad.editor.paper_surface") &&
 		strings.contains(inspection, "analytic-relief) height=-0.40") &&
 		strings.contains(inspection, "resolution=retained-cache dependencies=paint,material"),
 		"the inspector should explain paper-role provenance, material, optical height, and invalidation ownership")
