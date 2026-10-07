@@ -23,10 +23,12 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		scratchpad_editor_theme_destroy(&theme)
 	}
 	if app.paper_surface_material == alicorn.MATERIAL_FLAT {
-		app.paper_surface_material = alicorn.style_material_register(rt, alicorn.Style_Material{
-			kind=.Analytic_Relief, bevel_width=1, bevel_strength=0.36,
-			inner_shadow_strength=0.18,
-		})
+		for definition in scratchpad_editor_theme_materials {
+			if definition.name == "app.scratchpad.editor.paper" {
+				app.paper_surface_material = alicorn.style_material_register(rt, definition.material)
+				break
+			}
+		}
 	}
 	if app.raised_surface_material == alicorn.MATERIAL_FLAT {
 		app.raised_surface_material = alicorn.style_material_register(rt, alicorn.Style_Material{

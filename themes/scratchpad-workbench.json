@@ -232,6 +232,13 @@
       "$value": "{scratchpad.palette.editor_background}"
     }
   },
+  "recipes": {
+    "button": {
+      "tab": {
+        "selected_indicator_role": "accent"
+      }
+    }
+  },
   "roles": {
     "core": {
       "window_background": "{scratchpad.palette.window_background}",

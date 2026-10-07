@@ -24,16 +24,18 @@ The wrapper synchronizes the exact Caliber and Alicorn revisions in `dependencie
 
 ## Theme authoring
 
-Scratchpad's workbench and paper palettes are authored in `themes/scratchpad-workbench.json` and `themes/scratchpad-paper.json`. Both extend `alicorn.base` and use semantic aliases; the paper theme defines app-specific paper-surface and editor-padding roles. The editor padding dimension flows through `style_metric` in the paper scope, so Alicorn environment density scales a real Scratchpad layout metric. The sRGB source values round-trip to the existing runtime colors exactly.
+Scratchpad's workbench and paper palettes are authored in `themes/scratchpad-workbench.json` and `themes/scratchpad-paper.json`. Both extend `alicorn.base` and use semantic aliases; the paper theme defines app-specific paper-surface and editor-padding roles plus the analytic paper material, while the workbench theme authors the selected Tab underline role. The editor padding dimension flows through `style_metric` in the paper scope, so Alicorn environment density scales a real Scratchpad layout metric. The sRGB source values round-trip to the existing runtime colors exactly.
 
-The build, test, smoke, and run commands use Alicorn's `theme compile` command to generate static Odin theme data before checking or building the frontend. The application registers those immutable values at runtime; it does not read theme files or include the JSON compiler in the shipped binary. The paper surface uses its namespaced role, while Alicorn's core editor-background role remains available as the fallback. The repository has no Scratchpad-specific theme serializer.
+The build, test, smoke, and run commands use Alicorn's `theme compile` command to generate static Odin theme data before checking or building the frontend. The application registers those immutable values at runtime; it does not read theme files or include the JSON compiler in the shipped binary. The paper surface uses its namespaced role and generated material definition, while Alicorn's core editor-background role remains available as the fallback. The tab recipe remains a sparse override of Alicorn's built-in defaults. The repository has no Scratchpad-specific theme serializer.
 
 From the repository root, check and explain authored tokens with:
 
     odin run .deps/alicorn/tools/theme -collection:alicorn=.deps/alicorn -out:out/alicorn/theme-tool.exe -- check themes/scratchpad-workbench.json
     odin run .deps/alicorn/tools/theme -collection:alicorn=.deps/alicorn -out:out/alicorn/theme-tool.exe -- explain themes/scratchpad-paper.json scratchpad.semantic.paper.surface
+    odin run .deps/alicorn/tools/theme -collection:alicorn=.deps/alicorn -out:out/alicorn/theme-tool.exe -- explain themes/scratchpad-paper.json material.app.scratchpad.editor.paper
+    odin run .deps/alicorn/tools/theme -collection:alicorn=.deps/alicorn -out:out/alicorn/theme-tool.exe -- explain themes/scratchpad-workbench.json recipe.button.tab
 
-Run the same commands for either theme file; explain prints the resolved linear-sRGB value and alias provenance.
+Run the same commands for either theme file; explain prints token values and alias provenance, material parameters and source location, or the authored recipe fields and source location.
 
 ## Included behavior
 
