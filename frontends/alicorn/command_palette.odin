@@ -7,6 +7,7 @@ import host "alicorn:native/sdl_gpu"
 
 COMMAND_PALETTE_MAX_VISIBLE_ROWS :: 8
 COMMAND_PALETTE_ROW_HEIGHT :: f32(38)
+COMMAND_PALETTE_MAX_LIST_HEIGHT :: f32(COMMAND_PALETTE_MAX_VISIBLE_ROWS)*COMMAND_PALETTE_ROW_HEIGHT
 
 Command_Palette_Result :: struct {
 	action_id:   string,
@@ -445,9 +446,6 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 	defer delete(filtered)
 	if len(filtered) == 0 { app.command_palette_selected_index = 0
 	} else { app.command_palette_selected_index = clamp(app.command_palette_selected_index, 0, len(filtered)-1) }
-	visible_rows := min(max(len(filtered), 1), COMMAND_PALETTE_MAX_VISIBLE_ROWS)
-	results_height := f32(visible_rows)*COMMAND_PALETTE_ROW_HEIGHT
-	panel_height := f32(24+40+16+20)+results_height
 	app.command_palette_overlay_node = alicorn.modal_overlay_begin(
 		ui,
 		alicorn.key_string("scratchpad-command-palette-overlay"),
@@ -459,7 +457,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		alicorn.surface_core_color_role(.Surface),
 		label="scratchpad-command-palette-panel",
 		key=alicorn.key_string("scratchpad-command-palette-panel"),
-		style=alicorn.layout_style(.Column, max_width=760, height=panel_height, padding=12, gap=8, clip=true),
+		style=alicorn.layout_style(.Column, max_width=760, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=12, gap=8, clip=true),
 		material=app.floating_surface_material,
 		physical_height=1,
 	)
@@ -481,7 +479,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 			len(filtered),
 			COMMAND_PALETTE_ROW_HEIGHT,
 			key=alicorn.key_string("scratchpad-command-palette-results"),
-			style=alicorn.layout_style(height=results_height, clip=true),
+			style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=COMMAND_PALETTE_MAX_LIST_HEIGHT, grow=1, clip=true),
 			label="scratchpad-command-palette-results",
 		)
 		app.command_palette_results_scroll_node = list.scroll.id

@@ -3,6 +3,7 @@ package main
 import "core:testing"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
+import bridge "./bridge"
 
 @(test)
 test_command_palette_fuzzy_terms_cover_action_fields_and_aliases :: proc(t: ^testing.T) {
@@ -122,4 +123,73 @@ test_command_palette_focus_keyboard_and_dismissal_are_local :: proc(t: ^testing.
 	command_palette_restore_focus_after_frame(&app, &rt)
 	testing.expect(t, rt.focused == previous_focus,
 		"dismissing the palette should restore the prior retained focus target")
+}
+
+command_palette_test_build :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build {
+		testing.expect(t, false, "command palette fixture should build its invalidated description")
+		return false
+	}
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	command_palette_build(app, &ui, rt)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	return true
+}
+
+@(test)
+test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	init_menus(&app)
+	synthetic_actions := [?]bridge.Action_State{
+		{id="file.open", title="Open File", category="File", visible=true, enabled=true},
+		{id="demo.one", title="Demo One", category="Demo", visible=true, enabled=true},
+		{id="demo.two", title="Demo Two", category="Demo", visible=true, enabled=true},
+		{id="demo.three", title="Demo Three", category="Demo", visible=true, enabled=true},
+		{id="demo.four", title="Demo Four", category="Demo", visible=true, enabled=true},
+		{id="demo.five", title="Demo Five", category="Demo", visible=true, enabled=true},
+		{id="demo.six", title="Demo Six", category="Demo", visible=true, enabled=true},
+		{id="demo.seven", title="Demo Seven", category="Demo", visible=true, enabled=true},
+		{id="demo.eight", title="Demo Eight", category="Demo", visible=true, enabled=true},
+		{id="demo.nine", title="Demo Nine", category="Demo", visible=true, enabled=true},
+		{id="demo.ten", title="Demo Ten", category="Demo", visible=true, enabled=true},
+		{id="demo.eleven", title="Demo Eleven", category="Demo", visible=true, enabled=true},
+		{id="demo.twelve", title="Demo Twelve", category="Demo", visible=true, enabled=true},
+	}
+	app.backend.state.actions = synthetic_actions[:]
+	app.command_palette_open = true
+	app.command_palette_query = "Open File"
+
+	results := command_palette_collect_results(&app, context.temp_allocator)
+	defer delete(results)
+	sparse := command_palette_filter_results(results[:], app.command_palette_query, {}, context.temp_allocator)
+	defer delete(sparse)
+	visible_sparse := min(max(len(sparse), 1), COMMAND_PALETTE_MAX_VISIBLE_ROWS)
+	if !command_palette_test_build(t, &app, &rt) { return }
+	panel, panel_ok := alicorn.node_info(&rt, app.command_palette_panel_node)
+	testing.expect(t, panel_ok && len(sparse) > 0 && len(sparse) < COMMAND_PALETTE_MAX_VISIBLE_ROWS,
+		"the focused query should produce a short natural-height result list")
+	if panel_ok {
+		want_height := f32(100)+f32(visible_sparse)*COMMAND_PALETTE_ROW_HEIGHT
+		testing.expect(t, panel.bounds.h == want_height,
+			"the command palette panel height should come from its realized query, result, and footer contents")
+	}
+
+	app.command_palette_query = ""
+	alicorn.invalidate_root(&rt, "command palette content sizing stress")
+	all_results := command_palette_filter_results(results[:], "", {}, context.temp_allocator)
+	defer delete(all_results)
+	if !command_palette_test_build(t, &app, &rt) { return }
+	panel, panel_ok = alicorn.node_info(&rt, app.command_palette_panel_node)
+	list, list_ok := alicorn.node_info(&rt, app.command_palette_results_scroll_node)
+	testing.expect(t, len(all_results) > COMMAND_PALETTE_MAX_VISIBLE_ROWS,
+		"the real command set should exceed the palette's bounded visible row count")
+	testing.expect(t, panel_ok && panel.bounds.h == f32(100)+COMMAND_PALETTE_MAX_LIST_HEIGHT,
+		"many results should grow the panel only to the capped list height")
+	testing.expect(t, list_ok && list.scroll_content_height == f32(len(all_results))*COMMAND_PALETTE_ROW_HEIGHT &&
+		list.scroll_viewport_height <= COMMAND_PALETTE_MAX_LIST_HEIGHT,
+		"the palette should retain the full result extent while keeping the scroll viewport bounded")
 }
