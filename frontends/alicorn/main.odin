@@ -80,6 +80,15 @@ App :: struct {
 	floating_surface_material: alicorn.Material_ID,
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
+	accessibility_source_lane: Accessibility_Source_Lane,
+	accessibility_projection: Editor_Accessibility_Projection,
+	accessibility_source_error: string,
+	accessibility_source_error_document_id: string,
+	accessibility_source_error_revision: u64,
+	accessibility_semantic_area_id: alicorn.Semantic_ID,
+	accessibility_semantic_revision: u64,
+	accessibility_semantic_has_runs: bool,
+	accessibility_semantic_run_count: int,
 	editor_edit_lane:       bridge.Editor_Edit_Lane,
 	quick_open_lane:        bridge.Workspace_Files_Lane,
 	editor_edits:           [dynamic]Editor_Edit_Intent,
@@ -305,6 +314,20 @@ start_backend :: proc(app: ^App) {
 			set_error(app, "Could not start the asynchronous Quick Open file index worker.")
 			return
 		}
+		accessibility_lane_started := accessibility_source_lane_start(
+			&app.accessibility_source_lane,
+			&app.backend,
+			app.waker.wake,
+			app.waker.data,
+		)
+		if !accessibility_lane_started {
+			_ = bridge.workspace_files_lane_stop(&app.quick_open_lane)
+			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
+			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
+			_, _ = bridge.backend_stop(&app.backend)
+			set_error(app, "Could not start the active-document accessibility source worker.")
+			return
+		}
 	app.recovery_notice_dismissed = false
 		set_error(app, "")
 		tree_sync_workspace(app)
@@ -318,6 +341,9 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	}
 	if !bridge.visible_window_lane_stop(&app.visible_window_lane) {
 		return false, "visible-window worker did not join cleanly"
+	}
+	if !accessibility_source_lane_stop(&app.accessibility_source_lane) {
+		return false, "accessibility source worker did not join cleanly"
 	}
 	if !editor_flush_pending_edits(app) {
 		return false, "pending editor edits did not drain cleanly"
@@ -511,6 +537,8 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 		bridge.editor_edit_lane_result_destroy(&edit_result, app.editor_edit_lane.allocator)
 		alicorn.invalidate_root(rt, "Scratchpad optimistic editor edit acknowledged")
 	}
+	editor_accessibility_take_completion(app, rt)
+	editor_accessibility_requests_drain(app, rt)
 	shutdown_advance(app, rt)
 }
 
@@ -1549,6 +1577,9 @@ editor_apply_local_replace_with_wire :: proc(
 	resulting_anchor, resulting_caret: u64,
 	typing_group_id: u64 = 0,
 	action_id := "",
+	allow_offscreen_authoritative := false,
+	reveal_after_ack := false,
+	reveal_logical_line: u64 = 0,
 ) -> bool {
 	if app == nil || rt == nil || !app.backend.started || end_byte < start_byte {
 		return false
@@ -1563,18 +1594,20 @@ editor_apply_local_replace_with_wire :: proc(
 	view := &app.editor_views[view_index]
 	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
-	if !window_matches {
+	window_end: u64 = 0
+	if window_matches { window_end = window.start_byte+u64(len(window.source)) }
+	optimistic_projection := window_matches && start_byte >= window.start_byte && end_byte <= window_end
+	if !optimistic_projection && !allow_offscreen_authoritative {
 		set_error(app, "The bounded source window is not ready for local editing.")
 		alicorn.invalidate_root(rt, "Scratchpad local replacement waited for a source window")
 		return false
 	}
-	window_end := window.start_byte + u64(len(window.source))
-	if start_byte < window.start_byte || end_byte > window_end {
-		set_error(app, "The replacement range is outside the loaded source window.")
-		alicorn.invalidate_root(rt, "Scratchpad replacement crossed a bounded window edge")
+	if allow_offscreen_authoritative && !optimistic_projection && end_byte > document.byte_length {
+		set_error(app, "The replacement range is outside the authoritative document.")
+		alicorn.invalidate_root(rt, "Scratchpad rejected an out-of-document replacement")
 		return false
 	}
-	if editor_window_is_long_line_chunk(window) && editor_count_line_breaks(replacement) > 0 {
+	if optimistic_projection && editor_window_is_long_line_chunk(window) && editor_count_line_breaks(replacement) > 0 {
 		set_error(app, "Enter is unavailable inside a partially loaded long line; move to a complete line window first.")
 		alicorn.invalidate_root(rt, "Scratchpad deferred a line break beyond the bounded long-line projection")
 		return false
@@ -1586,8 +1619,11 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	if typing_group_id == 0 { editor_undo_group_break(view) }
 	workspace_search_match_clear(view)
-	local_start := int(start_byte-window.start_byte)
-	local_end := int(end_byte-window.start_byte)
+	local_start, local_end: int
+	if optimistic_projection {
+		local_start = int(start_byte-window.start_byte)
+		local_end = int(end_byte-window.start_byte)
+	}
 	if view.auto_pair_valid {
 		marker := view.auto_pair_closer_byte
 		if start_byte <= marker && end_byte <= marker {
@@ -1600,16 +1636,22 @@ editor_apply_local_replace_with_wire :: proc(
 			view.auto_pair_valid = false
 		}
 	}
-	removed_line_breaks := editor_count_line_breaks(window.source[local_start:local_end])
-	new_window, replaced, replace_error := editor_window_replace_bytes(window, start_byte, end_byte, replacement)
-	if !replaced {
-		set_error(app, replace_error)
-		alicorn.invalidate_root(rt, "Scratchpad could not apply a bounded optimistic replacement")
-		return false
+	removed_line_breaks: u64 = 0
+	new_window: Editor_Window
+	if optimistic_projection {
+		removed_line_breaks = editor_count_line_breaks(window.source[local_start:local_end])
+		replaced: bool
+		replace_error: string
+		new_window, replaced, replace_error = editor_window_replace_bytes(window, start_byte, end_byte, replacement)
+		if !replaced {
+			set_error(app, replace_error)
+			alicorn.invalidate_root(rt, "Scratchpad could not apply a bounded optimistic replacement")
+			return false
+		}
 	}
 	document_id, id_error := strings.clone(document.id, context.allocator)
 	if id_error != nil {
-		editor_window_destroy(&new_window)
+		if optimistic_projection { editor_window_destroy(&new_window) }
 		set_error(app, "Could not retain the edit's document identity.")
 		return false
 	}
@@ -1618,7 +1660,7 @@ editor_apply_local_replace_with_wire :: proc(
 		owned_action_id, id_error = strings.clone(action_id, context.allocator)
 		if id_error != nil {
 			delete(document_id, context.allocator)
-			editor_window_destroy(&new_window)
+			if optimistic_projection { editor_window_destroy(&new_window) }
 			set_error(app, "Could not retain the semantic edit intent.")
 			return false
 		}
@@ -1627,7 +1669,7 @@ editor_apply_local_replace_with_wire :: proc(
 	if replacement_error != nil {
 		delete(document_id, context.allocator)
 		if len(owned_action_id) > 0 { delete(owned_action_id, context.allocator) }
-		editor_window_destroy(&new_window)
+		if optimistic_projection { editor_window_destroy(&new_window) }
 		set_error(app, "Could not retain replacement bytes for the serial edit queue.")
 		return false
 	}
@@ -1639,15 +1681,17 @@ editor_apply_local_replace_with_wire :: proc(
 			delete(document_id, context.allocator)
 			if len(owned_action_id) > 0 { delete(owned_action_id, context.allocator) }
 			delete(replacement_copy, context.allocator)
-			editor_window_destroy(&new_window)
+			if optimistic_projection { editor_window_destroy(&new_window) }
 			set_error(app, "Could not retain the authoritative replacement bytes for the serial edit queue.")
 			return false
 		}
 		mem.copy(rawptr(&wire_copy[0]), rawptr(&wire_replacement[0]), len(wire_replacement))
 	}
-	view.viewport_anchor_skip_next_source_change = true
-	view.viewport_anchor_pending = false
-	view.viewport_anchor_resolved = false
+	if optimistic_projection {
+		view.viewport_anchor_skip_next_source_change = true
+		view.viewport_anchor_pending = false
+		view.viewport_anchor_resolved = false
+	}
 	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
 	edit_base_revision := view.authoritative_revision
 	for pending in app.editor_edits {
@@ -1657,12 +1701,14 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	app.editor_edit_sequence += 1
 	if app.editor_edit_sequence == 0 { app.editor_edit_sequence = 1 }
-	editor_wrap_heights_apply_edit(view, window, start_byte, end_byte, replacement, removed_line_breaks, editor_text_scale_effective(app))
-	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
-	view.optimistic_window = new_window
-	view.optimistic_window_ready = true
-	view.optimistic_pending_edits += 1
-	view.optimistic_line_delta += i64(editor_count_line_breaks(replacement))-i64(removed_line_breaks)
+	if optimistic_projection {
+		editor_wrap_heights_apply_edit(view, window, start_byte, end_byte, replacement, removed_line_breaks, editor_text_scale_effective(app))
+		if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
+		view.optimistic_window = new_window
+		view.optimistic_window_ready = true
+		view.optimistic_pending_edits += 1
+		view.optimistic_line_delta += i64(editor_count_line_breaks(replacement))-i64(removed_line_breaks)
+	}
 	append(&app.editor_edits, Editor_Edit_Intent{
 		sequence=app.editor_edit_sequence,
 		document_id=document_id,
@@ -1677,6 +1723,9 @@ editor_apply_local_replace_with_wire :: proc(
 		action_id=owned_action_id,
 		replacement=replacement_copy,
 		wire_replacement=wire_copy,
+		optimistic_projection=optimistic_projection,
+		reveal_after_ack=reveal_after_ack,
+		reveal_logical_line=reveal_logical_line,
 	})
 	view.selection_anchor = resulting_anchor
 	view.caret_byte = resulting_caret
@@ -1689,7 +1738,7 @@ editor_apply_local_replace_with_wire :: proc(
 	sync_runtime_actions(app, rt)
 	accepted, dispatch_error := editor_dispatch_next_edit(app)
 	if !accepted { set_error(app, dispatch_error) } else { set_error(app, "") }
-	alicorn.invalidate_root(rt, "Scratchpad source replacement appeared optimistically")
+	alicorn.invalidate_root(rt, "Scratchpad source replacement was submitted")
 	return true
 }
 
@@ -1906,7 +1955,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		}
 		if view_index := editor_view_find(app.editor_views[:], intent.document_id); view_index >= 0 {
 			view := &app.editor_views[view_index]
-			if len(result.command.edit.applied_replacement) > 0 &&
+			if intent.optimistic_projection && len(result.command.edit.applied_replacement) > 0 &&
 			   !editor_reconcile_applied_replacement(app, view, &app.editor_edits[0], result.command.edit.applied_replacement) {
 				failed_document, _ := strings.clone(intent.document_id, context.allocator)
 				shutdown_note_edit_failure(app)
@@ -1919,8 +1968,21 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				if rt != nil { alicorn.invalidate_root(rt, "Scratchpad reloaded after edit acknowledgement reconciliation failed") }
 				return
 			}
-			if view.optimistic_pending_edits > 0 { view.optimistic_pending_edits -= 1 }
+			if intent.optimistic_projection && view.optimistic_pending_edits > 0 { view.optimistic_pending_edits -= 1 }
 			view.authoritative_revision = result.command.edit.editor_revision
+			if intent.reveal_after_ack {
+				view.selection_anchor = result.command.edit.new_end_byte
+				view.caret_byte = result.command.edit.new_end_byte
+				_ = editor_reveal_request_set(
+					view,
+					intent.document_id,
+					result.command.edit.editor_revision,
+					result.command.edit.new_end_byte,
+					result.command.edit.new_end_byte,
+					intent.reveal_logical_line,
+					.Nearest,
+				)
+			}
 			if view.optimistic_pending_edits == 0 && view.optimistic_window_ready {
 				view.optimistic_window.editor_revision = result.command.edit.editor_revision
 				view.optimistic_window.application_rev = app.backend.state.application_rev
@@ -2576,11 +2638,17 @@ application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
 	if app.backend.started {
 		stopped, message := stop_backend(app)
-		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil
+		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil && app.accessibility_source_lane.thread == nil
 		if !stopped { fmt.eprintln("Scratchpad backend shutdown error:", message) }
 	} else {
 		app.smoke_shutdown = true
 	}
+	editor_accessibility_projection_destroy(&app.accessibility_projection)
+	if len(app.accessibility_source_error) > 0 { delete(app.accessibility_source_error, context.allocator) }
+	if len(app.accessibility_source_error_document_id) > 0 { delete(app.accessibility_source_error_document_id, context.allocator) }
+	app.accessibility_source_error = ""
+	app.accessibility_source_error_document_id = ""
+	app.accessibility_source_error_revision = 0
 	tree_clear_directories(app)
 	if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
 	app.tree_root_path = ""

@@ -402,6 +402,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		axes=.Both,
 		focusable=true,
 	)
+	editor_accessibility_build_semantics(app, ui, rt, document, editor_scroll.id, view)
 	list_metrics := alicorn.virtual_list_variable_metrics(
 		&view.wrap_height_index,
 		editor_scroll.offset_y,

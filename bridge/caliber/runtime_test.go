@@ -606,6 +606,65 @@ func TestReadVisibleLongLineAsAnchoredBoundedChunks(t *testing.T) {
 	}
 }
 
+func TestReadVisibleLineChunkPreservesCRLFAndTerminalCarriageReturn(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		terminator     []byte
+		wantLineLength int
+		wantEndOffset  int
+	}{
+		{name: "CRLF terminator", terminator: []byte{'\r', '\n'}, wantLineLength: MaxVisibleLineChunkBytes + 257, wantEndOffset: MaxVisibleLineChunkBytes + 257},
+		{name: "terminal lone CR is content", terminator: []byte{'\r'}, wantLineLength: MaxVisibleLineChunkBytes + 258, wantEndOffset: MaxVisibleLineChunkBytes + 258},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			path := filepath.Join(workspace, "line.txt")
+			prefix := bytes.Repeat([]byte("a"), MaxVisibleLineChunkBytes+257)
+			content := append(append([]byte(nil), prefix...), test.terminator...)
+			writeFile(t, path, string(content))
+
+			runtime := newStartedRuntime(t, workspace)
+			defer stopRuntime(t, runtime)
+			state := latestStateForTest(t, runtime)
+			dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+				Version: ProtocolVersion, RequestID: 140, BasedOnRevision: state.ApplicationRev,
+				Command: "open_path", Path: path,
+			}))
+			opened := decodeResponse(t, runtime.Pump())
+			state = latestStateForTest(t, runtime)
+			if !opened.OK || len(state.Documents) != 1 {
+				t.Fatalf("open response = %+v, state = %+v", opened, state)
+			}
+
+			anchor := len(prefix) - 32
+			dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+				Version: ProtocolVersion, RequestID: 141, BasedOnRevision: state.ApplicationRev,
+				Command: "read_visible_lines", DocumentID: state.Documents[0].ID,
+				StartLine: 0, AnchorByte: uint64(anchor), MaxLines: 1, MaxBytes: MaxVisibleBytes,
+			}))
+			response := decodeResponse(t, runtime.Pump())
+			if !response.OK || response.Resource == nil {
+				t.Fatalf("read line chunk = %+v", response)
+			}
+			descriptor := response.Resource
+			if descriptor.StartByte != uint64(anchor) || descriptor.LineByteLength != uint64(test.wantLineLength) || descriptor.EndLine != 1 || descriptor.Truncated {
+				t.Fatalf("line chunk descriptor = %+v", descriptor)
+			}
+			resource, err := runtime.caliber.readResourceCopy(descriptor.ResourceID, descriptor.Generation)
+			if err != nil {
+				t.Fatalf("map line chunk resource: %v", err)
+			}
+			want := content[anchor:test.wantEndOffset]
+			if !bytes.Equal(resource[visibleSliceHeaderBytes:], want) {
+				t.Fatalf("line chunk payload = %q, want exact source bytes %q", resource[visibleSliceHeaderBytes:], want)
+			}
+			if err := runtime.caliber.releaseResourceOwner(descriptor.ResourceID, descriptor.Generation); err != nil {
+				t.Fatalf("release line chunk resource: %v", err)
+			}
+		})
+	}
+}
+
 func TestReplaceDocumentIsRevisionedAndAcknowledged(t *testing.T) {
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "edit.txt")

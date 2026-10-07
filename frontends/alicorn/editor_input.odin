@@ -40,6 +40,9 @@ Editor_Edit_Intent :: struct {
 	action_id:         string,
 	replacement:       []u8,
 	wire_replacement:  []u8,
+	optimistic_projection: bool,
+	reveal_after_ack: bool,
+	reveal_logical_line: u64,
 }
 
 EDITOR_TYPING_GROUP_PAUSE_NS :: i64(900_000_000)

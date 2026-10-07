@@ -274,6 +274,14 @@ func (b *Buffer) BoundedLines(startLine, maxLines, maxBytes int) (data []byte, s
 	}
 
 	data = b.slice(startByte, startByte+maxBytes)
+	// A continuation may resume inside a line. Keep CRLF indivisible at the
+	// byte-budget edge: BoundedLineChunk excludes the CRLF terminator, so a
+	// page ending after its CR could otherwise produce an invalid next anchor.
+	if len(data) > 1 && data[len(data)-1] == '\r' {
+		if next, exists := b.ByteAt(startByte + len(data)); exists && next == '\n' {
+			data = data[:len(data)-1]
+		}
+	}
 	returnedEndLine := startLine + bytes.Count(data, []byte{'\n'})
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		returnedEndLine++
@@ -302,9 +310,11 @@ func (b *Buffer) BoundedLineChunk(line int, anchorByte, maxBytes int) (data []by
 	if !ok {
 		return nil, 0, 0, false, errors.New("line outside buffer")
 	}
-	if lineEnd > lineStart {
+	if lineEnd > lineStart && lineEnd < b.byteLen {
 		if last, exists := b.ByteAt(lineEnd - 1); exists && last == '\r' {
-			lineEnd--
+			if next, exists := b.ByteAt(lineEnd); exists && next == '\n' {
+				lineEnd--
+			}
 		}
 	}
 	lineByteLength = lineEnd - lineStart

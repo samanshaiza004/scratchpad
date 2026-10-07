@@ -1094,6 +1094,7 @@ backend_command :: proc(
 	has_target_byte := false,
 	target_byte: u64 = 0,
 	based_on_revision: u64 = 0,
+	allow_unversioned_read := false,
 	read_latest_after := true,
 	allocator := context.allocator,
 ) -> (result: Backend_Command_Result) {
@@ -1108,7 +1109,9 @@ backend_command :: proc(
 	if len(command) == 0 { return Backend_Command_Result{code="invalid_command", message="command is empty"} }
 	backend.request_id += 1
 	request_revision := based_on_revision
-	if request_revision == 0 { request_revision = backend.state.application_rev }
+	if request_revision == 0 && !(allow_unversioned_read && command == "read_visible_lines") {
+		request_revision = backend.state.application_rev
+	}
 	request := Backend_Command_Request{
 		version=1,
 		request_id=backend.request_id,

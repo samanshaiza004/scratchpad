@@ -209,6 +209,7 @@ build_app :: proc(
 				alicorn.component_end(&ui)
 			}
 		} else {
+			editor_accessibility_retire(app, rt)
 			alicorn.text(&ui, "Open a file to begin")
 			alicorn.text(&ui, "Open a document to view its bounded source window.")
 		}

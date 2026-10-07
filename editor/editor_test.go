@@ -76,6 +76,31 @@ func TestBufferBoundedLinesCopiesOneRange(t *testing.T) {
 	}
 }
 
+func TestBufferBoundedLinesDoesNotSplitCRLFTerminator(t *testing.T) {
+	const maxBytes = 64 * 1024
+	line := append(bytes.Repeat([]byte("x"), 255), '\n')
+	prefix := bytes.Repeat(line, 255)
+	source := append(prefix, bytes.Repeat([]byte("b"), 254)...)
+	source = append(source, 'b', '\r', '\n', 'z')
+	b := NewBuffer(source)
+
+	data, startByte, endLine, truncated, err := b.BoundedLines(0, 256, maxBytes)
+	if err != nil {
+		t.Fatalf("BoundedLines = error: %v", err)
+	}
+	if len(data) != maxBytes-1 || data[len(data)-1] != 'b' || startByte != 0 || !truncated {
+		t.Fatalf("bounded page ended inside CRLF: len=%d, last=%q, end_line=%d, truncated=%v", len(data), data[len(data)-1], endLine, truncated)
+	}
+
+	continuation, continuationStart, _, continuationTruncated, err := b.BoundedLineChunk(endLine-1, len(data), 16*1024)
+	if err != nil {
+		t.Fatalf("CRLF-boundary continuation = error: %v", err)
+	}
+	if len(continuation) != 0 || continuationStart != len(data) || continuationTruncated {
+		t.Fatalf("CRLF-boundary continuation = %q, start=%d, truncated=%v", continuation, continuationStart, continuationTruncated)
+	}
+}
+
 func TestBufferBoundedLineChunksTraverseLongLineWithoutWholeCopy(t *testing.T) {
 	line := bytes.Repeat([]byte("ab😀cd"), 400_000)
 	source := append(append([]byte(nil), line...), '\r', '\n')
@@ -135,6 +160,41 @@ func TestBufferBoundedLineChunksTraverseLongLineWithoutWholeCopy(t *testing.T) {
 	zwjChunk, zwjStart, _, _, err := zwjBuffer.BoundedLineChunk(0, 9, 32)
 	if err != nil || zwjStart != 1 || !bytes.Equal(zwjChunk, zwj[1:]) {
 		t.Fatalf("emoji ZWJ chunk = %q start=%d err=%v", zwjChunk, zwjStart, err)
+	}
+}
+
+func TestBufferBoundedLineChunkPreservesCRLFAndTerminalCarriageReturn(t *testing.T) {
+	source := []byte("crlf\r\nfinal\r")
+	b := NewBuffer(source)
+	if b.LineCount() != 2 {
+		t.Fatalf("line count = %d, want 2", b.LineCount())
+	}
+
+	crlf, crlfStart, crlfLength, crlfTruncated, err := b.BoundedLineChunk(0, 0, 32)
+	if err != nil {
+		t.Fatalf("CRLF BoundedLineChunk = error: %v", err)
+	}
+	if crlfStart != 0 || crlfLength != len("crlf") || crlfTruncated || !bytes.Equal(crlf, source[:len("crlf")]) {
+		t.Fatalf("CRLF chunk = %q start=%d length=%d truncated=%v", crlf, crlfStart, crlfLength, crlfTruncated)
+	}
+
+	finalStart := len("crlf\r\n")
+	final, gotStart, finalLength, finalTruncated, err := b.BoundedLineChunk(1, 0, 32)
+	if err != nil {
+		t.Fatalf("terminal-CR BoundedLineChunk = error: %v", err)
+	}
+	if gotStart != finalStart || finalLength != len("final\r") || finalTruncated || !bytes.Equal(final, source[finalStart:]) {
+		t.Fatalf("terminal-CR chunk = %q start=%d length=%d truncated=%v", final, gotStart, finalLength, finalTruncated)
+	}
+
+	// The final CR is content, not a terminator: anchored chunking must retain
+	// it too, rather than silently shortening the source range.
+	anchored, anchoredStart, anchoredLength, anchoredTruncated, err := b.BoundedLineChunk(1, len(source)-2, 2)
+	if err != nil {
+		t.Fatalf("anchored terminal-CR BoundedLineChunk = error: %v", err)
+	}
+	if anchoredStart != len(source)-2 || anchoredLength != len("final\r") || anchoredTruncated || !bytes.Equal(anchored, source[len(source)-2:]) {
+		t.Fatalf("anchored terminal-CR chunk = %q start=%d length=%d truncated=%v", anchored, anchoredStart, anchoredLength, anchoredTruncated)
 	}
 }
 

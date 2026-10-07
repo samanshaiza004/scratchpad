@@ -1100,9 +1100,11 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	if !lineOK {
 		return Response{}, errors.New("requested line is unavailable")
 	}
-	if lineEnd > lineStart {
+	if lineEnd > lineStart && lineEnd < buffer.ByteLen() {
 		if last, exists := buffer.ByteAt(lineEnd - 1); exists && last == '\r' {
-			lineEnd--
+			if next, exists := buffer.ByteAt(lineEnd); exists && next == '\n' {
+				lineEnd--
+			}
 		}
 	}
 	lineByteLength := lineEnd - lineStart
