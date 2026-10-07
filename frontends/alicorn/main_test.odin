@@ -812,6 +812,21 @@ scratchpad_test_recipe_button :: proc(rt: ^alicorn.Runtime, label: string) -> (v
 			return node.button_variant, node.selected, true
 		}
 	}
+	// Composite TabBar labels live in retained Text children, so resolve the
+	// owning Button when the visible label is not duplicated on its owner node.
+	for text_id in rt.order {
+		text_node, exists := rt.nodes[text_id]
+		if !exists || !text_node.active || text_node.kind != .Text || text_node.text != label { continue }
+		parent_id := text_node.parent
+		for parent_id != 0 {
+			parent, parent_exists := rt.nodes[parent_id]
+			if !parent_exists { break }
+			if parent.active && (parent.kind == .Button || parent.kind == .Tab) {
+				return parent.button_variant, parent.selected, true
+			}
+			parent_id = parent.parent
+		}
+	}
 	return .Default, false, false
 }
 

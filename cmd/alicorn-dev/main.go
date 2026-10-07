@@ -160,6 +160,10 @@ func run(args []string) error {
 	if err := generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg); err != nil {
 		return err
 	}
+	accessKitFlags, err := accessKitLinkerFlags(alicornRoot)
+	if err != nil {
+		return err
+	}
 
 	switch command {
 	case "build":
@@ -167,7 +171,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		exe, err := buildFrontend(root, out, odinExe, collectionArg, *release, frontendEnv)
+		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -194,7 +198,9 @@ func run(args []string) error {
 			}
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
-		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:"+frontendTestExe, collectionArg); err != nil {
+		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
+		testArgs = appendLinkerFlags(testArgs, accessKitFlags)
+		if err := runCommand(root, testEnv, "odin", odinExe, testArgs...); err != nil {
 			return fmt.Errorf("Alicorn workbench integration tests: %w", err)
 		}
 		return nil
@@ -203,7 +209,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		exe, err := buildFrontend(root, out, odinExe, collectionArg, *release, frontendEnv)
+		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -495,7 +501,7 @@ func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg str
 	return nil
 }
 
-func buildFrontend(root, out, odinExe, collectionArg string, release bool, env []string) (string, error) {
+func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, release bool, env []string) (string, error) {
 	if runtime.GOOS == "windows" {
 		sdl := filepath.Join(filepath.Dir(odinExe), "vendor", "sdl3", "SDL3.dll")
 		if info, err := os.Stat(sdl); err != nil || info.Size() < 100_000 {
@@ -506,6 +512,7 @@ func buildFrontend(root, out, odinExe, collectionArg string, release bool, env [
 		}
 	}
 	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
+	args = appendLinkerFlags(args, accessKitFlags)
 	if release {
 		args = append(args, "-o:speed")
 	}

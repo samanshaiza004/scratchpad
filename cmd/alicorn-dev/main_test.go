@@ -1,9 +1,75 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAccessKitLinkerFlagsForWindows(t *testing.T) {
+	root := filepath.Join("workspace", "alicorn")
+	flags, library, err := accessKitLinkerFlagsFor(root, "windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	libraryDirectory := filepath.Join(root, ".deps", "accesskit", "accesskit-c-0.23.1", "lib", "windows", "x86_64", "msvc", "static")
+	if !strings.Contains(flags, "/LIBPATH:"+quoteLinkerPath(libraryDirectory)) {
+		t.Fatalf("linker flags %q do not point at selected Alicorn dependency directory %q", flags, libraryDirectory)
+	}
+	for _, libraryName := range []string{"bcrypt.lib", "ntdll.lib", "propsys.lib", "runtimeobject.lib", "uiautomationcore.lib", "userenv.lib", "ws2_32.lib"} {
+		if !strings.Contains(flags, libraryName) {
+			t.Errorf("linker flags %q omit %s", flags, libraryName)
+		}
+	}
+	if want := filepath.Join(libraryDirectory, "accesskit.lib"); library != want {
+		t.Fatalf("AccessKit library = %q, want %q", library, want)
+	}
+}
+
+func TestAccessKitLinkerFlagsForMacOS(t *testing.T) {
+	for _, test := range []struct {
+		goarch string
+		arch   string
+	}{
+		{goarch: "arm64", arch: "arm64"},
+		{goarch: "amd64", arch: "x86_64"},
+	} {
+		flags, library, err := accessKitLinkerFlagsFor("/workspace/alicorn", "darwin", test.goarch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		libraryDirectory := filepath.Join("/workspace/alicorn", ".deps", "accesskit", "accesskit-c-0.23.1", "lib", "macos", test.arch, "static")
+		if !strings.Contains(flags, "-L"+quoteLinkerPath(libraryDirectory)) {
+			t.Errorf("linker flags %q do not point at %q", flags, libraryDirectory)
+		}
+		if want := filepath.Join(libraryDirectory, "libaccesskit.a"); library != want {
+			t.Errorf("AccessKit library = %q, want %q", library, want)
+		}
+		for _, linkerToken := range []string{"-framework AppKit", "-framework Foundation", "-framework CoreFoundation", "-lobjc", "-lc++"} {
+			if !strings.Contains(flags, linkerToken) {
+				t.Errorf("linker flags %q omit %s", flags, linkerToken)
+			}
+		}
+	}
+}
+
+func TestAccessKitLinkerFlagsForLinux(t *testing.T) {
+	flags, library, err := accessKitLinkerFlagsFor("/workspace/alicorn", "linux", "amd64")
+	if err != nil || flags != "" || library != "" {
+		t.Fatalf("Linux AccessKit linker contract = (%q, %q, %v), want empty flags and library", flags, library, err)
+	}
+}
+
+func TestAppendLinkerFlags(t *testing.T) {
+	args := []string{"build", "frontends/alicorn"}
+	if got := appendLinkerFlags(args, ""); len(got) != len(args) {
+		t.Fatalf("empty linker flags added an argument: %v", got)
+	}
+	got := appendLinkerFlags(args, "/LIBPATH:C:/deps/accesskit accesskit.lib")
+	if len(got) != len(args)+1 || got[len(got)-1] != "-extra-linker-flags:/LIBPATH:C:/deps/accesskit accesskit.lib" {
+		t.Fatalf("linker flags were not passed as one Odin argument: %v", got)
+	}
+}
 
 func TestValidateLockedRevision(t *testing.T) {
 	tests := []struct {
