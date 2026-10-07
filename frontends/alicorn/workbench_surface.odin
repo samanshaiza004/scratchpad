@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
 
@@ -55,6 +56,16 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime)
 		alicorn.invalidate_root(rt, "Scratchpad accessibility appearance source changed")
 	}
 	alicorn.text(ui, "Turn this off to apply an app-level override for testing; it does not change OS settings.", style=alicorn.layout_style(.Row, height=36), text_style=alicorn.Text_Style{overflow=.Wrap})
+
+	host_appearance := alicorn.style_root_accessibility_observation_get(rt)
+	alicorn.text(ui, "System detected (host values; app overrides below do not change these):")
+	alicorn.text(ui, fmt.tprintf(
+		"Contrast: %s  ·  Reduce motion: %s  ·  Reduce transparency: %s  ·  Differentiate without color: %s",
+		settings_accessibility_observed_value(host_appearance, .Increased_Contrast, host_appearance.preferences.increased_contrast),
+		settings_accessibility_observed_value(host_appearance, .Reduce_Motion, host_appearance.preferences.reduce_motion),
+		settings_accessibility_observed_value(host_appearance, .Reduce_Transparency, host_appearance.preferences.reduce_transparency),
+		settings_accessibility_observed_value(host_appearance, .Differentiate_Without_Color, host_appearance.preferences.differentiate_without_color),
+	), style=alicorn.layout_style(.Row, height=36), text_style=alicorn.Text_Style{overflow=.Wrap})
 
 	alicorn.container_begin(ui, .Container, label="settings-accessibility-row-one", style=alicorn.layout_style(.Row, height=28, gap=6, align=.Center))
 	contrast_change := alicorn.checkbox(
@@ -143,6 +154,15 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime)
 	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 	alicorn.modal_overlay_end(ui)
+}
+
+settings_accessibility_observed_value :: proc(
+	observation: alicorn.Accessibility_Appearance_Observation,
+	field: alicorn.Accessibility_Appearance_Field,
+	value: bool,
+) -> string {
+	if field not_in observation.known { return "unsupported / unavailable" }
+	return value ? "true" : "false"
 }
 
 settings_surface_close :: proc(app: ^App, rt: ^alicorn.Runtime) {
