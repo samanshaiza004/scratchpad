@@ -78,6 +78,13 @@ test_theme_preferences_round_trip_and_fallback :: proc(t: ^testing.T) {
 	choice, found = scratchpad_theme_preferences_load(path)
 	testing.expect(t, found && choice == .Cool_Light,
 		"the selected theme should survive a preference-file reload")
+	testing.expect(t, scratchpad_theme_preferences_save(directory, .Warm),
+		"a new selection should atomically replace an existing preference")
+	choice, found = scratchpad_theme_preferences_load(path)
+	testing.expect(t, found && choice == .Warm,
+		"the replacement preference should be complete and readable")
+	testing.expect(t, scratchpad_theme_preferences_save(directory, .Cool_Light),
+		"the preference should be replaceable repeatedly")
 
 	invalid_sources := [?]string{
 		`{"version":1,"theme":"removed-theme"}`,

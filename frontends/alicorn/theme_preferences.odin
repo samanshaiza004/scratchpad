@@ -76,5 +76,17 @@ scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_
 	encoded, encode_error := json.marshal(preferences, allocator=context.temp_allocator)
 	if encode_error != nil { return false }
 	defer delete(encoded, context.temp_allocator)
-	return os.write_entire_file(path, encoded) == nil
+
+	// Keep the replacement on the same volume as the destination so rename is
+	// atomic on both POSIX hosts and Windows. A unique temporary directory also
+	// prevents two Scratchpad instances from sharing a staging filename.
+	temporary_directory, temporary_error := os.make_directory_temp(directory, ".theme-preferences-*", context.temp_allocator)
+	if temporary_error != nil { return false }
+	defer _ = os.remove_all(temporary_directory)
+	temporary_parts := [2]string{temporary_directory, "preferences.json"}
+	temporary_path, temporary_path_error := os.join_path(temporary_parts[:], context.temp_allocator)
+	if temporary_path_error != nil { return false }
+	defer delete(temporary_path, context.temp_allocator)
+	if os.write_entire_file(temporary_path, encoded) != nil { return false }
+	return os.rename(temporary_path, path) == nil
 }
