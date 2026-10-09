@@ -28,8 +28,35 @@ build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-settings-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=560, height=580, padding=22, gap=8, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
+	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=560, height=680, padding=22, gap=8, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
 	alicorn.text(ui, "Settings")
+	alicorn.text(ui, "Appearance")
+	alicorn.container_begin(ui, .Container, label="settings-theme-choice-row", style=alicorn.layout_style(.Row, height=36, gap=8))
+	if alicorn.button(
+		ui,
+		"Warm",
+		key=alicorn.key_string("settings-theme-warm"),
+		style=alicorn.layout_style(.Row, width=150, height=34),
+		state=alicorn.Button_State{selected=app.theme_choice == .Warm},
+		variant=.Quiet,
+	) {
+		if !frame_deferred_action_schedule(app, .Action, ACTION_VIEW_THEME_WARM) {
+			set_error(app, "Could not queue the Warm theme change.")
+		}
+	}
+	if alicorn.button(
+		ui,
+		"Cool Light",
+		key=alicorn.key_string("settings-theme-cool-light"),
+		style=alicorn.layout_style(.Row, width=150, height=34),
+		state=alicorn.Button_State{selected=app.theme_choice == .Cool_Light},
+		variant=.Quiet,
+	) {
+		if !frame_deferred_action_schedule(app, .Action, ACTION_VIEW_THEME_COOL_LIGHT) {
+			set_error(app, "Could not queue the Cool Light theme change.")
+		}
+	}
+	alicorn.container_end(ui)
 	alicorn.text(ui, "Workspace")
 	ignored_change := alicorn.checkbox(
 		ui,

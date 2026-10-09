@@ -111,6 +111,8 @@ command_palette_aliases :: proc(action_id: string) -> string {
 	case "file.open": return "open file browse"
 	case "file.quick-open": return "quick file path picker"
 	case "workspace.open": return "open folder project"
+	case ACTION_VIEW_THEME_WARM: return "appearance theme warm dark"
+	case ACTION_VIEW_THEME_COOL_LIGHT: return "appearance theme cool light"
 	case "file.save": return "write"
 	case "edit.select_all": return "select everything"
 	case:
@@ -259,6 +261,8 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	switch id {
 	case action_id_for(ACTION_DOCUMENT_GO_TO_LINE): return ACTION_DOCUMENT_GO_TO_LINE
 	case action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP): return ACTION_DOCUMENT_TOGGLE_WRAP
+	case action_id_for(ACTION_VIEW_THEME_WARM): return ACTION_VIEW_THEME_WARM
+	case action_id_for(ACTION_VIEW_THEME_COOL_LIGHT): return ACTION_VIEW_THEME_COOL_LIGHT
 	case action_id_for(ACTION_WORKSPACE_SETTINGS): return ACTION_WORKSPACE_SETTINGS
 	case action_id_for(ACTION_EDIT_CUT): return ACTION_EDIT_CUT
 	case action_id_for(ACTION_EDIT_COPY): return ACTION_EDIT_COPY

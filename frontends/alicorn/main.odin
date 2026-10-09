@@ -68,10 +68,18 @@ ACTION_COMMENT_TOGGLE :: "comment.toggle"
 ACTION_VIEW_EDITOR_ZOOM_IN :: "view.editor-zoom-in"
 ACTION_VIEW_EDITOR_ZOOM_OUT :: "view.editor-zoom-out"
 ACTION_VIEW_EDITOR_ZOOM_RESET :: "view.editor-zoom-reset"
+ACTION_VIEW_THEME_WARM :: "view.theme-warm"
+ACTION_VIEW_THEME_COOL_LIGHT :: "view.theme-cool-light"
 
 App :: struct {
 	workbench_theme: alicorn.Style_Theme_ID,
 	editor_theme:    alicorn.Style_Theme_ID,
+	warm_workbench_theme: alicorn.Style_Theme_ID,
+	warm_editor_theme: alicorn.Style_Theme_ID,
+	cool_light_theme: alicorn.Style_Theme_ID,
+	theme_choice: Scratchpad_Theme_Choice,
+	theme_preferences_directory: string,
+	theme_preferences_path: string,
 	accessibility_appearance: alicorn.Accessibility_Appearance_Preferences,
 	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
@@ -228,7 +236,7 @@ App :: struct {
 	edit_items:             [10]host.Application_Menu_Item,
 	workspace_items:        [6]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
-	view_items:             [5]host.Application_Menu_Item,
+	view_items:             [8]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -2687,6 +2695,10 @@ application_stop :: proc(state: rawptr) {
 	find_set_message(&app.workspace_search_started_query, "")
 	find_set_message(&app.workspace_search_started_root, "")
 	find_set_message(&app.workspace_search_error, "")
+	if len(app.theme_preferences_directory) > 0 { delete(app.theme_preferences_directory, context.allocator) }
+	if len(app.theme_preferences_path) > 0 { delete(app.theme_preferences_path, context.allocator) }
+	app.theme_preferences_directory = ""
+	app.theme_preferences_path = ""
 }
 
 main :: proc() {
@@ -2699,6 +2711,17 @@ main :: proc() {
 	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
 	app.editor_text_scale = 1
 	init_menus(&app)
+	if config_root, config_error := os.user_config_dir(context.allocator); config_error == nil {
+		preferences_directory, preferences_path, ok := scratchpad_theme_preferences_location(config_root, context.allocator)
+		delete(config_root, context.allocator)
+		if ok {
+			app.theme_preferences_directory = preferences_directory
+			app.theme_preferences_path = preferences_path
+			if choice, found := scratchpad_theme_preferences_load(preferences_path); found {
+				app.theme_choice = choice
+			}
+		}
+	}
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
 	if smoke, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE", context.allocator); found { app.smoke = smoke == "1" || smoke == "true" }

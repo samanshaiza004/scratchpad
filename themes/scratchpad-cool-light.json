@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "contract": "0.2",
+  "extends": "alicorn.base",
+  "tokens": {
+    "scratchpad.cool.window_background": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.91, 0.93, 0.96], "alpha": 1}},
+    "scratchpad.cool.surface": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.98, 0.99, 1.0], "alpha": 1}},
+    "scratchpad.cool.subtle_surface": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.87, 0.90, 0.94], "alpha": 1}},
+    "scratchpad.cool.editor_background": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [1.0, 0.995, 0.975], "alpha": 1}},
+    "scratchpad.cool.text": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.07, 0.10, 0.15], "alpha": 1}},
+    "scratchpad.cool.muted_text": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.27, 0.33, 0.41], "alpha": 1}},
+    "scratchpad.cool.accent": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.00, 0.34, 0.69], "alpha": 1}},
+    "scratchpad.cool.accent_hover": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.00, 0.27, 0.57], "alpha": 1}},
+    "scratchpad.cool.accent_pressed": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.00, 0.21, 0.45], "alpha": 1}},
+    "scratchpad.cool.accent_text": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [1.0, 1.0, 1.0], "alpha": 1}},
+    "scratchpad.cool.selection": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.47, 0.70, 0.92], "alpha": 0.48}},
+    "scratchpad.cool.focus": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.00, 0.28, 0.72], "alpha": 1}},
+    "scratchpad.cool.semantic_focus": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.38, 0.16, 0.62], "alpha": 1}},
+    "scratchpad.cool.border": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.39, 0.47, 0.56], "alpha": 1}},
+    "scratchpad.cool.danger": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.67, 0.12, 0.10], "alpha": 1}},
+    "scratchpad.cool.success": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.08, 0.39, 0.20], "alpha": 1}},
+    "scratchpad.cool.scrollbar_track": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.84, 0.88, 0.92], "alpha": 1}},
+    "scratchpad.cool.scrollbar_thumb": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.42, 0.51, 0.61], "alpha": 1}},
+    "scratchpad.cool.paper_surface": {"$type": "color", "$value": "{scratchpad.cool.editor_background}"},
+    "scratchpad.cool.editor_padding": {"$type": "dimension", "$value": {"value": 10, "unit": "px"}}
+  },
+  "roles": {
+    "core": {
+      "window_background": "{scratchpad.cool.window_background}",
+      "surface": "{scratchpad.cool.surface}",
+      "subtle_surface": "{scratchpad.cool.subtle_surface}",
+      "editor_background": "{scratchpad.cool.editor_background}",
+      "text": "{scratchpad.cool.text}",
+      "muted_text": "{scratchpad.cool.muted_text}",
+      "accent": "{scratchpad.cool.accent}",
+      "accent_hover": "{scratchpad.cool.accent_hover}",
+      "accent_pressed": "{scratchpad.cool.accent_pressed}",
+      "accent_text": "{scratchpad.cool.accent_text}",
+      "selection": "{scratchpad.cool.selection}",
+      "focus": "{scratchpad.cool.focus}",
+      "semantic_focus": "{scratchpad.cool.semantic_focus}",
+      "border": "{scratchpad.cool.border}",
+      "danger": "{scratchpad.cool.danger}",
+      "success": "{scratchpad.cool.success}",
+      "scrollbar_track": "{scratchpad.cool.scrollbar_track}",
+      "scrollbar_thumb": "{scratchpad.cool.scrollbar_thumb}"
+    },
+    "extensions": {
+      "app.scratchpad.editor.paper_surface": {"$type": "color", "$value": "{scratchpad.cool.paper_surface}"},
+      "app.scratchpad.editor.padding": {"$type": "dimension", "$value": "{scratchpad.cool.editor_padding}"}
+    }
+  }
+}

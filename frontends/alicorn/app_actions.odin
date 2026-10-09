@@ -10,6 +10,8 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) { _ = editor_text_zoom_step(app, rt, 1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) { _ = editor_text_zoom_step(app, rt, -1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET) { _ = editor_text_zoom_set(app, rt, 1); return }
+	if command == action_id_for(ACTION_VIEW_THEME_WARM) { _ = scratchpad_theme_select(app, rt, .Warm); return }
+	if command == action_id_for(ACTION_VIEW_THEME_COOL_LIGHT) { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
 	if command == action_id_for(ACTION_VIEW_COMMAND_PALETTE) { command_palette_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { go_to_line_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) { editor_toggle_wrap_mode(app, rt); return }
@@ -68,7 +70,10 @@ editor_resolve_conflict_now :: proc(app: ^App, rt: ^alicorn.Runtime, document_id
 }
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
-	if app == nil || !app.backend.started { return }
+	if app == nil || rt == nil { return }
+	if action_id == ACTION_VIEW_THEME_WARM { _ = scratchpad_theme_select(app, rt, .Warm); return }
+	if action_id == ACTION_VIEW_THEME_COOL_LIGHT { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
+	if !app.backend.started { return }
 	if action_id == ACTION_FILE_QUICK_OPEN {
 		quick_open_open_surface(app, rt)
 		return
@@ -472,12 +477,15 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 	}
-	app.view_items = [5]host.Application_Menu_Item{
+	app.view_items = [8]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN), label="Zoom In", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+' , {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT), label="Zoom Out", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Editor Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_COMMAND_PALETTE), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_WARM), label="Use Warm Theme", state=alicorn.Action_State{enabled=true}},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_COOL_LIGHT), label="Use Cool Light Theme", state=alicorn.Action_State{enabled=true}},
 	}
 	app.menus = [5]host.Application_Menu{
 		{label="File", items=app.file_items[:]},

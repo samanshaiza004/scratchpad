@@ -73,13 +73,17 @@ test_command_palette_projects_local_menu_commands_without_recursing :: proc(t: ^
 	go_to_line_found := false
 	wrap_found := false
 	palette_found := false
+	warm_theme_found := false
+	cool_light_theme_found := false
 	for result in results {
 		if result.action_id == ACTION_DOCUMENT_GO_TO_LINE && result.title == "Go to Line…" { go_to_line_found = true }
 		if result.action_id == ACTION_DOCUMENT_TOGGLE_WRAP && result.title == "Cycle Word Wrap" { wrap_found = true }
 		if result.action_id == ACTION_VIEW_COMMAND_PALETTE { palette_found = true }
+		if result.action_id == ACTION_VIEW_THEME_WARM && result.title == "Use Warm Theme" { warm_theme_found = true }
+		if result.action_id == ACTION_VIEW_THEME_COOL_LIGHT && result.title == "Use Cool Light Theme" { cool_light_theme_found = true }
 	}
-	testing.expect(t, go_to_line_found && wrap_found,
-		"frontend-local menu commands should also be discoverable in the palette")
+	testing.expect(t, go_to_line_found && wrap_found && warm_theme_found && cool_light_theme_found,
+		"frontend-local menu commands, including both theme choices, should be discoverable in the palette")
 	testing.expect(t, !palette_found,
 		"the command palette launcher must not list itself as a recursively runnable command")
 }
