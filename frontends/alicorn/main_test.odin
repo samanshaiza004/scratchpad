@@ -582,7 +582,8 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		context_event,
 		context_target,
 	)
-	testing.expect(t, alicorn.context_menu_is_open(&rt) && tree_test_paths_equal(app.workspace_context_path, "src/nested/first.txt"),
+	testing.expect(t, alicorn.context_menu_is_open(&rt) && app.workspace_context_target == .Item &&
+		tree_test_paths_equal(app.workspace_context_path, "src/nested/first.txt"),
 		"secondary-click should open the context menu for the row under the pointer")
 	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "context menu should describe after secondary-click"); return }
 	rename_item := test_workspace_context_menu_item(&rt, "Rename")

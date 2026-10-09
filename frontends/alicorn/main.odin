@@ -131,6 +131,7 @@ App :: struct {
 	tree_directories:       [dynamic]Tree_Directory,
 	tree_focused_path:      string,
 	tree_focused_is_dir:    bool,
+	workspace_context_target: Workspace_Context_Target,
 	workspace_context_path: string,
 	workspace_context_is_dir: bool,
 	workspace_drag_kind: Scratchpad_Drag_Kind,

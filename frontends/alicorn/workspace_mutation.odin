@@ -23,11 +23,21 @@ Workspace_Document_Migration :: struct {
 
 workspace_mutation_open_create :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspace_Mutation_Kind) {
 	if app == nil || rt == nil || !app.backend.state.has_workspace { return }
+	if app.workspace_context_target == .Workspace_Root {
+		workspace_mutation_open_create_at(app, rt, kind, "", true)
+		return
+	}
 	parent := ""
 	if app.tree_focused_path != "" {
 		parent = app.tree_focused_path if app.tree_focused_is_dir else tree_parent_relative_path(app.tree_focused_path)
 	}
-	workspace_mutation_begin(app, rt, kind, parent, app.tree_focused_is_dir)
+	parent_is_dir := app.tree_focused_is_dir if app.tree_focused_path != "" else true
+	workspace_mutation_open_create_at(app, rt, kind, parent, parent_is_dir)
+}
+
+workspace_mutation_open_create_at :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspace_Mutation_Kind, parent: string, parent_is_dir: bool) {
+	if app == nil || rt == nil || !app.backend.state.has_workspace || (kind != .Create_File && kind != .Create_Folder) { return }
+	workspace_mutation_begin(app, rt, kind, parent, parent_is_dir)
 }
 
 workspace_mutation_open_selected :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspace_Mutation_Kind) {

@@ -2,6 +2,13 @@ package main
 
 import "core:strings"
 import alicorn "alicorn:runtime"
+
+Workspace_Context_Target :: enum {
+	None,
+	Item,
+	Workspace_Root,
+}
+
 Workspace_Tree_Row_Target :: struct {
 	node: alicorn.Node_ID,
 	path: string,
@@ -11,6 +18,7 @@ Workspace_Tree_Row_Target :: struct {
 
 workspace_context_menu_clear :: proc(app: ^App) {
 	if app == nil { return }
+	app.workspace_context_target = .None
 	if len(app.workspace_context_path) > 0 { delete(app.workspace_context_path, context.allocator) }
 	app.workspace_context_path = ""
 	app.workspace_context_is_dir = false
@@ -28,7 +36,20 @@ workspace_context_menu_set_target :: proc(app: ^App, rt: ^alicorn.Runtime, targe
 	}
 	app.workspace_context_path = path_copy
 	app.workspace_context_is_dir = target.is_dir
+	app.workspace_context_target = .Item
 	if !alicorn.context_menu_open(rt, anchor, app.tree_scroll_owner) {
+		workspace_context_menu_clear(app)
+		return false
+	}
+	return true
+}
+
+workspace_context_menu_set_root_target :: proc(app: ^App, rt: ^alicorn.Runtime, anchor: alicorn.Rect) -> bool {
+	if app == nil || rt == nil || app.tree_scroll_owner == 0 || !app.backend.state.has_workspace { return false }
+	workspace_context_menu_clear(app)
+	app.workspace_context_is_dir = true
+	app.workspace_context_target = .Workspace_Root
+	if !alicorn.context_menu_open(rt, anchor, alicorn.focused_node(rt)) {
 		workspace_context_menu_clear(app)
 		return false
 	}
@@ -73,19 +94,26 @@ workspace_context_menu_open_node :: proc(app: ^App, rt: ^alicorn.Runtime, node: 
 
 workspace_context_menu_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target_node: alicorn.Node_ID) -> bool {
 	if event.kind != .Down || event.button != alicorn.POINTER_BUTTON_SECONDARY { return false }
-	if app == nil || rt == nil || target_node == 0 { return false }
+	if app == nil || rt == nil || app.tree_scroll_owner == 0 || !app.backend.state.has_workspace { return false }
 	key := event.target_key
-	if !alicorn.ui_key_is_explicit(key) {
+	if target_node != 0 && !alicorn.ui_key_is_explicit(key) {
 		key_found: bool
 		key, key_found = alicorn.node_identity_key(rt, target_node)
-		if !key_found { return false }
+		if !key_found { key = alicorn.UI_Unkeyed{} }
 	}
 	target, found := workspace_context_menu_target_for_key(app, key)
-	row, row_found := alicorn.node_info(rt, target_node)
-	if !found || !row_found || !row.active { return false }
-	target.node = target_node
-	if !workspace_context_menu_set_target(app, rt, target, alicorn.Rect{event.x, event.y, 0, 0}) { return false }
-	return true
+	if found && target_node != 0 {
+		row, row_found := alicorn.node_info(rt, target_node)
+		if row_found && row.active {
+			target.node = target_node
+			return workspace_context_menu_set_target(app, rt, target, alicorn.Rect{event.x, event.y, 0, 0})
+		}
+	}
+	viewport := alicorn.scroll_region_state(rt, app.tree_scroll_owner).viewport_bounds
+	inside_tree := viewport.w > 0 && viewport.h > 0 && event.x >= viewport.x && event.x < viewport.x+viewport.w &&
+	               event.y >= viewport.y && event.y < viewport.y+viewport.h
+	if !inside_tree { return false }
+	return workspace_context_menu_set_root_target(app, rt, alicorn.Rect{event.x, event.y, 0, 0})
 }
 
 workspace_context_menu_open_focused :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
@@ -107,18 +135,33 @@ workspace_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Ru
 		workspace_context_menu_clear(app)
 		return
 	}
-	if app.workspace_context_path == "" || !app.backend.state.has_workspace {
+	if app.workspace_context_target == .None || !app.backend.state.has_workspace {
 		alicorn.context_menu_close(rt)
 		workspace_context_menu_clear(app)
 		return
 	}
 	if !alicorn.context_menu_begin(ui, alicorn.key_string("scratchpad-workspace-context-menu")) { return }
-	alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_RENAME), "Rename", action_enabled(&app.backend.state, ACTION_WORKSPACE_RENAME))
-	alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_MOVE), "Move…", action_enabled(&app.backend.state, ACTION_WORKSPACE_MOVE))
-	alicorn.context_menu_separator(ui)
-	alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_TRASH), "Move to Trash", action_enabled(&app.backend.state, ACTION_WORKSPACE_TRASH))
+	if app.workspace_context_target == .Workspace_Root {
+		can_create := app.backend.started && app.backend.state.has_workspace
+		alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_NEW_FILE), "New File…", can_create)
+		alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_NEW_FOLDER), "New Folder…", can_create)
+	} else {
+		alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_RENAME), "Rename", action_enabled(&app.backend.state, ACTION_WORKSPACE_RENAME))
+		alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_MOVE), "Move…", action_enabled(&app.backend.state, ACTION_WORKSPACE_MOVE))
+		alicorn.context_menu_separator(ui)
+		alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_TRASH), "Move to Trash", action_enabled(&app.backend.state, ACTION_WORKSPACE_TRASH))
+	}
 	action := alicorn.context_menu_end(ui)
 	if action == 0 { return }
+	if app.workspace_context_target == .Workspace_Root {
+		if action == action_id_for(ACTION_WORKSPACE_NEW_FILE) {
+			dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FILE)
+		} else if action == action_id_for(ACTION_WORKSPACE_NEW_FOLDER) {
+			dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FOLDER)
+		}
+		workspace_context_menu_clear(app)
+		return
+	}
 	kind := Workspace_Mutation_Kind.None
 	if action == action_id_for(ACTION_WORKSPACE_RENAME) { kind = .Rename }
 	if action == action_id_for(ACTION_WORKSPACE_MOVE) { kind = .Move }

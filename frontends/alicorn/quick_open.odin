@@ -279,9 +279,6 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	defer delete(results)
 	if len(results) == 0 { app.quick_open_selected_index = 0
 	} else { app.quick_open_selected_index = clamp(app.quick_open_selected_index, 0, len(results)-1) }
-	visible_rows := min(max(len(results), 1), QUICK_OPEN_MAX_VISIBLE_ROWS)
-	results_height := f32(visible_rows)*QUICK_OPEN_ROW_HEIGHT
-	panel_height := f32(132)+results_height
 	app.quick_open_overlay_node = alicorn.modal_overlay_begin(
 		ui,
 		alicorn.key_string("scratchpad-quick-open-overlay"),
@@ -293,7 +290,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		alicorn.surface_core_color_role(.Surface),
 		label="scratchpad-quick-open-panel",
 		key=alicorn.key_string("scratchpad-quick-open-panel"),
-		style=alicorn.layout_style(.Column, max_width=760, height=panel_height, padding=12, gap=8, clip=true),
+		style=alicorn.layout_style(.Column, max_width=760, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=12, gap=8, clip=true),
 		material=app.floating_surface_material,
 		physical_height=1,
 	)
@@ -306,7 +303,14 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	} else if len(results) == 0 {
 		alicorn.text(ui, "No matching files", style=alicorn.layout_style(.Row, height=22))
 	} else {
-		list := alicorn.virtual_list_begin(ui, len(results), QUICK_OPEN_ROW_HEIGHT, key=alicorn.key_string("scratchpad-quick-open-results"), style=alicorn.layout_style(height=results_height, clip=true), label="scratchpad-quick-open-results")
+		list := alicorn.virtual_list_begin(
+			ui,
+			len(results),
+			QUICK_OPEN_ROW_HEIGHT,
+			key=alicorn.key_string("scratchpad-quick-open-results"),
+			style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=f32(QUICK_OPEN_MAX_VISIBLE_ROWS)*QUICK_OPEN_ROW_HEIGHT, grow=1, clip=true),
+			label="scratchpad-quick-open-results",
+		)
 		app.quick_open_results_scroll_node = list.scroll.id
 		for index := list.first; index < list.last; index += 1 {
 			result := results[index]
