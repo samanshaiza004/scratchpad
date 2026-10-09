@@ -461,14 +461,14 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		material=app.floating_surface_material,
 		physical_height=1,
 	)
-	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=40, gap=8, align=.Center))
+	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=44, gap=8, align=.Center))
 	alicorn.text(ui, ">", style=alicorn.layout_style(.Row, width=18, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
 	app.command_palette_node = alicorn.text_field(
 		ui,
 		app.command_palette_query,
 		key=alicorn.key_string("scratchpad-command-palette-query"),
-		style=alicorn.layout_style(.Row, grow=1, height=38),
-		text_style=alicorn.Text_Style{overflow=.Ellipsis},
+		style=alicorn.layout_style(.Row, grow=1, height=40),
+		text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
 	)
 	alicorn.container_end(ui)
 	if len(filtered) == 0 {

@@ -173,7 +173,7 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	testing.expect(t, panel_ok && len(sparse) > 0 && len(sparse) < COMMAND_PALETTE_MAX_VISIBLE_ROWS,
 		"the focused query should produce a short natural-height result list")
 	if panel_ok {
-		want_height := f32(100)+f32(visible_sparse)*COMMAND_PALETTE_ROW_HEIGHT
+		want_height := f32(104)+f32(visible_sparse)*COMMAND_PALETTE_ROW_HEIGHT
 		testing.expect(t, panel.bounds.h == want_height,
 			"the command palette panel height should come from its realized query, result, and footer contents")
 	}
@@ -187,7 +187,7 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	list, list_ok := alicorn.node_info(&rt, app.command_palette_results_scroll_node)
 	testing.expect(t, len(all_results) > COMMAND_PALETTE_MAX_VISIBLE_ROWS,
 		"the real command set should exceed the palette's bounded visible row count")
-	testing.expect(t, panel_ok && panel.bounds.h == f32(100)+COMMAND_PALETTE_MAX_LIST_HEIGHT,
+	testing.expect(t, panel_ok && panel.bounds.h == f32(104)+COMMAND_PALETTE_MAX_LIST_HEIGHT,
 		"many results should grow the panel only to the capped list height")
 	testing.expect(t, list_ok && list.scroll_content_height == f32(len(all_results))*COMMAND_PALETTE_ROW_HEIGHT &&
 		list.scroll_viewport_height <= COMMAND_PALETTE_MAX_LIST_HEIGHT,

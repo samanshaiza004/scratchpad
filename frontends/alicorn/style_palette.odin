@@ -2,6 +2,12 @@ package main
 
 import alicorn "alicorn:runtime"
 
+SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE :: alicorn.Text_Style{
+	font_weight=alicorn.FONT_WEIGHT_REGULAR,
+	font_size=18,
+	overflow=.Ellipsis,
+}
+
 scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	if app == nil || rt == nil { return false }
 	if app.style_theme_runtime != rt {

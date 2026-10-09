@@ -194,16 +194,16 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 	}
 
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-mutation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-	alicorn.container_begin(ui, .Container, label="workspace-mutation-dialog", style=alicorn.layout_style(.Column, width=500, height=190, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
+	alicorn.container_begin(ui, .Container, label="workspace-mutation-dialog", style=alicorn.layout_style(.Column, width=500, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=320, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
 	alicorn.text(ui, label)
 	if app.workspace_mutation_queued {
 		alicorn.text(ui, "Waiting for pending editor changes to finish…")
 	} else if app.workspace_mutation_kind == .Move {
 		alicorn.text(ui, fmt.tprintf("Move %s to a workspace-relative destination path.", app.workspace_mutation_source))
-		app.workspace_mutation_name_node = alicorn.text_field(ui, app.workspace_mutation_name, key=alicorn.key_string("workspace-mutation-destination"), style=alicorn.layout_style(.Row, height=34))
+		app.workspace_mutation_name_node = alicorn.text_field(ui, app.workspace_mutation_name, key=alicorn.key_string("workspace-mutation-destination"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	} else {
 		if app.workspace_mutation_kind == .Rename { alicorn.text(ui, app.workspace_mutation_source) }
-		app.workspace_mutation_name_node = alicorn.text_field(ui, app.workspace_mutation_name, key=alicorn.key_string("workspace-mutation-name"), style=alicorn.layout_style(.Row, height=34))
+		app.workspace_mutation_name_node = alicorn.text_field(ui, app.workspace_mutation_name, key=alicorn.key_string("workspace-mutation-name"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	}
 	if app.workspace_mutation_error != "" { alicorn.text(ui, app.workspace_mutation_error) }
 	alicorn.container_begin(ui, .Container, label="workspace-mutation-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
