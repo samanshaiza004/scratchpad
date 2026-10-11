@@ -7,6 +7,11 @@ import bridge "./bridge"
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_WORKSPACE_RECENT) {
+		app.recent_workspaces_open = true
+		alicorn.invalidate_root(rt, "Scratchpad opened recent workspaces")
+		return
+	}
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) { _ = editor_text_zoom_step(app, rt, 1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) { _ = editor_text_zoom_step(app, rt, -1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET) { _ = editor_text_zoom_set(app, rt, 1); return }
@@ -456,10 +461,11 @@ init_menus :: proc(app: ^App) {
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_DELETE_LINE), label="Delete Line", shortcut=host.Application_Menu_Shortcut{'K', {.Primary, .Shift}}},
 	}
-	app.workspace_items = [6]host.Application_Menu_Item{
+	app.workspace_items = [7]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FILE), label="New File"},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FOLDER), label="New Folder"},
 		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_RECENT), label="Open Recent Workspace…", state=alicorn.Action_State{enabled=true}},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_REFRESH), label="Refresh Workspace", shortcut=host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SETTINGS), label="Settings…"},

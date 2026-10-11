@@ -5,7 +5,7 @@ import "core:strings"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
-editor_render_table_pipe :: proc(ui: ^alicorn.UI, pipe_index: int, row_height, text_scale: f32) {
+editor_render_table_pipe :: proc(ui: ^alicorn.UI, pipe_index: int, row_height, text_scale: f32, color: alicorn.Color) {
 	if ui == nil { return }
 	pipe := alicorn.text(
 		ui,
@@ -18,7 +18,7 @@ editor_render_table_pipe :: proc(ui: ^alicorn.UI, pipe_index: int, row_height, t
 	paint := [?]alicorn.Text_Paint_Span{{
 		start=0,
 		end=1,
-		color=alicorn.Color{0.57, 0.63, 0.74, 1},
+		color=color,
 		color_set=true,
 	}}
 	_ = alicorn.text_paint_spans(ui, pipe, paint[:])
@@ -32,6 +32,7 @@ editor_render_table_cells :: proc(
 	window: ^Editor_Window,
 	line: ^Editor_Display_Line,
 	table: Editor_Table_Row_Layout,
+	markdown_palette: Editor_Markdown_Palette,
 	row_height, wrap_width: f32,
 	scroll_owner: alicorn.Node_ID,
 	window_matches, paint_current: bool,
@@ -47,7 +48,7 @@ editor_render_table_cells :: proc(
 	)
 	pipe_index := 0
 	if table.leading_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, pipe_index, row_height, text_scale)
+		editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
 		pipe_index += 1
 	}
 	for &cell, cell_index in table.cells {
@@ -69,7 +70,7 @@ editor_render_table_cells :: proc(
 		paint_spans: []alicorn.Text_Paint_Span
 		text_style_spans: []alicorn.Text_Style_Span
 		if paint_current {
-			paint_spans = editor_presentation_spans_for_line(window, &cell, alicorn.runtime_scratch_allocator(rt))
+			paint_spans = editor_presentation_spans_for_line(window, &cell, markdown_palette, alicorn.runtime_scratch_allocator(rt))
 			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, alicorn.runtime_scratch_allocator(rt))
 		}
 		if show_caret && !view.preedit_active && !view.preedit_recoverable {
@@ -114,12 +115,12 @@ editor_render_table_cells :: proc(
 			app.editor_input_anchor_affinity = view.caret_affinity
 		}
 		if cell_index+1 < len(table.cells) && pipe_index < len(table.pipes) {
-			editor_render_table_pipe(ui, pipe_index, row_height, text_scale)
+			editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
 			pipe_index += 1
 		}
 	}
 	if table.trailing_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, pipe_index, row_height, text_scale)
+		editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
 	}
 	alicorn.container_end(ui)
 }
@@ -166,12 +167,25 @@ editor_wrap_viewport_size :: proc(
 }
 
 build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index := editor_view_find(app.editor_views[:], document.id)
+	view_created := view_index < 0
+	view_ok := true
+	if view_created { view_index, view_ok = editor_view_ensure(&app.editor_views, document.id) }
 	if !view_ok {
 		alicorn.text(ui, "Could not retain this document's view state.")
 		return
 	}
 	view := &app.editor_views[view_index]
+	if view_created {
+		view.selection_anchor = document.anchor_byte
+		view.caret_byte = document.cursor_byte
+		view.caret_affinity = alicorn.Text_Affinity(document.affinity)
+		view.scroll_x = document.scroll_x
+		view.scroll_y = document.scroll_y
+		view.restore_x_pending = document.scroll_x_initialized
+		view.restore_y_pending = document.scroll_y_initialized
+	}
+	markdown_palette := editor_markdown_palette(rt, app.editor_theme)
 	text_scale := editor_text_scale_effective(app)
 	if view.workspace_search_match_active && view.workspace_search_match_revision != document.editor_revision {
 		workspace_search_match_clear(view)
@@ -534,7 +548,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				paint_table := window_covers_view && presentation_visual &&
 				               window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 				editor_render_table_cells(
-					ui, app, rt, view, window, line, table_row,
+					ui, app, rt, view, window, line, table_row, markdown_palette,
 					row_height, wrap_width, list.scroll.id, window_matches, paint_table,
 				)
 			} else {
@@ -587,7 +601,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			paint_current := window_covers_view && presentation_visual &&
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current {
-				paint_spans = editor_presentation_spans_for_line(window, line, alicorn.runtime_scratch_allocator(rt))
+				paint_spans = editor_presentation_spans_for_line(window, line, markdown_palette, alicorn.runtime_scratch_allocator(rt))
 			}
 			text_style_spans: []alicorn.Text_Style_Span
 			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, alicorn.runtime_scratch_allocator(rt)) }

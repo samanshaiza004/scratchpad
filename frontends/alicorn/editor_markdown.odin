@@ -2,6 +2,30 @@ package main
 
 import alicorn "alicorn:runtime"
 
+Editor_Markdown_Palette :: struct {
+	text: alicorn.Color,
+	muted_text: alicorn.Color,
+	accent: alicorn.Color,
+	subtle_surface: alicorn.Color,
+	success: alicorn.Color,
+}
+
+editor_markdown_palette :: proc(rt: ^alicorn.Runtime, theme: alicorn.Style_Theme_ID) -> Editor_Markdown_Palette {
+	return Editor_Markdown_Palette{
+		text=alicorn.style_theme_color(rt, theme, .Text),
+		muted_text=alicorn.style_theme_color(rt, theme, .Muted_Text),
+		accent=alicorn.style_theme_color(rt, theme, .Accent),
+		subtle_surface=alicorn.style_theme_color(rt, theme, .Subtle_Surface),
+		success=alicorn.style_theme_color(rt, theme, .Success),
+	}
+}
+
+editor_markdown_tint :: proc(color: alicorn.Color, alpha: f32) -> alicorn.Color {
+	tinted := color
+	tinted.a = alpha
+	return tinted
+}
+
 editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, color_set: bool) {
 	switch kind {
 	case EDITOR_PRESENTATION_HEADING:
@@ -125,18 +149,6 @@ editor_markdown_row_presentation :: proc(
 	return result
 }
 
-editor_markdown_heading_color :: proc(level: u32) -> alicorn.Color {
-	switch level {
-	case 1: return alicorn.Color{0.14, 0.32, 0.45, 1}
-	case 2: return alicorn.Color{0.18, 0.34, 0.46, 1}
-	case 3: return alicorn.Color{0.22, 0.37, 0.47, 1}
-	case 4: return alicorn.Color{0.27, 0.39, 0.48, 1}
-	case 5: return alicorn.Color{0.31, 0.40, 0.47, 1}
-	case 6: return alicorn.Color{0.35, 0.41, 0.46, 1}
-	case: return alicorn.Color{0.18, 0.35, 0.46, 1}
-	}
-}
-
 editor_markdown_row_background :: proc(row: Editor_Markdown_Row_Presentation) -> alicorn.Color {
 	// Keep the source surface calm. Markdown hierarchy comes from typography,
 	// markers, and spacing; full-width semantic bands compete with selection.
@@ -221,7 +233,12 @@ editor_presentation_text_styles_for_line :: proc(window: ^Editor_Window, line: ^
 	return result[:]
 }
 
-editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor_Display_Line, allocator := context.temp_allocator) -> []alicorn.Text_Paint_Span {
+editor_presentation_spans_for_line :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	palette: Editor_Markdown_Palette,
+	allocator := context.temp_allocator,
+) -> []alicorn.Text_Paint_Span {
 	result := make([dynamic]alicorn.Text_Paint_Span, 0, allocator=allocator)
 	if window == nil || line == nil || !window.presentation_ready ||
 	   (!window.presentation_stale && window.presentation_revision != window.editor_revision) { return result[:] }
@@ -239,13 +256,13 @@ editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor
 		paint := alicorn.Text_Paint_Span{start=start, end=end}
 		switch record.kind {
 		case EDITOR_PRESENTATION_BLOCK_CODE:
-			paint.background = alicorn.Color{0.82, 0.80, 0.74, 0.62}
+			paint.background = editor_markdown_tint(palette.subtle_surface, 0.48)
 			paint.background_set = true
 		case EDITOR_PRESENTATION_BLOCK_QUOTE:
-			paint.background = alicorn.Color{0.84, 0.81, 0.74, 0.48}
+			paint.background = editor_markdown_tint(palette.subtle_surface, 0.28)
 			paint.background_set = true
 		case EDITOR_PRESENTATION_BLOCK_THEMATIC:
-			paint.background = alicorn.Color{0.77, 0.73, 0.64, 0.28}
+			paint.background = editor_markdown_tint(palette.muted_text, 0.22)
 			paint.background_set = true
 		}
 		if paint.background_set { append(&result, paint) }
@@ -259,19 +276,31 @@ editor_presentation_spans_for_line :: proc(window: ^Editor_Window, line: ^Editor
 		start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
 		if !mapped { continue }
 		color, color_set := editor_presentation_record_color(record.kind)
+		switch record.kind {
+		case EDITOR_PRESENTATION_STRONG, EDITOR_PRESENTATION_EMPHASIS,
+	     EDITOR_PRESENTATION_INLINE_CODE, EDITOR_PRESENTATION_CODE_BLOCK,
+	     29, 30: // table and table header
+			color, color_set = palette.text, true
+		case EDITOR_PRESENTATION_LINK, EDITOR_PRESENTATION_LIST_MARKER:
+			color, color_set = palette.accent, true
+		case EDITOR_PRESENTATION_TASK_MARKER:
+			color, color_set = palette.success, true
+		case 9, 28, 31, 32: // quote marker, thematic break, table delimiter and pipe
+			color, color_set = palette.muted_text, true
+		}
 		if record.kind == EDITOR_PRESENTATION_HEADING {
 			level := record.level_flags & 0xFF
 			if level >= 1 && level <= 6 {
-				color, color_set = editor_markdown_heading_color(level), true
+				color, color_set = palette.accent, true
 			}
 		}
 		paint := alicorn.Text_Paint_Span{start=start, end=end, color=color, color_set=color_set}
 		switch record.kind {
 		case EDITOR_PRESENTATION_INLINE_CODE:
-			paint.background = alicorn.Color{0.78, 0.73, 0.62, 0.62}
+			paint.background = editor_markdown_tint(palette.subtle_surface, 0.62)
 			paint.background_set = true
 		case EDITOR_PRESENTATION_TASK_MARKER:
-			paint.background = alicorn.Color{0.78, 0.67, 0.44, 0.58}
+			paint.background = editor_markdown_tint(palette.success, 0.24)
 			paint.background_set = true
 		case EDITOR_PRESENTATION_LINK:
 			paint.underline = true

@@ -11,6 +11,7 @@ import bridge "./bridge"
 ACTION_FILE_OPEN       :: "file.open"
 ACTION_FILE_QUICK_OPEN :: "file.quick-open"
 ACTION_WORKSPACE_OPEN  :: "workspace.open"
+ACTION_WORKSPACE_RECENT :: "workspace.open-recent"
 ACTION_FILE_SAVE       :: "file.save"
 ACTION_FILE_SAVE_AS    :: "file.save-as"
 ACTION_DOCUMENT_CLOSE  :: "document.close"
@@ -159,11 +160,13 @@ App :: struct {
 	workspace_mutation_source_is_dir: bool,
 	workspace_mutation_dirty: bool,
 	workspace_editor_split_node: alicorn.Node_ID,
+	workspace_sidebar_width: f32,
 	workspace_mutation_queued: bool,
 	frame_deferred_action: Deferred_Action,
 	frame_deferred_action_pending: bool,
 	show_ignored_files:     bool,
 	settings_surface_open:  bool,
+	recent_workspaces_open: bool,
 	workspace_search_mode:  bool,
 	workspace_search_query: string,
 	workspace_search_started_query: string,
@@ -234,7 +237,7 @@ App :: struct {
 	dialog_action:          string,
 	file_items:             [7]host.Application_Menu_Item,
 	edit_items:             [10]host.Application_Menu_Item,
-	workspace_items:        [6]host.Application_Menu_Item,
+	workspace_items:        [7]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
 	view_items:             [8]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
@@ -361,7 +364,25 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 		return false, "editor edit worker did not join cleanly"
 	}
 	_, _, _ = bridge.backend_consume_wake(&app.backend)
-	return bridge.backend_stop(&app.backend)
+	documents := make([dynamic]bridge.Backend_Stop_Session_Document, 0, len(app.editor_views), allocator=context.temp_allocator)
+	defer delete(documents)
+	for view in app.editor_views {
+		if view.document_id == "" { continue }
+		append(&documents, bridge.Backend_Stop_Session_Document{
+			id=view.document_id,
+			anchor=int(view.selection_anchor),
+			cursor=int(view.caret_byte),
+			affinity=u8(view.caret_affinity),
+			scroll_x=view.scroll_x,
+			scroll_y=view.scroll_y,
+		})
+	}
+	session := bridge.Backend_Stop_Session{
+		active=app.backend.state.active,
+		sidebar_width=app.workspace_sidebar_width,
+		documents=documents[:],
+	}
+	return bridge.backend_stop(&app.backend, session=&session)
 }
 
 application_start :: proc(state: rawptr, waker: host.Application_Waker) {
@@ -722,6 +743,13 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 			return true
 		}
 		return key != .Return
+	}
+	if app.recent_workspaces_open {
+		if key == .Escape {
+			app.recent_workspaces_open = false
+			alicorn.invalidate_root(rt, "Scratchpad closed recent workspaces with Escape")
+		}
+		return true
 	}
 	if app.command_palette_open {
 		#partial switch key {
@@ -2725,12 +2753,18 @@ main :: proc() {
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
 	if smoke, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE", context.allocator); found { app.smoke = smoke == "1" || smoke == "true" }
+	window_decorations := host.Window_Decoration_Mode.System
+	when ODIN_OS == .Windows {
+		window_decorations = .Integrated_Title_Bar
+	}
+
 	host.Run(host.Application{
 		state=rawptr(&app),
 		title="Scratchpad — Alicorn",
 		width=1200,
 		height=760,
 		menus=app.menus[:],
+		window_decorations=window_decorations,
 		build=build_app,
 		on_key=application_key,
 		on_pointer=application_pointer,

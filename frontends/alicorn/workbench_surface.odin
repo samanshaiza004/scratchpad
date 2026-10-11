@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
+import bridge "./bridge"
 
 build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
@@ -21,8 +22,60 @@ build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if alicorn.button(ui, "Command Palette…", key=alicorn.key_string("start-command-palette"), style=alicorn.layout_style(.Row, width=304, height=36)) {
 		command_palette_open_surface(app, rt)
 	}
+	if len(app.backend.state.recent_workspaces) > 0 {
+		alicorn.text(ui, "Recent Workspaces")
+		for path in app.backend.state.recent_workspaces {
+			if alicorn.button(ui, path, key=alicorn.key_string(path), style=alicorn.layout_style(.Row, width=304, height=34), text_style=alicorn.Text_Style{overflow=.Ellipsis}, variant=.Quiet) {
+				recent_workspace_open(app, rt, path)
+			}
+		}
+	}
 	alicorn.container_end(ui)
 	alicorn.container_end(ui)
+}
+
+recent_workspace_open :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
+	if app == nil || rt == nil || !app.backend.started || path == "" { return }
+	response := bridge.backend_command(&app.backend, "open_path", path=path)
+	handle_command_result(app, rt, &response)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	app.recent_workspaces_open = false
+	alicorn.invalidate_root(rt, "Scratchpad opened a recent workspace")
+}
+
+recent_workspace_clear :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.backend.started { return }
+	response := bridge.backend_command(&app.backend, "clear_recent_workspaces")
+	handle_command_result(app, rt, &response)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad cleared recent workspaces")
+}
+
+recent_workspaces_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+	if app == nil || ui == nil || rt == nil || !app.recent_workspaces_open { return }
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("recent-workspaces-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("recent-workspaces-panel"), label="recent-workspaces-panel", style=alicorn.layout_style(.Column, width=680, max_height=560, padding=18, gap=8, clip=true), material=app.floating_surface_material, physical_height=1)
+	alicorn.text(ui, "Recent Workspaces")
+	if len(app.backend.state.recent_workspaces) == 0 {
+		alicorn.text(ui, "No workspaces have been opened yet.")
+	} else {
+		for path in app.backend.state.recent_workspaces {
+			if alicorn.button(ui, path, key=alicorn.key_string(path), style=alicorn.layout_style(.Row, height=36), text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=8), variant=.Quiet) {
+				recent_workspace_open(app, rt, path)
+			}
+		}
+	}
+	alicorn.container_begin(ui, .Container, label="recent-workspaces-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.End))
+	if alicorn.button(ui, "Clear Recent", key=alicorn.key_string("recent-workspaces-clear"), style=alicorn.layout_style(.Row, width=120, height=34), state=alicorn.Button_State{disabled=len(app.backend.state.recent_workspaces) == 0}, variant=.Quiet) {
+		recent_workspace_clear(app, rt)
+	}
+	if alicorn.button(ui, "Done", key=alicorn.key_string("recent-workspaces-done"), style=alicorn.layout_style(.Row, width=88, height=34)) {
+		app.recent_workspaces_open = false
+		alicorn.invalidate_root(rt, "Scratchpad closed recent workspaces")
+	}
+	alicorn.container_end(ui)
+	alicorn.surface_end(ui)
+	alicorn.modal_overlay_end(ui)
 }
 
 settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {

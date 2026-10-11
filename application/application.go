@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,6 +71,7 @@ type Application struct {
 	Store                 workspace.FileStore
 	Workspace             workspace.Workspace
 	HasWorkspace          bool
+	SidebarWidth          float32
 	Documents             map[DocumentID]*document.Document
 	Order                 []DocumentID
 	Active                DocumentID
@@ -94,6 +97,7 @@ type Application struct {
 	derivedAfterFunc      func(time.Duration, func())
 	derivedWakeScheduled  int32
 	recent                []string
+	recentWorkspaces      []string
 	closed                []string
 	presentationRevision  uint64
 }
@@ -104,6 +108,7 @@ func New(store workspace.FileStore) *Application {
 	}
 	return &Application{
 		Store:                store,
+		SidebarWidth:         250,
 		Documents:            make(map[DocumentID]*document.Document),
 		Views:                make(map[DocumentID]ViewState),
 		Stale:                make(map[DocumentID]bool),
@@ -242,6 +247,7 @@ func (a *Application) OpenWorkspace(path string) error {
 	}
 	a.Workspace = ws
 	a.HasWorkspace = true
+	a.recordRecentWorkspace(ws.Root)
 	a.touchPresentation()
 	return nil
 }
@@ -424,6 +430,56 @@ func (a *Application) RecentPaths() []string {
 	return append([]string(nil), a.recent...)
 }
 
+// RecentWorkspaces returns the most recently opened workspace roots, newest first.
+// It contains paths only and is bounded independently from recent files.
+func (a *Application) RecentWorkspaces() []string {
+	return append([]string(nil), a.recentWorkspaces...)
+}
+
+// SetRecentWorkspaces replaces the workspace history with a bounded copy of
+// persisted path metadata. Paths are cleaned and duplicate roots are removed.
+func (a *Application) SetRecentWorkspaces(paths []string) {
+	if a == nil {
+		return
+	}
+	a.recentWorkspaces = nil
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			continue
+		}
+		clean := filepath.Clean(abs)
+		duplicate := false
+		for _, existing := range a.recentWorkspaces {
+			if workspacePathsEqual(existing, clean) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		a.recordRecentWorkspace(clean)
+		if len(a.recentWorkspaces) == maxRecentWorkspaces {
+			break
+		}
+	}
+	a.touchPresentation()
+}
+
+// ClearRecentWorkspaces forgets the path-only workspace history.
+func (a *Application) ClearRecentWorkspaces() bool {
+	if a == nil || len(a.recentWorkspaces) == 0 {
+		return false
+	}
+	a.recentWorkspaces = nil
+	a.touchPresentation()
+	return true
+}
+
 // RecentlyClosedPaths returns paths eligible for ReopenClosed, newest first.
 func (a *Application) RecentlyClosedPaths() []string {
 	return append([]string(nil), a.closed...)
@@ -455,6 +511,29 @@ func (a *Application) recordRecent(path string) {
 	if len(a.recent) > 20 {
 		a.recent = a.recent[:20]
 	}
+}
+
+const maxRecentWorkspaces = 10
+
+func (a *Application) recordRecentWorkspace(path string) {
+	path = filepath.Clean(path)
+	for i, existing := range a.recentWorkspaces {
+		if workspacePathsEqual(existing, path) {
+			a.recentWorkspaces = append(a.recentWorkspaces[:i], a.recentWorkspaces[i+1:]...)
+			break
+		}
+	}
+	a.recentWorkspaces = append([]string{path}, a.recentWorkspaces...)
+	if len(a.recentWorkspaces) > maxRecentWorkspaces {
+		a.recentWorkspaces = a.recentWorkspaces[:maxRecentWorkspaces]
+	}
+}
+
+func workspacePathsEqual(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func (a *Application) recordClosed(path string) {

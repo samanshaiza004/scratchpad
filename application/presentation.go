@@ -55,6 +55,13 @@ type PresentationDocument struct {
 	Status               DocumentStatus
 	Dirty                bool
 	Preview              bool
+	AnchorByte           uint64
+	CursorByte           uint64
+	Affinity             editor.Affinity
+	ScrollX              float32
+	ScrollY              float32
+	ScrollXInitialized   bool
+	ScrollYInitialized   bool
 	EditorRevision       uint64
 	ByteLength           uint64
 	LineCount            uint64
@@ -69,12 +76,14 @@ type PresentationDocument struct {
 // revision covers lifecycle/registry changes; EditorRevision identifies
 // content changes without asking a frontend to serialize the buffer.
 type PresentationState struct {
-	Revision      uint64
-	HasWorkspace  bool
-	HasTrasher    bool
-	WorkspaceRoot string
-	Active        DocumentID
-	Documents     []PresentationDocument
+	Revision         uint64
+	HasWorkspace     bool
+	HasTrasher       bool
+	WorkspaceRoot    string
+	RecentWorkspaces []string
+	SidebarWidth     float32
+	Active           DocumentID
+	Documents        []PresentationDocument
 }
 
 // PresentationClient is the only interface a future shell needs for this
@@ -101,12 +110,14 @@ func (a *Application) Snapshot() PresentationState {
 		return PresentationState{}
 	}
 	state := PresentationState{
-		Revision:      a.presentationRevision,
-		HasWorkspace:  a.HasWorkspace,
-		HasTrasher:    a.Trasher != nil,
-		WorkspaceRoot: filepath.Clean(a.Workspace.Root),
-		Active:        a.Active,
-		Documents:     make([]PresentationDocument, 0, len(a.Order)),
+		Revision:         a.presentationRevision,
+		HasWorkspace:     a.HasWorkspace,
+		HasTrasher:       a.Trasher != nil,
+		WorkspaceRoot:    filepath.Clean(a.Workspace.Root),
+		RecentWorkspaces: a.RecentWorkspaces(),
+		SidebarWidth:     a.SidebarWidth,
+		Active:           a.Active,
+		Documents:        make([]PresentationDocument, 0, len(a.Order)),
 	}
 	if !a.HasWorkspace {
 		state.WorkspaceRoot = ""
@@ -128,12 +139,21 @@ func (a *Application) Snapshot() PresentationState {
 				doc.Projections.Code.Revision == doc.Revision() &&
 				doc.Projections.Code.Language != ""
 		}
+		anchor, cursor := doc.Editor.Selection()
+		view := a.Views[id]
 		state.Documents = append(state.Documents, PresentationDocument{
 			ID:                   id,
 			Path:                 doc.Path,
 			Status:               a.Status(id),
 			Dirty:                doc.Dirty(),
 			Preview:              a.Preview == id && !doc.Dirty(),
+			AnchorByte:           uint64(anchor),
+			CursorByte:           uint64(cursor),
+			Affinity:             doc.Editor.Affinity,
+			ScrollX:              view.ScrollX,
+			ScrollY:              view.ScrollY,
+			ScrollXInitialized:   view.ScrollXInitialized,
+			ScrollYInitialized:   view.ScrollInitialized,
 			EditorRevision:       doc.Revision(),
 			ByteLength:           uint64(doc.Editor.Buffer.ByteLen()),
 			LineCount:            uint64(doc.Editor.Buffer.LineCount()),
