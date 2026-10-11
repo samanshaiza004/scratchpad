@@ -442,7 +442,7 @@ func (a *Application) SetRecentWorkspaces(paths []string) {
 	if a == nil {
 		return
 	}
-	a.recentWorkspaces = nil
+	cleanPaths := make([]string, 0, min(len(paths), maxRecentWorkspaces))
 	for _, path := range paths {
 		if path == "" {
 			continue
@@ -453,7 +453,7 @@ func (a *Application) SetRecentWorkspaces(paths []string) {
 		}
 		clean := filepath.Clean(abs)
 		duplicate := false
-		for _, existing := range a.recentWorkspaces {
+		for _, existing := range cleanPaths {
 			if workspacePathsEqual(existing, clean) {
 				duplicate = true
 				break
@@ -462,11 +462,12 @@ func (a *Application) SetRecentWorkspaces(paths []string) {
 		if duplicate {
 			continue
 		}
-		a.recordRecentWorkspace(clean)
-		if len(a.recentWorkspaces) == maxRecentWorkspaces {
+		cleanPaths = append(cleanPaths, clean)
+		if len(cleanPaths) == maxRecentWorkspaces {
 			break
 		}
 	}
+	a.recentWorkspaces = cleanPaths
 	a.touchPresentation()
 }
 

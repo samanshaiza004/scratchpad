@@ -80,15 +80,15 @@ editor_render_table_cells :: proc(
 				caret_row := [?]alicorn.Text_Paint_Span{{
 					start=row_start,
 					end=row_end,
-					background=EDITOR_CARET_ROW_BACKGROUND,
+					background=markdown_palette.active_line,
 					background_set=true,
 				}}
 				paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], alicorn.runtime_scratch_allocator(rt))
 			}
 		}
-		search_spans := workspace_search_match_paint_spans_for_line(window, &cell, view, alicorn.runtime_scratch_allocator(rt))
+		search_spans := workspace_search_match_paint_spans_for_line(window, &cell, view, markdown_palette, alicorn.runtime_scratch_allocator(rt))
 		paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, alicorn.runtime_scratch_allocator(rt))
-		if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, alicorn.runtime_scratch_allocator(rt)) }
+		if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, markdown_palette, alicorn.runtime_scratch_allocator(rt)) }
 		_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
 		_ = alicorn.text_style_spans(ui, cell_node, text_style_spans)
 		if !window_matches { anchor_display = caret_display }
@@ -529,7 +529,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				gutter_paint := [?]alicorn.Text_Paint_Span{{
 					start=0,
 					end=len(line_number_text),
-					background=EDITOR_CARET_GUTTER_BACKGROUND,
+					background=markdown_palette.active_line_gutter,
 					background_set=true,
 				}}
 				_ = alicorn.text_paint_spans(ui, line_number_node, gutter_paint[:])
@@ -608,9 +608,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			decoration_current := window_covers_view && window.document_id == document.id &&
 			                      !view.preedit_active && !view.preedit_recoverable
 			if decoration_current {
-				search_spans := workspace_search_match_paint_spans_for_line(window, line, view, alicorn.runtime_scratch_allocator(rt))
+				search_spans := workspace_search_match_paint_spans_for_line(window, line, view, markdown_palette, alicorn.runtime_scratch_allocator(rt))
 				paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, alicorn.runtime_scratch_allocator(rt))
-				if app.find_open { paint_spans = find_merge_paint_spans(window, line, &app.find_presentation, paint_spans, alicorn.runtime_scratch_allocator(rt)) }
+				if app.find_open { paint_spans = find_merge_paint_spans(window, line, &app.find_presentation, paint_spans, markdown_palette, alicorn.runtime_scratch_allocator(rt)) }
 			}
 			if bracket_match_found {
 				combined_spans := make([dynamic]alicorn.Text_Paint_Span, 0, len(paint_spans)+2, allocator=alicorn.runtime_scratch_allocator(rt))
@@ -623,7 +623,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 					append(&combined_spans, alicorn.Text_Paint_Span{
 						start=start,
 						end=end,
-						background=alicorn.Color{0.34, 0.48, 0.72, 0.7},
+						background=markdown_palette.bracket_match_background,
 						background_set=true,
 					})
 				}
@@ -652,8 +652,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			)
 			if show_caret && !view.preedit_active && !view.preedit_recoverable {
 				caret_position := alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity}
-				_ = alicorn.visual_row_background(ui, editor_row_node, line_node, caret_position, EDITOR_CARET_ROW_BACKGROUND)
-				_ = alicorn.visual_row_background(ui, editor_gutter_node, line_node, caret_position, EDITOR_CARET_ROW_BACKGROUND)
+				_ = alicorn.visual_row_background(ui, editor_row_node, line_node, caret_position, markdown_palette.active_line)
+				_ = alicorn.visual_row_background(ui, editor_gutter_node, line_node, caret_position, markdown_palette.active_line_gutter)
 			}
 			}
 			alicorn.container_end(ui)

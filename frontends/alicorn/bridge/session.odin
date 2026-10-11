@@ -351,13 +351,18 @@ Backend_Start_Request :: struct {
 Backend_Stop_Request :: struct {
 	version:    u32 `json:"version"`,
 	request_id: u64 `json:"request_id"`,
-	session:    ^Backend_Stop_Session `json:"session,omitempty"`,
 }
 
 Backend_Stop_Session :: struct {
 	active:        string `json:"active,omitempty"`,
 	sidebar_width: f32    `json:"sidebar_width,omitempty"`,
 	documents:     []Backend_Stop_Session_Document `json:"documents,omitempty"`,
+}
+
+Backend_Stop_Request_With_Session :: struct {
+	version:    u32                  `json:"version"`,
+	request_id: u64                  `json:"request_id"`,
+	session:    Backend_Stop_Session `json:"session"`,
 }
 
 Backend_Stop_Session_Document :: struct {
@@ -2198,9 +2203,8 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 backend_stop_uninitialized :: proc(backend: ^Backend, allocator: mem.Allocator, session: ^Backend_Stop_Session = nil) -> (ok: bool, message: string) {
 	if backend == nil || backend.stop_fn == nil { return false, "backend stop export is unavailable" }
 	backend.request_id += 1
-	request := Backend_Stop_Request{version=1, request_id=backend.request_id, session=session}
-	request_bytes, marshal_err := json.marshal(request, allocator=allocator)
-	if marshal_err != nil { return false, "could not encode backend stop request" }
+	request_bytes, marshal_err := backend_stop_request_encode(backend.request_id, session, allocator)
+	if marshal_err != nil { return false, fmt.tprintf("could not encode backend stop request: %v", marshal_err) }
 	defer delete(request_bytes, allocator)
 	output: ^u8
 	output_len: uintptr
@@ -2217,6 +2221,23 @@ backend_stop_uninitialized :: proc(backend: ^Backend, allocator: mem.Allocator, 
 	backend.state_revision = 0
 	backend.state_allocator = {}
 	return true, ""
+}
+
+backend_stop_request_encode :: proc(
+	request_id: u64,
+	session: ^Backend_Stop_Session,
+	allocator := context.allocator,
+) -> (data: []u8, err: json.Marshal_Error) {
+	if session == nil {
+		request := Backend_Stop_Request{version=1, request_id=request_id}
+		return json.marshal(request, allocator=allocator)
+	}
+	request := Backend_Stop_Request_With_Session{
+		version=1,
+		request_id=request_id,
+		session=session^,
+	}
+	return json.marshal(request, allocator=allocator)
 }
 
 backend_stop :: proc(backend: ^Backend, allocator := context.allocator, session: ^Backend_Stop_Session = nil) -> (ok: bool, message: string) {

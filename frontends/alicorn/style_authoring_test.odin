@@ -27,4 +27,10 @@ test_paper_material_and_tab_recipe_are_dogfooded_from_theme_source :: proc(t: ^t
 	accent := alicorn.style_theme_color(&rt, app.workbench_theme, .Accent)
 	testing.expect(t, resolved.selected_indicator == .Underline && resolved.selected_indicator_color == accent,
 		"the selected tab indicator should use the accent role authored in Scratchpad's workbench theme")
+
+	cool_active_line, cool_active_line_found := alicorn.style_extension_color(&rt, app.cool_light_theme, scratchpad_editor_active_line_role())
+	warm_active_line, warm_active_line_found := alicorn.style_extension_color(&rt, app.warm_editor_theme, scratchpad_editor_active_line_role())
+	testing.expect(t, cool_active_line_found && warm_active_line_found &&
+		cool_active_line != warm_active_line && cool_active_line.b > cool_active_line.r && warm_active_line.r > warm_active_line.b,
+		"the editor caret row should resolve distinct cool and warm colors from theme extension roles")
 }

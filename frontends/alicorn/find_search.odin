@@ -6,11 +6,6 @@ import "core:strings"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
-FIND_PASSIVE_BACKGROUND :: alicorn.Color{0.79, 0.68, 0.43, 0.34}
-FIND_ACTIVE_BACKGROUND  :: alicorn.Color{0.89, 0.69, 0.36, 0.58}
-EDITOR_CARET_ROW_BACKGROUND :: alicorn.Color{0.83, 0.79, 0.68, 0.42}
-EDITOR_CARET_GUTTER_BACKGROUND :: alicorn.Color{0.76, 0.71, 0.56, 0.48}
-
 // Find_Presentation owns only bounded match coordinates and frontend-local
 // navigation state. Source text and match computation stay in Go.
 Find_Presentation :: struct {
@@ -164,6 +159,7 @@ workspace_search_match_paint_spans_for_line :: proc(
 	window: ^Editor_Window,
 	line: ^Editor_Display_Line,
 	view: ^Editor_View_State,
+	palette: Editor_Markdown_Palette,
 	allocator := context.temp_allocator,
 ) -> []alicorn.Text_Paint_Span {
 	result := make([dynamic]alicorn.Text_Paint_Span, 0, 1, allocator=allocator)
@@ -178,7 +174,7 @@ workspace_search_match_paint_spans_for_line :: proc(
 	append(&result, alicorn.Text_Paint_Span{
 		start=start,
 		end=end,
-		background=FIND_ACTIVE_BACKGROUND,
+		background=palette.workspace_search_background,
 		background_set=true,
 	})
 	return result[:]
@@ -191,6 +187,7 @@ find_paint_spans_for_line :: proc(
 	window: ^Editor_Window,
 	line: ^Editor_Display_Line,
 	presentation: ^Find_Presentation,
+	palette: Editor_Markdown_Palette,
 	allocator := context.temp_allocator,
 ) -> []alicorn.Text_Paint_Span {
 	result := make([dynamic]alicorn.Text_Paint_Span, 0, allocator=allocator)
@@ -216,8 +213,8 @@ find_paint_spans_for_line :: proc(
 		end_byte := min(u64(match.end), line.source_end)
 		start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
 		if !mapped { continue }
-		background := FIND_PASSIVE_BACKGROUND
-		if index == presentation.active_match { background = FIND_ACTIVE_BACKGROUND }
+		background := palette.find_passive_background
+		if index == presentation.active_match { background = palette.find_active_background }
 		append(&result, alicorn.Text_Paint_Span{
 			start=start,
 			end=end,
@@ -234,11 +231,12 @@ find_merge_paint_spans :: proc(
 	line: ^Editor_Display_Line,
 	presentation: ^Find_Presentation,
 	base: []alicorn.Text_Paint_Span,
+	palette: Editor_Markdown_Palette,
 	allocator := context.temp_allocator,
 ) -> []alicorn.Text_Paint_Span {
 	result := make([dynamic]alicorn.Text_Paint_Span, 0, len(base)+4, allocator=allocator)
 	for span in base { append(&result, span) }
-	search := find_paint_spans_for_line(window, line, presentation, allocator)
+	search := find_paint_spans_for_line(window, line, presentation, palette, allocator)
 	for span in search { append(&result, span) }
 	return result[:]
 }

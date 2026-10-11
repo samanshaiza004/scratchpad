@@ -8,15 +8,33 @@ Editor_Markdown_Palette :: struct {
 	accent: alicorn.Color,
 	subtle_surface: alicorn.Color,
 	success: alicorn.Color,
+	active_line: alicorn.Color,
+	active_line_gutter: alicorn.Color,
+	find_passive_background: alicorn.Color,
+	find_active_background: alicorn.Color,
+	workspace_search_background: alicorn.Color,
+	bracket_match_background: alicorn.Color,
 }
 
 editor_markdown_palette :: proc(rt: ^alicorn.Runtime, theme: alicorn.Style_Theme_ID) -> Editor_Markdown_Palette {
+	selection := alicorn.style_theme_color(rt, theme, .Selection)
+	accent := alicorn.style_theme_color(rt, theme, .Accent)
+	active_line, active_line_found := alicorn.style_extension_color(rt, theme, scratchpad_editor_active_line_role())
+	if !active_line_found { active_line = editor_markdown_tint(selection, 0.24) }
+	active_line_gutter, active_line_gutter_found := alicorn.style_extension_color(rt, theme, scratchpad_editor_active_line_gutter_role())
+	if !active_line_gutter_found { active_line_gutter = editor_markdown_tint(selection, 0.36) }
 	return Editor_Markdown_Palette{
 		text=alicorn.style_theme_color(rt, theme, .Text),
 		muted_text=alicorn.style_theme_color(rt, theme, .Muted_Text),
-		accent=alicorn.style_theme_color(rt, theme, .Accent),
+		accent=accent,
 		subtle_surface=alicorn.style_theme_color(rt, theme, .Subtle_Surface),
 		success=alicorn.style_theme_color(rt, theme, .Success),
+		active_line=active_line,
+		active_line_gutter=active_line_gutter,
+		find_passive_background=editor_markdown_tint(selection, 0.42),
+		find_active_background=editor_markdown_tint(accent, 0.42),
+		workspace_search_background=editor_markdown_tint(accent, 0.32),
+		bracket_match_background=editor_markdown_tint(accent, 0.58),
 	}
 }
 

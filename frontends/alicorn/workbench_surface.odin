@@ -5,10 +5,14 @@ import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
+RECENT_WORKSPACE_ROW_HEIGHT :: f32(36)
+RECENT_WORKSPACE_MODAL_LIST_HEIGHT :: f32(324)
+RECENT_WORKSPACE_START_LIST_HEIGHT :: f32(238)
+
 build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-screen", style=alicorn.layout_style(.Column, grow=1, align=.Center, gap=12))
-	alicorn.container_begin(ui, .Container, label="scratchpad-start-content", style=alicorn.layout_style(.Column, width=360, padding=28, gap=12), color=alicorn.style_color(ui, .Surface))
+	alicorn.container_begin(ui, .Container, label="scratchpad-start-content", style=alicorn.layout_style(.Column, width=360, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=640, padding=28, gap=12, clip=true), color=alicorn.style_color(ui, .Surface))
 	alicorn.text(ui, "Scratchpad")
 	alicorn.text(ui, "Open a file or choose a workspace to get started.")
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-actions", style=alicorn.layout_style(.Row, height=38, gap=8))
@@ -24,11 +28,21 @@ build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	}
 	if len(app.backend.state.recent_workspaces) > 0 {
 		alicorn.text(ui, "Recent Workspaces")
-		for path in app.backend.state.recent_workspaces {
+		list := alicorn.virtual_list_begin(
+			ui,
+			len(app.backend.state.recent_workspaces),
+				34,
+			key=alicorn.key_string("scratchpad-start-recent-workspaces"),
+			style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=RECENT_WORKSPACE_START_LIST_HEIGHT, grow=1, clip=true),
+			label="scratchpad-start-recent-workspaces",
+		)
+		for index := list.first; index < list.last; index += 1 {
+			path := app.backend.state.recent_workspaces[index]
 			if alicorn.button(ui, path, key=alicorn.key_string(path), style=alicorn.layout_style(.Row, width=304, height=34), text_style=alicorn.Text_Style{overflow=.Ellipsis}, variant=.Quiet) {
 				recent_workspace_open(app, rt, path)
 			}
 		}
+		alicorn.virtual_list_end(ui, list)
 	}
 	alicorn.container_end(ui)
 	alicorn.container_end(ui)
@@ -53,17 +67,27 @@ recent_workspace_clear :: proc(app: ^App, rt: ^alicorn.Runtime) {
 
 recent_workspaces_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil || !app.recent_workspaces_open { return }
-	alicorn.modal_overlay_begin(ui, alicorn.key_string("recent-workspaces-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("recent-workspaces-panel"), label="recent-workspaces-panel", style=alicorn.layout_style(.Column, width=680, max_height=560, padding=18, gap=8, clip=true), material=app.floating_surface_material, physical_height=1)
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("recent-workspaces-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("recent-workspaces-panel"), label="recent-workspaces-panel", style=alicorn.layout_style(.Column, max_width=680, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=560, padding=18, gap=8, clip=true), material=app.floating_surface_material, physical_height=1)
 	alicorn.text(ui, "Recent Workspaces")
 	if len(app.backend.state.recent_workspaces) == 0 {
 		alicorn.text(ui, "No workspaces have been opened yet.")
 	} else {
-		for path in app.backend.state.recent_workspaces {
-			if alicorn.button(ui, path, key=alicorn.key_string(path), style=alicorn.layout_style(.Row, height=36), text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=8), variant=.Quiet) {
+		list := alicorn.virtual_list_begin(
+			ui,
+			len(app.backend.state.recent_workspaces),
+			RECENT_WORKSPACE_ROW_HEIGHT,
+			key=alicorn.key_string("recent-workspaces-list"),
+			style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=RECENT_WORKSPACE_MODAL_LIST_HEIGHT, grow=1, clip=true),
+			label="recent-workspaces-list",
+		)
+		for index := list.first; index < list.last; index += 1 {
+			path := app.backend.state.recent_workspaces[index]
+			if alicorn.button(ui, path, key=alicorn.key_string(path), style=alicorn.layout_style(.Row, height=RECENT_WORKSPACE_ROW_HEIGHT), text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=8), variant=.Quiet) {
 				recent_workspace_open(app, rt, path)
 			}
 		}
+		alicorn.virtual_list_end(ui, list)
 	}
 	alicorn.container_begin(ui, .Container, label="recent-workspaces-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.End))
 	if alicorn.button(ui, "Clear Recent", key=alicorn.key_string("recent-workspaces-clear"), style=alicorn.layout_style(.Row, width=120, height=34), state=alicorn.Button_State{disabled=len(app.backend.state.recent_workspaces) == 0}, variant=.Quiet) {

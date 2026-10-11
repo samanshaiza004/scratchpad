@@ -26,7 +26,7 @@ scratchpad_cool_light_theme :: proc(allocator := context.allocator) -> alicorn.S
         alicorn.Color{0.72934711, 0.767768741, 0.827570856, 1},
         alicorn.Color{0.187316671, 0.242866814, 0.306999326, 1},
     }
-    result.color_tokens = make([]alicorn.Color, 37, allocator)
+    result.color_tokens = make([]alicorn.Color, 39, allocator)
     result.color_tokens[0] = alicorn.Color{0.270000011, 0.479999989, 0.699999988, 1}
     result.color_tokens[1] = alicorn.Color{0.330000013, 0.569999993, 0.800000012, 1}
     result.color_tokens[2] = alicorn.Color{0.360000014, 0.620000005, 0.860000014, 1}
@@ -49,54 +49,64 @@ scratchpad_cool_light_theme :: proc(allocator := context.allocator) -> alicorn.S
     result.color_tokens[19] = alicorn.Color{0, 0.0592535213, 0.28464669, 1}
     result.color_tokens[20] = alicorn.Color{0, 0.0363064855, 0.170644939, 1}
     result.color_tokens[21] = alicorn.Color{1, 1, 1, 1}
-    result.color_tokens[22] = alicorn.Color{0.125967383, 0.187316671, 0.273838431, 1}
-    result.color_tokens[23] = alicorn.Color{0.406448305, 0.0134117492, 0.0100228256, 1}
-    result.color_tokens[24] = alicorn.Color{0.955104589, 0.963987529, 0.990924597, 1}
-    result.color_tokens[25] = alicorn.Color{0, 0.0637237951, 0.476999789, 1}
-    result.color_tokens[26] = alicorn.Color{0.0592535213, 0.0889815241, 0.139984891, 1}
-    result.color_tokens[27] = alicorn.Color{0.955104589, 0.963987529, 0.990924597, 1}
-    result.color_tokens[28] = alicorn.Color{0.187316671, 0.242866814, 0.306999326, 1}
-    result.color_tokens[29] = alicorn.Color{0.72934711, 0.767768741, 0.827570856, 1}
-    result.color_tokens[30] = alicorn.Color{0.295699805, 0.406448305, 0.603827357, 0.439999998}
-    result.color_tokens[31] = alicorn.Color{0.119280189, 0.0219809469, 0.34239164, 1}
-    result.color_tokens[32] = alicorn.Color{0.767768741, 0.807345927, 0.868899405, 1}
-    result.color_tokens[33] = alicorn.Color{0.00719440915, 0.125967383, 0.0331047662, 1}
-    result.color_tokens[34] = alicorn.Color{0.955104589, 0.977401912, 1, 1}
-    result.color_tokens[35] = alicorn.Color{0.00598105974, 0.0100228256, 0.019606648, 1}
-    result.color_tokens[36] = alicorn.Color{0.807345927, 0.848088264, 0.911407471, 1}
+    result.color_tokens[22] = alicorn.Color{0.420033276, 0.522521555, 0.710566461, 0.239999995}
+    result.color_tokens[23] = alicorn.Color{0.330343723, 0.447988421, 0.655930698, 0.360000014}
+    result.color_tokens[24] = alicorn.Color{0.125967383, 0.187316671, 0.273838431, 1}
+    result.color_tokens[25] = alicorn.Color{0.406448305, 0.0134117492, 0.0100228256, 1}
+    result.color_tokens[26] = alicorn.Color{0.955104589, 0.963987529, 0.990924597, 1}
+    result.color_tokens[27] = alicorn.Color{0, 0.0637237951, 0.476999789, 1}
+    result.color_tokens[28] = alicorn.Color{0.0592535213, 0.0889815241, 0.139984891, 1}
+    result.color_tokens[29] = alicorn.Color{0.955104589, 0.963987529, 0.990924597, 1}
+    result.color_tokens[30] = alicorn.Color{0.187316671, 0.242866814, 0.306999326, 1}
+    result.color_tokens[31] = alicorn.Color{0.72934711, 0.767768741, 0.827570856, 1}
+    result.color_tokens[32] = alicorn.Color{0.295699805, 0.406448305, 0.603827357, 0.439999998}
+    result.color_tokens[33] = alicorn.Color{0.119280189, 0.0219809469, 0.34239164, 1}
+    result.color_tokens[34] = alicorn.Color{0.767768741, 0.807345927, 0.868899405, 1}
+    result.color_tokens[35] = alicorn.Color{0.00719440915, 0.125967383, 0.0331047662, 1}
+    result.color_tokens[36] = alicorn.Color{0.955104589, 0.977401912, 1, 1}
+    result.color_tokens[37] = alicorn.Color{0.00598105974, 0.0100228256, 0.019606648, 1}
+    result.color_tokens[38] = alicorn.Color{0.807345927, 0.848088264, 0.911407471, 1}
     result.core_color_tokens = {
+        alicorn.Style_Color_Token_ID(39),
         alicorn.Style_Color_Token_ID(37),
         alicorn.Style_Color_Token_ID(35),
-        alicorn.Style_Color_Token_ID(33),
-        alicorn.Style_Color_Token_ID(25),
-        alicorn.Style_Color_Token_ID(36),
         alicorn.Style_Color_Token_ID(27),
+        alicorn.Style_Color_Token_ID(38),
+        alicorn.Style_Color_Token_ID(29),
         alicorn.Style_Color_Token_ID(19),
         alicorn.Style_Color_Token_ID(20),
         alicorn.Style_Color_Token_ID(21),
         alicorn.Style_Color_Token_ID(22),
-        alicorn.Style_Color_Token_ID(31),
-        alicorn.Style_Color_Token_ID(26),
-        alicorn.Style_Color_Token_ID(32),
-        alicorn.Style_Color_Token_ID(23),
-        alicorn.Style_Color_Token_ID(24),
+        alicorn.Style_Color_Token_ID(33),
+        alicorn.Style_Color_Token_ID(28),
         alicorn.Style_Color_Token_ID(34),
-        alicorn.Style_Color_Token_ID(30),
-        alicorn.Style_Color_Token_ID(29),
+        alicorn.Style_Color_Token_ID(25),
+        alicorn.Style_Color_Token_ID(26),
+        alicorn.Style_Color_Token_ID(36),
+        alicorn.Style_Color_Token_ID(32),
+        alicorn.Style_Color_Token_ID(31),
     }
     result.length_tokens = make([]alicorn.Style_Length, 1, allocator)
     result.length_tokens[0] = alicorn.Style_Length{logical_units=10}
-    result.extension_color_roles = make([]alicorn.Style_Extension_Color_Role_Binding, 1, allocator)
+    result.extension_color_roles = make([]alicorn.Style_Extension_Color_Role_Binding, 3, allocator)
     result.extension_color_roles[0] = alicorn.Style_Extension_Color_Role_Binding{
+        role=alicorn.Style_Extension_Color_Role_ID(u64(14578696322234267626)),
+        token=alicorn.Style_Color_Token_ID(23),
+    }
+    result.extension_color_roles[1] = alicorn.Style_Extension_Color_Role_Binding{
+        role=alicorn.Style_Extension_Color_Role_ID(u64(7757750830692491148)),
+        token=alicorn.Style_Color_Token_ID(24),
+    }
+    result.extension_color_roles[2] = alicorn.Style_Extension_Color_Role_Binding{
         role=alicorn.Style_Extension_Color_Role_ID(u64(7926949792708367841)),
-        token=alicorn.Style_Color_Token_ID(28),
+        token=alicorn.Style_Color_Token_ID(30),
     }
     result.extension_length_roles = make([]alicorn.Style_Extension_Length_Role_Binding, 1, allocator)
     result.extension_length_roles[0] = alicorn.Style_Extension_Length_Role_Binding{
         role=alicorn.Style_Extension_Length_Role_ID(u64(1169174812364479353)),
         token=alicorn.Style_Length_Token_ID(1),
     }
-    result.color_token_provenance = make([]alicorn.Style_Token_Provenance, 37, allocator)
+    result.color_token_provenance = make([]alicorn.Style_Token_Provenance, 39, allocator)
     result.color_token_provenance[0] = alicorn.Style_Token_Provenance{id=1, name="alicorn.color.accent", alias_target=""}
     result.color_token_provenance[1] = alicorn.Style_Token_Provenance{id=2, name="alicorn.color.accent_hover", alias_target=""}
     result.color_token_provenance[2] = alicorn.Style_Token_Provenance{id=3, name="alicorn.color.accent_pressed", alias_target=""}
@@ -119,25 +129,29 @@ scratchpad_cool_light_theme :: proc(allocator := context.allocator) -> alicorn.S
     result.color_token_provenance[19] = alicorn.Style_Token_Provenance{id=20, name="scratchpad.cool.accent_hover", alias_target=""}
     result.color_token_provenance[20] = alicorn.Style_Token_Provenance{id=21, name="scratchpad.cool.accent_pressed", alias_target=""}
     result.color_token_provenance[21] = alicorn.Style_Token_Provenance{id=22, name="scratchpad.cool.accent_text", alias_target=""}
-    result.color_token_provenance[22] = alicorn.Style_Token_Provenance{id=23, name="scratchpad.cool.border", alias_target=""}
-    result.color_token_provenance[23] = alicorn.Style_Token_Provenance{id=24, name="scratchpad.cool.danger", alias_target=""}
-    result.color_token_provenance[24] = alicorn.Style_Token_Provenance{id=25, name="scratchpad.cool.editor_background", alias_target=""}
-    result.color_token_provenance[25] = alicorn.Style_Token_Provenance{id=26, name="scratchpad.cool.focus", alias_target=""}
-    result.color_token_provenance[26] = alicorn.Style_Token_Provenance{id=27, name="scratchpad.cool.muted_text", alias_target=""}
-    result.color_token_provenance[27] = alicorn.Style_Token_Provenance{id=28, name="scratchpad.cool.paper_surface", alias_target="scratchpad.cool.editor_background"}
-    result.color_token_provenance[28] = alicorn.Style_Token_Provenance{id=29, name="scratchpad.cool.scrollbar_thumb", alias_target=""}
-    result.color_token_provenance[29] = alicorn.Style_Token_Provenance{id=30, name="scratchpad.cool.scrollbar_track", alias_target=""}
-    result.color_token_provenance[30] = alicorn.Style_Token_Provenance{id=31, name="scratchpad.cool.selection", alias_target=""}
-    result.color_token_provenance[31] = alicorn.Style_Token_Provenance{id=32, name="scratchpad.cool.semantic_focus", alias_target=""}
-    result.color_token_provenance[32] = alicorn.Style_Token_Provenance{id=33, name="scratchpad.cool.subtle_surface", alias_target=""}
-    result.color_token_provenance[33] = alicorn.Style_Token_Provenance{id=34, name="scratchpad.cool.success", alias_target=""}
-    result.color_token_provenance[34] = alicorn.Style_Token_Provenance{id=35, name="scratchpad.cool.surface", alias_target=""}
-    result.color_token_provenance[35] = alicorn.Style_Token_Provenance{id=36, name="scratchpad.cool.text", alias_target=""}
-    result.color_token_provenance[36] = alicorn.Style_Token_Provenance{id=37, name="scratchpad.cool.window_background", alias_target=""}
+    result.color_token_provenance[22] = alicorn.Style_Token_Provenance{id=23, name="scratchpad.cool.active_line", alias_target=""}
+    result.color_token_provenance[23] = alicorn.Style_Token_Provenance{id=24, name="scratchpad.cool.active_line_gutter", alias_target=""}
+    result.color_token_provenance[24] = alicorn.Style_Token_Provenance{id=25, name="scratchpad.cool.border", alias_target=""}
+    result.color_token_provenance[25] = alicorn.Style_Token_Provenance{id=26, name="scratchpad.cool.danger", alias_target=""}
+    result.color_token_provenance[26] = alicorn.Style_Token_Provenance{id=27, name="scratchpad.cool.editor_background", alias_target=""}
+    result.color_token_provenance[27] = alicorn.Style_Token_Provenance{id=28, name="scratchpad.cool.focus", alias_target=""}
+    result.color_token_provenance[28] = alicorn.Style_Token_Provenance{id=29, name="scratchpad.cool.muted_text", alias_target=""}
+    result.color_token_provenance[29] = alicorn.Style_Token_Provenance{id=30, name="scratchpad.cool.paper_surface", alias_target="scratchpad.cool.editor_background"}
+    result.color_token_provenance[30] = alicorn.Style_Token_Provenance{id=31, name="scratchpad.cool.scrollbar_thumb", alias_target=""}
+    result.color_token_provenance[31] = alicorn.Style_Token_Provenance{id=32, name="scratchpad.cool.scrollbar_track", alias_target=""}
+    result.color_token_provenance[32] = alicorn.Style_Token_Provenance{id=33, name="scratchpad.cool.selection", alias_target=""}
+    result.color_token_provenance[33] = alicorn.Style_Token_Provenance{id=34, name="scratchpad.cool.semantic_focus", alias_target=""}
+    result.color_token_provenance[34] = alicorn.Style_Token_Provenance{id=35, name="scratchpad.cool.subtle_surface", alias_target=""}
+    result.color_token_provenance[35] = alicorn.Style_Token_Provenance{id=36, name="scratchpad.cool.success", alias_target=""}
+    result.color_token_provenance[36] = alicorn.Style_Token_Provenance{id=37, name="scratchpad.cool.surface", alias_target=""}
+    result.color_token_provenance[37] = alicorn.Style_Token_Provenance{id=38, name="scratchpad.cool.text", alias_target=""}
+    result.color_token_provenance[38] = alicorn.Style_Token_Provenance{id=39, name="scratchpad.cool.window_background", alias_target=""}
     result.length_token_provenance = make([]alicorn.Style_Token_Provenance, 1, allocator)
     result.length_token_provenance[0] = alicorn.Style_Token_Provenance{id=1, name="scratchpad.cool.editor_padding", alias_target=""}
-    result.extension_color_role_provenance = make([]alicorn.Style_Extension_Color_Role_Provenance, 1, allocator)
-    result.extension_color_role_provenance[0] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(7926949792708367841)), name="app.scratchpad.editor.paper_surface"}
+    result.extension_color_role_provenance = make([]alicorn.Style_Extension_Color_Role_Provenance, 3, allocator)
+    result.extension_color_role_provenance[0] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(14578696322234267626)), name="app.scratchpad.editor.active_line"}
+    result.extension_color_role_provenance[1] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(7757750830692491148)), name="app.scratchpad.editor.active_line_gutter"}
+    result.extension_color_role_provenance[2] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(7926949792708367841)), name="app.scratchpad.editor.paper_surface"}
     result.extension_length_role_provenance = make([]alicorn.Style_Extension_Length_Role_Provenance, 1, allocator)
     result.extension_length_role_provenance[0] = alicorn.Style_Extension_Length_Role_Provenance{role=alicorn.Style_Extension_Length_Role_ID(u64(1169174812364479353)), name="app.scratchpad.editor.padding"}
     return result

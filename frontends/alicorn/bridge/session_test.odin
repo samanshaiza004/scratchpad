@@ -8,6 +8,28 @@ import "core:testing"
 import "core:time"
 
 @(test)
+test_backend_stop_request_encodes_session_as_a_value :: proc(t: ^testing.T) {
+	documents := [?]Backend_Stop_Session_Document{{
+		id="doc-1", anchor=3, cursor=7, affinity=1, scroll_x=12, scroll_y=48,
+	}}
+	session := Backend_Stop_Session{active="doc-1", sidebar_width=280, documents=documents[:]}
+	encoded, err := backend_stop_request_encode(9, &session, context.temp_allocator)
+	testing.expect(t, err == nil, "session shutdown request should serialize without unsupported pointer fields")
+	if err == nil {
+		text := transmute(string)encoded
+		testing.expect(t, strings.contains(text, `"session":{"active":"doc-1"`) &&
+			strings.contains(text, `"documents":[{"id":"doc-1"`) && strings.contains(text, `"scroll_y":48`),
+			"shutdown JSON should include active document, editor position, and viewport state")
+	}
+	delete(encoded, context.temp_allocator)
+
+	without_session, no_session_err := backend_stop_request_encode(10, nil, context.temp_allocator)
+	testing.expect(t, no_session_err == nil && !strings.contains(transmute(string)without_session, `"session"`),
+		"ordinary backend stops should omit the optional session object")
+	delete(without_session, context.temp_allocator)
+}
+
+@(test)
 test_state_envelope_decodes_the_existing_schema :: proc(t: ^testing.T) {
  json_text := `{"schema":1,"revision":7,"application_revision":6,"has_workspace":true,"workspace_root":"C:/work","active":"doc-1","workspace_search_generation":5,"workspace_search_sequence":2,"workspace_search_count":33,"workspace_search_page_available":true,"workspace_search_done":false,"workspace_search_truncated":false,"documents":[{"id":"doc-1","path":"C:/work/readme.md","status":"synced","dirty":false,"preview":true,"editor_revision":3,"line_count":42,"language":"markdown","presentation_revision":3,"presentation_ready":true}]}`
 	data := transmute([]u8)json_text

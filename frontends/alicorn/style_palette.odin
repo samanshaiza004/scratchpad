@@ -95,6 +95,14 @@ scratchpad_editor_paper_surface_role :: proc() -> alicorn.Style_Extension_Color_
 	return alicorn.style_extension_color_role_id("app.scratchpad.editor", "paper_surface")
 }
 
+scratchpad_editor_active_line_role :: proc() -> alicorn.Style_Extension_Color_Role_ID {
+	return alicorn.style_extension_color_role_id("app.scratchpad.editor", "active_line")
+}
+
+scratchpad_editor_active_line_gutter_role :: proc() -> alicorn.Style_Extension_Color_Role_ID {
+	return alicorn.style_extension_color_role_id("app.scratchpad.editor", "active_line_gutter")
+}
+
 scratchpad_workbench_style_environment :: proc(app: ^App) -> alicorn.Style_Environment {
 	if app == nil { return alicorn.Style_Environment{} }
 	environment := alicorn.Style_Environment{theme=app.workbench_theme}

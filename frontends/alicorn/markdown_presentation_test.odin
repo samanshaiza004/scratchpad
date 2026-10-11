@@ -11,6 +11,12 @@ EDITOR_MARKDOWN_TEST_PALETTE :: Editor_Markdown_Palette{
 	accent={0.3, 0.4, 0.5, 1},
 	subtle_surface={0.7, 0.8, 0.9, 1},
 	success={0.2, 0.6, 0.4, 1},
+	active_line={0.3, 0.4, 0.5, 0.2},
+	active_line_gutter={0.25, 0.35, 0.45, 0.3},
+	find_passive_background={0.4, 0.5, 0.6, 0.4},
+	find_active_background={0.3, 0.4, 0.5, 0.42},
+	workspace_search_background={0.3, 0.4, 0.5, 0.32},
+	bracket_match_background={0.3, 0.4, 0.5, 0.58},
 }
 
 @(test)

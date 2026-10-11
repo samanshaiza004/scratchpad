@@ -754,6 +754,38 @@ func TestRecentWorkspacesAreBoundedAndClearable(t *testing.T) {
 	}
 }
 
+func TestRecentWorkspacesRoundTripPreservesNewestFirstOrder(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{
+		filepath.Join(root, "workspace-newest"),
+		filepath.Join(root, "workspace-middle"),
+		filepath.Join(root, "workspace-oldest"),
+	}
+	for _, path := range paths {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := New(nil)
+	a.SetRecentWorkspaces(paths)
+	if recent := a.RecentWorkspaces(); len(recent) != len(paths) || recent[0] != paths[0] || recent[1] != paths[1] || recent[2] != paths[2] {
+		t.Fatalf("restored recent workspace order=%v, want newest first %v", recent, paths)
+	}
+
+	sessionPath := filepath.Join(t.TempDir(), "session.json")
+	if err := a.SaveSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(nil)
+	if err := restored.RestoreSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	if recent := restored.RecentWorkspaces(); len(recent) != len(paths) || recent[0] != paths[0] || recent[1] != paths[1] || recent[2] != paths[2] {
+		t.Fatalf("session round trip recent workspace order=%v, want %v", recent, paths)
+	}
+}
+
 func TestLoadSessionRejectsUnknownVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.json")
 	if err := os.WriteFile(path, []byte(`{"version":99}`), 0o600); err != nil {

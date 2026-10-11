@@ -66,12 +66,14 @@ test_find_paint_uses_markdown_source_coordinates_across_wrap_boundary :: proc(t:
 		matches=matches,
 		active_match=0,
 	}
-	spans := find_paint_spans_for_line(&window, &line, &presentation, context.temp_allocator)
+	spans := find_paint_spans_for_line(&window, &line, &presentation, EDITOR_MARKDOWN_TEST_PALETTE, context.temp_allocator)
 	testing.expect(t, len(spans) == 1, "visible Markdown match should produce one source-mapped paint span")
 	if len(spans) == 1 {
 		span := spans[0]
 		testing.expect(t, span.start == 5 && span.end == 11, "paint span should map the unchanged source bytes for 'needle'")
 		testing.expect(t, span.background_set, "active match should have a visible background")
+		testing.expect(t, span.background == EDITOR_MARKDOWN_TEST_PALETTE.find_active_background,
+			"active Find decoration should use the current editor theme palette")
 		// A wrap after byte 8 puts part of the same match on each visual row.
 		testing.expect(t, span.start < 8 && span.end > 8, "one logical match span should continue across the visual wrap boundary")
 	}
