@@ -441,11 +441,15 @@ func prepareNativeFrontendEnv(root string, env []string) ([]string, error) {
 	if runtime.GOOS != "darwin" {
 		return env, nil
 	}
-	prefix, err := commandOutput(root, "brew", "--prefix", "sdl3")
-	if err != nil {
-		return nil, fmt.Errorf("locate SDL3 installed by Homebrew (install it with `brew install sdl3`): %w", err)
+	prefix := os.Getenv("SDL3_PREFIX")
+	if prefix == "" {
+		output, err := commandOutput(root, "brew", "--prefix", "sdl3")
+		if err != nil {
+			return nil, fmt.Errorf("locate SDL3 installed by Homebrew (install it with `brew install sdl3`): %w", err)
+		}
+		prefix = strings.TrimSpace(string(output))
 	}
-	return prepareNativeFrontendEnvWithPrefix(env, strings.TrimSpace(string(prefix)))
+	return prepareNativeFrontendEnvWithPrefix(env, prefix)
 }
 
 func prepareNativeFrontendEnvWithPrefix(env []string, prefix string) ([]string, error) {
