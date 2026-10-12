@@ -567,7 +567,7 @@ settings_test_build :: proc(app: ^App, rt: ^alicorn.Runtime, scale: f32) -> bool
 	if !should_build { return false }
 	alicorn.container_begin(&ui, .Root, label="settings-test-root", style=alicorn.layout_style(grow=1), color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background))
 	scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme, text_scale=scale})
-	settings_surface_build(app, &ui, rt)
+	settings_surface_build(app, &ui, rt, scale)
 	alicorn.style_environment_pop(&ui, scope)
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)

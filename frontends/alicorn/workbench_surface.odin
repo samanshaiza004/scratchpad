@@ -11,8 +11,9 @@ RECENT_WORKSPACE_START_LIST_HEIGHT :: f32(238)
 
 build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
-	card_width := min(520, max(rt.viewport.w-48, 200))
-	card_max_height := min(640, max(rt.viewport.h-40, 180))
+	viewport := alicorn.viewport_bounds(rt)
+	card_width := min(520, max(viewport.w-48, 200))
+	card_max_height := min(640, max(viewport.h-40, 180))
 	recent_height := max(min(RECENT_WORKSPACE_START_LIST_HEIGHT, card_max_height-220), RECENT_WORKSPACE_ROW_HEIGHT)
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-screen", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, padding=20))
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-content", style=alicorn.layout_style(.Column, width=card_width, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=card_max_height, padding=28, gap=14, clip=true), color=alicorn.style_color(ui, .Surface))
@@ -104,11 +105,12 @@ recent_workspaces_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 	alicorn.modal_overlay_end(ui)
 }
 
-settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, text_scale: f32 = 1) {
 	if app == nil || ui == nil || rt == nil { return }
-	scale := max(rt.style_environment.text_scale, 1)
-	panel_width := min(640, max(rt.viewport.w-32, 200))
-	panel_height := min(700, max(rt.viewport.h-32, 180))
+	scale := max(text_scale, 1)
+	viewport := alicorn.viewport_bounds(rt)
+	panel_width := min(640, max(viewport.w-32, 200))
+	panel_height := min(700, max(viewport.h-32, 180))
 	header_height := max(32, 28*scale)
 	footer_height := max(44, 40*scale)
 	control_height := max(34, 30*scale)
@@ -262,8 +264,12 @@ settings_measured_text_height :: proc(
 ) -> f32 {
 	if rt == nil || value == "" { return 0 }
 	size := alicorn.DEFAULT_TEXT_SIZE*scale
-	_, height, _, ok := alicorn.text_layout(&rt.text_engine, value, size, max(width, 1), font_role=.UI)
-	if ok { return height }
+	run, ok := alicorn.runtime_text_run_build(rt, value, size, max(width, 1), font=.UI)
+	if ok {
+		height := run.height
+		alicorn.text_run_destroy(&run)
+		return height
+	}
 	return max(24*scale, size*1.25)
 }
 

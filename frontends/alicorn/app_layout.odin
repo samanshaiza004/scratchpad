@@ -333,7 +333,7 @@ build_app :: proc(
 	} else if app.recent_workspaces_open {
 		recent_workspaces_surface_build(app, &ui, rt)
 	} else if app.settings_surface_open {
-		settings_surface_build(app, &ui, rt)
+		settings_surface_build(app, &ui, rt, 1)
 	} else if app.quick_open_open {
 		quick_open_build(app, &ui, rt)
 	} else if app.command_palette_open {
