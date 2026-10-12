@@ -42,6 +42,9 @@ jobs:
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:MSYS2_LOCATION 'ucrt64\bin')
+      - name: Install macOS CMake
+        if: runner.os == 'macOS'
+        run: brew install cmake
       - name: Install pinned SDL3
         if: runner.os == 'macOS'
         uses: libsdl-org/setup-sdl@afd98199e97f9c2aa739474be7e0886d149a5e47
