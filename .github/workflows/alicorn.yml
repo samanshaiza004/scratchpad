@@ -52,7 +52,7 @@ jobs:
         with:
           version: 3.4.16
           add-to-environment: true
-          token: false
+          token: ${{ github.token }}
       - name: Headless Go, ABI, Odin, and lifecycle checks
         if: runner.os == 'Windows'
         shell: pwsh
