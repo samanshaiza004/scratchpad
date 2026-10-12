@@ -215,7 +215,7 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 		Name: "Scratchpad", Version: version,
 		BundleIdentifier: "com.samanshaiza004.scratchpad",
 		ExecutableName:   "Scratchpad", MinimumMacOSVersion: "13.0",
-		Resources:        licenseNames,
+		Resources:        nativePackageResources(runtime.GOOS, licenseNames),
 		PrivateLibraries: []string{backendLibraryName(), filepath.Base(caliberLibrary)},
 	}
 	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
@@ -527,6 +527,27 @@ func goRuntimeModules(root, goExe string) ([]moduleRecord, error) {
 		return modules[i].path < modules[j].path
 	})
 	return modules, nil
+}
+
+// nativePackageResources omits licenses that Alicorn's platform packagers
+// place in the app's resource directory from explicit arguments. macOS rejects
+// duplicate basenames when it copies generic resources into that directory.
+func nativePackageResources(goos string, resources []string) []string {
+	if goos != "darwin" {
+		return resources
+	}
+	packagerOwned := map[string]bool{
+		"licenses/SDL-LICENSE.txt":              true,
+		"licenses/AccessKit-LICENSE-APACHE.txt": true,
+		"licenses/AccessKit-LICENSE-MIT.txt":    true,
+	}
+	filtered := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		if !packagerOwned[resource] {
+			filtered = append(filtered, resource)
+		}
+	}
+	return filtered
 }
 
 func moduleLicenseFiles(moduleDir string) ([]string, error) {

@@ -107,6 +107,23 @@ func TestNativeFrontendEnvUsesProvidedSDLPrefix(t *testing.T) {
 	}
 }
 
+func TestNativePackageResourcesAvoidMacOSPackagerDuplicates(t *testing.T) {
+	resources := []string{
+		"licenses/AccessKit-LICENSE-APACHE.txt",
+		"licenses/AccessKit-LICENSE-MIT.txt",
+		"licenses/SDL-LICENSE.txt",
+		"licenses/Scratchpad-LICENSE.txt",
+	}
+	macOS := nativePackageResources("darwin", resources)
+	if len(macOS) != 1 || macOS[0] != "licenses/Scratchpad-LICENSE.txt" {
+		t.Fatalf("macOS generic resources = %v, want only the license not added directly by Alicorn", macOS)
+	}
+	windows := nativePackageResources("windows", resources)
+	if len(windows) != len(resources) {
+		t.Fatalf("Windows generic resources = %v, want all staged license resources", windows)
+	}
+}
+
 func TestPackageZipRoundTripAndRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "app")
