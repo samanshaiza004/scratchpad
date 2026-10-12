@@ -109,9 +109,6 @@ build_app :: proc(
 		} else {
 			alicorn.container_begin(&ui, .Container, label="workspace-root-row", style=alicorn.layout_style(.Row, height=34, gap=6, align=.Center))
 			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-			if alicorn.button(&ui, "Recent…", key=alicorn.key_string("workspace-open-recent"), style=alicorn.layout_style(.Row, width=86, height=30), variant=.Quiet) {
-				app.recent_workspaces_open = true
-			}
 			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
 		}
@@ -218,8 +215,14 @@ build_app :: proc(
 			}
 		} else {
 			editor_accessibility_retire(app, rt)
-			alicorn.text(&ui, "Open a file to begin")
-			alicorn.text(&ui, "Open a document to view its bounded source window.")
+			alicorn.container_begin(&ui, .Container, label="workspace-empty-editor-welcome", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=12))
+			alicorn.text(&ui, "No document open")
+			alicorn.text(&ui, "Open a file from this workspace to begin editing.")
+			if alicorn.button(&ui, "Quick Open…", key=alicorn.key_string("empty-editor-quick-open"), style=alicorn.layout_style(.Row, width=210, height=42), variant=.Primary) {
+				quick_open_open_surface(app, rt)
+			}
+			alicorn.text(&ui, "Ctrl+P opens Quick Open")
+			alicorn.container_end(&ui)
 		}
 		alicorn.style_environment_pop(&ui, editor_theme_scope)
 		alicorn.surface_end(&ui)
@@ -330,7 +333,7 @@ build_app :: proc(
 	} else if app.recent_workspaces_open {
 		recent_workspaces_surface_build(app, &ui, rt)
 	} else if app.settings_surface_open {
-		settings_surface_build(app, &ui, rt)
+		settings_surface_build(app, &ui, rt, 1)
 	} else if app.quick_open_open {
 		quick_open_build(app, &ui, rt)
 	} else if app.command_palette_open {
