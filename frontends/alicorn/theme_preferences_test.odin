@@ -170,6 +170,7 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 	}
 	second := theme_switch_test_render(&app, &rt)
 	second_workbench := rt.nodes[second.workbench]
+	cool_chrome := scratchpad_window_chrome_appearance(rawptr(&app), &rt)
 	testing.expect(t, second.root == first.root && second.workbench == first.workbench &&
 		second.field == first.field && second.paper == first.paper && second.paper_text == first.paper_text,
 		"theme changes should preserve retained control and surface identities")
@@ -178,6 +179,10 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		rt.nodes[second.paper_text].style_environment.theme == app.cool_light_theme &&
 		second_workbench.color != before_paint_color,
 		"the selected theme should reach both workbench and editor paint scopes")
+	testing.expect(t, cool_chrome.defined &&
+		cool_chrome.background == alicorn.style_theme_color(&rt, app.cool_light_theme, .Window_Background) &&
+		cool_chrome.foreground == alicorn.style_theme_color(&rt, app.cool_light_theme, .Text),
+		"the host chrome appearance should resolve from the selected Cool Light workbench theme")
 	testing.expect(t, alicorn.focused_node(&rt) == first.field,
 		"changing theme should retain keyboard focus on the same text field")
 	testing.expect(t, rt.stats.layout_nodes_visited == before_layout_visits &&
@@ -191,10 +196,15 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		"the theme chosen in the application should be persisted for the next launch")
 	_ = scratchpad_theme_select(&app, &rt, .Warm)
 	third := theme_switch_test_render(&app, &rt)
+	warm_chrome := scratchpad_window_chrome_appearance(rawptr(&app), &rt)
 	testing.expect(t, alicorn.focused_node(&rt) == first.field && third.field == first.field &&
 		rt.nodes[third.workbench].style_environment.theme == app.warm_workbench_theme &&
 		rt.nodes[third.paper_text].style_environment.theme == app.warm_editor_theme,
 		"switching back should restore the warm theme pair without replacing focused controls")
+	testing.expect(t, warm_chrome.defined &&
+		warm_chrome.background == alicorn.style_theme_color(&rt, app.warm_workbench_theme, .Window_Background) &&
+		warm_chrome.foreground == alicorn.style_theme_color(&rt, app.warm_workbench_theme, .Text),
+		"switching back should restore matching Warm chrome colors")
 }
 
 theme_switch_test_find_label :: proc(rt: ^alicorn.Runtime, label: string) -> alicorn.Node_ID {

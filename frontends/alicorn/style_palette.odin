@@ -1,6 +1,7 @@
 package main
 
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 
 SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE :: alicorn.Text_Style{
 	font_weight=alicorn.FONT_WEIGHT_REGULAR,
@@ -111,4 +112,16 @@ scratchpad_workbench_style_environment :: proc(app: ^App) -> alicorn.Style_Envir
 		environment.accessibility_set = true
 	}
 	return environment
+}
+
+// The host continues to own integrated title-bar rendering and behavior; this
+// callback only supplies colors from the currently selected workbench theme.
+scratchpad_window_chrome_appearance :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host.Window_Chrome_Appearance {
+	app := cast(^App)state
+	if app == nil || rt == nil || app.workbench_theme == 0 { return {} }
+	return host.Window_Chrome_Appearance{
+		defined=true,
+		background=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
+		foreground=alicorn.style_theme_color(rt, app.workbench_theme, .Text),
+	}
 }

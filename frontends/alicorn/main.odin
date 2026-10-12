@@ -2757,6 +2757,10 @@ main :: proc() {
 	when ODIN_OS == .Windows {
 		window_decorations = .Integrated_Title_Bar
 	}
+	window_chrome_appearance: host.Application_Chrome_Appearance_Proc
+	when ODIN_OS == .Windows {
+		window_chrome_appearance = scratchpad_window_chrome_appearance
+	}
 
 	host.Run(host.Application{
 		state=rawptr(&app),
@@ -2765,6 +2769,7 @@ main :: proc() {
 		height=760,
 		menus=app.menus[:],
 		window_decorations=window_decorations,
+		window_chrome_appearance=window_chrome_appearance,
 		build=build_app,
 		on_key=application_key,
 		on_pointer=application_pointer,
