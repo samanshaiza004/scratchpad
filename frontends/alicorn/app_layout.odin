@@ -40,7 +40,7 @@ build_app :: proc(
 	workbench_style_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
 
 	if app.error_message != "" {
-		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.Color{0.28, 0.11, 0.12, 1})
+		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.style_color(&ui, .Subtle_Surface))
 		alicorn.text(&ui, "Scratchpad needs attention.")
 		alicorn.text(&ui, app.error_message)
 		alicorn.container_end(&ui)
