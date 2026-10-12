@@ -180,7 +180,7 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		second_workbench.color != before_paint_color,
 		"the selected theme should reach both workbench and editor paint scopes")
 	testing.expect(t, cool_chrome.defined &&
-		cool_chrome.background == alicorn.style_theme_color(&rt, app.cool_light_theme, .Window_Background) &&
+		cool_chrome.background == alicorn.style_theme_color(&rt, app.cool_light_theme, .Surface) &&
 		cool_chrome.foreground == alicorn.style_theme_color(&rt, app.cool_light_theme, .Text),
 		"the host chrome appearance should resolve from the selected Cool Light workbench theme")
 	testing.expect(t, alicorn.focused_node(&rt) == first.field,
@@ -202,7 +202,7 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		rt.nodes[third.paper_text].style_environment.theme == app.warm_editor_theme,
 		"switching back should restore the warm theme pair without replacing focused controls")
 	testing.expect(t, warm_chrome.defined &&
-		warm_chrome.background == alicorn.style_theme_color(&rt, app.warm_workbench_theme, .Window_Background) &&
+		warm_chrome.background == alicorn.style_theme_color(&rt, app.warm_workbench_theme, .Surface) &&
 		warm_chrome.foreground == alicorn.style_theme_color(&rt, app.warm_workbench_theme, .Text),
 		"switching back should restore matching Warm chrome colors")
 }

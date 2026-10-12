@@ -121,7 +121,7 @@ scratchpad_window_chrome_appearance :: proc(state: rawptr, rt: ^alicorn.Runtime)
 	if app == nil || rt == nil || app.workbench_theme == 0 { return {} }
 	return host.Window_Chrome_Appearance{
 		defined=true,
-		background=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
+		background=alicorn.style_theme_color(rt, app.workbench_theme, .Surface),
 		foreground=alicorn.style_theme_color(rt, app.workbench_theme, .Text),
 	}
 }
