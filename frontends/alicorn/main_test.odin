@@ -416,12 +416,14 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	start_file_found := false
 	start_folder_found := false
 	start_commands_found := false
+	sidebar_recent_found := false
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
 		if !found { continue }
 		if node.key == "start-open-file" { start_file_found = true }
 		if node.key == "start-open-folder" { start_folder_found = true }
 		if node.key == "start-command-palette" { start_commands_found = true }
+		if node.key == "workspace-open-recent" { sidebar_recent_found = true }
 		if node.key == "backend-stop" || node.key == "backend-start" || node.key == "workbench-toolbar" ||
 		   node.key == "sidebar-refresh" || node.key == "sidebar-open-folder" ||
 		   node.key == "workspace-mutation-create" || node.key == "workspace-show-ignored" {
@@ -430,6 +432,24 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	}
 	testing.expect(t, start_file_found && start_folder_found && start_commands_found,
 		"the fresh empty screen should expose Open File, Open Folder, and the command palette")
+	testing.expect(t, !sidebar_recent_found,
+		"recent workspaces should stay in global navigation instead of taking space from the workspace path")
+
+	app.backend.state.has_workspace = true
+	app.backend.state.workspace_root = "C:/scratchpad-test"
+	alicorn.invalidate_root(&rt, "show a workspace with no active document")
+	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
+	empty_workspace_quick_open_found := false
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if found && node.key == "empty-editor-quick-open" {
+			empty_workspace_quick_open_found = true
+			testing.expect(t, node.button_variant == .Primary,
+				"Quick Open should be the primary action when a workspace has no open document")
+		}
+	}
+	testing.expect(t, empty_workspace_quick_open_found,
+		"a workspace without open documents should show Quick Open in the editor area")
 
 	app.settings_surface_open = true
 	alicorn.invalidate_root(&rt, "show settings in workbench cleanup test")
@@ -440,8 +460,12 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	accessibility_controls_found := 0
 	appearance_material_sample_found := false
 	appearance_selected_sample_found := false
+	settings_panel_id, settings_scroll_id, settings_done_id: alicorn.Node_ID
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
+		if found && node.label == "scratchpad-settings" { settings_panel_id = node_id }
+		if found && node.key == "scratchpad-settings-scroll" && node.kind == .Scroll_Region { settings_scroll_id = node_id }
+		if found && node.key == "settings-done" { settings_done_id = node_id }
 		if found && node.key == "settings-show-ignored-files" { settings_checkbox_found = true }
 		if found && node.key == "settings-theme-warm" { warm_theme_control_found = true }
 		if found && node.key == "settings-theme-cool-light" { cool_light_theme_control_found = true }
@@ -463,7 +487,64 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 		"Settings should expose both persisted theme choices")
 	testing.expect(t, accessibility_controls_found == 4 && appearance_material_sample_found && appearance_selected_sample_found,
 		"Settings should expose all four appearance overrides plus live relief and selected-state samples")
+	testing.expect(t, settings_panel_id != 0 && settings_scroll_id != 0 && settings_done_id != 0,
+		"Settings should retain its panel, scrollable body and fixed Done action")
+	if settings_panel_id != 0 && settings_scroll_id != 0 && settings_done_id != 0 {
+		panel := rt.nodes[settings_panel_id].bounds
+		scroll_node := rt.nodes[settings_scroll_id]
+		done := rt.nodes[settings_done_id].bounds
+		scroll := alicorn.scroll_region_state(&rt, settings_scroll_id)
+		testing.expect(t, panel.x >= 16 && panel.y >= 16 && panel.x+panel.w <= 884 && panel.y+panel.h <= 584,
+			"Settings should be centered within the window with an outer margin")
+		testing.expect(t, done.y >= panel.y && done.y+done.h <= panel.y+panel.h,
+			"the Done action should remain visible in the fixed panel footer")
+		testing.expect(t, scroll_node.bounds.y >= panel.y && scroll_node.bounds.y+scroll_node.bounds.h <= panel.y+panel.h,
+			"the scroll body should stay between the fixed header and footer")
+		testing.expect(t, scroll.max_scroll_y > 0,
+			"Settings content should scroll when it exceeds the body viewport")
+	}
 }
+
+@(test)
+test_settings_layout_fits_small_window_at_large_text_scale :: proc(t: ^testing.T) {
+	app: App
+	app.backend.started = true
+	app.settings_surface_open = true
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.temp_allocator)
+	defer delete(app.editor_row_targets)
+
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 720, 420})
+	defer alicorn.destroy_runtime(&rt)
+	rt.style_environment.text_scale = 2
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
+		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
+	testing.expect(t, fonts_loaded, "large-text Settings layout test should load the bundled UI fonts")
+	if !fonts_loaded { return }
+
+	_ = build_app(rawptr(&app), &rt, 720, 420, 1)
+	panel_id, scroll_id, done_id: alicorn.Node_ID
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if !found { continue }
+		if node.label == "scratchpad-settings" { panel_id = node_id }
+		if node.key == "scratchpad-settings-scroll" && node.kind == .Scroll_Region { scroll_id = node_id }
+		if node.key == "settings-done" { done_id = node_id }
+	}
+	testing.expect(t, panel_id != 0 && scroll_id != 0 && done_id != 0,
+		"large-text Settings should retain its panel, scroll body and Done action")
+	if panel_id == 0 || scroll_id == 0 || done_id == 0 { return }
+	panel := rt.nodes[panel_id].bounds
+	scroll_node := rt.nodes[scroll_id]
+	done := rt.nodes[done_id].bounds
+	scroll := alicorn.scroll_region_state(&rt, scroll_id)
+	testing.expect(t, panel.x >= 0 && panel.y >= 0 && panel.x+panel.w <= 720 && panel.y+panel.h <= 420,
+		"the Settings panel should fit a short laptop viewport at 200% text scale")
+	testing.expect(t, done.y >= panel.y && done.y+done.h <= panel.y+panel.h,
+		"the fixed Done footer should remain reachable at 200% text scale")
+	testing.expect(t, scroll_node.bounds.y >= panel.y && scroll_node.bounds.y+scroll_node.bounds.h <= panel.y+panel.h && scroll.max_scroll_y > 0,
+		"the Settings body should keep its own scroll range at 200% text scale")
+}
+
 
 tree_test_wake :: proc(data: rawptr) {}
 

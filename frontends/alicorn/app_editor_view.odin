@@ -786,19 +786,25 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	modified := ""
 	if document.dirty || view.optimistic_pending_edits > 0 { modified = "  • Modified" }
+	document_info := fmt.tprintf("%s%s  ·  %d lines", document.language, modified, line_count)
 	wrap_label := "Auto"
 	switch view.wrap_mode {
 	case .On: wrap_label = "On"
 	case .Off: wrap_label = "Off"
 	case .Auto: wrap_label = "Auto"
 	}
-	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=28, gap=14, padding=8, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
-	alicorn.text(ui, fmt.tprintf("%s%s  ·  %s  ·  %d lines", location, modified, document.language, line_count))
-	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=96, height=24)) {
+	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=32, gap=10, padding=8, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
+	alicorn.container_begin(ui, .Container, label="document-status-information", style=alicorn.layout_style(.Row, grow=1, height=24, gap=12, align=.Center))
+	alicorn.text(ui, location, key=alicorn.key_string("document-status-location"), style=alicorn.layout_style(.Row, width=176, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+	alicorn.text(ui, document_info, key=alicorn.key_string("document-status-document-info"), style=alicorn.layout_style(.Row, grow=1, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+	alicorn.container_end(ui)
+	alicorn.container_begin(ui, .Container, label="document-status-actions", style=alicorn.layout_style(.Row, height=24, gap=8, align=.Center))
+	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=88, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		editor_toggle_wrap_mode(app, rt)
 	}
-	if alicorn.button(ui, "Go to Line…", key=alicorn.key_string("document-goto-line"), style=alicorn.layout_style(.Row, width=106, height=24)) {
+	if alicorn.button(ui, "Go to Line…", key=alicorn.key_string("document-goto-line"), style=alicorn.layout_style(.Row, width=100, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		go_to_line_open_surface(app, rt)
 	}
+	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 }

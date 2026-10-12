@@ -2764,7 +2764,7 @@ main :: proc() {
 
 	host.Run(host.Application{
 		state=rawptr(&app),
-		title="Scratchpad — Alicorn",
+		title="Scratchpad",
 		width=1200,
 		height=760,
 		menus=app.menus[:],
