@@ -317,6 +317,43 @@ test_backend_publication_lease_wake_stop_and_restart :: proc(t: ^testing.T) {
 	exercise_shared_backend_shell_commands(t, &backend, &signal)
 }
 
+@(test)
+test_backend_library_path_prefers_macos_bundle_frameworks :: proc(t: ^testing.T) {
+	root, root_error := os.make_directory_temp("", "scratchpad-backend-bundle-*", context.temp_allocator)
+	if root_error != nil { testing.expect(t, false, "could not create a temporary bundle root"); return }
+	defer _ = os.remove_all(root)
+
+	executable_directory := fmt.tprintf("%s/Contents/MacOS", root)
+	frameworks_directory := fmt.tprintf("%s/Contents/Frameworks", root)
+	if mkdir_error := os.mkdir_all(frameworks_directory); mkdir_error != nil {
+		testing.expect(t, false, "could not create a temporary Frameworks directory")
+		return
+	}
+	framework_path, framework_error := os.join_path({executable_directory, "..", "Frameworks", "libscratchpad_backend.dylib"}, context.temp_allocator)
+	if framework_error != nil { testing.expect(t, false, "could not build a Frameworks backend path"); return }
+	defer delete(framework_path, context.temp_allocator)
+	if write_error := os.write_entire_file_from_string(framework_path, "test backend"); write_error != nil {
+		testing.expect(t, false, "could not create a temporary Frameworks backend")
+		return
+	}
+
+	resolved, found := backend_library_path_for_directory(executable_directory, true, context.temp_allocator)
+	testing.expect(t, found, "the macOS bundle backend path should resolve")
+	testing.expect(t, resolved == framework_path, fmt.tprintf("bundle backend path = %s, want Frameworks path %s", resolved, framework_path))
+	delete(resolved, context.temp_allocator)
+}
+
+@(test)
+test_backend_library_path_falls_back_to_executable_sibling :: proc(t: ^testing.T) {
+	directory := "Scratchpad.app/Contents/MacOS"
+	resolved, found := backend_library_path_for_directory(directory, true, context.temp_allocator)
+	testing.expect(t, found, "the sibling backend fallback path should resolve")
+	want, want_error := os.join_path({directory, "libscratchpad_backend.dylib"}, context.temp_allocator)
+	testing.expect(t, want_error == nil && resolved == want, "missing Frameworks backend should use the executable sibling path")
+	delete(want, context.temp_allocator)
+	delete(resolved, context.temp_allocator)
+}
+
 exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend, signal: ^Test_Wake_Signal) {
 	workspace, workspace_err := os.make_directory_temp("", "scratchpad-alicorn-shell-*", context.temp_allocator)
 	if workspace_err != nil { testing.expect(t, false, "could not create temporary workspace"); return }

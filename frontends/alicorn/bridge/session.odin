@@ -593,12 +593,9 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	if library_path == "" {
 		directory, directory_error := os.get_executable_directory(context.allocator)
 		if directory_error != nil { return false, "could not locate the Scratchpad executable directory" }
-		name := "libscratchpad_backend.so"
-		when ODIN_OS == .Windows { name = "scratchpad_backend.dll" }
-		when ODIN_OS == .Darwin { name = "libscratchpad_backend.dylib" }
-		resolved_path, join_error := os.join_path({directory, name}, context.allocator)
+		resolved_path, join_ok := backend_library_path_for_directory(directory, ODIN_OS == .Darwin, context.allocator)
 		delete(directory, context.allocator)
-		if join_error != nil { return false, "could not resolve the sibling Scratchpad backend library" }
+		if !join_ok { return false, "could not resolve the Scratchpad backend library path" }
 		resolved_library_path = resolved_path
 		owned_library_path = true
 	}
@@ -642,6 +639,23 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	backend.pump_fn = transmute(Backend_Pump_Proc)(pump)
 	backend.library_loaded = true
 	return true, ""
+}
+
+backend_library_path_for_directory :: proc(directory: string, macos_bundle: bool, allocator := context.allocator) -> (path: string, ok: bool) {
+	name := "libscratchpad_backend.so"
+	when ODIN_OS == .Windows { name = "scratchpad_backend.dll" }
+	when ODIN_OS == .Darwin { name = "libscratchpad_backend.dylib" }
+
+	if macos_bundle {
+		name = "libscratchpad_backend.dylib"
+		framework_path, framework_error := os.join_path({directory, "..", "Frameworks", name}, allocator)
+		if framework_error == nil {
+			if os.exists(framework_path) { return framework_path, true }
+			delete(framework_path, allocator)
+		}
+	}
+	sibling_path, sibling_error := os.join_path({directory, name}, allocator)
+	return sibling_path, sibling_error == nil
 }
 
 backend_start :: proc(
