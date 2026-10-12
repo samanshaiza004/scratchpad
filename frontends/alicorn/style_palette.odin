@@ -1,26 +1,41 @@
 package main
 
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
+
+SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE :: alicorn.Text_Style{
+	font_weight=alicorn.FONT_WEIGHT_REGULAR,
+	font_size=18,
+	overflow=.Ellipsis,
+}
 
 scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	if app == nil || rt == nil { return false }
 	if app.style_theme_runtime != rt {
 		app.workbench_theme = 0
 		app.editor_theme = 0
+		app.warm_workbench_theme = 0
+		app.warm_editor_theme = 0
+		app.cool_light_theme = 0
 		app.paper_surface_material = alicorn.MATERIAL_FLAT
 		app.raised_surface_material = alicorn.MATERIAL_FLAT
 		app.floating_surface_material = alicorn.MATERIAL_FLAT
 		app.style_theme_runtime = rt
 	}
-	if app.workbench_theme == 0 {
+	if app.warm_workbench_theme == 0 {
 		theme := scratchpad_workbench_theme()
-		app.workbench_theme = alicorn.style_theme_register(rt, theme)
+		app.warm_workbench_theme = alicorn.style_theme_register(rt, theme)
 		scratchpad_workbench_theme_destroy(&theme)
 	}
-	if app.editor_theme == 0 {
+	if app.warm_editor_theme == 0 {
 		theme := scratchpad_editor_theme()
-		app.editor_theme = alicorn.style_theme_register(rt, theme)
+		app.warm_editor_theme = alicorn.style_theme_register(rt, theme)
 		scratchpad_editor_theme_destroy(&theme)
+	}
+	if app.cool_light_theme == 0 {
+		theme := scratchpad_cool_light_theme()
+		app.cool_light_theme = alicorn.style_theme_register(rt, theme)
+		scratchpad_cool_light_theme_destroy(&theme)
 	}
 	if app.paper_surface_material == alicorn.MATERIAL_FLAT {
 		for definition in scratchpad_editor_theme_materials {
@@ -44,14 +59,49 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 			outer_shadow_radius=7,
 		})
 	}
+	scratchpad_theme_apply_registered(app)
 	return app.workbench_theme != 0 && app.editor_theme != 0 &&
 		app.paper_surface_material != alicorn.MATERIAL_FLAT &&
 		app.raised_surface_material != alicorn.MATERIAL_FLAT &&
 		app.floating_surface_material != alicorn.MATERIAL_FLAT
 }
 
+scratchpad_theme_apply_registered :: proc(app: ^App) {
+	if app == nil { return }
+	switch app.theme_choice {
+	case .Warm:
+		app.workbench_theme = app.warm_workbench_theme
+		app.editor_theme = app.warm_editor_theme
+	case .Cool_Light:
+		app.workbench_theme = app.cool_light_theme
+		app.editor_theme = app.cool_light_theme
+	}
+}
+
+scratchpad_theme_select :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratchpad_Theme_Choice) -> bool {
+	if app == nil || rt == nil || (choice != .Warm && choice != .Cool_Light) { return false }
+	if app.theme_choice == choice { return true }
+	if !scratchpad_styles_ensure(app, rt) { return false }
+	app.theme_choice = choice
+	scratchpad_theme_apply_registered(app)
+	if app.theme_preferences_directory != "" &&
+	   !scratchpad_theme_preferences_save(app.theme_preferences_directory, choice) {
+		set_error(app, "Theme changed for this session, but Scratchpad could not save the preference.")
+	}
+	alicorn.invalidate_root(rt, "Scratchpad theme preference changed")
+	return true
+}
+
 scratchpad_editor_paper_surface_role :: proc() -> alicorn.Style_Extension_Color_Role_ID {
 	return alicorn.style_extension_color_role_id("app.scratchpad.editor", "paper_surface")
+}
+
+scratchpad_editor_active_line_role :: proc() -> alicorn.Style_Extension_Color_Role_ID {
+	return alicorn.style_extension_color_role_id("app.scratchpad.editor", "active_line")
+}
+
+scratchpad_editor_active_line_gutter_role :: proc() -> alicorn.Style_Extension_Color_Role_ID {
+	return alicorn.style_extension_color_role_id("app.scratchpad.editor", "active_line_gutter")
 }
 
 scratchpad_workbench_style_environment :: proc(app: ^App) -> alicorn.Style_Environment {
@@ -62,4 +112,16 @@ scratchpad_workbench_style_environment :: proc(app: ^App) -> alicorn.Style_Envir
 		environment.accessibility_set = true
 	}
 	return environment
+}
+
+// The host continues to own integrated title-bar rendering and behavior; this
+// callback only supplies colors from the currently selected workbench theme.
+scratchpad_window_chrome_appearance :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host.Window_Chrome_Appearance {
+	app := cast(^App)state
+	if app == nil || rt == nil || app.workbench_theme == 0 { return {} }
+	return host.Window_Chrome_Appearance{
+		defined=true,
+		background=alicorn.style_theme_color(rt, app.workbench_theme, .Surface),
+		foreground=alicorn.style_theme_color(rt, app.workbench_theme, .Text),
+	}
 }

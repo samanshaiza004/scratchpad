@@ -111,6 +111,8 @@ command_palette_aliases :: proc(action_id: string) -> string {
 	case "file.open": return "open file browse"
 	case "file.quick-open": return "quick file path picker"
 	case "workspace.open": return "open folder project"
+	case ACTION_VIEW_THEME_WARM: return "appearance theme warm dark"
+	case ACTION_VIEW_THEME_COOL_LIGHT: return "appearance theme cool light"
 	case "file.save": return "write"
 	case "edit.select_all": return "select everything"
 	case:
@@ -259,6 +261,8 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	switch id {
 	case action_id_for(ACTION_DOCUMENT_GO_TO_LINE): return ACTION_DOCUMENT_GO_TO_LINE
 	case action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP): return ACTION_DOCUMENT_TOGGLE_WRAP
+	case action_id_for(ACTION_VIEW_THEME_WARM): return ACTION_VIEW_THEME_WARM
+	case action_id_for(ACTION_VIEW_THEME_COOL_LIGHT): return ACTION_VIEW_THEME_COOL_LIGHT
 	case action_id_for(ACTION_WORKSPACE_SETTINGS): return ACTION_WORKSPACE_SETTINGS
 	case action_id_for(ACTION_EDIT_CUT): return ACTION_EDIT_CUT
 	case action_id_for(ACTION_EDIT_COPY): return ACTION_EDIT_COPY
@@ -461,14 +465,14 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		material=app.floating_surface_material,
 		physical_height=1,
 	)
-	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=40, gap=8, align=.Center))
+	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=44, gap=8, align=.Center))
 	alicorn.text(ui, ">", style=alicorn.layout_style(.Row, width=18, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
 	app.command_palette_node = alicorn.text_field(
 		ui,
 		app.command_palette_query,
 		key=alicorn.key_string("scratchpad-command-palette-query"),
-		style=alicorn.layout_style(.Row, grow=1, height=38),
-		text_style=alicorn.Text_Style{overflow=.Ellipsis},
+		style=alicorn.layout_style(.Row, grow=1, height=40),
+		text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
 	)
 	alicorn.container_end(ui)
 	if len(filtered) == 0 {

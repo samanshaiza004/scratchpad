@@ -250,7 +250,12 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 			view.selection_anchor == first_visual_source_end && view.caret_byte > first_visual_source_end,
 			"Shift+Down should extend the source selection across a visual-row boundary")
 	}
-	paints := editor_presentation_spans_for_line(&app.editor_window, styled_line, context.temp_allocator)
+	paints := editor_presentation_spans_for_line(
+		&app.editor_window,
+		styled_line,
+		editor_markdown_palette(&rt, app.editor_theme),
+		context.temp_allocator,
+	)
 	testing.expect(t, len(paints) > 0 && len(styled_node.text_paint_spans) > 0,
 		"the same retained Markdown row should carry actual paint-only semantic spans after readiness")
 	delete(paints, context.temp_allocator)

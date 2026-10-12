@@ -435,12 +435,16 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	alicorn.invalidate_root(&rt, "show settings in workbench cleanup test")
 	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
 	settings_checkbox_found := false
+	warm_theme_control_found := false
+	cool_light_theme_control_found := false
 	accessibility_controls_found := 0
 	appearance_material_sample_found := false
 	appearance_selected_sample_found := false
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
 		if found && node.key == "settings-show-ignored-files" { settings_checkbox_found = true }
+		if found && node.key == "settings-theme-warm" { warm_theme_control_found = true }
+		if found && node.key == "settings-theme-cool-light" { cool_light_theme_control_found = true }
 		if found && (node.key == "settings-accessibility-increased-contrast" ||
 		   node.key == "settings-accessibility-reduce-motion" ||
 		   node.key == "settings-accessibility-reduce-transparency" ||
@@ -455,6 +459,8 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	}
 	testing.expect(t, settings_checkbox_found,
 		"Show ignored files should be available from the Settings surface")
+	testing.expect(t, warm_theme_control_found && cool_light_theme_control_found,
+		"Settings should expose both persisted theme choices")
 	testing.expect(t, accessibility_controls_found == 4 && appearance_material_sample_found && appearance_selected_sample_found,
 		"Settings should expose all four appearance overrides plus live relief and selected-state samples")
 }

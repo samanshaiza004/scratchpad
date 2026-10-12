@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -44,8 +45,9 @@ type StartRequest struct {
 }
 
 type StopRequest struct {
-	Version   uint32 `json:"version"`
-	RequestID uint64 `json:"request_id"`
+	Version   uint32                   `json:"version"`
+	RequestID uint64                   `json:"request_id"`
+	Session   *application.SessionView `json:"session,omitempty"`
 }
 
 type CommandRequest struct {
@@ -225,6 +227,8 @@ type StateEnvelope struct {
 	ApplicationRev               uint64          `json:"application_revision"`
 	HasWorkspace                 bool            `json:"has_workspace"`
 	WorkspaceRoot                string          `json:"workspace_root,omitempty"`
+	RecentWorkspaces             []string        `json:"recent_workspaces,omitempty"`
+	SidebarWidth                 float32         `json:"sidebar_width,omitempty"`
 	Active                       string          `json:"active,omitempty"`
 	StartupNotice                string          `json:"startup_notice,omitempty"`
 	Documents                    []StateDocument `json:"documents"`
@@ -251,19 +255,26 @@ type ActionState struct {
 }
 
 type StateDocument struct {
-	ID                   string `json:"id"`
-	Path                 string `json:"path"`
-	Status               string `json:"status"`
-	Dirty                bool   `json:"dirty"`
-	Preview              bool   `json:"preview,omitempty"`
-	EditorRevision       uint64 `json:"editor_revision"`
-	ByteLength           uint64 `json:"byte_length"`
-	LineCount            uint64 `json:"line_count"`
-	CanUndo              bool   `json:"can_undo"`
-	CanRedo              bool   `json:"can_redo"`
-	Language             string `json:"language,omitempty"`
-	PresentationRevision uint64 `json:"presentation_revision,omitempty"`
-	PresentationReady    bool   `json:"presentation_ready,omitempty"`
+	ID                   string  `json:"id"`
+	Path                 string  `json:"path"`
+	Status               string  `json:"status"`
+	Dirty                bool    `json:"dirty"`
+	Preview              bool    `json:"preview,omitempty"`
+	AnchorByte           uint64  `json:"anchor_byte,omitempty"`
+	CursorByte           uint64  `json:"cursor_byte,omitempty"`
+	Affinity             uint8   `json:"affinity,omitempty"`
+	ScrollX              float32 `json:"scroll_x,omitempty"`
+	ScrollY              float32 `json:"scroll_y,omitempty"`
+	ScrollXInitialized   bool    `json:"scroll_x_initialized,omitempty"`
+	ScrollYInitialized   bool    `json:"scroll_y_initialized,omitempty"`
+	EditorRevision       uint64  `json:"editor_revision"`
+	ByteLength           uint64  `json:"byte_length"`
+	LineCount            uint64  `json:"line_count"`
+	CanUndo              bool    `json:"can_undo"`
+	CanRedo              bool    `json:"can_redo"`
+	Language             string  `json:"language,omitempty"`
+	PresentationRevision uint64  `json:"presentation_revision,omitempty"`
+	PresentationReady    bool    `json:"presentation_ready,omitempty"`
 }
 
 type DirectoryListing struct {
@@ -318,6 +329,21 @@ func decodeStopRequest(input []byte, lifecycle string) (StopRequest, Response, b
 	if response, ok := validateEnvelope(request.Version, request.RequestID, lifecycle); !ok {
 		return request, response, false
 	}
+	if request.Session != nil {
+		if len(request.Session.Documents) > 4096 || request.Session.SidebarWidth < 0 || request.Session.SidebarWidth > 4096 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_session_view", "session view exceeds supported bounds", false), false
+		}
+		for _, document := range request.Session.Documents {
+			if document.ID == "" || !utf8.ValidString(string(document.ID)) || document.Anchor < 0 || document.Cursor < 0 || document.Affinity > 1 ||
+				document.ScrollX < 0 || document.ScrollY < 0 || math.IsNaN(float64(document.ScrollX)) || math.IsNaN(float64(document.ScrollY)) ||
+				math.IsInf(float64(document.ScrollX), 0) || math.IsInf(float64(document.ScrollY), 0) {
+				return request, errorResponse(request.RequestID, lifecycle, "invalid_session_view", "session view contains invalid document state", false), false
+			}
+		}
+		if request.Session.Active != "" && !utf8.ValidString(string(request.Session.Active)) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_session_view", "session view contains an invalid active document ID", false), false
+		}
+	}
 	return request, Response{}, true
 }
 
@@ -343,7 +369,7 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		return request, errorResponse(request.RequestID, lifecycle, "argument_too_large", fmt.Sprintf("argument exceeds %d bytes", MaxEditBytes), false), false
 	}
 	switch request.Command {
-	case "snapshot", "ping", "refresh_workspace", "list_workspace_files":
+	case "snapshot", "ping", "refresh_workspace", "list_workspace_files", "clear_recent_workspaces":
 	case "reorder_documents":
 		if len(request.DocumentOrder) < 2 || len(request.DocumentOrder) > 4096 {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_order", "document_order must contain between 2 and 4096 document IDs", false), false
@@ -705,28 +731,37 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		DocumentCount:  len(snapshot.Documents),
 	}
 	state := StateEnvelope{
-		Schema:         StateSchemaV1,
-		Revision:       revision,
-		ApplicationRev: snapshot.Revision,
-		HasWorkspace:   snapshot.HasWorkspace,
-		WorkspaceRoot:  snapshot.WorkspaceRoot,
-		Active:         string(snapshot.Active),
-		Documents:      make([]StateDocument, 0, len(snapshot.Documents)),
-		Actions:        make([]ActionState, 0, len(shellActionIDs)),
+		Schema:           StateSchemaV1,
+		Revision:         revision,
+		ApplicationRev:   snapshot.Revision,
+		HasWorkspace:     snapshot.HasWorkspace,
+		WorkspaceRoot:    snapshot.WorkspaceRoot,
+		RecentWorkspaces: snapshot.RecentWorkspaces,
+		SidebarWidth:     snapshot.SidebarWidth,
+		Active:           string(snapshot.Active),
+		Documents:        make([]StateDocument, 0, len(snapshot.Documents)),
+		Actions:          make([]ActionState, 0, len(shellActionIDs)),
 	}
 	for _, document := range snapshot.Documents {
 		stateDocument := StateDocument{
-			ID:             string(document.ID),
-			Path:           document.Path,
-			Status:         documentStatusString(document.Status),
-			Dirty:          document.Dirty,
-			Preview:        document.Preview,
-			EditorRevision: document.EditorRevision,
-			ByteLength:     document.ByteLength,
-			LineCount:      document.LineCount,
-			CanUndo:        document.CanUndo,
-			CanRedo:        document.CanRedo,
-			Language:       document.Language,
+			ID:                 string(document.ID),
+			Path:               document.Path,
+			Status:             documentStatusString(document.Status),
+			Dirty:              document.Dirty,
+			Preview:            document.Preview,
+			AnchorByte:         document.AnchorByte,
+			CursorByte:         document.CursorByte,
+			Affinity:           uint8(document.Affinity),
+			ScrollX:            document.ScrollX,
+			ScrollY:            document.ScrollY,
+			ScrollXInitialized: document.ScrollXInitialized,
+			ScrollYInitialized: document.ScrollYInitialized,
+			EditorRevision:     document.EditorRevision,
+			ByteLength:         document.ByteLength,
+			LineCount:          document.LineCount,
+			CanUndo:            document.CanUndo,
+			CanRedo:            document.CanRedo,
+			Language:           document.Language,
 		}
 		if presentationEnabled {
 			stateDocument.PresentationRevision = document.PresentationRevision

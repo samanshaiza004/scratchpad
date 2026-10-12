@@ -295,7 +295,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		physical_height=1,
 	)
 	alicorn.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22))
-	app.quick_open_node = alicorn.text_field(ui, app.quick_open_query, key=alicorn.key_string("scratchpad-quick-open-query"), style=alicorn.layout_style(.Row, height=38), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+	app.quick_open_node = alicorn.text_field(ui, app.quick_open_query, key=alicorn.key_string("scratchpad-quick-open-query"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	if app.quick_open_error != "" {
 		alicorn.text(ui, app.quick_open_error, style=alicorn.layout_style(.Row, height=22))
 	} else if app.quick_open_loading && !app.quick_open_ready {

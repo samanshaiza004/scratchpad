@@ -187,6 +187,7 @@ func run(args []string) error {
 		testEnv := setEnv(env, "SCRATCHPAD_BACKEND_LIBRARY", backendPath)
 		testEnv = setRuntimePath(testEnv, out)
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DISABLE_RECOVERY", "1")
+		testEnv = setEnv(testEnv, "SCRATCHPAD_DISABLE_SESSION", "1")
 		testExe := filepath.Join(out, "scratchpad-alicorn-bridge-tests"+exeSuffix())
 		if err := runCommand(root, testEnv, "odin", odinExe, "test", filepath.Join(root, "frontends", "alicorn", "bridge"), "-define:ODIN_TEST_THREADS=1", "-out:"+testExe); err != nil {
 			return fmt.Errorf("Alicorn Caliber bridge/lifecycle tests: %w", err)
@@ -480,6 +481,7 @@ func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg str
 	}{
 		{"scratchpad-workbench.json", "style_workbench_generated.odin", "scratchpad_workbench_theme"},
 		{"scratchpad-paper.json", "style_paper_generated.odin", "scratchpad_editor_theme"},
+		{"scratchpad-cool-light.json", "style_cool_light_generated.odin", "scratchpad_cool_light_theme"},
 	}
 	for _, item := range themes {
 		args := []string{

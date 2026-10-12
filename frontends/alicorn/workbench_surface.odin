@@ -3,11 +3,16 @@ package main
 import "core:fmt"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
+import bridge "./bridge"
+
+RECENT_WORKSPACE_ROW_HEIGHT :: f32(36)
+RECENT_WORKSPACE_MODAL_LIST_HEIGHT :: f32(324)
+RECENT_WORKSPACE_START_LIST_HEIGHT :: f32(238)
 
 build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-screen", style=alicorn.layout_style(.Column, grow=1, align=.Center, gap=12))
-	alicorn.container_begin(ui, .Container, label="scratchpad-start-content", style=alicorn.layout_style(.Column, width=360, padding=28, gap=12), color=alicorn.style_color(ui, .Surface))
+	alicorn.container_begin(ui, .Container, label="scratchpad-start-content", style=alicorn.layout_style(.Column, width=360, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=640, padding=28, gap=12, clip=true), color=alicorn.style_color(ui, .Surface))
 	alicorn.text(ui, "Scratchpad")
 	alicorn.text(ui, "Open a file or choose a workspace to get started.")
 	alicorn.container_begin(ui, .Container, label="scratchpad-start-actions", style=alicorn.layout_style(.Row, height=38, gap=8))
@@ -21,15 +26,114 @@ build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if alicorn.button(ui, "Command Palette…", key=alicorn.key_string("start-command-palette"), style=alicorn.layout_style(.Row, width=304, height=36)) {
 		command_palette_open_surface(app, rt)
 	}
+	if len(app.backend.state.recent_workspaces) > 0 {
+		alicorn.text(ui, "Recent Workspaces")
+		list := alicorn.virtual_list_begin(
+			ui,
+			len(app.backend.state.recent_workspaces),
+				34,
+			key=alicorn.key_string("scratchpad-start-recent-workspaces"),
+			style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=RECENT_WORKSPACE_START_LIST_HEIGHT, grow=1, clip=true),
+			label="scratchpad-start-recent-workspaces",
+		)
+		for index := list.first; index < list.last; index += 1 {
+			path := app.backend.state.recent_workspaces[index]
+			if alicorn.button(ui, path, key=alicorn.key_string(path), style=alicorn.layout_style(.Row, width=304, height=34), text_style=alicorn.Text_Style{overflow=.Ellipsis}, variant=.Quiet) {
+				recent_workspace_open(app, rt, path)
+			}
+		}
+		alicorn.virtual_list_end(ui, list)
+	}
 	alicorn.container_end(ui)
 	alicorn.container_end(ui)
+}
+
+recent_workspace_open :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
+	if app == nil || rt == nil || !app.backend.started || path == "" { return }
+	response := bridge.backend_command(&app.backend, "open_path", path=path)
+	handle_command_result(app, rt, &response)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	app.recent_workspaces_open = false
+	alicorn.invalidate_root(rt, "Scratchpad opened a recent workspace")
+}
+
+recent_workspace_clear :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.backend.started { return }
+	response := bridge.backend_command(&app.backend, "clear_recent_workspaces")
+	handle_command_result(app, rt, &response)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad cleared recent workspaces")
+}
+
+recent_workspaces_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+	if app == nil || ui == nil || rt == nil || !app.recent_workspaces_open { return }
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("recent-workspaces-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("recent-workspaces-panel"), label="recent-workspaces-panel", style=alicorn.layout_style(.Column, max_width=680, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=560, padding=18, gap=8, clip=true), material=app.floating_surface_material, physical_height=1)
+	alicorn.text(ui, "Recent Workspaces")
+	if len(app.backend.state.recent_workspaces) == 0 {
+		alicorn.text(ui, "No workspaces have been opened yet.")
+	} else {
+		list := alicorn.virtual_list_begin(
+			ui,
+			len(app.backend.state.recent_workspaces),
+			RECENT_WORKSPACE_ROW_HEIGHT,
+			key=alicorn.key_string("recent-workspaces-list"),
+			style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=RECENT_WORKSPACE_MODAL_LIST_HEIGHT, grow=1, clip=true),
+			label="recent-workspaces-list",
+		)
+		for index := list.first; index < list.last; index += 1 {
+			path := app.backend.state.recent_workspaces[index]
+			if alicorn.button(ui, path, key=alicorn.key_string(path), style=alicorn.layout_style(.Row, height=RECENT_WORKSPACE_ROW_HEIGHT), text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=8), variant=.Quiet) {
+				recent_workspace_open(app, rt, path)
+			}
+		}
+		alicorn.virtual_list_end(ui, list)
+	}
+	alicorn.container_begin(ui, .Container, label="recent-workspaces-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.End))
+	if alicorn.button(ui, "Clear Recent", key=alicorn.key_string("recent-workspaces-clear"), style=alicorn.layout_style(.Row, width=120, height=34), state=alicorn.Button_State{disabled=len(app.backend.state.recent_workspaces) == 0}, variant=.Quiet) {
+		recent_workspace_clear(app, rt)
+	}
+	if alicorn.button(ui, "Done", key=alicorn.key_string("recent-workspaces-done"), style=alicorn.layout_style(.Row, width=88, height=34)) {
+		app.recent_workspaces_open = false
+		alicorn.invalidate_root(rt, "Scratchpad closed recent workspaces")
+	}
+	alicorn.container_end(ui)
+	alicorn.surface_end(ui)
+	alicorn.modal_overlay_end(ui)
 }
 
 settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-settings-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=560, height=580, padding=22, gap=8, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
+	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=560, height=680, padding=22, gap=8, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
 	alicorn.text(ui, "Settings")
+	alicorn.text(ui, "Appearance")
+	alicorn.container_begin(ui, .Container, label="settings-theme-choice-row", style=alicorn.layout_style(.Row, height=36, gap=8))
+	if alicorn.button(
+		ui,
+		"Warm",
+		key=alicorn.key_string("settings-theme-warm"),
+		style=alicorn.layout_style(.Row, width=150, height=34),
+		state=alicorn.Button_State{selected=app.theme_choice == .Warm},
+		variant=.Quiet,
+	) {
+		if !frame_deferred_action_schedule(app, .Action, ACTION_VIEW_THEME_WARM) {
+			set_error(app, "Could not queue the Warm theme change.")
+		}
+	}
+	if alicorn.button(
+		ui,
+		"Cool Light",
+		key=alicorn.key_string("settings-theme-cool-light"),
+		style=alicorn.layout_style(.Row, width=150, height=34),
+		state=alicorn.Button_State{selected=app.theme_choice == .Cool_Light},
+		variant=.Quiet,
+	) {
+		if !frame_deferred_action_schedule(app, .Action, ACTION_VIEW_THEME_COOL_LIGHT) {
+			set_error(app, "Could not queue the Cool Light theme change.")
+		}
+	}
+	alicorn.container_end(ui)
 	alicorn.text(ui, "Workspace")
 	ignored_change := alicorn.checkbox(
 		ui,

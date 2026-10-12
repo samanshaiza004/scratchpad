@@ -695,11 +695,15 @@ func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := New(nil)
-	if err := a.OpenPath(path); err != nil {
+	if err := a.OpenWorkspace(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OpenPreviewPath(path); err != nil {
 		t.Fatal(err)
 	}
 	a.ActiveDocument().Editor.SetSelection(1, 4)
 	a.Views[a.Active] = ViewState{ScrollY: 42, ScrollInitialized: true, ScrollX: 18, ScrollXInitialized: true}
+	a.SidebarWidth = 315
 	sessionPath := filepath.Join(t.TempDir(), "session.json")
 	if err := a.SaveSession(sessionPath); err != nil {
 		t.Fatal(err)
@@ -713,6 +717,97 @@ func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
 	view := restored.Views[restored.Active]
 	if anchor != 1 || cursor != 4 || view.ScrollY != 42 || !view.ScrollInitialized || view.ScrollX != 18 || !view.ScrollXInitialized {
 		t.Fatalf("restored selection=%d:%d view=%+v", anchor, cursor, restored.Views[restored.Active])
+	}
+	if restored.Workspace.Root != dir || !restored.HasWorkspace || restored.Preview != restored.Active || restored.SidebarWidth != 315 {
+		t.Fatalf("restored workspace=%q active=%q preview=%q sidebar=%v", restored.Workspace.Root, restored.Active, restored.Preview, restored.SidebarWidth)
+	}
+	if recent := restored.RecentWorkspaces(); len(recent) != 1 || recent[0] != dir {
+		t.Fatalf("recent workspaces=%v, want [%q]", recent, dir)
+	}
+}
+
+func TestRecentWorkspacesAreBoundedAndClearable(t *testing.T) {
+	root := t.TempDir()
+	a := New(nil)
+	paths := make([]string, 12)
+	for i := range paths {
+		paths[i] = filepath.Join(root, fmt.Sprintf("workspace-%02d", i))
+		if err := os.MkdirAll(paths[i], 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.OpenWorkspace(paths[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recent := a.RecentWorkspaces()
+	if len(recent) != 10 || recent[0] != paths[11] || recent[9] != paths[2] {
+		t.Fatalf("bounded recent workspaces=%v", recent)
+	}
+	if err := a.OpenWorkspace(paths[5]); err != nil {
+		t.Fatal(err)
+	}
+	if recent = a.RecentWorkspaces(); len(recent) != 10 || recent[0] != paths[5] {
+		t.Fatalf("reopened workspace was not moved to front: %v", recent)
+	}
+	if !a.ClearRecentWorkspaces() || len(a.RecentWorkspaces()) != 0 || a.ClearRecentWorkspaces() {
+		t.Fatal("clear recent workspaces should clear once and then report no change")
+	}
+}
+
+func TestRecentWorkspacesRoundTripPreservesNewestFirstOrder(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{
+		filepath.Join(root, "workspace-newest"),
+		filepath.Join(root, "workspace-middle"),
+		filepath.Join(root, "workspace-oldest"),
+	}
+	for _, path := range paths {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := New(nil)
+	a.SetRecentWorkspaces(paths)
+	if recent := a.RecentWorkspaces(); len(recent) != len(paths) || recent[0] != paths[0] || recent[1] != paths[1] || recent[2] != paths[2] {
+		t.Fatalf("restored recent workspace order=%v, want newest first %v", recent, paths)
+	}
+
+	sessionPath := filepath.Join(t.TempDir(), "session.json")
+	if err := a.SaveSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(nil)
+	if err := restored.RestoreSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	if recent := restored.RecentWorkspaces(); len(recent) != len(paths) || recent[0] != paths[0] || recent[1] != paths[1] || recent[2] != paths[2] {
+		t.Fatalf("session round trip recent workspace order=%v, want %v", recent, paths)
+	}
+}
+
+func TestLoadSessionRejectsUnknownVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := os.WriteFile(path, []byte(`{"version":99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSession(path); err == nil {
+		t.Fatal("unsupported saved-session version was accepted")
+	}
+}
+
+func TestLoadSessionMigratesUnversionedSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	legacy := `{"workspace":"workspace","documents":[{"id":"doc","path":"note.md","cursor":4,"anchor":2}],"active":"doc"}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session, err := LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Version != sessionVersion || session.Workspace != "workspace" || len(session.Documents) != 1 || session.Documents[0].Cursor != 4 || session.Documents[0].Anchor != 2 {
+		t.Fatalf("legacy session migration = %+v", session)
 	}
 }
 

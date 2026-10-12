@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,10 +18,13 @@ import (
 )
 
 type Session struct {
-	Workspace string            `json:"workspace"`
-	Documents []SessionDocument `json:"documents"`
-	Active    DocumentID        `json:"active"`
-	Recent    []string          `json:"recent,omitempty"`
+	Version          int               `json:"version"`
+	Workspace        string            `json:"workspace,omitempty"`
+	Documents        []SessionDocument `json:"documents,omitempty"`
+	Active           DocumentID        `json:"active,omitempty"`
+	Recent           []string          `json:"recent,omitempty"`
+	RecentWorkspaces []string          `json:"recent_workspaces,omitempty"`
+	SidebarWidth     float32           `json:"sidebar_width,omitempty"`
 }
 
 type SessionDocument struct {
@@ -30,7 +34,31 @@ type SessionDocument struct {
 	Anchor   int             `json:"anchor"`
 	Affinity editor.Affinity `json:"affinity"`
 	View     ViewState       `json:"view"`
+	Preview  bool            `json:"preview,omitempty"`
 }
+
+// SessionView is the bounded frontend-owned portion of the current view that
+// must be joined with application-owned document metadata before a clean save.
+type SessionView struct {
+	Active       DocumentID            `json:"active,omitempty"`
+	SidebarWidth float32               `json:"sidebar_width,omitempty"`
+	Documents    []SessionViewDocument `json:"documents,omitempty"`
+}
+
+type SessionViewDocument struct {
+	ID       DocumentID `json:"id"`
+	Anchor   int        `json:"anchor"`
+	Cursor   int        `json:"cursor"`
+	Affinity uint8      `json:"affinity"`
+	ScrollX  float32    `json:"scroll_x"`
+	ScrollY  float32    `json:"scroll_y"`
+}
+
+const (
+	sessionVersion  = 1
+	maxSessionBytes = 1 << 20
+	maxSessionDocs  = 4096
+)
 
 type recoveryManifest struct {
 	Documents []recoveryDocument `json:"documents"`
@@ -59,7 +87,7 @@ func DefaultStateDir() (string, error) {
 }
 
 func (a *Application) Session() Session {
-	session := Session{Active: a.Active, Recent: a.RecentPaths()}
+	session := Session{Version: sessionVersion, Active: a.Active, Recent: a.RecentPaths(), RecentWorkspaces: a.RecentWorkspaces(), SidebarWidth: a.SidebarWidth}
 	if a.HasWorkspace {
 		session.Workspace = a.Workspace.Root
 	}
@@ -68,7 +96,7 @@ func (a *Application) Session() Session {
 		anchor, cursor := doc.Editor.Selection()
 		session.Documents = append(session.Documents, SessionDocument{
 			ID: id, Path: doc.Path, Cursor: cursor, Anchor: anchor,
-			Affinity: doc.Editor.Affinity, View: a.Views[id],
+			Affinity: doc.Editor.Affinity, View: a.Views[id], Preview: a.Preview == id && !doc.Dirty(),
 		})
 	}
 	return session
@@ -86,6 +114,13 @@ func (a *Application) SaveSession(path string) error {
 }
 
 func LoadSession(path string) (Session, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return Session{}, err
+	}
+	if info.Size() > maxSessionBytes {
+		return Session{}, errors.New("saved session exceeds the 1 MiB limit")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Session{}, err
@@ -93,6 +128,34 @@ func LoadSession(path string) (Session, error) {
 	var session Session
 	if err := json.Unmarshal(data, &session); err != nil {
 		return Session{}, err
+	}
+	// Sessions written before schema versioning used the same document fields
+	// without a version. Their shape is compatible: new fields have safe zero
+	// values, so migrate those files in memory instead of discarding them.
+	if session.Version == 0 {
+		session.Version = sessionVersion
+	}
+	if session.Version != sessionVersion {
+		return Session{}, errors.New("saved session has an unsupported version")
+	}
+	if len(session.RecentWorkspaces) > maxRecentWorkspaces || len(session.Recent) > 20 {
+		return Session{}, errors.New("saved session contains too many recent paths")
+	}
+	if len(session.Workspace) > 32*1024 {
+		return Session{}, errors.New("saved session contains an invalid workspace path")
+	}
+	for _, path := range session.RecentWorkspaces {
+		if path == "" || len(path) > 32*1024 {
+			return Session{}, errors.New("saved session contains an invalid recent workspace path")
+		}
+	}
+	if len(session.Documents) > maxSessionDocs {
+		return Session{}, fmt.Errorf("saved session contains more than %d documents", maxSessionDocs)
+	}
+	for _, saved := range session.Documents {
+		if saved.Path == "" || len(saved.Path) > 32*1024 {
+			return Session{}, errors.New("saved session contains an invalid document path")
+		}
 	}
 	return session, nil
 }
@@ -102,28 +165,74 @@ func (a *Application) RestoreSession(path string) error {
 	if err != nil {
 		return err
 	}
+	a.SetRecentWorkspaces(session.RecentWorkspaces)
+	if session.SidebarWidth >= 180 && session.SidebarWidth <= 2048 {
+		a.SidebarWidth = session.SidebarWidth
+	}
+	var restoreErrors []error
 	if session.Workspace != "" {
 		if err := a.OpenWorkspace(session.Workspace); err != nil {
-			return err
+			restoreErrors = append(restoreErrors, fmt.Errorf("workspace %q: %w", session.Workspace, err))
 		}
 	}
+	restoredIDs := make(map[DocumentID]DocumentID, len(session.Documents))
 	for _, saved := range session.Documents {
 		if err := a.OpenDocument(saved.Path); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return err
+			restoreErrors = append(restoreErrors, fmt.Errorf("document %q: %w", saved.Path, err))
+			continue
 		}
-		doc := a.Documents[a.Active]
+		id := a.Active
+		restoredIDs[saved.ID] = id
+		doc := a.Documents[id]
 		doc.Editor.SetSelection(saved.Anchor, saved.Cursor)
 		doc.Editor.SetAffinity(saved.Affinity)
-		a.Views[a.Active] = saved.View
+		a.Views[id] = saved.View
+		if saved.Preview && !doc.Dirty() {
+			a.Preview = id
+		}
 	}
 	if session.Active != "" {
-		a.Activate(session.Active)
+		if restored, found := restoredIDs[session.Active]; found {
+			a.Activate(restored)
+		} else {
+			a.Activate(session.Active)
+		}
 	}
 	a.recent = append([]string(nil), session.Recent...)
+	if len(restoreErrors) > 0 {
+		return errors.Join(restoreErrors...)
+	}
 	return nil
+}
+
+// ApplySessionView imports presentation-local caret and viewport state just
+// before shutdown. It accepts only IDs already owned by the application.
+func (a *Application) ApplySessionView(view SessionView) {
+	if a == nil {
+		return
+	}
+	for _, saved := range view.Documents {
+		doc := a.Documents[saved.ID]
+		if doc == nil || doc.Editor == nil {
+			continue
+		}
+		doc.Editor.SetSelection(saved.Anchor, saved.Cursor)
+		if saved.Affinity <= uint8(editor.AffinityTrailing) {
+			doc.Editor.SetAffinity(editor.Affinity(saved.Affinity))
+		}
+		a.Views[saved.ID] = ViewState{
+			ScrollX: saved.ScrollX, ScrollXInitialized: true,
+			ScrollY: saved.ScrollY, ScrollInitialized: true,
+			LastRevision: doc.Revision(),
+		}
+	}
+	if view.Active != "" && a.Documents[view.Active] != nil {
+		a.Active = view.Active
+	}
+	if view.SidebarWidth >= 180 && view.SidebarWidth <= 2048 {
+		a.SidebarWidth = view.SidebarWidth
+	}
+	a.touchPresentation()
 }
 
 type recoveryPayload struct {

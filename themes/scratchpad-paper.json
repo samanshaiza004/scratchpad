@@ -241,6 +241,22 @@
     "scratchpad.semantic.paper.surface": {
       "$type": "color",
       "$value": "{scratchpad.palette.editor_background}"
+    },
+    "scratchpad.semantic.editor.active_line": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [0.85, 0.79, 0.66],
+        "alpha": 0.25
+      }
+    },
+    "scratchpad.semantic.editor.active_line_gutter": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [0.76, 0.69, 0.55],
+        "alpha": 0.34
+      }
     }
   },
   "materials": {
@@ -276,6 +292,14 @@
       "app.scratchpad.editor.paper_surface": {
         "$type": "color",
         "$value": "{scratchpad.semantic.paper.surface}"
+      },
+      "app.scratchpad.editor.active_line": {
+        "$type": "color",
+        "$value": "{scratchpad.semantic.editor.active_line}"
+      },
+      "app.scratchpad.editor.active_line_gutter": {
+        "$type": "color",
+        "$value": "{scratchpad.semantic.editor.active_line_gutter}"
       },
       "app.scratchpad.editor.padding": {
         "$type": "dimension",

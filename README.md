@@ -34,7 +34,7 @@ The Alicorn integration suite also runs Go/Caliber boundary tests, Odin checks, 
 
 ## Frontend history and known gaps
 
-The former Shirei and GPUI implementations are preserved at the `archive/pre-v0.1.0-frontends` branch and tag. They are not supported build targets. Alicorn currently lacks saved-session restoration, the outline sidebar, fold controls, selectable/persisted themes, editor font-zoom controls, and expand-selection. These are recorded in the [Alicorn coverage and follow-up list](docs/frontends/alicorn/PARITY.md); native Windows/macOS validation is tracked separately from missing features.
+The former Shirei and GPUI implementations are preserved at the `archive/pre-v0.1.0-frontends` branch and tag. They are not supported build targets. Remaining Alicorn gaps include the outline sidebar, fold controls, editor font-zoom controls, and expand-selection. These are recorded in the [Alicorn coverage and follow-up list](docs/frontends/alicorn/PARITY.md); native Windows/macOS validation is tracked separately from missing features.
 
 ## Project principles
 

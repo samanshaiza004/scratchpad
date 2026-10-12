@@ -7,9 +7,16 @@ import bridge "./bridge"
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_WORKSPACE_RECENT) {
+		app.recent_workspaces_open = true
+		alicorn.invalidate_root(rt, "Scratchpad opened recent workspaces")
+		return
+	}
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) { _ = editor_text_zoom_step(app, rt, 1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) { _ = editor_text_zoom_step(app, rt, -1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET) { _ = editor_text_zoom_set(app, rt, 1); return }
+	if command == action_id_for(ACTION_VIEW_THEME_WARM) { _ = scratchpad_theme_select(app, rt, .Warm); return }
+	if command == action_id_for(ACTION_VIEW_THEME_COOL_LIGHT) { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
 	if command == action_id_for(ACTION_VIEW_COMMAND_PALETTE) { command_palette_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { go_to_line_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) { editor_toggle_wrap_mode(app, rt); return }
@@ -68,7 +75,10 @@ editor_resolve_conflict_now :: proc(app: ^App, rt: ^alicorn.Runtime, document_id
 }
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
-	if app == nil || !app.backend.started { return }
+	if app == nil || rt == nil { return }
+	if action_id == ACTION_VIEW_THEME_WARM { _ = scratchpad_theme_select(app, rt, .Warm); return }
+	if action_id == ACTION_VIEW_THEME_COOL_LIGHT { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
+	if !app.backend.started { return }
 	if action_id == ACTION_FILE_QUICK_OPEN {
 		quick_open_open_surface(app, rt)
 		return
@@ -451,10 +461,11 @@ init_menus :: proc(app: ^App) {
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_DELETE_LINE), label="Delete Line", shortcut=host.Application_Menu_Shortcut{'K', {.Primary, .Shift}}},
 	}
-	app.workspace_items = [6]host.Application_Menu_Item{
+	app.workspace_items = [7]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FILE), label="New File"},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FOLDER), label="New Folder"},
 		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_RECENT), label="Open Recent Workspace…", state=alicorn.Action_State{enabled=true}},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_REFRESH), label="Refresh Workspace", shortcut=host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SETTINGS), label="Settings…"},
@@ -472,12 +483,15 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 	}
-	app.view_items = [5]host.Application_Menu_Item{
+	app.view_items = [8]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN), label="Zoom In", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+' , {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT), label="Zoom Out", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Editor Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_COMMAND_PALETTE), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_WARM), label="Use Warm Theme", state=alicorn.Action_State{enabled=true}},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_COOL_LIGHT), label="Use Cool Light Theme", state=alicorn.Action_State{enabled=true}},
 	}
 	app.menus = [5]host.Application_Menu{
 		{label="File", items=app.file_items[:]},

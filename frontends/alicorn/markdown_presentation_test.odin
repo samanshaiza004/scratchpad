@@ -5,6 +5,74 @@ import "core:testing"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
+EDITOR_MARKDOWN_TEST_PALETTE :: Editor_Markdown_Palette{
+	text={0.1, 0.2, 0.3, 1},
+	muted_text={0.2, 0.3, 0.4, 1},
+	accent={0.3, 0.4, 0.5, 1},
+	subtle_surface={0.7, 0.8, 0.9, 1},
+	success={0.2, 0.6, 0.4, 1},
+	active_line={0.3, 0.4, 0.5, 0.2},
+	active_line_gutter={0.25, 0.35, 0.45, 0.3},
+	find_passive_background={0.4, 0.5, 0.6, 0.4},
+	find_active_background={0.3, 0.4, 0.5, 0.42},
+	workspace_search_background={0.3, 0.4, 0.5, 0.32},
+	bracket_match_background={0.3, 0.4, 0.5, 0.58},
+}
+
+@(test)
+test_markdown_inline_code_changes_with_selected_theme :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer alicorn.destroy_runtime(&rt)
+	app := App{theme_choice=.Cool_Light}
+	if !scratchpad_styles_ensure(&app, &rt) {
+		testing.expect(t, false, "theme-aware Markdown fixture should register Scratchpad themes")
+		return
+	}
+
+	source := [?]u8{'`', 'x', '`'}
+	line, line_ok := editor_project_line(source[:], 0, 0, context.temp_allocator)
+	testing.expect(t, line_ok, "inline code should project for theme-aware paint")
+	if !line_ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	span := [?]bridge.Presentation_Record{{kind=EDITOR_PRESENTATION_INLINE_CODE, start_byte=0, end_byte=3}}
+	window := Editor_Window{
+		document_id="theme-code-test",
+		editor_revision=1,
+		start_byte=0,
+		source=source[:],
+		presentation_revision=1,
+		presentation_ready=true,
+		presentation_spans=span[:],
+	}
+
+	cool_palette := editor_markdown_palette(&rt, app.editor_theme)
+	cool_surface := alicorn.style_theme_color(&rt, app.editor_theme, .Subtle_Surface)
+	cool_text := alicorn.style_theme_color(&rt, app.editor_theme, .Text)
+	paints := editor_presentation_spans_for_line(&window, &line, cool_palette, context.temp_allocator)
+	if len(paints) == 1 {
+		testing.expect(t, paints[0].color == cool_text && paints[0].background.r == cool_surface.r &&
+			paints[0].background.g == cool_surface.g && paints[0].background.b == cool_surface.b &&
+			paints[0].background.a == 0.62 && paints[0].background.b > paints[0].background.r,
+			"Cool Light inline-code ink and background should follow its cool editor theme")
+	} else {
+		testing.expect(t, false, "inline code should produce one paint span in the cool theme")
+	}
+	delete(paints, context.temp_allocator)
+
+	_ = scratchpad_theme_select(&app, &rt, .Warm)
+	warm_palette := editor_markdown_palette(&rt, app.editor_theme)
+	paints = editor_presentation_spans_for_line(&window, &line, warm_palette, context.temp_allocator)
+	if len(paints) == 1 {
+		testing.expect(t, paints[0].color == alicorn.style_theme_color(&rt, app.editor_theme, .Text) &&
+			paints[0].background.r > paints[0].background.b,
+			"the Warm theme should retain its warm Markdown surface character")
+	} else {
+		testing.expect(t, false, "inline code should remain present after switching to Warm")
+	}
+	delete(paints, context.temp_allocator)
+}
+
 @(test)
 test_markdown_display_mapping_covers_bom_tabs_and_invalid_bytes :: proc(t: ^testing.T) {
 	source := [?]u8{0xEF, 0xBB, 0xBF, '#', '\t', 'X', 0xFF}
@@ -263,16 +331,23 @@ test_markdown_paint_spans_use_projected_bytes_without_metric_styles :: proc(t: ^
 		presentation_spans=spans[:],
 		presentation_blocks=blocks[:],
 	}
-	paints := editor_presentation_spans_for_line(&window, &line, context.temp_allocator)
+	paints := editor_presentation_spans_for_line(&window, &line, EDITOR_MARKDOWN_TEST_PALETTE, context.temp_allocator)
 	defer delete(paints, context.temp_allocator)
 	testing.expect(t, len(paints) == 3, "code-block surface plus heading and inline-code spans should produce paint-only modifiers")
 	if len(paints) == 3 {
 		testing.expect(t, paints[0].start == 0 && paints[0].end == len(line.display) && paints[0].background_set,
 			"block styling should cover its displayed row range")
+		testing.expect(t, paints[0].background.r == EDITOR_MARKDOWN_TEST_PALETTE.subtle_surface.r &&
+			paints[0].background.b == EDITOR_MARKDOWN_TEST_PALETTE.subtle_surface.b && paints[0].background.a == 0.48,
+			"code-block surfaces should tint the active theme's subtle surface")
 		testing.expect(t, paints[1].start == 0 && paints[1].end == 1 && paints[1].color_set,
 			"heading paint should map its source marker without changing the display text")
 		testing.expect(t, paints[2].start == 4 && paints[2].end == 5 && paints[2].background_set,
 			"inline-code paint should map after the expanded tab using display byte coordinates")
+		testing.expect(t, paints[2].color == EDITOR_MARKDOWN_TEST_PALETTE.text &&
+			paints[2].background.r == EDITOR_MARKDOWN_TEST_PALETTE.subtle_surface.r &&
+			paints[2].background.b == EDITOR_MARKDOWN_TEST_PALETTE.subtle_surface.b && paints[2].background.a == 0.62,
+			"inline code foreground and surface should come from the active theme")
 	}
 	testing.expect(t, line.display == "#   X", "styling metadata must not alter source-derived display bytes")
 }
@@ -303,7 +378,7 @@ test_code_syntax_paint_spans_use_semantic_roles_and_source_bytes :: proc(t: ^tes
 		presentation_ready=true,
 		presentation_spans=spans[:],
 	}
-	paints := editor_presentation_spans_for_line(&window, &line, context.temp_allocator)
+	paints := editor_presentation_spans_for_line(&window, &line, EDITOR_MARKDOWN_TEST_PALETTE, context.temp_allocator)
 	defer delete(paints, context.temp_allocator)
 	if len(paints) != 3 {
 		testing.expect(t, false, "keyword, function, and number roles should all produce paint spans")

@@ -144,6 +144,13 @@ State_Document :: struct {
 	status:          string `json:"status"`,
 	dirty:           bool   `json:"dirty"`,
 	preview:         bool   `json:"preview"`,
+	anchor_byte:     u64    `json:"anchor_byte"`,
+	cursor_byte:     u64    `json:"cursor_byte"`,
+	affinity:        u8     `json:"affinity"`,
+	scroll_x:        f32    `json:"scroll_x"`,
+	scroll_y:        f32    `json:"scroll_y"`,
+	scroll_x_initialized: bool `json:"scroll_x_initialized"`,
+	scroll_y_initialized: bool `json:"scroll_y_initialized"`,
 	editor_revision: u64    `json:"editor_revision"`,
 	line_count:      u64    `json:"line_count"`,
 	byte_length:     u64    `json:"byte_length"`,
@@ -221,6 +228,8 @@ State_Envelope :: struct {
 	application_rev: u64              `json:"application_revision"`,
 	has_workspace:   bool             `json:"has_workspace"`,
 	workspace_root:  string           `json:"workspace_root"`,
+	recent_workspaces: []string       `json:"recent_workspaces"`,
+	sidebar_width: f32                `json:"sidebar_width"`,
 	active:          string           `json:"active"`,
 	startup_notice: string           `json:"startup_notice"`,
 	documents:       []State_Document `json:"documents"`,
@@ -344,6 +353,27 @@ Backend_Stop_Request :: struct {
 	request_id: u64 `json:"request_id"`,
 }
 
+Backend_Stop_Session :: struct {
+	active:        string `json:"active,omitempty"`,
+	sidebar_width: f32    `json:"sidebar_width,omitempty"`,
+	documents:     []Backend_Stop_Session_Document `json:"documents,omitempty"`,
+}
+
+Backend_Stop_Request_With_Session :: struct {
+	version:    u32                  `json:"version"`,
+	request_id: u64                  `json:"request_id"`,
+	session:    Backend_Stop_Session `json:"session"`,
+}
+
+Backend_Stop_Session_Document :: struct {
+	id:       string `json:"id"`,
+	anchor:   int    `json:"anchor"`,
+	cursor:   int    `json:"cursor"`,
+	affinity: u8     `json:"affinity"`,
+	scroll_x: f32    `json:"scroll_x"`,
+	scroll_y: f32    `json:"scroll_y"`,
+}
+
 Backend_Command_Request :: struct {
 	version:          u32    `json:"version"`,
 	request_id:       u64    `json:"request_id"`,
@@ -420,6 +450,8 @@ state_destroy :: proc(state: ^State_Envelope, allocator: mem.Allocator) {
 	delete(state.workspace_root, allocator)
 	delete(state.active, allocator)
 	delete(state.startup_notice, allocator)
+	for &path in state.recent_workspaces { delete(path, allocator) }
+	delete(state.recent_workspaces, allocator)
 	for &document in state.documents {
 		delete(document.id, allocator)
 		delete(document.path, allocator)
@@ -2168,12 +2200,11 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	response^ = {}
 }
 
-backend_stop_uninitialized :: proc(backend: ^Backend, allocator: mem.Allocator) -> (ok: bool, message: string) {
+backend_stop_uninitialized :: proc(backend: ^Backend, allocator: mem.Allocator, session: ^Backend_Stop_Session = nil) -> (ok: bool, message: string) {
 	if backend == nil || backend.stop_fn == nil { return false, "backend stop export is unavailable" }
 	backend.request_id += 1
-	request := Backend_Stop_Request{version=1, request_id=backend.request_id}
-	request_bytes, marshal_err := json.marshal(request, allocator=allocator)
-	if marshal_err != nil { return false, "could not encode backend stop request" }
+	request_bytes, marshal_err := backend_stop_request_encode(backend.request_id, session, allocator)
+	if marshal_err != nil { return false, fmt.tprintf("could not encode backend stop request: %v", marshal_err) }
 	defer delete(request_bytes, allocator)
 	output: ^u8
 	output_len: uintptr
@@ -2192,10 +2223,27 @@ backend_stop_uninitialized :: proc(backend: ^Backend, allocator: mem.Allocator) 
 	return true, ""
 }
 
-backend_stop :: proc(backend: ^Backend, allocator := context.allocator) -> (ok: bool, message: string) {
+backend_stop_request_encode :: proc(
+	request_id: u64,
+	session: ^Backend_Stop_Session,
+	allocator := context.allocator,
+) -> (data: []u8, err: json.Marshal_Error) {
+	if session == nil {
+		request := Backend_Stop_Request{version=1, request_id=request_id}
+		return json.marshal(request, allocator=allocator)
+	}
+	request := Backend_Stop_Request_With_Session{
+		version=1,
+		request_id=request_id,
+		session=session^,
+	}
+	return json.marshal(request, allocator=allocator)
+}
+
+backend_stop :: proc(backend: ^Backend, allocator := context.allocator, session: ^Backend_Stop_Session = nil) -> (ok: bool, message: string) {
 	if backend == nil || !backend.started { return true, "" }
 	if backend.api == nil {
-		return backend_stop_uninitialized(backend, allocator)
+		return backend_stop_uninitialized(backend, allocator, session)
 	}
 	stop_waiters := transmute(Caliber_Stop_Waiters_Proc)(backend.api.context_stop_wake_waiters)
 	stop_status := stop_waiters(backend.caliber_context)
@@ -2207,7 +2255,7 @@ backend_stop :: proc(backend: ^Backend, allocator := context.allocator) -> (ok: 
 	if backend.resource_leases != 0 {
 		return false, fmt.tprintf("refusing backend stop with %d outstanding Caliber resource lease(s)", backend.resource_leases)
 	}
-	stopped, stop_message := backend_stop_uninitialized(backend, allocator)
+	stopped, stop_message := backend_stop_uninitialized(backend, allocator, session)
 	if !stopped { return false, stop_message }
 	if stop_status != .OK { return false, fmt.tprintf("backend stopped, but Caliber context_stop_wake_waiters returned: %v", stop_status) }
 	return true, ""

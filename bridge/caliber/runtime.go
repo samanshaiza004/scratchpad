@@ -43,6 +43,7 @@ type Runtime struct {
 	pendingSaveAs       *pendingSaveAsConfirmation
 	nextSaveAsToken     uint64
 	recoveryDir         string
+	sessionPath         string
 	recoveryTimer       *time.Timer
 	startupNotice       string
 	watcher             *workspace.OSWatcher
@@ -126,8 +127,13 @@ func (r *Runtime) watchWorkspace(generation uint64, app *application.Application
 }
 
 func samePublishedDocuments(left, right StateEnvelope) bool {
-	if left.Active != right.Active || left.HasWorkspace != right.HasWorkspace || left.WorkspaceRoot != right.WorkspaceRoot || len(left.Documents) != len(right.Documents) {
+	if left.Active != right.Active || left.HasWorkspace != right.HasWorkspace || left.WorkspaceRoot != right.WorkspaceRoot || left.SidebarWidth != right.SidebarWidth || len(left.Documents) != len(right.Documents) || len(left.RecentWorkspaces) != len(right.RecentWorkspaces) {
 		return false
+	}
+	for i := range left.RecentWorkspaces {
+		if left.RecentWorkspaces[i] != right.RecentWorkspaces[i] {
+			return false
+		}
 	}
 	for i := range left.Documents {
 		if left.Documents[i] != right.Documents[i] {
@@ -154,33 +160,54 @@ func (r *Runtime) Start(input []byte) []byte {
 	}
 	app := application.New(nil)
 	app.SetTrasher(workspace.NewOSTrasher())
+	stateDir := r.stateDirOverride
+	var stateDirErr error
+	disableRecovery := os.Getenv("SCRATCHPAD_DISABLE_RECOVERY") == "1"
+	disableSession := os.Getenv("SCRATCHPAD_DISABLE_SESSION") == "1"
+	if disableRecovery {
+		// The Alicorn integration harness reuses the c-shared singleton across
+		// many test cases. Keep test fixtures out of the user's real recovery
+		// store and prevent one test's unsaved files from leaking into another.
+		app.SetRecoveryWritesBlocked(true)
+	}
+	if stateDir == "" && (!disableRecovery || !disableSession) {
+		stateDir, stateDirErr = application.DefaultStateDir()
+	}
+	recoveryDir := ""
+	sessionPath := ""
+	startupNotice := ""
+	if stateDirErr != nil {
+		if !disableSession {
+			startupNotice = fmt.Sprintf("Saved session storage is unavailable: %v. The previous session cannot be restored or saved.", stateDirErr)
+		}
+		if !disableRecovery {
+			app.SetRecoveryWritesBlocked(true)
+			startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Recovery storage is unavailable: %v. Unsaved changes will not be recoverable after a crash.", stateDirErr))
+		}
+	} else {
+		if !disableSession {
+			sessionPath = filepath.Join(stateDir, "session.json")
+			if request.WorkspacePath == "" {
+				if err := app.RestoreSession(sessionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Could not fully restore the previous session: %v. Available files and crash recovery remain accessible.", err))
+				}
+			} else if session, err := application.LoadSession(sessionPath); err == nil {
+				app.SetRecentWorkspaces(session.RecentWorkspaces)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Could not read the previous session history: %v.", err))
+			}
+		}
+	}
 	if request.WorkspacePath != "" {
 		if err := app.OpenWorkspace(request.WorkspacePath); err != nil {
 			caliber.close()
 			return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "application_error", err.Error(), false))
 		}
 	}
-	stateDir := r.stateDirOverride
-	var stateDirErr error
-	if os.Getenv("SCRATCHPAD_DISABLE_RECOVERY") == "1" {
-		// The Alicorn integration harness reuses the c-shared singleton across
-		// many test cases. Keep test fixtures out of the user's real recovery
-		// store and prevent one test's unsaved files from leaking into another.
-		app.SetRecoveryWritesBlocked(true)
-	} else if stateDir == "" {
-		stateDir, stateDirErr = application.DefaultStateDir()
-	}
-	recoveryDir := ""
-	startupNotice := ""
-	if os.Getenv("SCRATCHPAD_DISABLE_RECOVERY") == "1" {
-		// Recovery is intentionally disabled for isolated frontend tests.
-	} else if stateDirErr != nil {
-		app.SetRecoveryWritesBlocked(true)
-		startupNotice = fmt.Sprintf("Recovery storage is unavailable: %v. Unsaved changes will not be recoverable after a crash.", stateDirErr)
-	} else {
+	if !disableRecovery && stateDirErr == nil {
 		recoveryDir = filepath.Join(stateDir, "recovery")
 		app.RecoveryDir = recoveryDir
-		startupNotice = restoreRuntimeRecovery(app, recoveryDir)
+		startupNotice = joinStartupNotice(startupNotice, restoreRuntimeRecovery(app, recoveryDir))
 	}
 	watcher, watcherErr := workspace.NewOSWatcher()
 	if watcherErr == nil {
@@ -197,6 +224,7 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.app = app
 	r.watcher = watcher
 	r.recoveryDir = recoveryDir
+	r.sessionPath = sessionPath
 	r.startupNotice = startupNotice
 	r.lifecycle = lifecycleRunning
 	r.revision = 0
@@ -245,9 +273,17 @@ func (r *Runtime) Stop(input []byte) []byte {
 	if r.resourceLeases != 0 {
 		return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "outstanding_resource_leases", fmt.Sprintf("cannot stop with %d outstanding resource lease(s)", r.resourceLeases), false))
 	}
+	if r.app != nil && request.Session != nil {
+		r.app.ApplySessionView(*request.Session)
+	}
 	if r.app != nil && r.recoveryDir != "" {
 		if err := r.app.FlushRecovery(r.recoveryDir); err != nil {
 			return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "recovery_flush_failed", fmt.Sprintf("could not preserve unsaved recovery data: %v", err), true))
+		}
+	}
+	if r.app != nil && r.sessionPath != "" {
+		if err := r.app.SaveSession(r.sessionPath); err != nil {
+			return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "session_save_failed", fmt.Sprintf("could not save the current session: %v", err), true))
 		}
 	}
 	r.cancelRecoveryTimerLocked()
@@ -273,6 +309,7 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.asyncError = ""
 	r.pendingSaveAs = nil
 	r.recoveryDir = ""
+	r.sessionPath = ""
 	r.startupNotice = ""
 	return marshalResponse(Response{
 		Version:   ProtocolVersion,
@@ -664,6 +701,11 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 					CursorLine:     uint64(cursorLine),
 				}
 			}
+		}
+	case "clear_recent_workspaces":
+		if !r.app.ClearRecentWorkspaces() {
+			commandOutcome = CommandOutcomeNoOp
+			publishState = false
 		}
 	case "select_document":
 		if err := r.app.Dispatch(application.PresentationCommand{
@@ -1233,6 +1275,7 @@ func validateDirectoryListing(listing DirectoryListing) error {
 
 func validateStatePaths(state StateEnvelope) error {
 	values := []string{state.WorkspaceRoot, state.Active}
+	values = append(values, state.RecentWorkspaces...)
 	for _, document := range state.Documents {
 		values = append(values, document.ID, document.Path, document.Status, document.Language)
 	}

@@ -50,17 +50,20 @@ build_app :: proc(
 		build_start_screen(app, &ui, rt)
 	} else if app.backend.started {
 		state := &app.backend.state
+		split_initial := state.sidebar_width
+		if split_initial < 180 || split_initial > 2048 { split_initial = 250 }
 		workspace_split := alicorn.split_begin(
 			&ui,
 			key=alicorn.key_string("scratchpad-workspace-editor-split"),
 			axis=.Horizontal,
-			initial=250,
+			initial=split_initial,
 			min_first=180,
 			min_second=480,
 			style=alicorn.layout_style(.Row, grow=1, gap=12, clip=true),
 			label="scratchpad-workspace-editor-split",
 		)
 		app.workspace_editor_split_node = workspace_split.id
+		app.workspace_sidebar_width = workspace_split.position
 		alicorn.split_first_begin(&ui, workspace_split)
 		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=alicorn.style_color(&ui, .Surface))
 		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=32, gap=6))
@@ -104,7 +107,12 @@ build_app :: proc(
 				alicorn.virtual_list_end(&ui, search_list)
 			}
 		} else {
-			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open")
+			alicorn.container_begin(&ui, .Container, label="workspace-root-row", style=alicorn.layout_style(.Row, height=34, gap=6, align=.Center))
+			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+			if alicorn.button(&ui, "Recent…", key=alicorn.key_string("workspace-open-recent"), style=alicorn.layout_style(.Row, width=86, height=30), variant=.Quiet) {
+				app.recent_workspaces_open = true
+			}
+			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
 		}
 		alicorn.container_end(&ui)
@@ -153,10 +161,10 @@ build_app :: proc(
 		}
 		alicorn.surface_end(&ui)
 		if app.find_open {
-			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=78, gap=4, padding=5), color=alicorn.style_color(&ui, .Subtle_Surface))
-			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=32, gap=8, align=.Center))
+			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), color=alicorn.style_color(&ui, .Subtle_Surface))
+			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
 			alicorn.text(&ui, "Find")
-			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=30))
+			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=36), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 			app.find_query_node = find_node
 			if alicorn.button(&ui, "Aa", key=alicorn.key_string("find-match-case"), style=alicorn.layout_style(.Row, width=38, height=28), state=alicorn.Button_State{selected=app.find_match_case}, variant=.Toolbar) {
 				app.find_match_case = !app.find_match_case
@@ -183,9 +191,9 @@ build_app :: proc(
 			if alicorn.button(&ui, "↓", key=alicorn.key_string("find-next"), style=alicorn.layout_style(.Row, width=34, height=28), variant=.Toolbar) { _ = find_move_match(app, rt, 1) }
 			if alicorn.button(&ui, "×", key=alicorn.key_string("find-close"), style=alicorn.layout_style(.Row, width=30, height=28), variant=.Toolbar) { find_close_surface(app) }
 			alicorn.container_end(&ui)
-			alicorn.container_begin(&ui, .Container, label="scratchpad-replace-bar", style=alicorn.layout_style(.Row, height=32, gap=8, align=.Center))
+			alicorn.container_begin(&ui, .Container, label="scratchpad-replace-bar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
 			alicorn.text(&ui, "Replace")
-			replace_node := alicorn.text_field(&ui, app.find_replace_text, key=alicorn.key_string("scratchpad-find-replace-text"), style=alicorn.layout_style(.Row, grow=1, height=30))
+			replace_node := alicorn.text_field(&ui, app.find_replace_text, key=alicorn.key_string("scratchpad-find-replace-text"), style=alicorn.layout_style(.Row, grow=1, height=36), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 			app.find_replace_node = replace_node
 			can_replace := app.find_query != "" && len(app.find_presentation.matches) > 0 && len(app.editor_edits) == 0 && !editor_active_preedit(app)
 			if alicorn.button(&ui, "Replace", key=alicorn.key_string("find-replace-current"), style=alicorn.layout_style(.Row, width=82, height=28), state=alicorn.Button_State{disabled=!can_replace}, variant=.Toolbar) {
@@ -228,7 +236,7 @@ build_app :: proc(
 	}
 	alicorn.container_end(&ui)
 
-	if app.shutdown_intent == .None && app.close_document_id == "" && !app.save_as_confirmation_open && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.command_palette_open && !app.quick_open_open {
+	if app.shutdown_intent == .None && app.close_document_id == "" && !app.save_as_confirmation_open && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.recent_workspaces_open && !app.command_palette_open && !app.quick_open_open {
 		workspace_context_menu_build(app, &ui, rt)
 	}
 
@@ -319,6 +327,8 @@ build_app :: proc(
 		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
 		alicorn.modal_overlay_end(&ui)
+	} else if app.recent_workspaces_open {
+		recent_workspaces_surface_build(app, &ui, rt)
 	} else if app.settings_surface_open {
 		settings_surface_build(app, &ui, rt)
 	} else if app.quick_open_open {

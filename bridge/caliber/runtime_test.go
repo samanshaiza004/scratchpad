@@ -290,6 +290,111 @@ func TestLinkedCaliberAPIPointerSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestRuntimeRestoresCleanSessionAndRecentWorkspaces(t *testing.T) {
+	t.Setenv("SCRATCHPAD_DISABLE_SESSION", "0")
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	documentPath := filepath.Join(workspacePath, "note.md")
+	writeFile(t, documentPath, "first\nsecond\n")
+	stateDir := filepath.Join(root, "state")
+
+	first := NewRuntime()
+	first.stateDirOverride = stateDir
+	started := decodeResponse(t, first.Start(mustJSON(t, StartRequest{
+		Version: ProtocolVersion, RequestID: 1, WorkspacePath: workspacePath,
+	})))
+	if !started.OK {
+		t.Fatalf("first start: %+v", started)
+	}
+	state := latestStateForTest(t, first)
+	dispatchForTest(t, first, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 2, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: documentPath,
+	}))
+	opened := decodeResponse(t, first.Pump())
+	if !opened.OK {
+		t.Fatalf("open document: %+v", opened)
+	}
+	state = latestStateForTest(t, first)
+	documentID := application.DocumentID(state.Active)
+	first.app.Documents[documentID].Editor.SetSelection(2, 8)
+	first.app.Views[documentID] = application.ViewState{ScrollY: 96, ScrollInitialized: true, ScrollX: 12, ScrollXInitialized: true}
+	stopped := decodeResponse(t, first.Stop(mustJSON(t, StopRequest{
+		Version:   ProtocolVersion,
+		RequestID: 3,
+		Session: &application.SessionView{
+			Active: documentID, SidebarWidth: 344,
+			Documents: []application.SessionViewDocument{{ID: documentID, Anchor: 2, Cursor: 8, Affinity: 1, ScrollX: 12, ScrollY: 96}},
+		},
+	})))
+	if !stopped.OK {
+		t.Fatalf("first stop: %+v", stopped)
+	}
+
+	second := NewRuntime()
+	second.stateDirOverride = stateDir
+	started = decodeResponse(t, second.Start(mustJSON(t, StartRequest{Version: ProtocolVersion, RequestID: 4})))
+	if !started.OK {
+		t.Fatalf("second start: %+v", started)
+	}
+	defer stopRuntime(t, second)
+	state = latestStateForTest(t, second)
+	if !state.HasWorkspace || state.WorkspaceRoot != workspacePath || state.Active != string(documentID) || len(state.Documents) != 1 {
+		t.Fatalf("restored runtime state = %+v", state)
+	}
+	if len(state.RecentWorkspaces) != 1 || state.RecentWorkspaces[0] != workspacePath || state.SidebarWidth != 344 {
+		t.Fatalf("restored workspace metadata = recent %v sidebar %.1f", state.RecentWorkspaces, state.SidebarWidth)
+	}
+	restored := second.app.Documents[documentID]
+	anchor, cursor := restored.Editor.Selection()
+	view := second.app.Views[documentID]
+	if anchor != 2 || cursor != 8 || restored.Editor.Affinity != 1 || view.ScrollX != 12 || view.ScrollY != 96 || !view.ScrollXInitialized || !view.ScrollInitialized {
+		t.Fatalf("restored document state selection=%d:%d affinity=%d view=%+v", anchor, cursor, restored.Editor.Affinity, view)
+	}
+}
+
+func TestRuntimeExplicitWorkspaceTakesPrecedenceAndKeepsRecentList(t *testing.T) {
+	t.Setenv("SCRATCHPAD_DISABLE_SESSION", "0")
+	root := t.TempDir()
+	firstWorkspace := filepath.Join(root, "first")
+	secondWorkspace := filepath.Join(root, "second")
+	for _, path := range []string{firstWorkspace, secondWorkspace} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stateDir := filepath.Join(root, "state")
+	first := NewRuntime()
+	first.stateDirOverride = stateDir
+	started := decodeResponse(t, first.Start(mustJSON(t, StartRequest{
+		Version: ProtocolVersion, RequestID: 1, WorkspacePath: firstWorkspace,
+	})))
+	if !started.OK {
+		t.Fatalf("first start: %+v", started)
+	}
+	stopRuntime(t, first)
+
+	second := NewRuntime()
+	second.stateDirOverride = stateDir
+	started = decodeResponse(t, second.Start(mustJSON(t, StartRequest{
+		Version: ProtocolVersion, RequestID: 2, WorkspacePath: secondWorkspace,
+	})))
+	if !started.OK {
+		t.Fatalf("explicit-workspace restart: %+v", started)
+	}
+	defer stopRuntime(t, second)
+	state := latestStateForTest(t, second)
+	if !state.HasWorkspace || state.WorkspaceRoot != secondWorkspace || len(state.Documents) != 0 {
+		t.Fatalf("explicit workspace should take precedence over restored documents: %+v", state)
+	}
+	if len(state.RecentWorkspaces) != 2 || state.RecentWorkspaces[0] != secondWorkspace || state.RecentWorkspaces[1] != firstWorkspace {
+		t.Fatalf("recent workspaces after explicit restart = %v", state.RecentWorkspaces)
+	}
+}
+
 func TestLeaseAccountingRejectsCallAfterRelease(t *testing.T) {
 	runtime := newStartedRuntime(t, "")
 	defer stopRuntime(t, runtime)
