@@ -65,7 +65,8 @@ scratchpad_theme_preferences_load :: proc(path: string) -> (choice: Scratchpad_T
 
 scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_Theme_Choice) -> bool {
 	if directory == "" || (choice != .Warm && choice != .Cool_Light) { return false }
-	if os.mkdir_all(directory) != nil { return false }
+	directory_error := os.mkdir_all(directory)
+	if directory_error != nil && !(directory_error == .Exist && os.is_directory(directory)) { return false }
 	parts := [2]string{directory, "preferences.json"}
 	path, path_error := os.join_path(parts[:], context.temp_allocator)
 	if path_error != nil { return false }
