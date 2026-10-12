@@ -287,9 +287,9 @@ editor_metadata_result_should_suppress_retry :: proc(
 start_backend :: proc(app: ^App) {
 	if app == nil { return }
 	loaded, load_error := bridge.backend_load(&app.backend, app.backend_library)
-	if !loaded { set_error(app, load_error); return }
+	if !loaded { set_startup_error(app, load_error); return }
 	started, start_error := bridge.backend_start(&app.backend, app.workspace_path, app.waker.wake, app.waker.data)
-	if !started { set_error(app, start_error) } else {
+	if !started { set_startup_error(app, start_error) } else {
 		lane_started := bridge.visible_window_lane_start(
 			&app.visible_window_lane,
 			&app.backend,
@@ -298,7 +298,7 @@ start_backend :: proc(app: ^App) {
 		)
 		if !lane_started {
 			_, _ = bridge.backend_stop(&app.backend)
-			set_error(app, "Could not start the bounded document-window worker.")
+			set_startup_error(app, "Could not start the bounded document-window worker.")
 			return
 		}
 		edit_lane_started := bridge.editor_edit_lane_start(
@@ -310,7 +310,7 @@ start_backend :: proc(app: ^App) {
 		if !edit_lane_started {
 			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
 			_, _ = bridge.backend_stop(&app.backend)
-			set_error(app, "Could not start the serial editor edit worker.")
+			set_startup_error(app, "Could not start the serial editor edit worker.")
 			return
 		}
 		quick_open_lane_started := bridge.workspace_files_lane_start(
@@ -323,7 +323,7 @@ start_backend :: proc(app: ^App) {
 			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
 			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
 			_, _ = bridge.backend_stop(&app.backend)
-			set_error(app, "Could not start the asynchronous Quick Open file index worker.")
+			set_startup_error(app, "Could not start the asynchronous Quick Open file index worker.")
 			return
 		}
 		accessibility_lane_started := accessibility_source_lane_start(
@@ -337,7 +337,7 @@ start_backend :: proc(app: ^App) {
 			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
 			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
 			_, _ = bridge.backend_stop(&app.backend)
-			set_error(app, "Could not start the active-document accessibility source worker.")
+			set_startup_error(app, "Could not start the active-document accessibility source worker.")
 			return
 		}
 	app.recovery_notice_dismissed = false
@@ -2671,6 +2671,11 @@ set_error :: proc(app: ^App, message: string) {
 	if len(message) > 0 { app.error_message, _ = strings.clone(message, context.allocator) }
 }
 
+set_startup_error :: proc(app: ^App, message: string) {
+	scratchpad_consumer_startup_error(message)
+	set_error(app, message)
+}
+
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
 	if app.backend.started {
@@ -2730,6 +2735,8 @@ application_stop :: proc(state: rawptr) {
 }
 
 main :: proc() {
+	scratchpad_consumer_diagnostics_begin()
+	defer scratchpad_consumer_diagnostics_end()
 	app: App
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
 	app.workspace_search_selected = -1

@@ -1,0 +1,72 @@
+name: Consumer package candidates
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'cmd/alicorn-dev/**'
+      - 'frontends/alicorn/**'
+      - 'packaging/**'
+      - 'tools/alicorn.ps1'
+      - 'tools/alicorn.sh'
+      - 'tools/caliber.ps1'
+      - 'tools/caliber.sh'
+      - 'dependencies.lock.json'
+      - '.github/workflows/package-candidate.yml'
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            output: windows
+          - os: macos-latest
+            output: macos
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: laytan/setup-odin@v2
+        with:
+          token: false
+          release: nightly
+      - name: Set up MSVC linker and Windows SDK
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install 64-bit MinGW-w64 for Go cgo
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Add 64-bit cgo compiler to PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:MSYS2_LOCATION 'ucrt64\bin')
+      - name: Install macOS CMake
+        if: runner.os == 'macOS'
+        run: brew install cmake
+      - name: Build, audit, and smoke the package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\tools\alicorn.ps1 package --version 0.1.1 --out out\packages\windows
+      - name: Build, sign, audit, and smoke the package
+        if: runner.os == 'macOS'
+        run: ./tools/alicorn.sh package --version 0.1.1 --out out/packages/macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scratchpad-v0.1.1-${{ matrix.output }}
+          path: out/packages/${{ matrix.output }}/
+          if-no-files-found: error

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('build', 'test', 'smoke', 'run')]
+    [ValidateSet('build', 'test', 'smoke', 'run', 'package')]
     [string]$Command = 'test',
 
     [string]$Go,
