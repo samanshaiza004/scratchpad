@@ -792,6 +792,13 @@ func consumerPackageSmoke(root, executable, tempParent string) error {
 		env = setEnv(env, "XDG_CONFIG_HOME", configDir)
 	}
 	if err := runCommandWithTimeout(workDir, env, 30*time.Second, executable); err != nil {
+		startupLog := filepath.Join(configDir, "Scratchpad", "startup.log")
+		if runtime.GOOS == "darwin" {
+			startupLog = filepath.Join(smokeRoot, "Library", "Application Support", "Scratchpad", "startup.log")
+		}
+		if data, readErr := os.ReadFile(startupLog); readErr == nil && len(data) != 0 {
+			return fmt.Errorf("consumer launch from unrelated directory: %w\nstartup log (%s):\n%s", err, startupLog, strings.TrimSpace(string(data)))
+		}
 		return fmt.Errorf("consumer launch from unrelated directory: %w", err)
 	}
 	return nil
