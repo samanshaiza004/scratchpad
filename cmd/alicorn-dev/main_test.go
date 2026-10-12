@@ -71,6 +71,24 @@ func TestAppendLinkerFlags(t *testing.T) {
 	}
 }
 
+func TestNativeFrontendLinkerFlagsForMacOS(t *testing.T) {
+	prefix := filepath.Join("workspace", "SDL Framework")
+	flags := nativeFrontendLinkerFlagsFor("darwin", []string{"SDL3_PREFIX=" + prefix}, "-framework AppKit")
+	if !strings.Contains(flags, "-L"+quoteLinkerPath(filepath.Join(prefix, "lib"))) {
+		t.Fatalf("macOS linker flags %q omit SDL3's library directory", flags)
+	}
+	if !strings.Contains(flags, "-framework AppKit") {
+		t.Fatalf("macOS linker flags %q dropped existing flags", flags)
+	}
+}
+
+func TestNativeFrontendLinkerFlagsLeaveOtherPlatformsUnchanged(t *testing.T) {
+	flags := nativeFrontendLinkerFlagsFor("windows", []string{"SDL3_PREFIX=C:/SDL"}, "/LIBPATH:accesskit")
+	if flags != "/LIBPATH:accesskit" {
+		t.Fatalf("non-macOS linker flags = %q, want original flags", flags)
+	}
+}
+
 func TestValidateLockedRevision(t *testing.T) {
 	tests := []struct {
 		name    string

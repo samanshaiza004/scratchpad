@@ -45,7 +45,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: go run ./cmd/alicorn-dev <build|test|smoke|run> [options]")
+		return errors.New("usage: go run ./cmd/alicorn-dev <build|test|smoke|run|package> [options]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -57,7 +57,8 @@ func run(args []string) error {
 	caliberRootArg := flags.String("caliber-root", os.Getenv("CALIBER_CANDIDATE_ROOT"), "Caliber checkout override for dependency validation")
 	allowCaliberRevision := flags.Bool("allow-caliber-revision", false, "allow a Caliber candidate different from the lock")
 	release := flags.Bool("release", false, "build optimized native artifacts")
-	outArg := flags.String("out", "out/alicorn", "artifact directory")
+	version := flags.String("version", "", "consumer package version (required for package)")
+	outArg := flags.String("out", "", "artifact directory (package defaults under out/packages)")
 	workspace := flags.String("workspace", "", "initial Scratchpad workspace directory; defaults to this checkout")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -65,8 +66,8 @@ func run(args []string) error {
 	if len(flags.Args()) != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	if command != "build" && command != "test" && command != "smoke" && command != "run" {
-		return fmt.Errorf("unknown command %q; expected build, test, smoke, or run", command)
+	if command != "build" && command != "test" && command != "smoke" && command != "run" && command != "package" {
+		return fmt.Errorf("unknown command %q; expected build, test, smoke, run, or package", command)
 	}
 
 	root, err := repoRoot()
@@ -128,12 +129,25 @@ func run(args []string) error {
 	}
 
 	out := *outArg
+	if out == "" {
+		if command == "package" {
+			if *version == "" {
+				return errors.New("package requires --version, for example --version 0.1.1")
+			}
+			out = filepath.Join("out", "packages", fmt.Sprintf("Scratchpad-v%s-%s-%s", strings.TrimPrefix(*version, "v"), runtime.GOOS, runtime.GOARCH))
+		} else {
+			out = "out/alicorn"
+		}
+	}
 	if !filepath.IsAbs(out) {
 		out = filepath.Join(root, out)
 	}
 	out, err = filepath.Abs(out)
 	if err != nil {
 		return err
+	}
+	if command == "package" {
+		return packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, out, *version)
 	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
@@ -171,7 +185,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, frontendEnv)
+		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, false, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -184,7 +198,11 @@ func run(args []string) error {
 		if err := runCommand(root, nil, "odin", odinExe, "check", filepath.Join(root, "frontends", "alicorn"), collectionArg); err != nil {
 			return fmt.Errorf("Alicorn frontend type check: %w", err)
 		}
-		testEnv := setEnv(env, "SCRATCHPAD_BACKEND_LIBRARY", backendPath)
+		frontendEnv, err := prepareNativeFrontendEnv(root, env)
+		if err != nil {
+			return err
+		}
+		testEnv := setEnv(frontendEnv, "SCRATCHPAD_BACKEND_LIBRARY", backendPath)
 		testEnv = setRuntimePath(testEnv, out)
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DISABLE_RECOVERY", "1")
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DISABLE_SESSION", "1")
@@ -200,7 +218,7 @@ func run(args []string) error {
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
 		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
-		testArgs = appendLinkerFlags(testArgs, accessKitFlags)
+		testArgs = appendLinkerFlags(testArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
 		if err := runCommand(root, testEnv, "odin", odinExe, testArgs...); err != nil {
 			return fmt.Errorf("Alicorn workbench integration tests: %w", err)
 		}
@@ -210,7 +228,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, frontendEnv)
+		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, false, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -427,17 +445,35 @@ func prepareNativeFrontendEnv(root string, env []string) ([]string, error) {
 	if runtime.GOOS != "darwin" {
 		return env, nil
 	}
-	prefix, err := commandOutput(root, "brew", "--prefix", "sdl3")
-	if err != nil {
-		return nil, fmt.Errorf("locate SDL3 installed by Homebrew (install it with `brew install sdl3`): %w", err)
+	prefix := os.Getenv("SDL3_PREFIX")
+	if prefix == "" {
+		output, err := commandOutput(root, "brew", "--prefix", "sdl3")
+		if err != nil {
+			return nil, fmt.Errorf("locate SDL3 installed by Homebrew (install it with `brew install sdl3`): %w", err)
+		}
+		prefix = strings.TrimSpace(string(output))
 	}
-	libDir := filepath.Join(strings.TrimSpace(string(prefix)), "lib")
+	return prepareNativeFrontendEnvWithPrefix(env, prefix)
+}
+
+func prepareNativeFrontendEnvWithPrefix(env []string, prefix string) ([]string, error) {
+	libDir := filepath.Join(prefix, "lib")
 	if _, err := os.Stat(filepath.Join(libDir, "libSDL3.dylib")); err != nil {
-		return nil, fmt.Errorf("SDL3 shared library was not found under %s; install it with `brew install sdl3`: %w", libDir, err)
+		return nil, fmt.Errorf("SDL3 shared library was not found under %s: %w", libDir, err)
 	}
 	env = prependPathEnv(env, "LIBRARY_PATH", libDir)
 	env = prependPathEnv(env, "DYLD_LIBRARY_PATH", libDir)
+	env = setEnv(env, "SDL3_PREFIX", prefix)
 	return env, nil
+}
+
+func nativeFrontendLinkerFlagsFor(goos string, env []string, additional string) string {
+	if goos == "darwin" {
+		if prefix := envValue(env, "SDL3_PREFIX"); prefix != "" {
+			additional = strings.TrimSpace(additional + " -L" + quoteLinkerPath(filepath.Join(prefix, "lib")))
+		}
+	}
+	return additional
 }
 
 func prependPathEnv(env []string, key, directory string) []string {
@@ -503,7 +539,7 @@ func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg str
 	return nil
 }
 
-func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, release bool, env []string) (string, error) {
+func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, release, consumerBuild bool, env []string) (string, error) {
 	if runtime.GOOS == "windows" {
 		sdl := filepath.Join(filepath.Dir(odinExe), "vendor", "sdl3", "SDL3.dll")
 		if info, err := os.Stat(sdl); err != nil || info.Size() < 100_000 {
@@ -514,9 +550,15 @@ func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, rel
 		}
 	}
 	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
-	args = appendLinkerFlags(args, accessKitFlags)
+	args = appendLinkerFlags(args, nativeFrontendLinkerFlagsFor(runtime.GOOS, env, accessKitFlags))
 	if release {
 		args = append(args, "-o:speed")
+	}
+	if consumerBuild {
+		args = append(args, "-define:SCRATCHPAD_CONSUMER_BUILD=true")
+		if runtime.GOOS == "windows" {
+			args = append(args, "-subsystem:windows")
+		}
 	}
 	if err := runCommand(root, env, "odin", odinExe, args...); err != nil {
 		return "", fmt.Errorf("build Scratchpad Alicorn frontend: %w", err)

@@ -42,15 +42,25 @@ jobs:
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:MSYS2_LOCATION 'ucrt64\bin')
-      - name: Install SDL3
+      - name: Install macOS CMake
         if: runner.os == 'macOS'
-        run: brew install sdl3
+        run: brew install cmake
+      - name: Install pinned SDL3
+        if: runner.os == 'macOS'
+        uses: libsdl-org/setup-sdl@afd98199e97f9c2aa739474be7e0886d149a5e47
+        id: sdl_macos
+        with:
+          version: 3.4.16
+          add-to-environment: true
+          token: ${{ github.token }}
       - name: Headless Go, ABI, Odin, and lifecycle checks
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\tools\alicorn.ps1 test
       - name: Headless Go, ABI, Odin, and lifecycle checks
         if: runner.os == 'macOS'
+        env:
+          SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
         run: ./tools/alicorn.sh test
       - name: Native window lifecycle smoke
         if: runner.os == 'Windows'
@@ -58,6 +68,8 @@ jobs:
         run: .\tools\alicorn.ps1 smoke
       - name: Native window lifecycle smoke
         if: runner.os == 'macOS'
+        env:
+          SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
         run: ./tools/alicorn.sh smoke
       - name: Build native release artifact
         if: runner.os == 'Windows'
@@ -65,6 +77,8 @@ jobs:
         run: .\tools\alicorn.ps1 build --release
       - name: Build native release artifact
         if: runner.os == 'macOS'
+        env:
+          SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
         run: ./tools/alicorn.sh build --release
       - name: Upload Alicorn artifact
         uses: actions/upload-artifact@v4

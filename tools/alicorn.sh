@@ -6,8 +6,8 @@ PROJECT_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd -P)
 COMMAND=${1:-test}
 if [ "$#" -gt 0 ]; then shift; fi
 case "$COMMAND" in
-    build|test|smoke|run) ;;
-    *) printf 'Usage: sh tools/alicorn.sh [build|test|smoke|run] [alicorn-dev options]\n' >&2; exit 2 ;;
+    build|test|smoke|run|package) ;;
+    *) printf 'Usage: sh tools/alicorn.sh [build|test|smoke|run|package] [alicorn-dev options]\n' >&2; exit 2 ;;
 esac
 
 GO_EXEC=${SCRATCHPAD_GO:-go}
