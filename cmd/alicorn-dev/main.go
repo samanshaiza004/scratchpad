@@ -198,7 +198,11 @@ func run(args []string) error {
 		if err := runCommand(root, nil, "odin", odinExe, "check", filepath.Join(root, "frontends", "alicorn"), collectionArg); err != nil {
 			return fmt.Errorf("Alicorn frontend type check: %w", err)
 		}
-		testEnv := setEnv(env, "SCRATCHPAD_BACKEND_LIBRARY", backendPath)
+		frontendEnv, err := prepareNativeFrontendEnv(root, env)
+		if err != nil {
+			return err
+		}
+		testEnv := setEnv(frontendEnv, "SCRATCHPAD_BACKEND_LIBRARY", backendPath)
 		testEnv = setRuntimePath(testEnv, out)
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DISABLE_RECOVERY", "1")
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DISABLE_SESSION", "1")
@@ -214,7 +218,7 @@ func run(args []string) error {
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
 		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
-		testArgs = appendLinkerFlags(testArgs, accessKitFlags)
+		testArgs = appendLinkerFlags(testArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
 		if err := runCommand(root, testEnv, "odin", odinExe, testArgs...); err != nil {
 			return fmt.Errorf("Alicorn workbench integration tests: %w", err)
 		}
@@ -459,7 +463,17 @@ func prepareNativeFrontendEnvWithPrefix(env []string, prefix string) ([]string, 
 	}
 	env = prependPathEnv(env, "LIBRARY_PATH", libDir)
 	env = prependPathEnv(env, "DYLD_LIBRARY_PATH", libDir)
+	env = setEnv(env, "SDL3_PREFIX", prefix)
 	return env, nil
+}
+
+func nativeFrontendLinkerFlagsFor(goos string, env []string, additional string) string {
+	if goos == "darwin" {
+		if prefix := envValue(env, "SDL3_PREFIX"); prefix != "" {
+			additional = strings.TrimSpace(additional + " -L" + quoteLinkerPath(filepath.Join(prefix, "lib")))
+		}
+	}
+	return additional
 }
 
 func prependPathEnv(env []string, key, directory string) []string {
@@ -536,7 +550,7 @@ func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, rel
 		}
 	}
 	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
-	args = appendLinkerFlags(args, accessKitFlags)
+	args = appendLinkerFlags(args, nativeFrontendLinkerFlagsFor(runtime.GOOS, env, accessKitFlags))
 	if release {
 		args = append(args, "-o:speed")
 	}

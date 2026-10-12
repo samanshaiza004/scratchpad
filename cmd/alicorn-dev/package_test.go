@@ -102,6 +102,9 @@ func TestNativeFrontendEnvUsesProvidedSDLPrefix(t *testing.T) {
 	if got := envValue(env, "DYLD_LIBRARY_PATH"); got != libDir {
 		t.Errorf("DYLD_LIBRARY_PATH = %q, want %q", got, libDir)
 	}
+	if got := envValue(env, "SDL3_PREFIX"); got != prefix {
+		t.Errorf("SDL3_PREFIX = %q, want %q", got, prefix)
+	}
 }
 
 func TestPackageZipRoundTripAndRejectsTraversal(t *testing.T) {
