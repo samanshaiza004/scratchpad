@@ -115,6 +115,38 @@ test_recoverable_ime_text_survives_document_switch_and_blocks_close :: proc(t: ^
 ALICORN_TEST_UI_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Variable.ttf")
 ALICORN_TEST_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
 
+@(test)
+test_workbench_error_banner_uses_theme_surface_for_readable_text :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 600})
+	defer alicorn.destroy_runtime(&rt)
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
+		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
+	testing.expect(t, fonts_loaded, "error-banner appearance fixture should load the bundled fonts")
+	if !fonts_loaded { return }
+
+	app: App
+	app.error_message = "The selected workspace file could not be opened."
+	choices := [?]Scratchpad_Theme_Choice{.Warm, .Cool_Light}
+	for choice in choices {
+		app.theme_choice = choice
+		alicorn.invalidate_root(&rt, "verify themed workbench error banner")
+		_ = build_app(rawptr(&app), &rt, 900, 600, 1)
+		expected_background := alicorn.style_theme_color(&rt, app.workbench_theme, .Subtle_Surface)
+		error_node_found := false
+		for node_id in rt.order {
+			node, found := rt.nodes[node_id]
+			if found && node.label == "workbench-error" {
+				error_node_found = true
+				testing.expect(t, node.color == expected_background &&
+					node.style_environment.theme == app.workbench_theme,
+					"the error banner should use a neutral surface with foreground text from the same active theme")
+				break
+			}
+		}
+		testing.expect(t, error_node_found, "the workbench error banner should be present when an error is set")
+	}
+}
+
 
 SCRATCHPAD_WORKBENCH_EXPECTED_COLORS :: [18]alicorn.Color{
 	alicorn.Color{0.16, 0.16, 0.14, 1},

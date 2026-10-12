@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
@@ -213,6 +214,13 @@ quick_open_filter :: proc(paths: []string, query: string, allocator := context.t
 	return results
 }
 
+quick_open_workspace_path :: proc(workspace_root, relative_path: string, allocator := context.temp_allocator) -> (string, bool) {
+	if workspace_root == "" || relative_path == "" { return "", false }
+	parts := [2]string{workspace_root, relative_path}
+	resolved, err := os.join_path(parts[:], allocator)
+	return resolved, err == nil
+}
+
 quick_open_open_path :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 	if app == nil || rt == nil || path == "" { return }
 	if len(app.editor_edits) > 0 {
@@ -230,14 +238,25 @@ quick_open_open_path :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 
 quick_open_execute :: proc(app: ^App, rt: ^alicorn.Runtime, path: string, from_build := false) -> bool {
 	if app == nil || rt == nil || path == "" { return false }
+	resolved_path, path_ok := quick_open_workspace_path(
+		app.backend.state.workspace_root,
+		path,
+		context.temp_allocator,
+	)
+	if !path_ok {
+		find_set_message(&app.quick_open_error, "Could not resolve the selected file path under the current workspace.")
+		alicorn.invalidate_root(rt, "Scratchpad could not resolve a Quick Open workspace path")
+		return false
+	}
+	defer delete(resolved_path, context.temp_allocator)
 	quick_open_close_surface(app, rt, false)
 	if from_build {
-		if !frame_deferred_action_schedule(app, .Open_Path, path) {
+		if !frame_deferred_action_schedule(app, .Open_Path, resolved_path) {
 			set_error(app, "Could not queue the selected Quick Open file until this frame completes.")
 			return false
 		}
 	} else {
-		quick_open_open_path(app, rt, path)
+		quick_open_open_path(app, rt, resolved_path)
 	}
 	return true
 }
