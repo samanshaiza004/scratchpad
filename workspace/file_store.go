@@ -87,6 +87,12 @@ type ImageFileStore interface {
 	LoadImage(path string) (ImageFileSnapshot, error)
 }
 
+// ImageMetadataStore lets document classification and watcher reconciliation
+// inspect only the header. Pixel bytes are read by an explicit image request.
+type ImageMetadataStore interface {
+	InspectImage(path string) (ImageFileSnapshot, error)
+}
+
 const (
 	maxPreviewImageBytes     = int64(128 << 20)
 	maxPreviewImageDimension = uint32(16384)
@@ -204,9 +210,60 @@ func (OSFileStore) Load(path string) (FileSnapshot, error) {
 	return FileSnapshot{Path: clean, Data: data, Mode: info.Mode(), Version: version, IsSymlink: lstat.Mode()&os.ModeSymlink != 0}, nil
 }
 
-// LoadImage recognizes and bounds the formats Alicorn can decode. Unknown
-// binary files return a presentation reason without asking the editor to treat
-// them as source text. Full pixel decoding remains in Alicorn.
+// InspectImage classifies a file with at most 33 bytes of I/O. It does not
+// hash or retain its encoded contents, including unsupported binary files.
+func (s OSFileStore) InspectImage(path string) (ImageFileSnapshot, error) {
+	clean := filepath.Clean(path)
+	file, err := os.Open(clean)
+	if err != nil {
+		return ImageFileSnapshot{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ImageFileSnapshot{}, err
+	}
+	return inspectImageHeader(file, clean, info)
+}
+
+func inspectImageHeader(reader io.Reader, path string, info fs.FileInfo) (ImageFileSnapshot, error) {
+	if !info.Mode().IsRegular() {
+		return ImageFileSnapshot{}, errors.New("path is not a regular file")
+	}
+	snapshot := ImageFileSnapshot{Path: path, Mode: info.Mode(), Version: observedVersion(path, info)}
+	header, err := io.ReadAll(io.LimitReader(reader, 33))
+	if err != nil {
+		return ImageFileSnapshot{}, err
+	}
+	switch {
+	case bytes.HasPrefix(header, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}):
+		snapshot.Format = "PNG"
+		if len(header) < 33 || binary.BigEndian.Uint32(header[8:12]) != 13 || !bytes.Equal(header[12:16], []byte("IHDR")) {
+			snapshot.Error = "PNG header is incomplete or invalid."
+			return snapshot, nil
+		}
+		snapshot.Width, snapshot.Height = binary.BigEndian.Uint32(header[16:20]), binary.BigEndian.Uint32(header[20:24])
+	case bytes.HasPrefix(header, []byte("qoif")):
+		snapshot.Format = "QOI"
+		if len(header) < 14 || (header[12] != 3 && header[12] != 4) || header[13] > 1 {
+			snapshot.Error = "QOI header is incomplete or invalid."
+			return snapshot, nil
+		}
+		snapshot.Width, snapshot.Height = binary.BigEndian.Uint32(header[4:8]), binary.BigEndian.Uint32(header[8:12])
+	default:
+		snapshot.Error = "This file format isn't supported for preview."
+		return snapshot, nil
+	}
+	if info.Size() > maxPreviewImageBytes {
+		snapshot.Error = "Image exceeds the 128 MiB preview limit."
+	} else if snapshot.Width == 0 || snapshot.Height == 0 || snapshot.Width > maxPreviewImageDimension || snapshot.Height > maxPreviewImageDimension || uint64(snapshot.Width)*uint64(snapshot.Height) > maxPreviewImagePixels {
+		snapshot.Error = "Image dimensions exceed the 64 MiB decoded preview limit."
+	}
+	return snapshot, nil
+}
+
+// LoadImage reads and verifies encoded bytes only after the bounded header has
+// identified a supported, valid-sized image. Full decoding remains in Alicorn.
 func (s OSFileStore) LoadImage(path string) (ImageFileSnapshot, error) {
 	clean := filepath.Clean(path)
 	file, err := os.Open(clean)
@@ -218,50 +275,29 @@ func (s OSFileStore) LoadImage(path string) (ImageFileSnapshot, error) {
 	if err != nil {
 		return ImageFileSnapshot{}, err
 	}
-	if !info.Mode().IsRegular() {
-		return ImageFileSnapshot{}, errors.New("path is not a regular file")
+	snapshot, err := inspectImageHeader(file, clean, info)
+	if err != nil || snapshot.Error != "" {
+		return snapshot, err
 	}
-	if info.Size() > maxPreviewImageBytes {
-		return ImageFileSnapshot{Path: clean, Mode: info.Mode(), Version: observedVersion(clean, info), Error: "Image exceeds the 128 MiB preview limit."}, nil
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return ImageFileSnapshot{}, err
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxPreviewImageBytes+1))
 	if err != nil {
 		return ImageFileSnapshot{}, err
 	}
 	if int64(len(data)) > maxPreviewImageBytes {
-		return ImageFileSnapshot{Path: clean, Mode: info.Mode(), Version: observedVersion(clean, info), Error: "Image exceeds the 128 MiB preview limit."}, nil
+		snapshot.Error = "Image exceeds the 128 MiB preview limit."
+		return snapshot, nil
 	}
 	version, err := verifiedVersion(clean, data)
 	if err != nil {
 		return ImageFileSnapshot{}, err
 	}
-	snapshot := ImageFileSnapshot{Path: clean, Mode: info.Mode(), Version: version}
-	switch {
-	case bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}):
-		snapshot.Format = "PNG"
-		if len(data) < 33 || binary.BigEndian.Uint32(data[8:12]) != 13 || !bytes.Equal(data[12:16], []byte("IHDR")) {
-			snapshot.Error = "PNG header is incomplete."
-			return snapshot, nil
-		}
-		snapshot.Width = binary.BigEndian.Uint32(data[16:20])
-		snapshot.Height = binary.BigEndian.Uint32(data[20:24])
-	case bytes.HasPrefix(data, []byte("qoif")):
-		snapshot.Format = "QOI"
-		if len(data) < 14 {
-			snapshot.Error = "QOI header is incomplete."
-			return snapshot, nil
-		}
-		snapshot.Width = binary.BigEndian.Uint32(data[4:8])
-		snapshot.Height = binary.BigEndian.Uint32(data[8:12])
-	default:
-		snapshot.Error = "This file format isn't supported for preview."
-		return snapshot, nil
+	if !snapshot.Version.Equal(version) {
+		return ImageFileSnapshot{}, errors.New("image changed while reading")
 	}
-	if snapshot.Width == 0 || snapshot.Height == 0 || snapshot.Width > maxPreviewImageDimension || snapshot.Height > maxPreviewImageDimension || uint64(snapshot.Width)*uint64(snapshot.Height) > maxPreviewImagePixels {
-		snapshot.Error = "Image dimensions exceed the 64 MiB decoded preview limit."
-		return snapshot, nil
-	}
-	snapshot.Data = data
+	snapshot.Version, snapshot.Data = version, data
 	return snapshot, nil
 }
 

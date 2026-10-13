@@ -81,6 +81,7 @@ test_image_preview_wheel_and_scrollbar_drag_move_image_and_reset_fit :: proc(t: 
 	image_preview_test_build(&app, &rt, document)
 	original := image_preview_test_bounds(&rt)
 	scroll := alicorn.scroll_region_state(&rt, view.scroll_owner)
+	initial_offset_x := scroll.offset_x
 	testing.expect(t, scroll.max_scroll_x > 0 && scroll.max_scroll_y > 0, "100 percent should expose both overflow axes")
 	_ = alicorn.process_scroll(&rt, alicorn.Scroll_Event{x=scroll.viewport_bounds.x+40,y=scroll.viewport_bounds.y+40,delta_y=-2})
 	image_preview_test_build(&app, &rt, document)
@@ -96,7 +97,7 @@ test_image_preview_wheel_and_scrollbar_drag_move_image_and_reset_fit :: proc(t: 
 	image_preview_test_build(&app, &rt, document)
 	scroll = alicorn.scroll_region_state(&rt, view.scroll_owner)
 	after_drag := image_preview_test_bounds(&rt)
-	testing.expect(t, scroll.offset_x > 0 && abs(after_drag.x-(original.x-scroll.offset_x)) <= 0.51,
+	testing.expect(t, scroll.offset_x > 0 && abs(after_drag.x-(original.x-(scroll.offset_x-initial_offset_x))) <= 0.51,
 		fmt.tprintf("horizontal thumb pan: original=%v after=%v scroll=%v", original, after_drag, scroll))
 	_ = image_preview_set_mode(view, &rt, true)
 	image_preview_test_build(&app, &rt, document)
@@ -166,5 +167,37 @@ test_image_preview_native_zoom_command_targets_image_not_text :: proc(t: ^testin
 	testing.expect(t, !view.fit && view.zoom == 0.625 && app.editor_text_scale == 1,
 		"native View zoom commands should zoom the active image without changing editor typography")
 	application_menu_command(rawptr(&app), &rt, action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET))
-	testing.expect(t, view.zoom == 1 && view.reset_scroll, "native Reset Zoom should restore image pixel size and reset pan")
+	testing.expect(t, view.zoom == 1 && view.zoom_anchor_pending, "native Reset Zoom should restore image pixel size and reset pan")
+}
+
+@(test)
+test_image_preview_zoom_preserves_source_at_viewport_center :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0,0,700,460})
+	defer alicorn.destroy_runtime(&rt)
+	handle,err := alicorn.image_load_bytes(&rt,SCRATCHPAD_WARM_MARK_DATA)
+	if err != .None { testing.expect(t,false,"fixture should decode"); return }
+	app := App{image_preview_handle=handle,image_preview_width=1600,image_preview_height=900}
+	defer image_preview_views_destroy(&app)
+	doc := image_preview_test_document()
+	view := image_preview_view_ensure(&app,doc.id)
+	_ = image_preview_set_mode(view,&rt,false)
+	image_preview_test_build(&app,&rt,doc)
+	_ = alicorn.scroll_region_set_offset_x(&rt,view.scroll_owner,300)
+	_ = alicorn.scroll_region_set_offset(&rt,view.scroll_owner,200)
+	image_preview_test_build(&app,&rt,doc)
+	before := alicorn.scroll_region_state(&rt,view.scroll_owner)
+	x := (before.offset_x+before.viewport_width/2-(before.content_width-view.image_width)/2)/view.image_width
+	y := (before.offset_y+before.viewport_height/2-(before.content_height-view.image_height)/2)/view.image_height
+	for id,node in rt.nodes {
+		if node.kind == .Button && node.label == "+" {
+			_ = alicorn.focus(&rt,id)
+			_ = alicorn.activate_focused(&rt,.Enter)
+			break
+		}
+	}
+	image_preview_test_build(&app,&rt,doc)
+	after := alicorn.scroll_region_state(&rt,view.scroll_owner)
+	x_after := (after.offset_x+after.viewport_width/2-(after.content_width-view.image_width)/2)/view.image_width
+	y_after := (after.offset_y+after.viewport_height/2-(after.content_height-view.image_height)/2)/view.image_height
+	testing.expect(t,abs(x_after-x)<0.001 && abs(y_after-y)<0.001,"zoom should preserve the source point at the viewport center")
 }

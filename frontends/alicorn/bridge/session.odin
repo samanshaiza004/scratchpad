@@ -134,6 +134,7 @@ foreign {
 	scratchpad_backend_resource_lease_acquired :: proc () -> i32 ---
 	scratchpad_backend_resource_lease_released :: proc () -> i32 ---
 	scratchpad_backend_free :: proc (input: rawptr) ---
+	scratchpad_backend_read_image :: proc (input: ^u8, input_len: uintptr, out: ^^u8, out_len: ^uintptr) -> i32 ---
 	scratchpad_backend_pump :: proc (out: ^^u8, out_len: ^uintptr) -> i32 ---
 }
 Application_Wake_Proc :: #type proc (rawptr)
@@ -567,6 +568,7 @@ Backend :: struct {
 	resource_lease_released_fn: Backend_Lease_Proc,
 	free_fn:           Backend_Free_Proc,
 	pump_fn:           Backend_Pump_Proc,
+	image_read_fn:     Backend_Start_Proc,
 	api:               ^Caliber_Api_V1,
 	caliber_context:   rawptr,
 	waiter:            Waiter_State,
@@ -594,6 +596,7 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 		backend.resource_lease_released_fn = scratchpad_backend_resource_lease_released
 		backend.free_fn = scratchpad_backend_free
 		backend.pump_fn = scratchpad_backend_pump
+		backend.image_read_fn = scratchpad_backend_read_image
 		backend.library_loaded = true
 		return true, ""
 	}
@@ -631,7 +634,8 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	resource_lease_released := load_proc(library, "scratchpad_backend_resource_lease_released")
 	free_output := load_proc(library, "scratchpad_backend_free")
 	pump := load_proc(library, "scratchpad_backend_pump")
-	if start == nil || stop == nil || api == nil || ctx == nil || lease_acquired == nil || lease_released == nil || resource_lease_acquired == nil || resource_lease_released == nil || free_output == nil || pump == nil {
+	image_read := load_proc(library, "scratchpad_backend_read_image")
+	if start == nil || stop == nil || api == nil || ctx == nil || lease_acquired == nil || lease_released == nil || resource_lease_acquired == nil || resource_lease_released == nil || free_output == nil || pump == nil || image_read == nil {
 		backend.library_loaded = true
 		backend.load_error = "backend library is missing one or more scratchpad_backend_* bridge exports"
 		return false, backend.load_error
@@ -646,6 +650,7 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	backend.resource_lease_released_fn = transmute(Backend_Lease_Proc)(resource_lease_released)
 	backend.free_fn = transmute(Backend_Free_Proc)(free_output)
 	backend.pump_fn = transmute(Backend_Pump_Proc)(pump)
+	backend.image_read_fn = transmute(Backend_Start_Proc)(image_read)
 	backend.library_loaded = true
 	return true, ""
 }
@@ -859,7 +864,7 @@ backend_release_resource_view :: proc(
 	}
 	release_resource := transmute(Caliber_Release_Context_Resource_Proc)(backend.api.context_release_resource)
 	_ = release_resource(backend.caliber_context, resource_id, generation)
-	if backend.resource_lease_released_fn() == 0 { backend.resource_leases -= 1 }
+	if backend.resource_lease_released_fn() == 0 { sync.atomic_add(&backend.resource_leases, -1) }
 	view^ = {}
 }
 
@@ -1044,7 +1049,7 @@ backend_copy_visible_resource :: proc(
 		_ = release_resource(backend.caliber_context, descriptor.resource_id, descriptor.generation)
 		return {}, false, "backend rejected Caliber resource lease accounting"
 	}
-	backend.resource_leases += 1
+	sync.atomic_add(&backend.resource_leases, 1)
 	defer backend_release_resource_view(backend, &view, descriptor.resource_id, descriptor.generation)
 	if view.resource_id != descriptor.resource_id || view.generation != descriptor.generation {
 		return {}, false, "Caliber returned a mismatched resource handle"
@@ -1090,7 +1095,7 @@ backend_copy_image_resource :: proc(
 		_ = release_resource(backend.caliber_context, descriptor.resource_id, descriptor.generation)
 		return {}, false, "backend rejected Caliber image resource lease accounting"
 	}
-	backend.resource_leases += 1
+	sync.atomic_add(&backend.resource_leases, 1)
 	defer backend_release_resource_view(backend, &view, descriptor.resource_id, descriptor.generation)
 	if view.resource_id != descriptor.resource_id || view.generation != descriptor.generation || view.len != uintptr(descriptor.byte_len) || view.data == nil {
 		return {}, false, "Caliber returned a mismatched image resource"
@@ -1099,6 +1104,31 @@ backend_copy_image_resource :: proc(
 	if allocation_error != nil { return {}, false, "could not retain the bounded image bytes" }
 	mem.copy(rawptr(&image_copy[0]), rawptr(view.data), int(view.len))
 	return image_copy, true, ""
+}
+
+// This read bypasses the serial command queue and its UI command mutex.
+// The backend snapshots/revalidates identity around unlocked file I/O. Resource
+// bytes still cross the ordinary bounded Caliber map/release contract.
+backend_image_read :: proc(backend: ^Backend, document_id: string, image_revision, generation: u64, allocator := context.allocator) -> (result: Backend_Command_Result) {
+	if backend == nil || backend.image_read_fn == nil { return Backend_Command_Result{message="Image reader is unavailable"} }
+	request_id := generation | (u64(1)<<63)
+	request := Backend_Command_Request{version=1, request_id=request_id,command="read_image",document_id=document_id,image_revision=image_revision}
+	encoded, err := json.marshal(request,allocator=allocator)
+	if err != nil { return Backend_Command_Result{message="Could not encode image request"} }
+	defer delete(encoded,allocator)
+	output: ^u8
+	output_len: uintptr
+	status := backend.image_read_fn(&encoded[0],uintptr(len(encoded)),&output,&output_len)
+	response, valid := backend_decode_response(output,output_len,backend.free_fn,allocator)
+	defer backend_response_destroy(&response,allocator)
+	if status != 0 || !valid || !backend_response_identity_matches(response,request_id) { return Backend_Command_Result{message="Invalid image resource response"} }
+	if !response.ok {
+		message, clone_err := strings.clone(response.outcome.message,allocator)
+		return Backend_Command_Result{message=message,message_owned=clone_err == nil && len(message)>0}
+	}
+	data, read_ok, message := backend_copy_image_resource(backend,response.resource,document_id,image_revision,allocator)
+	if !read_ok { return Backend_Command_Result{message=message} }
+	return Backend_Command_Result{ok=true,image_bytes=data,image_bytes_owned=true}
 }
 
 backend_consume_wake :: proc(backend: ^Backend, allocator := context.allocator) -> (changed: bool, ok: bool, message: string) {

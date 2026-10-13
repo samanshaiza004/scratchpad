@@ -141,6 +141,9 @@ App :: struct {
 	image_preview_width: int,
 	image_preview_height: int,
 	image_preview_views: [dynamic]Image_Preview_View,
+	image_preview_lane: Image_Preview_Lane,
+	image_preview_generation: u64,
+	image_preview_loading: bool,
 	image_scroll_owner: alicorn.Node_ID,
 	recovery_notice_dismissed: bool,
 	close_document_id:      string,
@@ -363,6 +366,7 @@ start_backend :: proc(app: ^App) {
 
 stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	if app == nil { return false, "application state is unavailable" }
+	if !image_preview_lane_stop(&app.image_preview_lane) { return false, "Image preview worker did not stop cleanly" }
 	if !bridge.workspace_files_lane_stop(&app.quick_open_lane) {
 		return false, "Quick Open file index worker did not join cleanly"
 	}
@@ -461,6 +465,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 			alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
 		}
 	}
+	image_preview_take_completion(app, rt)
 	_ = workspace_search_sync_wake(app, rt)
 	quick_open_take_completion(app, rt)
 	window_result, window_found := bridge.visible_window_lane_take(&app.visible_window_lane)
@@ -2704,7 +2709,7 @@ application_stop :: proc(state: rawptr) {
 	app.retired_brand_marks = {}
 	if app.backend.started {
 		stopped, message := stop_backend(app)
-		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil && app.accessibility_source_lane.thread == nil
+		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil && app.accessibility_source_lane.thread == nil && app.image_preview_lane.thread == nil
 		if !stopped { fmt.eprintln("Scratchpad backend shutdown error:", message) }
 	} else {
 		app.smoke_shutdown = true

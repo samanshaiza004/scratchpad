@@ -22,6 +22,9 @@ Image_Preview_View :: struct {
 	reset_scroll: bool,
 	restore_scroll: bool,
 	scroll_x, scroll_y: f32,
+	image_width, image_height: f32,
+	zoom_anchor_x, zoom_anchor_y: f32,
+	zoom_anchor_pending: bool,
 }
 
 image_preview_views_destroy :: proc(app: ^App) {
@@ -39,10 +42,23 @@ image_preview_view_ensure :: proc(app: ^App, document_id: string) -> ^Image_Prev
 	return &app.image_preview_views[len(app.image_preview_views)-1]
 }
 
+image_preview_capture_zoom_anchor :: proc(view: ^Image_Preview_View, rt: ^alicorn.Runtime) {
+	scroll := alicorn.scroll_region_state(rt,view.scroll_owner)
+	view.zoom_anchor_x,view.zoom_anchor_y = 0.5,0.5
+	if scroll.id != 0 && view.image_width > 0 && view.image_height > 0 {
+		origin_x := (scroll.content_width-view.image_width)/2
+		origin_y := (scroll.content_height-view.image_height)/2
+		view.zoom_anchor_x = clamp((scroll.offset_x+scroll.viewport_width/2-origin_x)/view.image_width,0,1)
+		view.zoom_anchor_y = clamp((scroll.offset_y+scroll.viewport_height/2-origin_y)/view.image_height,0,1)
+	}
+	view.zoom_anchor_pending = true
+}
+
 image_preview_zoom_step :: proc(view: ^Image_Preview_View, rt: ^alicorn.Runtime, direction: int) -> bool {
 	if view == nil || rt == nil { return false }
 	current := view.effective_zoom if view.fit else view.zoom
 	if current <= 0 { current = 1 }
+	image_preview_capture_zoom_anchor(view,rt)
 	view.fit = false
 	view.zoom = clamp(current*IMAGE_PREVIEW_ZOOM_STEP if direction > 0 else current/IMAGE_PREVIEW_ZOOM_STEP, IMAGE_PREVIEW_MIN_ZOOM, IMAGE_PREVIEW_MAX_ZOOM)
 	alicorn.invalidate_root(rt, "image preview zoom changed")
@@ -51,9 +67,11 @@ image_preview_zoom_step :: proc(view: ^Image_Preview_View, rt: ^alicorn.Runtime,
 
 image_preview_set_mode :: proc(view: ^Image_Preview_View, rt: ^alicorn.Runtime, fit: bool) -> bool {
 	if view == nil || rt == nil { return false }
+	if !fit { image_preview_capture_zoom_anchor(view,rt) }
+	else { view.zoom_anchor_pending = false }
 	view.fit = fit
 	view.zoom = 1
-	view.reset_scroll = true
+	view.reset_scroll = fit
 	alicorn.invalidate_root(rt, "image preview sizing mode changed")
 	return true
 }
@@ -64,6 +82,14 @@ image_preview_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil || app.image_scroll_owner == 0 { return }
 	for &view in app.image_preview_views {
 		if view.scroll_owner != app.image_scroll_owner { continue }
+		if view.zoom_anchor_pending {
+			scroll := alicorn.scroll_region_state(rt,view.scroll_owner)
+			x := (scroll.content_width-view.image_width)/2+view.zoom_anchor_x*view.image_width-scroll.viewport_width/2
+			y := (scroll.content_height-view.image_height)/2+view.zoom_anchor_y*view.image_height-scroll.viewport_height/2
+			_ = alicorn.scroll_region_set_offset_x(rt,view.scroll_owner,x,"preserve image center while zooming")
+			_ = alicorn.scroll_region_set_offset(rt,view.scroll_owner,y,"preserve image center while zooming")
+			view.zoom_anchor_pending = false; view.restore_scroll = false
+		}
 		if view.restore_scroll {
 			_ = alicorn.scroll_region_set_offset_x(rt, view.scroll_owner, view.scroll_x, "restore image tab horizontal pan")
 			_ = alicorn.scroll_region_set_offset(rt, view.scroll_owner, view.scroll_y, "restore image tab vertical pan")
@@ -107,6 +133,8 @@ scratchpad_image_preview_sync :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	}
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found || document.view_kind != "image" {
+		if app.image_preview_loading { image_preview_lane_cancel(&app.image_preview_lane) }
+		app.image_preview_loading = false; app.image_preview_generation = 0
 		if app.image_preview_handle != 0 { scratchpad_image_preview_retire_current(app) }
 		if len(app.image_preview_document_id) > 0 { delete(app.image_preview_document_id, context.allocator) }
 		app.image_preview_document_id = ""
@@ -117,7 +145,9 @@ scratchpad_image_preview_sync :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		return
 	}
 	if app.image_preview_document_id == document.id && app.image_preview_revision == document.image_revision &&
-	   (app.image_preview_handle != 0 || app.image_preview_error != "") { return }
+	   (app.image_preview_handle != 0 || app.image_preview_error != "" || app.image_preview_loading) { return }
+	image_preview_lane_cancel(&app.image_preview_lane)
+	app.image_preview_loading = false
 	scratchpad_image_preview_retire_current(app)
 	if len(app.image_preview_document_id) > 0 { delete(app.image_preview_document_id, context.allocator) }
 	app.image_preview_document_id, _ = strings.clone(document.id, context.allocator)
@@ -130,42 +160,53 @@ scratchpad_image_preview_sync :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		scratchpad_image_preview_set_error(app, "The image preview revision is unavailable. Reopen the tab to retry.")
 		return
 	}
-	response := bridge.backend_command(&app.backend, "read_image", document_id=document.id, image_revision=document.image_revision, read_latest_after=false)
-	if !response.ok {
-		message := response.message
-		if message == "" { message = "Scratchpad could not read this image. Reopen the tab to retry." }
-		scratchpad_image_preview_set_error(app, message)
-		bridge.backend_command_result_destroy(&response, context.allocator)
-		return
-	}
-	handle, decode_error := alicorn.image_load_bytes(rt, response.image_bytes)
-	bridge.backend_command_result_destroy(&response, context.allocator)
-	if decode_error != .None {
-		message := "Scratchpad could not decode this image."
-		switch decode_error {
-		case .None: message = "Scratchpad could not decode this image."
-		case .Empty_Input: message = "The image file is empty."
-		case .Unsupported_Format: message = "Only PNG and QOI images can be previewed."
-		case .Invalid_Header: message = "The image header is incomplete or invalid."
-		case .Input_Too_Large: message = "Image exceeds the 128 MiB preview limit."
-		case .Dimensions_Too_Large: message = "Image dimensions exceed the 64 MiB decoded preview limit."
-		case .Decode_Failed: message = "The image data is invalid or incomplete."
-		case .Unsupported_Pixel_Format: message = "This image uses an unsupported pixel format."
-		case .Resource_Limit: message = "Scratchpad could not allocate image preview resources."
-		case: message = "Scratchpad could not decode this image."
+	if app.image_preview_lane.thread == nil {
+		if !image_preview_lane_start(&app.image_preview_lane,&app.backend,app.waker.wake,app.waker.data) {
+			scratchpad_image_preview_set_error(app,"Could not start the image preview worker.")
+			return
 		}
-		scratchpad_image_preview_set_error(app, message)
-		return
 	}
-	app.image_preview_handle = handle
-	if pixels, ok := alicorn.image_resolve(rt, handle); ok {
-		app.image_preview_width = pixels.width
-		app.image_preview_height = pixels.height
-	} else {
-		scratchpad_image_preview_set_error(app, "Scratchpad could not retain the decoded image.")
-		return
+	generation,accepted := image_preview_lane_request(&app.image_preview_lane,document.id,document.image_revision)
+	if !accepted { scratchpad_image_preview_set_error(app,"Could not queue the image preview."); return }
+	app.image_preview_generation = generation
+	app.image_preview_loading = true
+}
+
+image_preview_decode_error_message :: proc(err: alicorn.Image_Load_Error) -> string {
+	switch err {
+	case .None: return ""
+	case .Empty_Input: return "The image file is empty."
+	case .Unsupported_Format: return "Only PNG and QOI images can be previewed."
+	case .Invalid_Header: return "The image header is incomplete or invalid."
+	case .Input_Too_Large: return "Image exceeds the 128 MiB preview limit."
+	case .Dimensions_Too_Large: return "Image dimensions exceed the 64 MiB decoded preview limit."
+	case .Decode_Failed: return "The image data is invalid or incomplete."
+	case .Unsupported_Pixel_Format: return "This image uses an unsupported pixel format."
+	case .Resource_Limit: return "Scratchpad could not allocate image preview resources."
 	}
-	scratchpad_image_preview_set_error(app, "")
+	return "Scratchpad could not decode this image."
+}
+
+image_preview_take_completion :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	result,found := image_preview_lane_take(&app.image_preview_lane)
+	if !found { return }
+	defer image_preview_result_destroy(&result,app.image_preview_lane.allocator)
+	document,exists := find_document(&app.backend.state,app.backend.state.active)
+	if !exists || document.view_kind != "image" || document.id != result.request.document_id || document.image_revision != result.request.revision || result.request.generation != app.image_preview_generation { return }
+	app.image_preview_loading = false
+	if result.error != "" { scratchpad_image_preview_set_error(app,result.error) }
+	else {
+		handle,err := alicorn.image_adopt_decoded(rt,&result.pixels)
+		if err != .None { scratchpad_image_preview_set_error(app,image_preview_decode_error_message(err)) }
+		else {
+			scratchpad_image_preview_retire_current(app)
+			app.image_preview_handle = handle
+			pixels,_ := alicorn.image_resolve(rt,handle)
+			app.image_preview_width,app.image_preview_height = pixels.width,pixels.height
+			scratchpad_image_preview_set_error(app,"")
+		}
+	}
+	alicorn.invalidate_root(rt,"image preview worker completed")
 }
 
 build_image_preview :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document, dpi_scale: f32) {
@@ -189,26 +230,34 @@ build_image_preview :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, do
 	view.effective_zoom = zoom
 	alicorn.container_begin(ui, .Container, label="image-preview-toolbar", style=alicorn.layout_style(.Row, height=IMAGE_PREVIEW_TOOLBAR_HEIGHT, gap=8, align=.Center))
 	alicorn.text(ui, fmt.tprintf("%s · %d × %d · %s · Read-only", document_title(document.path), app.image_preview_width, app.image_preview_height, document.image_format), style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	alicorn.text(ui, fmt.tprintf("%d%%", int(zoom*100+0.5)), style=alicorn.layout_style(.Row, width=48), text_style=alicorn.Text_Style{overflow=.Clip})
-	if alicorn.button(ui, "−", key=alicorn.key_string("image-preview-zoom-out"), style=alicorn.layout_style(.Row, width=34, height=28), variant=.Toolbar) { _ = image_preview_zoom_step(view, rt, -1) }
-	_ = alicorn.tooltip(ui, "Zoom out")
-	if alicorn.button(ui, "Fit", key=alicorn.key_string("image-preview-fit"), style=alicorn.layout_style(.Row, width=52, height=28), state=alicorn.Button_State{selected=view.fit}, variant=.Toolbar) { _ = image_preview_set_mode(view, rt, true) }
-	if alicorn.button(ui, "100%", key=alicorn.key_string("image-preview-zoom-100"), style=alicorn.layout_style(.Row, width=58, height=28), state=alicorn.Button_State{selected=!view.fit && view.zoom == 1}, variant=.Toolbar) { _ = image_preview_set_mode(view, rt, false) }
-	if alicorn.button(ui, "+", key=alicorn.key_string("image-preview-zoom-in"), style=alicorn.layout_style(.Row, width=34, height=28), variant=.Toolbar) { _ = image_preview_zoom_step(view, rt, 1) }
-	_ = alicorn.tooltip(ui, "Zoom in")
+	alicorn.container_begin(ui,.Container,label="image-preview-zoom-controls",style=alicorn.layout_style(.Row,width=244,height=28,gap=4,align=.Center))
+	if alicorn.button(ui,"−",key=alicorn.key_string("image-preview-zoom-out"),style=alicorn.layout_style(.Row,width=32,height=28),variant=.Toolbar) { _ = image_preview_zoom_step(view,rt,-1) }
+	_ = alicorn.tooltip(ui,"Zoom out")
+	alicorn.text(ui,fmt.tprintf("%d%%",int(zoom*100+0.5)),style=alicorn.layout_style(.Row,width=48),text_style=alicorn.Text_Style{overflow=.Clip})
+	if alicorn.button(ui,"+",key=alicorn.key_string("image-preview-zoom-in"),style=alicorn.layout_style(.Row,width=32,height=28),variant=.Toolbar) { _ = image_preview_zoom_step(view,rt,1) }
+	_ = alicorn.tooltip(ui,"Zoom in")
+	if alicorn.button(ui,"Fit",key=alicorn.key_string("image-preview-fit"),style=alicorn.layout_style(.Row,width=48,height=28),state=alicorn.Button_State{selected=view.fit},variant=.Toolbar) { _ = image_preview_set_mode(view,rt,true) }
+	if alicorn.button(ui,"100%",key=alicorn.key_string("image-preview-zoom-100"),style=alicorn.layout_style(.Row,width=58,height=28),state=alicorn.Button_State{selected=!view.fit && view.zoom == 1},variant=.Toolbar) { _ = image_preview_set_mode(view,rt,false) }
+	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 	if app.image_preview_error != "" || app.image_preview_handle == 0 {
 		alicorn.container_begin(ui, .Container, label="image-preview-error-card", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=8, padding=18))
-		alicorn.text(ui, "Preview unavailable")
+		alicorn.text(ui, "Loading image preview…" if app.image_preview_loading else "Preview unavailable")
 		alicorn.text(ui, app.image_preview_error if app.image_preview_error != "" else "Loading image preview…", text_style=alicorn.Text_Style{overflow=.Wrap})
-		if alicorn.button(ui, "Retry", key=alicorn.key_string("image-preview-retry"), style=alicorn.layout_style(.Row, width=82, height=28)) {
+		if !app.image_preview_loading && alicorn.button(ui, "Retry", key=alicorn.key_string("image-preview-retry"), style=alicorn.layout_style(.Row, width=82, height=28)) {
 			app.image_preview_revision = 0
 			alicorn.invalidate_root(rt, "retry image preview")
 		}
 		alicorn.container_end(ui)
 		return
 	}
+	// Toolbar activations change the view during description. Apply the new
+	// scale to this frame before resolving the center anchor after layout.
+	zoom = view.zoom
+	if view.fit { zoom = min(max(outer.w-2*IMAGE_PREVIEW_PADDING,1)/base_width,max(outer.h-2*IMAGE_PREVIEW_PADDING,1)/base_height,1) }
+	view.effective_zoom = zoom
 	image_width, image_height := base_width*zoom, base_height*zoom
+	view.image_width,view.image_height = image_width,image_height
 	geometry := alicorn.scroll_bar_geometry(alicorn.Rect{0,0,outer.w,outer.h}, image_width+2*IMAGE_PREVIEW_PADDING, image_height+2*IMAGE_PREVIEW_PADDING, 0, .Both, .Auto)
 	content_width := max(geometry.viewport.w, image_width+2*IMAGE_PREVIEW_PADDING)
 	content_height := max(geometry.viewport.h, image_height+2*IMAGE_PREVIEW_PADDING)
@@ -225,11 +274,17 @@ build_image_preview :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, do
 	// The scroll region owns input and scrollbar geometry. Its content wrapper
 	// applies both retained offsets to the image; changing a thumb alone never
 	// moves ordinary flow children. Virtual_List supplies that layout contract.
-	alicorn.container_begin(ui, .Virtual_List, label="image-preview-canvas", style=alicorn.layout_style(.Row, width=content_width, height=content_height, align=.Center, justify=.Center), color=alicorn.style_color(ui, .Subtle_Surface), scroll_offset_x=scroll.offset_x, scroll_offset_y=scroll.offset_y)
+	alicorn.container_begin(ui, .Virtual_List, label="image-preview-canvas", style=alicorn.layout_style(.Row, width=content_width, height=content_height, align=.Center, justify=.Center), color=image_preview_canvas_color(ui), scroll_offset_x=scroll.offset_x, scroll_offset_y=scroll.offset_y)
 	alt := fmt.tprintf("%s, %d by %d pixels", document_title(document.path), app.image_preview_width, app.image_preview_height)
 	_ = alicorn.image(ui, app.image_preview_handle, alt_text=alt, key=alicorn.key_string("image-preview-image"), style=alicorn.layout_style(.Row, width=image_width, height=image_height))
 	alicorn.container_end(ui)
 	alicorn.scroll_region_end(ui)
+}
+
+image_preview_canvas_color :: proc(ui: ^alicorn.UI) -> alicorn.Color {
+	surface := alicorn.style_color(ui,.Subtle_Surface)
+	neutral := (surface.r+surface.g+surface.b)/3*0.88
+	return alicorn.Color{neutral,neutral,neutral,1}
 }
 
 build_unsupported_file_view :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_Document) {

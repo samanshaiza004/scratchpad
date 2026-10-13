@@ -462,6 +462,47 @@ func (r *Runtime) Pump() []byte {
 	return marshalResponse(response)
 }
 
+// ReadImage is a dedicated readonly resource request. Its filesystem work runs
+// outside r.mu so tab changes, input commands and publications remain usable.
+// It never consumes the ordinary Caliber command queue.
+func (r *Runtime) ReadImage(input []byte) []byte {
+	r.mu.Lock()
+	request, response, ok := decodeCommandRequest(input, r.lifecycle)
+	if !ok || request.Command != "read_image" || r.lifecycle != lifecycleRunning {
+		if ok {
+			response = commandError(request, "image_unavailable", errors.New("image reader is not running or request is invalid"))
+		}
+		r.mu.Unlock()
+		return marshalResponse(response)
+	}
+	app, generation := r.app, r.generation
+	read, err := app.ImagePreviewRequest(application.DocumentID(request.DocumentID), request.ImageRevision)
+	r.mu.Unlock()
+	if err != nil {
+		return marshalResponse(commandError(request, "image_unavailable", err))
+	}
+	data, err := read.Read()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lifecycle != lifecycleRunning || r.generation != generation || r.app != app {
+		return marshalResponse(commandError(request, "image_unavailable", errors.New("image request outlived its backend session")))
+	}
+	current, currentErr := app.ImagePreviewRequest(application.DocumentID(request.DocumentID), request.ImageRevision)
+	if currentErr != nil || current.Path != read.Path || !current.Version.Equal(read.Version) {
+		return marshalResponse(commandError(request, "image_unavailable", errors.New("image document changed while reading")))
+	}
+	if err != nil {
+		return marshalResponse(commandError(request, "image_unavailable", err))
+	}
+	resourceID, resourceGeneration, err := r.caliber.publishResource(data)
+	if err != nil {
+		return marshalResponse(commandError(request, "resource_unavailable", err))
+	}
+	response = okResponse(request.RequestID, r.lifecycle, r.revision)
+	response.Resource = &ResourceDescriptor{ResourceID: resourceID, Generation: resourceGeneration, DocumentID: request.DocumentID, ImageRevision: request.ImageRevision, ApplicationRev: r.applicationRevision, ByteLen: uint64(len(data))}
+	return marshalResponse(response)
+}
+
 // maybeWriteRecoveryLocked keeps the one-second recovery throttle compatible
 // with the event-driven idle loop. If an edit arrives during the throttle (or
 // while an older snapshot is still being written), schedule another async

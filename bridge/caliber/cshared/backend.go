@@ -48,6 +48,11 @@ func scratchpad_backend_pump(out *unsafe.Pointer, outLen *C.size_t) C.int {
 	return safeOutput(out, outLen, singleton.Pump)
 }
 
+//export scratchpad_backend_read_image
+func scratchpad_backend_read_image(input unsafe.Pointer, inputLen C.size_t, out *unsafe.Pointer, outLen *C.size_t) C.int {
+	return safeOutput(out, outLen, func() []byte { return singleton.ReadImage(copyInput(input, inputLen)) })
+}
+
 //export scratchpad_backend_stop
 func scratchpad_backend_stop(input unsafe.Pointer, inputLen C.size_t, out *unsafe.Pointer, outLen *C.size_t) C.int {
 	return safeOutput(out, outLen, func() []byte { return singleton.Stop(copyInput(input, inputLen)) })

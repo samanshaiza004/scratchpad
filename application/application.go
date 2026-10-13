@@ -324,7 +324,7 @@ func (a *Application) loadDocumentView(path string) (*document.Document, FileVie
 		doc := document.NewLoaded(filepath.Clean(path), nil, workspace.DiskVersion{}, 0, "")
 		return doc, FileView{Kind: FileViewUnsupported, Error: unsupported.Reason}, nil
 	}
-	image, imageErr := imageStore.LoadImage(path)
+	image, imageErr := inspectImageStore(a.Store, imageStore, path)
 	if imageErr != nil {
 		return nil, FileView{}, imageErr
 	}
@@ -338,36 +338,64 @@ func (a *Application) loadDocumentView(path string) (*document.Document, FileVie
 	return doc, view, nil
 }
 
-// ImagePreviewBytes reads only the currently opened image tab's encoded bytes.
-// The caller must provide the state revision it observed, preventing a stale
-// frontend request from silently loading a newer external file version.
-func (a *Application) ImagePreviewBytes(id DocumentID, revision uint64) ([]byte, error) {
+func inspectImageStore(store workspace.FileStore, images workspace.ImageFileStore, path string) (workspace.ImageFileSnapshot, error) {
+	if metadata, ok := store.(workspace.ImageMetadataStore); ok {
+		return metadata.InspectImage(path)
+	}
+	return images.LoadImage(path)
+}
+
+// ImageReadRequest is an immutable snapshot that may be read on a worker
+// without holding the application's lifecycle lock. The caller revalidates the
+// document/revision before publishing its resource.
+type ImageReadRequest struct {
+	Path    string
+	Version workspace.DiskVersion
+	store   workspace.ImageFileStore
+}
+
+func (a *Application) ImagePreviewRequest(id DocumentID, revision uint64) (ImageReadRequest, error) {
 	doc := a.Documents[id]
 	view, ok := a.FileViews[id]
 	if doc == nil || !ok || view.Kind != FileViewImage {
-		return nil, errors.New("document is not an image preview")
+		return ImageReadRequest{}, errors.New("document is not an image preview")
 	}
 	if revision == 0 || view.Revision != revision {
-		return nil, errors.New("image preview changed; refresh the document state")
+		return ImageReadRequest{}, errors.New("image preview changed; refresh the document state")
 	}
 	if view.Error != "" {
-		return nil, errors.New(view.Error)
+		return ImageReadRequest{}, errors.New(view.Error)
 	}
-	imageStore, ok := a.Store.(workspace.ImageFileStore)
+	store, ok := a.Store.(workspace.ImageFileStore)
 	if !ok {
-		return nil, errors.New("image preview is unavailable from this file store")
+		return ImageReadRequest{}, errors.New("image preview is unavailable from this file store")
 	}
-	image, err := imageStore.LoadImage(doc.Path)
+	return ImageReadRequest{Path: doc.Path, Version: view.Version, store: store}, nil
+}
+
+func (request ImageReadRequest) Read() ([]byte, error) {
+	image, err := request.store.LoadImage(request.Path)
 	if err != nil {
 		return nil, err
 	}
 	if image.Error != "" {
 		return nil, errors.New(image.Error)
 	}
-	if image.Format == "" || !view.Version.Equal(image.Version) {
+	if image.Format == "" || !request.Version.Equal(image.Version) {
 		return nil, errors.New("image changed while it was being opened; retry the preview")
 	}
 	return image.Data, nil
+}
+
+// ImagePreviewBytes reads only the currently opened image tab's encoded bytes.
+// The caller must provide the state revision it observed, preventing a stale
+// frontend request from silently loading a newer external file version.
+func (a *Application) ImagePreviewBytes(id DocumentID, revision uint64) ([]byte, error) {
+	request, err := a.ImagePreviewRequest(id, revision)
+	if err != nil {
+		return nil, err
+	}
+	return request.Read()
 }
 
 func (a *Application) SetWatcher(watcher workspace.Watcher) error {
@@ -522,7 +550,7 @@ func (a *Application) reconcileFileView(id DocumentID, doc *document.Document, v
 		delete(a.Stale, id)
 		return StatusSynced, nil
 	}
-	image, imageErr := imageStore.LoadImage(doc.Path)
+	image, imageErr := inspectImageStore(a.Store, imageStore, doc.Path)
 	if imageErr != nil {
 		return a.fileViewReadFailure(id, view, imageErr)
 	}
