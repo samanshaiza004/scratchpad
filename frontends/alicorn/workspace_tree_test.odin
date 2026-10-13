@@ -174,9 +174,17 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 
 	runa_id, runa_found := test_workspace_tree_row(&rt, "Runa")
 	stable_id, stable_found := test_workspace_tree_row(&rt, "stable.txt")
+	runa_name_node := tree_test_row_text_node(&rt, runa_id)
+	runa_name_x: f32
+	if runa_name_node != 0 { runa_name_x = rt.nodes[runa_name_node].bounds.x }
 	initial_tree_scroll_owner := app.tree_scroll_owner
 	testing.expect(t, runa_found, "root listing should contain the initially collapsed Runa folder")
 	testing.expect(t, stable_found && initial_tree_scroll_owner != 0, "the root should contain an unaffected sibling and a retained scroll owner")
+	testing.expect(t, tree_test_row_has_icon(&rt, runa_id, .Chevron_Right) && tree_test_row_has_icon(&rt, runa_id, .Folder_Closed),
+		"collapsed workspace directories should show a disclosure chevron and closed-folder icon")
+	testing.expect(t, tree_test_row_has_icon(&rt, stable_id, .File),
+		"workspace files should show the file icon in the same fixed icon gutter")
+	testing.expect(t, runa_name_node != 0, "a folder row should retain its visible name node")
 	if !runa_found || !stable_found { return }
 
 	// Loading and expanding a never-opened folder must publish a new description
@@ -189,6 +197,11 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	parse_id, parse_found := test_workspace_tree_row(&rt, "Runa/parse")
 	testing.expect(t, parse_found, "parse should appear immediately after Runa's follow-up description")
 	runa_id, _ = test_workspace_tree_row(&rt, "Runa")
+	testing.expect(t, tree_test_row_has_icon(&rt, runa_id, .Chevron_Down) && tree_test_row_has_icon(&rt, runa_id, .Folder_Open),
+		"expanded workspace directories should update both disclosure and folder artwork")
+	runa_name_after := tree_test_row_text_node(&rt, runa_id)
+	testing.expect(t, runa_name_after == runa_name_node && runa_name_after != 0 && rt.nodes[runa_name_after].bounds.x == runa_name_x,
+		"opening a folder should retain the filename node and fixed horizontal icon gutter")
 	stable_id_after_expansion, stable_sibling_still_found := test_workspace_tree_row(&rt, "stable.txt")
 	testing.expect(t, stable_sibling_still_found && stable_id_after_expansion == stable_id,
 		"expanding a directory should retain the Node_ID of an unchanged sibling row")
@@ -274,6 +287,24 @@ test_workspace_tree_row :: proc(rt: ^alicorn.Runtime, path: string) -> (id: alic
 	}
 	return 0, false
 }
+tree_test_row_text_node :: proc(rt: ^alicorn.Runtime, row_id: alicorn.Node_ID) -> alicorn.Node_ID {
+	if rt == nil || row_id == 0 { return 0 }
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if found && node.active && node.parent == row_id && node.kind == .Text && node.key == "tree-row-name" { return node_id }
+	}
+	return 0
+}
+
+tree_test_row_has_icon :: proc(rt: ^alicorn.Runtime, row_id: alicorn.Node_ID, icon_id: alicorn.Icon_ID) -> bool {
+	if rt == nil || row_id == 0 { return false }
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if found && node.active && node.parent == row_id && node.icon_id == icon_id { return true }
+	}
+	return false
+}
+
 tree_test_paths_equal :: proc(actual, expected: string) -> bool {
 	if len(actual) != len(expected) { return false }
 	for i in 0..<len(expected) {
