@@ -115,6 +115,38 @@ test_recoverable_ime_text_survives_document_switch_and_blocks_close :: proc(t: ^
 ALICORN_TEST_UI_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Variable.ttf")
 ALICORN_TEST_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
 
+@(test)
+test_workbench_error_banner_uses_theme_surface_for_readable_text :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 600})
+	defer alicorn.destroy_runtime(&rt)
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
+		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
+	testing.expect(t, fonts_loaded, "error-banner appearance fixture should load the bundled fonts")
+	if !fonts_loaded { return }
+
+	app: App
+	app.error_message = "The selected workspace file could not be opened."
+	choices := [?]Scratchpad_Theme_Choice{.Warm, .Cool_Light}
+	for choice in choices {
+		app.theme_choice = choice
+		alicorn.invalidate_root(&rt, "verify themed workbench error banner")
+		_ = build_app(rawptr(&app), &rt, 900, 600, 1)
+		expected_background := alicorn.style_theme_color(&rt, app.workbench_theme, .Subtle_Surface)
+		error_node_found := false
+		for node_id in rt.order {
+			node, found := rt.nodes[node_id]
+			if found && node.label == "workbench-error" {
+				error_node_found = true
+				testing.expect(t, node.color == expected_background &&
+					node.style_environment.theme == app.workbench_theme,
+					"the error banner should use a neutral surface with foreground text from the same active theme")
+				break
+			}
+		}
+		testing.expect(t, error_node_found, "the workbench error banner should be present when an error is set")
+	}
+}
+
 
 SCRATCHPAD_WORKBENCH_EXPECTED_COLORS :: [18]alicorn.Color{
 	alicorn.Color{0.16, 0.16, 0.14, 1},
@@ -629,7 +661,7 @@ settings_test_layout_case :: proc(t: ^testing.T, scale: f32) {
 		settings_accessibility_observed_value(status, .Differentiate_Without_Color, status.preferences.differentiate_without_color),
 	)
 	section_heights := settings_form_section_heights(&rt, 640, scale, status_summary)
-	section_gap := max(14, 10*scale)
+	section_gap := max(12, 8*scale)
 	expected_content_height := section_heights[0]+section_gap+section_heights[1]+section_gap+section_heights[2]
 	testing.expect(t, abs(scroll.content_height-expected_content_height) < 0.1,
 		fmt.tprintf("Settings scale %.2f scroll extent %.2f should equal measured section sum %.2f (%.2f, %.2f, %.2f)", scale, scroll.content_height, expected_content_height, section_heights[0], section_heights[1], section_heights[2]))
@@ -1215,9 +1247,17 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 			break
 		}
 	}
-	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "   sample.md")
+	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "sample.md")
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
+	sidebar_id, panel_tabs_id, workspace_root_id: alicorn.Node_ID
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if !found || !node.active { continue }
+		if node.label == "files-sidebar" { sidebar_id = node_id }
+		if node.label == "workspace-panel-tabs" { panel_tabs_id = node_id }
+		if node.label == "workspace-root-row" { workspace_root_id = node_id }
+	}
 
 	testing.expect(t, files_found && files_variant == .Tab && files_selected,
 		"the active Files workspace tab should retain Tab recipe intent and selected state")
@@ -1233,6 +1273,17 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		"the selected Match Case find control should retain Toolbar recipe intent and selected state")
 	testing.expect(t, primary_found && primary_variant == .Primary,
 		"the workspace mutation confirmation should retain Primary recipe intent")
+	testing.expect(t, sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0,
+		"the compact workspace sidebar should retain its tabs and root row")
+	if sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0 {
+		sidebar_style := rt.nodes[sidebar_id].style
+		tabs_style := rt.nodes[panel_tabs_id].style
+		root_style := rt.nodes[workspace_root_id].style
+		testing.expect(t, sidebar_style.padding == 8 && sidebar_style.gap == 6,
+			"the workspace sidebar should use compact outer padding and section spacing")
+		testing.expect(t, tabs_style.height == 30 && tabs_style.gap == 4 && root_style.height == 26,
+			"workspace tabs and root path should use compact aligned heights")
+	}
 
 	inspection := alicorn.inspect(&rt)
 	testing.expect(t, strings.contains(inspection, "button recipe: variant=tab") &&

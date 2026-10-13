@@ -1,7 +1,19 @@
 package main
 
 import "core:testing"
+import "core:strings"
 import alicorn "alicorn:runtime"
+
+@(test)
+test_quick_open_resolves_workspace_relative_paths_before_opening :: proc(t: ^testing.T) {
+	root := "workspace-root"
+	resolved, ok := quick_open_workspace_path(root, "alicorn-history/.gitmodules", context.temp_allocator)
+	defer delete(resolved, context.temp_allocator)
+	testing.expect(t, ok && strings.has_prefix(resolved, root),
+		"Quick Open paths should be resolved against the active workspace instead of the process working directory")
+	testing.expect(t, strings.contains(resolved, "alicorn-history") && strings.contains(resolved, ".gitmodules"),
+		"resolving a Quick Open result should preserve its workspace-relative path")
+}
 
 @(test)
 test_quick_open_matches_basenames_paths_and_multiple_terms :: proc(t: ^testing.T) {

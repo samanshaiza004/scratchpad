@@ -62,6 +62,37 @@ func TestReadSDLSourceVersion(t *testing.T) {
 	}
 }
 
+func TestGoToolchainLicensePath(t *testing.T) {
+	root := t.TempDir()
+	goroot := filepath.Join(root, "libexec")
+	if err := os.Mkdir(goroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	license := filepath.Join(root, "LICENSE")
+	if err := os.WriteFile(license, []byte("Go license"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := goToolchainLicensePath(goroot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != license {
+		t.Fatalf("goToolchainLicensePath = %q, want parent license %q", got, license)
+	}
+
+	rootLicense := filepath.Join(goroot, "LICENSE")
+	if err := os.WriteFile(rootLicense, []byte("GOROOT license"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = goToolchainLicensePath(goroot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != rootLicense {
+		t.Fatalf("goToolchainLicensePath = %q, want GOROOT license %q", got, rootLicense)
+	}
+}
+
 func TestReadSDLPackageMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alicorn-package.json")
 	manifest := `{"host":{"sdlVersion":"3.4.16","sdlLinkage":"shared"}}`

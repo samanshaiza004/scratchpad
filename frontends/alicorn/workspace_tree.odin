@@ -9,7 +9,10 @@ import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 TREE_SEMANTIC_NAMESPACE :: u64(0x5343524154434850)
-TREE_ROW_HEIGHT :: 28
+TREE_ROW_HEIGHT :: 26
+TREE_INDENT_WIDTH :: f32(12)
+TREE_TYPE_ICON_SIZE :: f32(16)
+TREE_ROW_GAP :: f32(4)
 TREE_SCROLL_KEY :: "scratchpad-workspace-tree"
 
 Tree_Directory :: struct {
@@ -59,30 +62,68 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	focus_state := alicorn.semantic_focus_state(rt)
 	for position := list.first; position < list.last; position += 1 {
 		row := rows[position]
-		indent, _ := strings.repeat("  ", row.depth, context.temp_allocator)
-		marker := "   "
-		if row.is_dir { marker = ">  "; if row.expanded { marker = "v  " } }
-		label := fmt.tprintf("%s%s%s", indent, marker, row.name)
 		semantic_id := tree_semantic_id(row.path, row.is_dir)
 		selected := focus_state.id == semantic_id
-		clicked := alicorn.button(
+		row_button, clicked := alicorn.button_begin(
 			ui,
-			label,
+			"",
 			key=alicorn.key_string(row.path),
-			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT),
+			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT, gap=TREE_ROW_GAP, align=.Center),
 			state=alicorn.Button_State{selected=selected},
-			content_style=alicorn.button_content_style(.Start, padding_x=8),
+			content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=0),
 			variant=.Quiet,
 		)
-		_ = alicorn.semantic_bind(ui, semantic_id)
-		_ = alicorn.drag_source(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id)
-		if row.is_dir { _ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id, .On) }
+		if row_button != 0 {
+			row_states := alicorn.Semantic_States{}
+			if selected { row_states = alicorn.semantic_states_add(row_states, .Selected) }
+			row_actions := alicorn.semantic_actions_add({}, .Press)
+			row_description := "File"
+			if row.is_dir {
+				if row.expanded {
+					row_states = alicorn.semantic_states_add(row_states, .Expanded)
+					row_actions = alicorn.semantic_actions_add(row_actions, .Collapse)
+					row_description = "Folder, expanded"
+				} else {
+					row_actions = alicorn.semantic_actions_add(row_actions, .Expand)
+					row_description = "Folder, collapsed"
+				}
+			}
+			_ = alicorn.semantic_description(ui, .Button, row.name, description=row_description, states=row_states, actions=row_actions)
+			_ = alicorn.semantic_bind(ui, semantic_id)
+			_ = alicorn.drag_source(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id)
+			if row.is_dir { _ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id, .On) }
+
+			if row.depth > 0 {
+				// The Row gap also sits between the depth spacer and type icon,
+				// so subtract it to keep each nesting level exactly 12 units wide.
+				tree_row_indent(ui, max(f32(row.depth)*TREE_INDENT_WIDTH-TREE_ROW_GAP, 0))
+			}
+			file_icon := alicorn.Icon_ID.File
+			if row.is_dir {
+				file_icon = .Folder_Closed
+				if row.expanded { file_icon = .Folder_Open }
+			}
+			_ = alicorn.icon(ui, file_icon, key=alicorn.key_string("tree-row-type-icon"), size=TREE_TYPE_ICON_SIZE)
+			_ = alicorn.text(
+				ui,
+				row.name,
+				key=alicorn.key_string("tree-row-name"),
+				style=alicorn.layout_style(.Row, grow=1),
+				text_style=alicorn.Text_Style{overflow=.Ellipsis},
+			)
+			alicorn.button_end(ui)
+		}
 		if clicked { tree_activate_row(app, rt, row) }
 	}
 	alicorn.virtual_list_end(ui, list)
 	if tree_any_truncated(app) {
 		alicorn.text(ui, "Some folders show only the first 200 entries.")
 	}
+}
+
+tree_row_indent :: proc(ui: ^alicorn.UI, width: f32) {
+	alicorn.container_begin(ui, .Container, key=alicorn.key_string("tree-row-indent"), style=alicorn.layout_style(width=width, height=1))
+	alicorn.container_end(ui)
 }
 
 tree_sync_workspace :: proc(app: ^App, rt: ^alicorn.Runtime = nil) {
