@@ -1247,7 +1247,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 			break
 		}
 	}
-	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "   sample.md")
+	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "sample.md")
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
 
