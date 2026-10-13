@@ -550,6 +550,7 @@ func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, rel
 		}
 	}
 	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
+	args = appendDarwinMinimumOSVersion(args, runtime.GOOS)
 	args = appendLinkerFlags(args, nativeFrontendLinkerFlagsFor(runtime.GOOS, env, accessKitFlags))
 	if release {
 		args = append(args, "-o:speed")
@@ -564,6 +565,13 @@ func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, rel
 		return "", fmt.Errorf("build Scratchpad Alicorn frontend: %w", err)
 	}
 	return filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), nil
+}
+
+func appendDarwinMinimumOSVersion(args []string, goos string) []string {
+	if goos == "darwin" {
+		return append(args, "-minimum-os-version:13.0")
+	}
+	return args
 }
 
 func stageCaliberLibrary(caliberLibrary, out string) error {

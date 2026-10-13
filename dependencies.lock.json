@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/powershell-hash-bootstrap",
-    "revision": "f4b1ca748c12a046103140c888c4200000fe47d7"
+    "ref": "master",
+    "revision": "d34d7785eb5bc4a02ea21b187b0fc04794c118fe"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

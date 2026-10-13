@@ -71,6 +71,16 @@ func TestAppendLinkerFlags(t *testing.T) {
 	}
 }
 
+func TestAppendDarwinMinimumOSVersion(t *testing.T) {
+	args := []string{"build", "frontends/alicorn"}
+	if got := appendDarwinMinimumOSVersion(args, "darwin"); len(got) != len(args)+1 || got[len(got)-1] != "-minimum-os-version:13.0" {
+		t.Fatalf("Darwin minimum OS args = %v, want explicit macOS 13 target", got)
+	}
+	if got := appendDarwinMinimumOSVersion(args, "windows"); len(got) != len(args) {
+		t.Fatalf("non-Darwin build args changed: %v", got)
+	}
+}
+
 func TestNativeFrontendLinkerFlagsForMacOS(t *testing.T) {
 	prefix := filepath.Join("workspace", "SDL Framework")
 	flags := nativeFrontendLinkerFlagsFor("darwin", []string{"SDL3_PREFIX=" + prefix}, "-framework AppKit")

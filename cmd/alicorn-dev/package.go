@@ -443,7 +443,11 @@ func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, build
 	if err != nil {
 		return nil, nil, fmt.Errorf("locate Go toolchain license: %w", err)
 	}
-	licenseSources = append(licenseSources, licenseSource{name: "Go-LICENSE.txt", path: filepath.Join(strings.TrimSpace(string(goroot)), "LICENSE")})
+	goLicense, err := goToolchainLicensePath(strings.TrimSpace(string(goroot)))
+	if err != nil {
+		return nil, nil, fmt.Errorf("locate Go toolchain license: %w", err)
+	}
+	licenseSources = append(licenseSources, licenseSource{name: "Go-LICENSE.txt", path: goLicense})
 	if rustRoot, rustErr := commandOutput(root, "rustc", "--print", "sysroot"); rustErr == nil {
 		rustLicenses := filepath.Join(strings.TrimSpace(string(rustRoot)), "share", "doc", "rust", "licenses")
 		for _, name := range []string{"LICENSE-APACHE", "LICENSE-MIT"} {
@@ -499,6 +503,22 @@ func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, build
 	sort.Strings(resources)
 	sort.Slice(moduleLicenses, func(i, j int) bool { return moduleLicenses[i].Path < moduleLicenses[j].Path })
 	return moduleLicenses, resources, nil
+}
+
+func goToolchainLicensePath(goroot string) (string, error) {
+	for _, path := range []string{
+		filepath.Join(goroot, "LICENSE"),
+		filepath.Join(filepath.Dir(goroot), "LICENSE"),
+	} {
+		info, err := os.Stat(path)
+		if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			return path, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("LICENSE not found in %s or its parent", goroot)
 }
 
 func goRuntimeModules(root, goExe string) ([]moduleRecord, error) {
