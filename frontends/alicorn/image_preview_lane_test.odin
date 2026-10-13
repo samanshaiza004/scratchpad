@@ -168,3 +168,25 @@ test_image_preview_real_bridge_large_image_close_reopen_and_theme_switch :: proc
 	pixels,present := alicorn.image_resolve(&rt,app.image_preview_handle)
 	testing.expect(t,present && pixels.width == 4096 && pixels.height == 4096 && len(pixels.rgba8) == 64*1024*1024 && app.backend.resource_leases == 0,"large decode/adoption should preserve dimensions and release all Caliber leases")
 }
+
+@(test)
+test_image_worker_restart_clears_obsolete_wake_ticket :: proc(t: ^testing.T) {
+	gate: Image_Preview_Test_Gate
+	image_preview_test_gate = &gate
+	backend := bridge.Backend{started=true}
+	lane := Image_Preview_Lane{read=image_preview_test_read}
+	testing.expect(t,image_preview_lane_start(&lane,&backend,image_preview_test_wake,rawptr(&gate)),"worker should start")
+	_ = image_preview_lane_stop(&lane)
+	// Stopping before a pending wake is consumed may leave its coalescing
+	// flag set. A fresh semaphore must not inherit that obsolete ticket.
+	lane.wake_posted = true
+	testing.expect(t,image_preview_lane_start(&lane,&backend,image_preview_test_wake,rawptr(&gate)),"worker should restart")
+	defer { sync.sema_post(&gate.release); _ = image_preview_lane_stop(&lane); image_preview_test_gate=nil }
+	_,accepted := image_preview_lane_request(&lane,"restarted",1)
+	testing.expect(t,accepted && sync.sema_wait_with_timeout(&gate.entered,2*time.Second),"restarted worker should receive its first request")
+	sync.sema_post(&gate.release)
+	testing.expect(t,sync.sema_wait_with_timeout(&gate.completed,2*time.Second),"restarted worker should publish its completion")
+	result,found := image_preview_lane_take(&lane)
+	defer image_preview_result_destroy(&result,lane.allocator)
+	testing.expect(t,found && result.request.document_id == "restarted","completion should belong to the new worker session")
+}

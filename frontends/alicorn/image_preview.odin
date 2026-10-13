@@ -243,7 +243,7 @@ build_image_preview :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, do
 	if app.image_preview_error != "" || app.image_preview_handle == 0 {
 		alicorn.container_begin(ui, .Container, label="image-preview-error-card", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=8, padding=18))
 		alicorn.text(ui, "Loading image preview…" if app.image_preview_loading else "Preview unavailable")
-		alicorn.text(ui, app.image_preview_error if app.image_preview_error != "" else "Loading image preview…", text_style=alicorn.Text_Style{overflow=.Wrap})
+		if app.image_preview_error != "" { alicorn.text(ui, app.image_preview_error, text_style=alicorn.Text_Style{overflow=.Wrap}) }
 		if !app.image_preview_loading && alicorn.button(ui, "Retry", key=alicorn.key_string("image-preview-retry"), style=alicorn.layout_style(.Row, width=82, height=28)) {
 			app.image_preview_revision = 0
 			alicorn.invalidate_root(rt, "retry image preview")

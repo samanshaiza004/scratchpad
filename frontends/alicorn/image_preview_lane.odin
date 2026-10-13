@@ -92,7 +92,7 @@ image_preview_lane_worker :: proc(t: ^thread.Thread) {
 image_preview_lane_start :: proc(lane: ^Image_Preview_Lane, backend: ^bridge.Backend, wake: bridge.Application_Wake_Proc, wake_data: rawptr, allocator := context.allocator) -> bool {
 	if lane == nil || backend == nil || !backend.started || lane.thread != nil { return false }
 	lane.backend = backend; lane.wake = wake; lane.wake_data = wake_data; lane.allocator = allocator
-	lane.stopping = false; lane.sema = {}
+	lane.stopping = false; lane.sema = {}; lane.wake_posted = false
 	if lane.read == nil { lane.read = bridge.backend_image_read }
 	lane.thread = thread.create(image_preview_lane_worker,name="Scratchpad image preview")
 	if lane.thread == nil { return false }
