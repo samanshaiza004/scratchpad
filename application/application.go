@@ -21,6 +21,26 @@ type DocumentID string
 
 type DocumentStatus uint8
 
+type FileViewKind string
+
+const (
+	FileViewText        FileViewKind = "text"
+	FileViewImage       FileViewKind = "image"
+	FileViewUnsupported FileViewKind = "unsupported"
+)
+
+// FileView carries only stable metadata for non-text tabs. Encoded bytes are
+// fetched explicitly through ImagePreviewBytes when the image tab is active.
+type FileView struct {
+	Kind     FileViewKind
+	Format   string
+	Revision uint64
+	Width    uint32
+	Height   uint32
+	Error    string
+	Version  workspace.DiskVersion
+}
+
 const (
 	StatusSynced DocumentStatus = iota
 	StatusDirty
@@ -32,6 +52,7 @@ var ErrConflict = errors.New("document has an unresolved external-change conflic
 var ErrDirty = errors.New("document has unsaved changes")
 var ErrDocumentAlreadyOpen = errors.New("destination document is already open")
 var ErrSaveAsDestinationExists = errors.New("save-as destination already exists")
+var ErrReadOnlyFileView = errors.New("preview documents are read-only")
 
 // SaveAsDestinationExistsError reports an existing, unopened Save As target
 // and the verified version that the user must confirm before it can be
@@ -73,6 +94,7 @@ type Application struct {
 	HasWorkspace          bool
 	SidebarWidth          float32
 	Documents             map[DocumentID]*document.Document
+	FileViews             map[DocumentID]FileView
 	Order                 []DocumentID
 	Active                DocumentID
 	Preview               DocumentID
@@ -110,6 +132,7 @@ func New(store workspace.FileStore) *Application {
 		Store:                store,
 		SidebarWidth:         250,
 		Documents:            make(map[DocumentID]*document.Document),
+		FileViews:            make(map[DocumentID]FileView),
 		Views:                make(map[DocumentID]ViewState),
 		Stale:                make(map[DocumentID]bool),
 		Conflicts:            make(map[DocumentID]Conflict),
@@ -185,11 +208,10 @@ func (a *Application) OpenPreviewPath(path string) error {
 
 	// Load before retiring the old preview, so a transient I/O failure never
 	// makes the current document disappear.
-	snapshot, err := a.Store.Load(abs)
+	doc, fileView, err := a.loadDocumentView(abs)
 	if err != nil {
 		return err
 	}
-	doc := document.NewLoaded(snapshot.Path, snapshot.Data, snapshot.Version, snapshot.Mode, string(language.DetectPath(snapshot.Path)))
 	if previous := a.Preview; previous != "" {
 		if old := a.Documents[previous]; old != nil && old.Dirty() {
 			a.PinPreview(previous)
@@ -202,6 +224,9 @@ func (a *Application) OpenPreviewPath(path string) error {
 		}
 	}
 	a.Documents[id] = doc
+	if fileView.Kind != FileViewText {
+		a.FileViews[id] = fileView
+	}
 	a.Order = append(a.Order, id)
 	a.Views[id] = ViewState{}
 	a.Active = id
@@ -264,13 +289,14 @@ func (a *Application) OpenDocument(path string) error {
 		a.touchPresentation()
 		return nil
 	}
-	snapshot, err := a.Store.Load(path)
+	doc, fileView, err := a.loadDocumentView(path)
 	if err != nil {
 		return err
 	}
-	rootLanguage := string(language.DetectPath(snapshot.Path))
-	doc := document.NewLoaded(snapshot.Path, snapshot.Data, snapshot.Version, snapshot.Mode, rootLanguage)
 	a.Documents[id] = doc
+	if fileView.Kind != FileViewText {
+		a.FileViews[id] = fileView
+	}
 	a.Order = append(a.Order, id)
 	a.Views[id] = ViewState{}
 	a.Active = id
@@ -282,6 +308,94 @@ func (a *Application) OpenDocument(path string) error {
 	}
 	a.recordRecent(doc.Path)
 	return nil
+}
+
+func (a *Application) loadDocumentView(path string) (*document.Document, FileView, error) {
+	snapshot, err := a.Store.Load(path)
+	if err == nil {
+		return document.NewLoaded(snapshot.Path, snapshot.Data, snapshot.Version, snapshot.Mode, string(language.DetectPath(snapshot.Path))), FileView{Kind: FileViewText}, nil
+	}
+	var unsupported *workspace.UnsupportedTextFileError
+	if !errors.As(err, &unsupported) {
+		return nil, FileView{}, err
+	}
+	imageStore, ok := a.Store.(workspace.ImageFileStore)
+	if !ok {
+		doc := document.NewLoaded(filepath.Clean(path), nil, workspace.DiskVersion{}, 0, "")
+		return doc, FileView{Kind: FileViewUnsupported, Error: unsupported.Reason}, nil
+	}
+	image, imageErr := inspectImageStore(a.Store, imageStore, path)
+	if imageErr != nil {
+		return nil, FileView{}, imageErr
+	}
+	kind := FileViewUnsupported
+	revision := uint64(0)
+	if image.Format != "" {
+		kind, revision = FileViewImage, 1
+	}
+	view := FileView{Kind: kind, Format: image.Format, Revision: revision, Width: image.Width, Height: image.Height, Error: image.Error, Version: image.Version}
+	doc := document.NewLoaded(image.Path, nil, image.Version, image.Mode, "")
+	return doc, view, nil
+}
+
+func inspectImageStore(store workspace.FileStore, images workspace.ImageFileStore, path string) (workspace.ImageFileSnapshot, error) {
+	if metadata, ok := store.(workspace.ImageMetadataStore); ok {
+		return metadata.InspectImage(path)
+	}
+	return images.LoadImage(path)
+}
+
+// ImageReadRequest is an immutable snapshot that may be read on a worker
+// without holding the application's lifecycle lock. The caller revalidates the
+// document/revision before publishing its resource.
+type ImageReadRequest struct {
+	Path    string
+	Version workspace.DiskVersion
+	store   workspace.ImageFileStore
+}
+
+func (a *Application) ImagePreviewRequest(id DocumentID, revision uint64) (ImageReadRequest, error) {
+	doc := a.Documents[id]
+	view, ok := a.FileViews[id]
+	if doc == nil || !ok || view.Kind != FileViewImage {
+		return ImageReadRequest{}, errors.New("document is not an image preview")
+	}
+	if revision == 0 || view.Revision != revision {
+		return ImageReadRequest{}, errors.New("image preview changed; refresh the document state")
+	}
+	if view.Error != "" {
+		return ImageReadRequest{}, errors.New(view.Error)
+	}
+	store, ok := a.Store.(workspace.ImageFileStore)
+	if !ok {
+		return ImageReadRequest{}, errors.New("image preview is unavailable from this file store")
+	}
+	return ImageReadRequest{Path: doc.Path, Version: view.Version, store: store}, nil
+}
+
+func (request ImageReadRequest) Read() ([]byte, error) {
+	image, err := request.store.LoadImage(request.Path)
+	if err != nil {
+		return nil, err
+	}
+	if image.Error != "" {
+		return nil, errors.New(image.Error)
+	}
+	if image.Format == "" || !request.Version.Equal(image.Version) {
+		return nil, errors.New("image changed while it was being opened; retry the preview")
+	}
+	return image.Data, nil
+}
+
+// ImagePreviewBytes reads only the currently opened image tab's encoded bytes.
+// The caller must provide the state revision it observed, preventing a stale
+// frontend request from silently loading a newer external file version.
+func (a *Application) ImagePreviewBytes(id DocumentID, revision uint64) ([]byte, error) {
+	request, err := a.ImagePreviewRequest(id, revision)
+	if err != nil {
+		return nil, err
+	}
+	return request.Read()
 }
 
 func (a *Application) SetWatcher(watcher workspace.Watcher) error {
@@ -353,8 +467,31 @@ func (a *Application) Reconcile(id DocumentID) (DocumentStatus, error) {
 		delete(a.Stale, id)
 		return StatusMissing, errors.New("unknown document")
 	}
+	if view, isFileView := a.FileViews[id]; isFileView {
+		return a.reconcileFileView(id, doc, view)
+	}
 	snapshot, err := a.Store.Load(doc.Path)
 	if err != nil {
+		var unsupported *workspace.UnsupportedTextFileError
+		if errors.As(err, &unsupported) {
+			delete(a.Stale, id)
+			// Reclassify a clean tab when another program replaces text with
+			// a binary file. Never discard an unsaved editor buffer.
+			if !doc.Dirty() {
+				replacement, view, loadErr := a.loadDocumentView(doc.Path)
+				if loadErr != nil {
+					return StatusSynced, loadErr
+				}
+				a.Documents[id] = replacement
+				if view.Kind != FileViewText {
+					a.FileViews[id] = view
+				}
+				a.closeDerivedAfterPathChange(id)
+				a.touchPresentation()
+				return StatusSynced, nil
+			}
+			return StatusDirty, err
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			// One hint = one Load: consume the hint so a still-missing file
 			// does not cause a Load every frame. The next watcher event
@@ -383,6 +520,80 @@ func (a *Application) Reconcile(id DocumentID) (DocumentStatus, error) {
 		DiskVersion: snapshot.Version, DiskMode: snapshot.Mode,
 	}
 	return StatusConflict, nil
+}
+
+func (a *Application) reconcileFileView(id DocumentID, doc *document.Document, view FileView) (DocumentStatus, error) {
+	snapshot, err := a.Store.Load(doc.Path)
+	if err == nil {
+		a.Documents[id] = document.NewLoaded(snapshot.Path, snapshot.Data, snapshot.Version, snapshot.Mode, string(language.DetectPath(snapshot.Path)))
+		delete(a.FileViews, id)
+		delete(a.Stale, id)
+		a.touchPresentation()
+		return StatusSynced, nil
+	}
+	var unsupported *workspace.UnsupportedTextFileError
+	if !errors.As(err, &unsupported) {
+		if errors.Is(err, os.ErrNotExist) {
+			delete(a.Stale, id)
+			if view.Error != "File is missing on disk." {
+				view.Error = "File is missing on disk."
+				view.Revision++
+				a.FileViews[id] = view
+				a.touchPresentation()
+			}
+			return StatusMissing, nil
+		}
+		return a.fileViewReadFailure(id, view, err)
+	}
+	imageStore, ok := a.Store.(workspace.ImageFileStore)
+	if !ok {
+		delete(a.Stale, id)
+		return StatusSynced, nil
+	}
+	image, imageErr := inspectImageStore(a.Store, imageStore, doc.Path)
+	if imageErr != nil {
+		return a.fileViewReadFailure(id, view, imageErr)
+	}
+	kind := FileViewUnsupported
+	revision := uint64(0)
+	if image.Format != "" {
+		kind, revision = FileViewImage, view.Revision
+		if revision == 0 {
+			revision = 1
+		}
+	}
+	changed := kind != view.Kind || image.Format != view.Format || image.Width != view.Width || image.Height != view.Height || image.Error != view.Error || !view.Version.Equal(image.Version)
+	if !changed {
+		delete(a.Stale, id)
+		return StatusSynced, nil
+	}
+	if kind == FileViewImage && view.Kind == FileViewImage && revision < ^uint64(0) {
+		revision++
+	}
+	view = FileView{Kind: kind, Format: image.Format, Revision: revision, Width: image.Width, Height: image.Height, Error: image.Error, Version: image.Version}
+	a.FileViews[id] = view
+	if image.Format != "" {
+		a.Documents[id] = document.NewLoaded(image.Path, nil, image.Version, image.Mode, "")
+	}
+	delete(a.Stale, id)
+	a.touchPresentation()
+	return StatusSynced, nil
+}
+
+// One watcher hint causes one read attempt, even when access fails. Retrying
+// waits for a new filesystem event instead of repeatedly doing I/O at idle.
+func (a *Application) fileViewReadFailure(id DocumentID, view FileView, err error) (DocumentStatus, error) {
+	delete(a.Stale, id)
+	message := "Could not reload image preview: " + err.Error()
+	if view.Error != message {
+		view.Error = message
+		if view.Revision < ^uint64(0) {
+			view.Revision++
+		}
+		a.FileViews[id] = view
+		a.touchPresentation()
+	}
+	return StatusSynced, err
 }
 
 func (a *Application) Status(id DocumentID) DocumentStatus {
@@ -609,6 +820,9 @@ func (a *Application) OverwriteDisk(id DocumentID) error {
 }
 
 func (a *Application) SaveActive() error {
+	if _, readOnly := a.FileViews[a.Active]; readOnly {
+		return ErrReadOnlyFileView
+	}
 	doc := a.ActiveDocument()
 	if doc == nil {
 		return errors.New("no active document")
@@ -671,6 +885,9 @@ func (a *Application) SaveDocument(id DocumentID) error {
 }
 
 func (a *Application) SaveAs(id DocumentID, path string) error {
+	if _, readOnly := a.FileViews[id]; readOnly {
+		return ErrReadOnlyFileView
+	}
 	return a.saveAs(id, path, nil)
 }
 
@@ -682,6 +899,9 @@ func (a *Application) ConfirmSaveAs(id DocumentID, path string, expected workspa
 }
 
 func (a *Application) saveAs(id DocumentID, path string, expected *workspace.DiskVersion) error {
+	if _, readOnly := a.FileViews[id]; readOnly {
+		return ErrReadOnlyFileView
+	}
 	doc := a.Documents[id]
 	if doc == nil {
 		return errors.New("unknown document")
@@ -866,6 +1086,7 @@ func (a *Application) closeDocument(id DocumentID, discard bool, rememberClosed 
 		return ErrDirty
 	}
 	delete(a.Documents, id)
+	delete(a.FileViews, id)
 	if a.Preview == id {
 		a.Preview = ""
 	}

@@ -127,7 +127,7 @@ func loadCaliber() (*caliberRuntime, error) {
 		struct_size:           C.uint32_t(unsafe.Sizeof(C.CaliberContextConfig{})),
 		max_command_bytes:     C.size_t(MaxInputBytes),
 		max_publication_bytes: C.size_t(MaxInputBytes),
-		max_resource_bytes:    C.size_t(1 << 20),
+		max_resource_bytes:    C.size_t(128 << 20),
 		max_resources:         C.size_t(64),
 		telemetry_width:       C.size_t(4),
 		max_pending_commands:  C.size_t(16),

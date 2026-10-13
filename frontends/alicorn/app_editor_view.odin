@@ -758,6 +758,16 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 
 build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
 	if app == nil || ui == nil { return }
+	if document.view_kind == "image" || document.view_kind == "unsupported" {
+		label := "Preview unavailable"
+		if document.view_kind == "image" && document.image_width > 0 && document.image_height > 0 {
+			label = fmt.tprintf("%d x %d pixels  |  %s  |  Read-only", document.image_width, document.image_height, document.image_format)
+		} else if document.view_kind == "image" { label = "Image preview unavailable | Read-only" }
+		alicorn.container_begin(ui, .Container, label="image-document-status-bar", style=alicorn.layout_style(.Row, height=32, padding=8, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
+		alicorn.text(ui, label, style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+		alicorn.container_end(ui)
+		return
+	}
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return }
 	view := &app.editor_views[view_index]

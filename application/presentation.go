@@ -70,6 +70,12 @@ type PresentationDocument struct {
 	Language             string
 	PresentationRevision uint64
 	PresentationReady    bool
+	ViewKind             FileViewKind
+	ImageFormat          string
+	ImageRevision        uint64
+	ImageWidth           uint32
+	ImageHeight          uint32
+	ViewError            string
 }
 
 // PresentationState is a bounded, UI-independent snapshot for a shell. The
@@ -141,6 +147,11 @@ func (a *Application) Snapshot() PresentationState {
 		}
 		anchor, cursor := doc.Editor.Selection()
 		view := a.Views[id]
+		fileView, isFileView := a.FileViews[id]
+		viewKind := fileView.Kind
+		if !isFileView {
+			viewKind = FileViewText
+		}
 		state.Documents = append(state.Documents, PresentationDocument{
 			ID:                   id,
 			Path:                 doc.Path,
@@ -162,6 +173,12 @@ func (a *Application) Snapshot() PresentationState {
 			Language:             doc.RootLanguage,
 			PresentationRevision: doc.Revision(),
 			PresentationReady:    presentationReady,
+			ViewKind:             viewKind,
+			ImageFormat:          fileView.Format,
+			ImageRevision:        fileView.Revision,
+			ImageWidth:           fileView.Width,
+			ImageHeight:          fileView.Height,
+			ViewError:            fileView.Error,
 		})
 	}
 	return state
@@ -215,6 +232,9 @@ func (a *Application) ReplaceDocument(command PresentationCommand) (editor.Appli
 	}
 	if command.Kind != PresentationReplaceDocument {
 		return editor.AppliedEdit{}, errors.New("not a document replacement command")
+	}
+	if _, readOnly := a.FileViews[command.DocumentID]; readOnly {
+		return editor.AppliedEdit{}, ErrReadOnlyFileView
 	}
 	doc := a.Documents[command.DocumentID]
 	if doc == nil {
@@ -309,6 +329,9 @@ func (a *Application) applyDocumentHistoryStep(id DocumentID, redo bool) error {
 	}
 	if id == "" {
 		id = a.Active
+	}
+	if _, readOnly := a.FileViews[id]; readOnly {
+		return ErrReadOnlyFileView
 	}
 	doc := a.Documents[id]
 	if doc == nil {

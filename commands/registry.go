@@ -7,6 +7,7 @@ import "scratchpad/language"
 // toolbars; it does not expose Shirei state or parser nodes.
 type CommandContext struct {
 	ActiveDocument    bool
+	ReadOnlyDocument  bool
 	HasWorkspace      bool
 	DocumentCount     int
 	HasTrasher        bool
@@ -131,8 +132,8 @@ func DefaultRegistry() Registry {
 		{ID: FileOpen, Title: "Open File…", Category: "File", Bindings: []Keybinding{{Key: "primary+o"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: QuickOpen, Title: "Quick Open…", Category: "File", Bindings: []Keybinding{{Key: "primary+p"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
 		{ID: WorkspaceOpen, Title: "Open Folder…", Category: "File", Visible: func(CommandContext) bool { return true }, Enabled: func(CommandContext) bool { return true }},
-		{ID: FileSave, Title: "Save", Category: "File", Bindings: []Keybinding{{Key: "primary+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
-		{ID: FileSaveAs, Title: "Save As…", Category: "File", Bindings: []Keybinding{{Key: "primary+shift+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
+		{ID: FileSave, Title: "Save", Category: "File", Bindings: []Keybinding{{Key: "primary+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument && !ctx.ReadOnlyDocument }},
+		{ID: FileSaveAs, Title: "Save As…", Category: "File", Bindings: []Keybinding{{Key: "primary+shift+s"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument && !ctx.ReadOnlyDocument }},
 		{ID: DocumentClose, Title: "Close Document", Category: "File", Bindings: []Keybinding{{Key: "primary+w"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: DocumentActivate, Title: "Activate Document", Category: "Document", Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument }},
 		{ID: EditUndo, Title: "Undo", Category: "Edit", Bindings: []Keybinding{{Key: "primary+z"}}, Visible: func(CommandContext) bool { return true }, Enabled: func(ctx CommandContext) bool { return ctx.ActiveDocument && ctx.CanUndo }},

@@ -462,6 +462,47 @@ func (r *Runtime) Pump() []byte {
 	return marshalResponse(response)
 }
 
+// ReadImage is a dedicated readonly resource request. Its filesystem work runs
+// outside r.mu so tab changes, input commands and publications remain usable.
+// It never consumes the ordinary Caliber command queue.
+func (r *Runtime) ReadImage(input []byte) []byte {
+	r.mu.Lock()
+	request, response, ok := decodeCommandRequest(input, r.lifecycle)
+	if !ok || request.Command != "read_image" || r.lifecycle != lifecycleRunning {
+		if ok {
+			response = commandError(request, "image_unavailable", errors.New("image reader is not running or request is invalid"))
+		}
+		r.mu.Unlock()
+		return marshalResponse(response)
+	}
+	app, generation := r.app, r.generation
+	read, err := app.ImagePreviewRequest(application.DocumentID(request.DocumentID), request.ImageRevision)
+	r.mu.Unlock()
+	if err != nil {
+		return marshalResponse(commandError(request, "image_unavailable", err))
+	}
+	data, err := read.Read()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lifecycle != lifecycleRunning || r.generation != generation || r.app != app {
+		return marshalResponse(commandError(request, "image_unavailable", errors.New("image request outlived its backend session")))
+	}
+	current, currentErr := app.ImagePreviewRequest(application.DocumentID(request.DocumentID), request.ImageRevision)
+	if currentErr != nil || current.Path != read.Path || !current.Version.Equal(read.Version) {
+		return marshalResponse(commandError(request, "image_unavailable", errors.New("image document changed while reading")))
+	}
+	if err != nil {
+		return marshalResponse(commandError(request, "image_unavailable", err))
+	}
+	resourceID, resourceGeneration, err := r.caliber.publishResource(data)
+	if err != nil {
+		return marshalResponse(commandError(request, "resource_unavailable", err))
+	}
+	response = okResponse(request.RequestID, r.lifecycle, r.revision)
+	response.Resource = &ResourceDescriptor{ResourceID: resourceID, Generation: resourceGeneration, DocumentID: request.DocumentID, ImageRevision: request.ImageRevision, ApplicationRev: r.applicationRevision, ByteLen: uint64(len(data))}
+	return marshalResponse(response)
+}
+
 // maybeWriteRecoveryLocked keeps the one-second recovery throttle compatible
 // with the event-driven idle loop. If an edit arrives during the throttle (or
 // while an older snapshot is still being written), schedule another async
@@ -810,6 +851,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "application_error", err)
 		}
 	case "replace_document", "find_replace_current", "paste_document":
+		if _, readOnly := r.app.FileViews[application.DocumentID(request.DocumentID)]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		replacement := make([]byte, len(request.Replacement))
 		for i, value := range request.Replacement {
 			replacement[i] = byte(value)
@@ -881,6 +925,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			sourceRefreshNeeded = true
 		}
 	case "find_replace_all":
+		if _, readOnly := r.app.FileViews[application.DocumentID(request.DocumentID)]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		replacement := make([]byte, len(request.Replacement))
 		for i, value := range request.Replacement {
 			replacement[i] = byte(value)
@@ -913,6 +960,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 	case "execute_command":
 		documentID := application.DocumentID(request.DocumentID)
+		if _, readOnly := r.app.FileViews[documentID]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		doc := r.app.Documents[documentID]
 		if doc == nil || doc.Editor == nil {
 			return commandError(request, "unknown_document", errors.New("unknown document"))
@@ -993,6 +1043,12 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 	case string(commands.EditUndo), string(commands.EditRedo):
 		documentID := application.DocumentID(request.DocumentID)
+		if documentID == "" {
+			documentID = r.app.Active
+		}
+		if _, readOnly := r.app.FileViews[documentID]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		var err error
 		if request.Command == string(commands.EditUndo) {
 			err = r.app.UndoDocument(documentID)
@@ -1079,6 +1135,26 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		response, err := r.readVisibleLines(request)
 		if err != nil {
 			return commandError(request, "application_error", err)
+		}
+		return response
+	case "read_image":
+		data, err := r.app.ImagePreviewBytes(application.DocumentID(request.DocumentID), request.ImageRevision)
+		if err != nil {
+			return commandError(request, "image_unavailable", err)
+		}
+		resourceID, generation, err := r.caliber.publishResource(data)
+		if err != nil {
+			return commandError(request, "resource_unavailable", err)
+		}
+		response := okResponse(request.RequestID, r.lifecycle, r.revision)
+		response.BasedOnRevision = request.BasedOnRevision
+		response.Resource = &ResourceDescriptor{
+			ResourceID:     resourceID,
+			Generation:     generation,
+			DocumentID:     request.DocumentID,
+			ApplicationRev: r.applicationRevision,
+			ImageRevision:  request.ImageRevision,
+			ByteLen:        uint64(len(data)),
 		}
 		return response
 	default:

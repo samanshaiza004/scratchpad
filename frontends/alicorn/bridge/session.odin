@@ -134,6 +134,7 @@ foreign {
 	scratchpad_backend_resource_lease_acquired :: proc () -> i32 ---
 	scratchpad_backend_resource_lease_released :: proc () -> i32 ---
 	scratchpad_backend_free :: proc (input: rawptr) ---
+	scratchpad_backend_read_image :: proc (input: ^u8, input_len: uintptr, out: ^^u8, out_len: ^uintptr) -> i32 ---
 	scratchpad_backend_pump :: proc (out: ^^u8, out_len: ^uintptr) -> i32 ---
 }
 Application_Wake_Proc :: #type proc (rawptr)
@@ -159,6 +160,12 @@ State_Document :: struct {
 	language:        string `json:"language"`,
 	presentation_revision: u64 `json:"presentation_revision"`,
 	presentation_ready: bool `json:"presentation_ready"`,
+	view_kind: string `json:"view_kind"`,
+	image_format: string `json:"image_format"`,
+	image_revision: u64 `json:"image_revision"`,
+	image_width: u32 `json:"image_width"`,
+	image_height: u32 `json:"image_height"`,
+	view_error: string `json:"view_error"`,
 }
 
 Resource_Descriptor :: struct {
@@ -176,7 +183,7 @@ Resource_Descriptor :: struct {
 	metadata_byte_len: u64 `json:"metadata_byte_len"`,
 	has_source_anchor: bool `json:"has_source_anchor,omitempty"`,
 	source_anchor_byte: u64 `json:"source_anchor_byte,omitempty"`,
-	source_anchor_line: u64 `json:"source_anchor_line,omitempty"`,
+	source_anchor_line: u64 `json:"source_anchor_line,omitempty"`,	image_revision: u64 `json:"image_revision,omitempty"`,
 }
 
 PRESENTATION_MAX_RECORDS :: 4096
@@ -418,7 +425,7 @@ Backend_Command_Request :: struct {
 	has_source_anchor:  bool   `json:"has_source_anchor,omitempty"`,
 	source_anchor_revision: u64 `json:"source_anchor_revision,omitempty"`,
 	source_anchor_byte: u64    `json:"source_anchor_byte,omitempty"`,
-	source_anchor_line: u64    `json:"source_anchor_line,omitempty"`,
+	source_anchor_line: u64    `json:"source_anchor_line,omitempty"`,	image_revision: u64 `json:"image_revision,omitempty"`,
 }
 
 decode_state_envelope :: proc(data: []u8, allocator := context.allocator) -> (state: State_Envelope, ok: bool, message: string) {
@@ -457,6 +464,9 @@ state_destroy :: proc(state: ^State_Envelope, allocator: mem.Allocator) {
 		delete(document.path, allocator)
 		delete(document.status, allocator)
 		delete(document.language, allocator)
+		delete(document.view_kind, allocator)
+	delete(document.image_format, allocator)
+	delete(document.view_error, allocator)
 	}
 	delete(state.documents, allocator)
 	for &action in state.actions {
@@ -558,6 +568,7 @@ Backend :: struct {
 	resource_lease_released_fn: Backend_Lease_Proc,
 	free_fn:           Backend_Free_Proc,
 	pump_fn:           Backend_Pump_Proc,
+	image_read_fn:     Backend_Start_Proc,
 	api:               ^Caliber_Api_V1,
 	caliber_context:   rawptr,
 	waiter:            Waiter_State,
@@ -585,6 +596,7 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 		backend.resource_lease_released_fn = scratchpad_backend_resource_lease_released
 		backend.free_fn = scratchpad_backend_free
 		backend.pump_fn = scratchpad_backend_pump
+		backend.image_read_fn = scratchpad_backend_read_image
 		backend.library_loaded = true
 		return true, ""
 	}
@@ -622,7 +634,8 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	resource_lease_released := load_proc(library, "scratchpad_backend_resource_lease_released")
 	free_output := load_proc(library, "scratchpad_backend_free")
 	pump := load_proc(library, "scratchpad_backend_pump")
-	if start == nil || stop == nil || api == nil || ctx == nil || lease_acquired == nil || lease_released == nil || resource_lease_acquired == nil || resource_lease_released == nil || free_output == nil || pump == nil {
+	image_read := load_proc(library, "scratchpad_backend_read_image")
+	if start == nil || stop == nil || api == nil || ctx == nil || lease_acquired == nil || lease_released == nil || resource_lease_acquired == nil || resource_lease_released == nil || free_output == nil || pump == nil || image_read == nil {
 		backend.library_loaded = true
 		backend.load_error = "backend library is missing one or more scratchpad_backend_* bridge exports"
 		return false, backend.load_error
@@ -637,6 +650,7 @@ backend_load :: proc(backend: ^Backend, library_path: string) -> (ok: bool, mess
 	backend.resource_lease_released_fn = transmute(Backend_Lease_Proc)(resource_lease_released)
 	backend.free_fn = transmute(Backend_Free_Proc)(free_output)
 	backend.pump_fn = transmute(Backend_Pump_Proc)(pump)
+	backend.image_read_fn = transmute(Backend_Start_Proc)(image_read)
 	backend.library_loaded = true
 	return true, ""
 }
@@ -850,7 +864,7 @@ backend_release_resource_view :: proc(
 	}
 	release_resource := transmute(Caliber_Release_Context_Resource_Proc)(backend.api.context_release_resource)
 	_ = release_resource(backend.caliber_context, resource_id, generation)
-	if backend.resource_lease_released_fn() == 0 { backend.resource_leases -= 1 }
+	if backend.resource_lease_released_fn() == 0 { sync.atomic_add(&backend.resource_leases, -1) }
 	view^ = {}
 }
 
@@ -1035,7 +1049,7 @@ backend_copy_visible_resource :: proc(
 		_ = release_resource(backend.caliber_context, descriptor.resource_id, descriptor.generation)
 		return {}, false, "backend rejected Caliber resource lease accounting"
 	}
-	backend.resource_leases += 1
+	sync.atomic_add(&backend.resource_leases, 1)
 	defer backend_release_resource_view(backend, &view, descriptor.resource_id, descriptor.generation)
 	if view.resource_id != descriptor.resource_id || view.generation != descriptor.generation {
 		return {}, false, "Caliber returned a mismatched resource handle"
@@ -1050,6 +1064,71 @@ backend_copy_visible_resource :: proc(
 	defer delete(data, allocator)
 	mem.copy(rawptr(&data[0]), rawptr(view.data), int(view.len))
 	return visible_window_decode(data, descriptor, expected_document_id, include_presentation, allocator)
+}
+
+IMAGE_PREVIEW_MAX_ENCODED_BYTES :: 128 * 1024 * 1024
+
+backend_copy_image_resource :: proc(
+	backend: ^Backend,
+	descriptor: Resource_Descriptor,
+	expected_document_id: string,
+	expected_revision: u64,
+	allocator := context.allocator,
+) -> (data: []u8, ok: bool, message: string) {
+	if backend == nil || backend.api == nil || backend.caliber_context == nil {
+		return {}, false, "Caliber image resource context is unavailable"
+	}
+	if descriptor.resource_id == 0 || descriptor.generation == 0 || descriptor.document_id != expected_document_id || descriptor.image_revision != expected_revision ||
+	   descriptor.byte_len == 0 || descriptor.byte_len > IMAGE_PREVIEW_MAX_ENCODED_BYTES {
+		return {}, false, "image resource identity or byte limit is invalid"
+	}
+	map_resource := transmute(Caliber_Map_Resource_Proc)(backend.api.context_map_resource)
+	view: Caliber_Resource_View
+	status := map_resource(backend.caliber_context, descriptor.resource_id, descriptor.generation, &view)
+	if status != .OK { return {}, false, fmt.tprintf("Caliber context_map_resource failed with status %d", status) }
+	if backend.resource_lease_acquired_fn() != 0 {
+		if view.lease != nil {
+			release_view := transmute(Caliber_Release_Resource_Proc)(backend.api.resource_release)
+			release_view(&view)
+		}
+		release_resource := transmute(Caliber_Release_Context_Resource_Proc)(backend.api.context_release_resource)
+		_ = release_resource(backend.caliber_context, descriptor.resource_id, descriptor.generation)
+		return {}, false, "backend rejected Caliber image resource lease accounting"
+	}
+	sync.atomic_add(&backend.resource_leases, 1)
+	defer backend_release_resource_view(backend, &view, descriptor.resource_id, descriptor.generation)
+	if view.resource_id != descriptor.resource_id || view.generation != descriptor.generation || view.len != uintptr(descriptor.byte_len) || view.data == nil {
+		return {}, false, "Caliber returned a mismatched image resource"
+	}
+	image_copy, allocation_error := make([]u8, int(view.len), allocator)
+	if allocation_error != nil { return {}, false, "could not retain the bounded image bytes" }
+	mem.copy(rawptr(&image_copy[0]), rawptr(view.data), int(view.len))
+	return image_copy, true, ""
+}
+
+// This read bypasses the serial command queue and its UI command mutex.
+// The backend snapshots/revalidates identity around unlocked file I/O. Resource
+// bytes still cross the ordinary bounded Caliber map/release contract.
+backend_image_read :: proc(backend: ^Backend, document_id: string, image_revision, generation: u64, allocator := context.allocator) -> (result: Backend_Command_Result) {
+	if backend == nil || backend.image_read_fn == nil { return Backend_Command_Result{message="Image reader is unavailable"} }
+	request_id := generation | (u64(1)<<63)
+	request := Backend_Command_Request{version=1, request_id=request_id,command="read_image",document_id=document_id,image_revision=image_revision}
+	encoded, err := json.marshal(request,allocator=allocator)
+	if err != nil { return Backend_Command_Result{message="Could not encode image request"} }
+	defer delete(encoded,allocator)
+	output: ^u8
+	output_len: uintptr
+	status := backend.image_read_fn(&encoded[0],uintptr(len(encoded)),&output,&output_len)
+	response, valid := backend_decode_response(output,output_len,backend.free_fn,allocator)
+	defer backend_response_destroy(&response,allocator)
+	if status != 0 || !valid || !backend_response_identity_matches(response,request_id) { return Backend_Command_Result{message="Invalid image resource response"} }
+	if !response.ok {
+		message, clone_err := strings.clone(response.outcome.message,allocator)
+		return Backend_Command_Result{message=message,message_owned=clone_err == nil && len(message)>0}
+	}
+	data, read_ok, message := backend_copy_image_resource(backend,response.resource,document_id,image_revision,allocator)
+	if !read_ok { return Backend_Command_Result{message=message} }
+	return Backend_Command_Result{ok=true,image_bytes=data,image_bytes_owned=true}
 }
 
 backend_consume_wake :: proc(backend: ^Backend, allocator := context.allocator) -> (changed: bool, ok: bool, message: string) {
@@ -1081,7 +1160,7 @@ Backend_Command_Result :: struct {
 	directory_listing: Directory_Listing,
 	close_decision: Close_Decision,
 	save_as_conflict: Save_As_Conflict,
-	visible_window:  Visible_Window,
+	visible_window:  Visible_Window,	image_bytes: []u8,
 	code_owned:     bool,
 	message_owned:  bool,
 	command_outcome_owned: bool,
@@ -1090,7 +1169,7 @@ Backend_Command_Result :: struct {
 	edit_document_id_owned: bool,
 	edit_applied_replacement_owned: bool,
 	editor_selection_document_id_owned: bool,
-	visible_window_owned: bool,
+	visible_window_owned: bool,	image_bytes_owned: bool,
 	matches_owned: bool,
 	search_page_owned: bool,
 	workspace_files_owned: bool,
@@ -1141,6 +1220,7 @@ backend_command :: proc(
 	target_byte: u64 = 0,
 	based_on_revision: u64 = 0,
 	allow_unversioned_read := false,
+	image_revision: u64 = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
 ) -> (result: Backend_Command_Result) {
@@ -1155,7 +1235,7 @@ backend_command :: proc(
 	if len(command) == 0 { return Backend_Command_Result{code="invalid_command", message="command is empty"} }
 	backend.request_id += 1
 	request_revision := based_on_revision
-	if request_revision == 0 && !(allow_unversioned_read && command == "read_visible_lines") {
+	if request_revision == 0 && !(allow_unversioned_read && (command == "read_visible_lines" || command == "read_image")) {
 		request_revision = backend.state.application_rev
 	}
 	request := Backend_Command_Request{
@@ -1200,7 +1280,7 @@ backend_command :: proc(
 		match_case=match_case,
 		whole_word=whole_word,
 		save_as_token=save_as_token,
-		search_generation=search_generation,
+		search_generation=search_generation,		image_revision=image_revision,
 		has_target_byte=has_target_byte,
 		target_byte=target_byte,
 	}
@@ -1319,8 +1399,18 @@ backend_command :: proc(
 		result.visible_window = window
 		result.visible_window_owned = true
 	}
+	if response.ok && command == "read_image" {
+		image_data, image_ok, image_message := backend_copy_image_resource(backend, response.resource, document_id, image_revision, allocator)
+		if !image_ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="image_resource_invalid", message=image_message}
+		}
+		result.image_bytes = image_data
+		result.image_bytes_owned = true
+	}
 	backend_response_destroy(&response, allocator)
-	if command == "read_visible_lines" { return result }
+	if command == "read_visible_lines" || command == "read_image" { return result }
 	if !read_latest_after {
 		if !result.ok && result.message == "" { result.message = result.code }
 		return result
@@ -1355,6 +1445,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.edit_applied_replacement_owned { delete(result.edit.applied_replacement, allocator) }
 	if result.editor_selection_document_id_owned { delete(result.editor_selection.document_id, allocator) }
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
+	if result.image_bytes_owned { delete(result.image_bytes, allocator) }
 	if result.matches_owned { delete(result.matches, allocator) }
 	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
 	if result.workspace_files_owned { workspace_files_destroy(&result.workspace_files, allocator) }
