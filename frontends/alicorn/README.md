@@ -45,6 +45,8 @@ Alicorn provides native File/Workspace/Edit/View menus; reorderable document tab
 
 The editor reads a bounded source window, maps displayed bytes back to source offsets, and keeps edits optimistic while Go remains authoritative. Markdown meaning comes from the Go projection; the frontend renders transported ranges and does not parse Markdown.
 
+Scratchpad installs its bundled Atkinson UI and monospace faces through Alicorn's public application font API, then registers the available platform UI fallback from disk. The empty-editor state uses a small app-owned PNG mark; switching Warm/Cool Light replaces its Runtime image handle and defers release of the old handle until a later build callback, after the replacement presentation has completed. The native host owns GPU textures and rebuilds them from Runtime-owned decoded pixels. Consumer packages include both Atkinson OFL notices in their release manifest.
+
 ## Current feature gaps
 
 Compared with the retired Shirei workbench, Alicorn does not yet provide the outline sidebar (code symbols, Markdown headings, tasks, and links), fold/collapse controls for code and Markdown, editor font-zoom commands, or expand-selection. It restores the last saved workspace, open documents, active document, editor positions, sidebar width, and recent workspace list; crash-recovery data remains a separate lifecycle. The detailed coverage and follow-up list is in [Alicorn coverage](../../docs/frontends/alicorn/PARITY.md). These remaining product gaps are distinct from native-platform verification still pending for v0.1.0.

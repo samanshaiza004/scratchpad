@@ -427,6 +427,8 @@ func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, build
 	licenseSources := []licenseSource{
 		{name: "Scratchpad-LICENSE.txt", path: filepath.Join(root, "LICENSE")},
 		{name: "Alicorn-LICENSE.txt", path: filepath.Join(alicornRoot, "LICENSE")},
+		{name: "Atkinson-Hyperlegible-Next-OFL.txt", path: filepath.Join(alicornRoot, "assets", "fonts", "OFL-Atkinson-Hyperlegible-Next.txt")},
+		{name: "Atkinson-Hyperlegible-Mono-OFL.txt", path: filepath.Join(alicornRoot, "assets", "fonts", "OFL-Atkinson-Hyperlegible-Mono.txt")},
 		{name: "Runa-LICENSE.txt", path: filepath.Join(alicornRoot, "third_party", "Runa", "LICENSE")},
 		{name: "Caliber-LICENSE-APACHE.txt", path: filepath.Join(caliberRoot, "LICENSE-APACHE")},
 		{name: "Caliber-LICENSE-MIT.txt", path: filepath.Join(caliberRoot, "LICENSE-MIT")},

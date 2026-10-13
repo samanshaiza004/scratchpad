@@ -143,11 +143,23 @@ func TestNativePackageResourcesAvoidMacOSPackagerDuplicates(t *testing.T) {
 		"licenses/AccessKit-LICENSE-APACHE.txt",
 		"licenses/AccessKit-LICENSE-MIT.txt",
 		"licenses/SDL-LICENSE.txt",
+		"licenses/Atkinson-Hyperlegible-Next-OFL.txt",
+		"licenses/Atkinson-Hyperlegible-Mono-OFL.txt",
 		"licenses/Scratchpad-LICENSE.txt",
 	}
 	macOS := nativePackageResources("darwin", resources)
-	if len(macOS) != 1 || macOS[0] != "licenses/Scratchpad-LICENSE.txt" {
-		t.Fatalf("macOS generic resources = %v, want only the license not added directly by Alicorn", macOS)
+	wantMacOS := []string{
+		"licenses/Atkinson-Hyperlegible-Next-OFL.txt",
+		"licenses/Atkinson-Hyperlegible-Mono-OFL.txt",
+		"licenses/Scratchpad-LICENSE.txt",
+	}
+	if len(macOS) != len(wantMacOS) {
+		t.Fatalf("macOS generic resources = %v, want %v", macOS, wantMacOS)
+	}
+	for index, want := range wantMacOS {
+		if macOS[index] != want {
+			t.Fatalf("macOS generic resources = %v, want %v", macOS, wantMacOS)
+		}
 	}
 	windows := nativePackageResources("windows", resources)
 	if len(windows) != len(resources) {

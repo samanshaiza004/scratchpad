@@ -10,6 +10,7 @@ build_app :: proc(
 	dpi_scale: f32,
 ) -> alicorn.Node_ID {
 	app := cast(^App)state
+	scratchpad_application_assets_release_retired(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	_ = find_capture_text_field(rt, app.find_query_node, &app.find_query)
@@ -216,6 +217,7 @@ build_app :: proc(
 		} else {
 			editor_accessibility_retire(app, rt)
 			alicorn.container_begin(&ui, .Container, label="workspace-empty-editor-welcome", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=12))
+			if app.brand_mark != 0 { _ = alicorn.image(&ui, app.brand_mark, alt_text="Scratchpad mark", key=alicorn.key_string("scratchpad-brand-mark"), style=alicorn.layout_style(.Row, width=40, height=40)) }
 			alicorn.text(&ui, "No document open")
 			alicorn.text(&ui, "Open a file from this workspace to begin editing.")
 			if alicorn.button(&ui, "Quick Open…", key=alicorn.key_string("empty-editor-quick-open"), style=alicorn.layout_style(.Row, width=210, height=42), variant=.Primary) {
@@ -382,6 +384,7 @@ build_app :: proc(
 	}
 	editor_reveal_after_frame(app, rt)
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
+	scratchpad_application_assets_build_completed(app)
 	return root
 }
 
