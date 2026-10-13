@@ -73,6 +73,11 @@ ACTION_VIEW_THEME_WARM :: "view.theme-warm"
 ACTION_VIEW_THEME_COOL_LIGHT :: "view.theme-cool-light"
 
 App :: struct {
+	brand_mark: alicorn.Image_Handle,
+	brand_mark_choice: Scratchpad_Theme_Choice,
+	ui_font_fallback_loaded: bool,
+	retired_brand_marks: [dynamic]Scratchpad_Image_Retirement,
+	asset_build_generation: u64,
 	workbench_theme: alicorn.Style_Theme_ID,
 	editor_theme:    alicorn.Style_Theme_ID,
 	warm_workbench_theme: alicorn.Style_Theme_ID,
@@ -2678,6 +2683,8 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	delete(app.retired_brand_marks)
+	app.retired_brand_marks = {}
 	if app.backend.started {
 		stopped, message := stop_backend(app)
 		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil && app.accessibility_source_lane.thread == nil
@@ -2739,6 +2746,7 @@ main :: proc() {
 	defer scratchpad_consumer_diagnostics_end()
 	app: App
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.retired_brand_marks = make([dynamic]Scratchpad_Image_Retirement, 0, allocator=context.allocator)
 	app.workspace_search_selected = -1
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
@@ -2777,6 +2785,7 @@ main :: proc() {
 		menus=app.menus[:],
 		window_decorations=window_decorations,
 		window_chrome_appearance=window_chrome_appearance,
+		on_initialize=scratchpad_application_initialize,
 		build=build_app,
 		on_key=application_key,
 		on_pointer=application_pointer,

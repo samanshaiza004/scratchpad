@@ -345,8 +345,8 @@ test_full_application_theme_switch_preserves_modal_tab_syntax_and_caret :: proc(
 	testing.expect(t, row_after_found && len(row_after.text_paint_spans) > 0 &&
 		row_after.text_interaction && row_after.text_interaction_focus.byte == 5,
 		"syntax spans and the editor's source-byte caret should survive the theme switch")
-	testing.expect(t, row_after_found && row_after.text_interaction_show_caret,
-		"the focused editor caret should remain visible in the retained presentation")
+	testing.expect(t, row_after_found && !row_after.text_interaction_show_caret,
+		"the modal should hide the covered editor caret while retaining its source-byte position")
 	paper_fill_is_cool := false
 	if paper_after_found {
 		for command in paper_after.paint {

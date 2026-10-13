@@ -83,6 +83,7 @@ scratchpad_theme_select :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratch
 	if app.theme_choice == choice { return true }
 	if !scratchpad_styles_ensure(app, rt) { return false }
 	app.theme_choice = choice
+	if app.brand_mark != 0 { _ = scratchpad_brand_mark_replace(app, rt, choice) }
 	scratchpad_theme_apply_registered(app)
 	if app.theme_preferences_directory != "" &&
 	   !scratchpad_theme_preferences_save(app.theme_preferences_directory, choice) {
