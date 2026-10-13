@@ -175,16 +175,23 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	runa_id, runa_found := test_workspace_tree_row(&rt, "Runa")
 	stable_id, stable_found := test_workspace_tree_row(&rt, "stable.txt")
 	runa_name_node := tree_test_row_text_node(&rt, runa_id)
+	stable_name_node := tree_test_row_text_node(&rt, stable_id)
 	runa_name_x: f32
+	stable_name_x: f32
 	if runa_name_node != 0 { runa_name_x = rt.nodes[runa_name_node].bounds.x }
+	if stable_name_node != 0 { stable_name_x = rt.nodes[stable_name_node].bounds.x }
 	initial_tree_scroll_owner := app.tree_scroll_owner
 	testing.expect(t, runa_found, "root listing should contain the initially collapsed Runa folder")
 	testing.expect(t, stable_found && initial_tree_scroll_owner != 0, "the root should contain an unaffected sibling and a retained scroll owner")
-	testing.expect(t, tree_test_row_has_icon(&rt, runa_id, .Chevron_Right) && tree_test_row_has_icon(&rt, runa_id, .Folder_Closed),
-		"collapsed workspace directories should show a disclosure chevron and closed-folder icon")
+	testing.expect(t, tree_test_row_has_icon(&rt, runa_id, .Folder_Closed) &&
+		!tree_test_row_has_icon(&rt, runa_id, .Chevron_Right) && !tree_test_row_has_icon(&rt, runa_id, .Chevron_Down),
+		"collapsed workspace directories should use one closed-folder icon without a disclosure slot")
 	testing.expect(t, tree_test_row_has_icon(&rt, stable_id, .File),
-		"workspace files should show the file icon in the same fixed icon gutter")
-	testing.expect(t, runa_name_node != 0, "a folder row should retain its visible name node")
+		"workspace files should use the same single icon gutter as directories")
+	testing.expect(t, runa_name_node != 0 && stable_name_node != 0 && abs(runa_name_x-stable_name_x) < 0.1,
+		"top-level files and folders should align names after one shared icon gutter")
+	testing.expect(t, rt.nodes[runa_id].bounds.h == f32(TREE_ROW_HEIGHT),
+		"workspace rows should use the compact virtual-list item height")
 	if !runa_found || !stable_found { return }
 
 	// Loading and expanding a never-opened folder must publish a new description
@@ -197,11 +204,12 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	parse_id, parse_found := test_workspace_tree_row(&rt, "Runa/parse")
 	testing.expect(t, parse_found, "parse should appear immediately after Runa's follow-up description")
 	runa_id, _ = test_workspace_tree_row(&rt, "Runa")
-	testing.expect(t, tree_test_row_has_icon(&rt, runa_id, .Chevron_Down) && tree_test_row_has_icon(&rt, runa_id, .Folder_Open),
-		"expanded workspace directories should update both disclosure and folder artwork")
+	testing.expect(t, tree_test_row_has_icon(&rt, runa_id, .Folder_Open) &&
+		!tree_test_row_has_icon(&rt, runa_id, .Chevron_Right) && !tree_test_row_has_icon(&rt, runa_id, .Chevron_Down),
+		"expanded workspace directories should communicate state with folder artwork alone")
 	runa_name_after := tree_test_row_text_node(&rt, runa_id)
 	testing.expect(t, runa_name_after == runa_name_node && runa_name_after != 0 && rt.nodes[runa_name_after].bounds.x == runa_name_x,
-		"opening a folder should retain the filename node and fixed horizontal icon gutter")
+		"opening a folder should retain the filename node and stable horizontal icon gutter")
 	stable_id_after_expansion, stable_sibling_still_found := test_workspace_tree_row(&rt, "stable.txt")
 	testing.expect(t, stable_sibling_still_found && stable_id_after_expansion == stable_id,
 		"expanding a directory should retain the Node_ID of an unchanged sibling row")
@@ -248,16 +256,80 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	active, active_found := find_document(&app.backend.state, app.backend.state.active)
 	testing.expect(t, active_found && strings.contains(active.path, "avar.odin"), "the shared Go backend should publish avar as the active document")
 }
-test_render_workspace_tree :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
+test_render_workspace_tree :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime, width: f32 = 800, height: f32 = 600) -> bool {
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return false }
-	alicorn.container_begin(&ui, .Root, label="scratchpad-tree-integration-test", style=alicorn.layout_style(.Column, width=800, height=600, clip=true))
+	alicorn.container_begin(&ui, .Root, label="scratchpad-tree-integration-test", style=alicorn.layout_style(.Column, width=width, height=height, clip=true))
 	build_workspace_tree(app, &ui, rt)
 	alicorn.container_end(&ui)
 	workspace_context_menu_build(app, &ui, rt)
 	alicorn.end_frame(&ui)
 	return true
 }
+
+@(test)
+test_workspace_tree_compact_gutter_fits_sidebar_widths :: proc(t: ^testing.T) {
+	app: App
+	app.backend.state.has_workspace = true
+	app.backend.state.workspace_root = "C:/compact-tree-fixture"
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	root_entries := [?]bridge.Directory_Entry{
+		{name="examples", path="examples", dir=true},
+		{name="a-really-long-readme-filename-that-needs-ellipsis.txt", path="a-really-long-readme-filename-that-needs-ellipsis.txt", dir=false},
+	}
+	nested_entries := [?]bridge.Directory_Entry{{name="sample.odin", path="examples/sample.odin", dir=false}}
+	append(&app.tree_directories, Tree_Directory{path="", entries=root_entries[:], expanded=true})
+	append(&app.tree_directories, Tree_Directory{path="examples", entries=nested_entries[:], expanded=true})
+	defer delete(app.tree_directories)
+
+	widths := [3]f32{220, 320, 560}
+	for width in widths {
+		rt := alicorn.new_runtime(alicorn.Rect{0, 0, width, 420})
+		fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA)
+		testing.expect(t, fonts_loaded, fmt.tprintf("compact tree width %.0f should load the bundled UI font", width))
+		if !fonts_loaded { alicorn.destroy_runtime(&rt); continue }
+		if !test_render_workspace_tree(t, &app, &rt, width, 420) {
+			testing.expect(t, false, fmt.tprintf("workspace tree should build at width %.0f", width))
+			alicorn.destroy_runtime(&rt)
+			continue
+		}
+
+		folder_id, folder_found := test_workspace_tree_row(&rt, "examples")
+		file_id, file_found := test_workspace_tree_row(&rt, "a-really-long-readme-filename-that-needs-ellipsis.txt")
+		nested_id, nested_found := test_workspace_tree_row(&rt, "examples/sample.odin")
+		folder_name := tree_test_row_text_node(&rt, folder_id)
+		file_name := tree_test_row_text_node(&rt, file_id)
+		nested_name := tree_test_row_text_node(&rt, nested_id)
+		testing.expect(t, folder_found && file_found && nested_found,
+			fmt.tprintf("compact tree rows should be present at width %.0f", width))
+		if !folder_found || !file_found || !nested_found { alicorn.destroy_runtime(&rt); continue }
+		if folder_name == 0 || file_name == 0 || nested_name == 0 {
+			testing.expect(t, false, fmt.tprintf("compact tree names should be present at width %.0f", width))
+			alicorn.destroy_runtime(&rt)
+			continue
+		}
+
+		folder_x := rt.nodes[folder_name].bounds.x
+		file_x := rt.nodes[file_name].bounds.x
+		nested_x := rt.nodes[nested_name].bounds.x
+		testing.expect(t, abs(folder_x-file_x) < 0.1 && abs(nested_x-folder_x-TREE_INDENT_WIDTH) < 0.1,
+			fmt.tprintf("single icon gutters should align names at width %.0f (folder=%v file=%v nested=%v indent=%v)", width, folder_x, file_x, nested_x, TREE_INDENT_WIDTH))
+		row_ids := [3]alicorn.Node_ID{folder_id, file_id, nested_id}
+		for row_id in row_ids {
+			row := rt.nodes[row_id]
+			name_id := tree_test_row_text_node(&rt, row_id)
+			name := rt.nodes[name_id]
+			testing.expect(t, row.bounds.h == f32(TREE_ROW_HEIGHT) && row.bounds.x >= 0 && row.bounds.x+row.bounds.w <= width+0.1,
+				fmt.tprintf("compact tree row should fit its viewport at width %.0f", width))
+			testing.expect(t, name.text_style.overflow == .Ellipsis && name.bounds.x+name.bounds.w <= row.bounds.x+row.bounds.w+0.1,
+				fmt.tprintf("long names should ellipsize within their row at width %.0f", width))
+			testing.expect(t, !tree_test_row_has_key(&rt, row_id, "tree-row-disclosure-slot"),
+				"tree rows should not retain an empty disclosure-icon slot")
+		}
+		alicorn.destroy_runtime(&rt)
+	}
+}
+
 test_workspace_context_menu_item :: proc(rt: ^alicorn.Runtime, label: string) -> alicorn.Node_ID {
 	if rt == nil || rt.context_menu.panel == 0 { return 0 }
 	for node_id in rt.order {
@@ -301,6 +373,15 @@ tree_test_row_has_icon :: proc(rt: ^alicorn.Runtime, row_id: alicorn.Node_ID, ic
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
 		if found && node.active && node.parent == row_id && node.icon_id == icon_id { return true }
+	}
+	return false
+}
+
+tree_test_row_has_key :: proc(rt: ^alicorn.Runtime, row_id: alicorn.Node_ID, key: string) -> bool {
+	if rt == nil || row_id == 0 { return false }
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if found && node.active && node.parent == row_id && node.key == key { return true }
 	}
 	return false
 }

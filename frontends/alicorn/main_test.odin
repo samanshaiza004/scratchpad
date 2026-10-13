@@ -661,7 +661,7 @@ settings_test_layout_case :: proc(t: ^testing.T, scale: f32) {
 		settings_accessibility_observed_value(status, .Differentiate_Without_Color, status.preferences.differentiate_without_color),
 	)
 	section_heights := settings_form_section_heights(&rt, 640, scale, status_summary)
-	section_gap := max(14, 10*scale)
+	section_gap := max(12, 8*scale)
 	expected_content_height := section_heights[0]+section_gap+section_heights[1]+section_gap+section_heights[2]
 	testing.expect(t, abs(scroll.content_height-expected_content_height) < 0.1,
 		fmt.tprintf("Settings scale %.2f scroll extent %.2f should equal measured section sum %.2f (%.2f, %.2f, %.2f)", scale, scroll.content_height, expected_content_height, section_heights[0], section_heights[1], section_heights[2]))
@@ -1250,6 +1250,14 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "sample.md")
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
+	sidebar_id, panel_tabs_id, workspace_root_id: alicorn.Node_ID
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if !found || !node.active { continue }
+		if node.label == "files-sidebar" { sidebar_id = node_id }
+		if node.label == "workspace-panel-tabs" { panel_tabs_id = node_id }
+		if node.label == "workspace-root-row" { workspace_root_id = node_id }
+	}
 
 	testing.expect(t, files_found && files_variant == .Tab && files_selected,
 		"the active Files workspace tab should retain Tab recipe intent and selected state")
@@ -1265,6 +1273,17 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		"the selected Match Case find control should retain Toolbar recipe intent and selected state")
 	testing.expect(t, primary_found && primary_variant == .Primary,
 		"the workspace mutation confirmation should retain Primary recipe intent")
+	testing.expect(t, sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0,
+		"the compact workspace sidebar should retain its tabs and root row")
+	if sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0 {
+		sidebar_style := rt.nodes[sidebar_id].style
+		tabs_style := rt.nodes[panel_tabs_id].style
+		root_style := rt.nodes[workspace_root_id].style
+		testing.expect(t, sidebar_style.padding == 8 && sidebar_style.gap == 6,
+			"the workspace sidebar should use compact outer padding and section spacing")
+		testing.expect(t, tabs_style.height == 30 && tabs_style.gap == 4 && root_style.height == 26,
+			"workspace tabs and root path should use compact aligned heights")
+	}
 
 	inspection := alicorn.inspect(&rt)
 	testing.expect(t, strings.contains(inspection, "button recipe: variant=tab") &&
