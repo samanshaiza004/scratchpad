@@ -309,10 +309,17 @@ func (a *Application) applyPathMutation(plan PathMutationPlan) {
 		newLanguage := language.DetectPath(relocation.NewPath)
 		doc.Path = filepath.Clean(relocation.NewPath)
 		doc.RootLanguage = string(newLanguage)
+		if _, readOnly := a.FileViews[relocation.OldID]; readOnly {
+			doc.RootLanguage = ""
+		}
 
 		if relocation.OldID != relocation.NewID {
 			delete(a.Documents, relocation.OldID)
 			a.Documents[relocation.NewID] = doc
+			if view, found := a.FileViews[relocation.OldID]; found {
+				a.FileViews[relocation.NewID] = view
+				delete(a.FileViews, relocation.OldID)
+			}
 			for i, id := range a.Order {
 				if id == relocation.OldID {
 					a.Order[i] = relocation.NewID

@@ -11,6 +11,7 @@ build_app :: proc(
 ) -> alicorn.Node_ID {
 	app := cast(^App)state
 	scratchpad_application_assets_release_retired(app, rt)
+	scratchpad_image_preview_sync(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	_ = find_capture_text_field(rt, app.find_query_node, &app.find_query)
@@ -21,6 +22,12 @@ build_app :: proc(
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
 	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
 	_ = find_capture_text_field(rt, app.quick_open_node, &app.quick_open_query)
+	if active, found := find_document(&app.backend.state, app.backend.state.active); found && (active.view_kind == "image" || active.view_kind == "unsupported") {
+		if app.find_open { find_close_surface(app) }
+		app.editor_scroll_owner = 0
+		app.editor_restore_scroll = false
+	}
+	app.image_scroll_owner = 0
 	if app.find_open { find_refresh_if_needed(app, rt) }
 	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
 	clear(&app.editor_row_targets)
@@ -39,13 +46,6 @@ build_app :: proc(
 		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
 	)
 	workbench_style_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
-
-	if app.error_message != "" {
-		alicorn.container_begin(&ui, .Container, label="workbench-error", style=alicorn.layout_style(.Column, height=132, padding=9, gap=2), color=alicorn.style_color(&ui, .Subtle_Surface))
-		alicorn.text(&ui, "Scratchpad needs attention.")
-		alicorn.text(&ui, app.error_message)
-		alicorn.container_end(&ui)
-	}
 
 	if app.backend.started && !app.backend.state.has_workspace && len(app.backend.state.documents) == 0 {
 		build_start_screen(app, &ui, rt)
@@ -211,7 +211,16 @@ build_app :: proc(
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
-				build_document_editor(app, &ui, rt, active)
+				switch active.view_kind {
+				case "image":
+					editor_accessibility_retire(app, rt)
+					build_image_preview(app, &ui, rt, active, dpi_scale)
+				case "unsupported":
+					editor_accessibility_retire(app, rt)
+					build_unsupported_file_view(app, &ui, active)
+				case:
+					build_document_editor(app, &ui, rt, active)
+				}
 				alicorn.component_end(&ui)
 			}
 		} else {
@@ -344,6 +353,11 @@ build_app :: proc(
 	alicorn.style_environment_pop(&ui, workbench_style_scope)
 
 	alicorn.end_frame(&ui)
+	image_preview_after_frame(app, rt)
+	if app.editor_focus_pending && app.image_scroll_owner != 0 {
+		if alicorn.focus(rt, app.image_scroll_owner) { app.editor_focus_pending = false }
+	}
+	scratchpad_error_notice_sync(app, rt)
 	frame_deferred_action_run(app, rt)
 	command_palette_restore_focus_after_frame(app, rt)
 	quick_open_restore_focus_after_frame(app, rt)

@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -66,6 +67,31 @@ type FileSnapshot struct {
 	Version   DiskVersion
 	IsSymlink bool
 }
+
+// ImageFileSnapshot is an on-demand, bounded PNG/QOI read for the image viewer.
+// Encoded image bytes never enter ordinary application state publications.
+type ImageFileSnapshot struct {
+	Path    string
+	Data    []byte
+	Mode    fs.FileMode
+	Version DiskVersion
+	Format  string
+	Width   uint32
+	Height  uint32
+	Error   string
+}
+
+// ImageFileStore is optional so existing in-memory FileStore implementations
+// remain useful for text-only tests and embedders.
+type ImageFileStore interface {
+	LoadImage(path string) (ImageFileSnapshot, error)
+}
+
+const (
+	maxPreviewImageBytes     = int64(128 << 20)
+	maxPreviewImageDimension = uint32(16384)
+	maxPreviewImagePixels    = uint64(16 * 1024 * 1024)
+)
 
 // FileStore is the filesystem seam used by document lifecycle code. The OS
 // implementation is deliberately small; tests can provide an adapter without
@@ -178,6 +204,67 @@ func (OSFileStore) Load(path string) (FileSnapshot, error) {
 	return FileSnapshot{Path: clean, Data: data, Mode: info.Mode(), Version: version, IsSymlink: lstat.Mode()&os.ModeSymlink != 0}, nil
 }
 
+// LoadImage recognizes and bounds the formats Alicorn can decode. Unknown
+// binary files return a presentation reason without asking the editor to treat
+// them as source text. Full pixel decoding remains in Alicorn.
+func (s OSFileStore) LoadImage(path string) (ImageFileSnapshot, error) {
+	clean := filepath.Clean(path)
+	file, err := os.Open(clean)
+	if err != nil {
+		return ImageFileSnapshot{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ImageFileSnapshot{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return ImageFileSnapshot{}, errors.New("path is not a regular file")
+	}
+	if info.Size() > maxPreviewImageBytes {
+		return ImageFileSnapshot{Path: clean, Mode: info.Mode(), Version: observedVersion(clean, info), Error: "Image exceeds the 128 MiB preview limit."}, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxPreviewImageBytes+1))
+	if err != nil {
+		return ImageFileSnapshot{}, err
+	}
+	if int64(len(data)) > maxPreviewImageBytes {
+		return ImageFileSnapshot{Path: clean, Mode: info.Mode(), Version: observedVersion(clean, info), Error: "Image exceeds the 128 MiB preview limit."}, nil
+	}
+	version, err := verifiedVersion(clean, data)
+	if err != nil {
+		return ImageFileSnapshot{}, err
+	}
+	snapshot := ImageFileSnapshot{Path: clean, Mode: info.Mode(), Version: version}
+	switch {
+	case bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}):
+		snapshot.Format = "PNG"
+		if len(data) < 33 || binary.BigEndian.Uint32(data[8:12]) != 13 || !bytes.Equal(data[12:16], []byte("IHDR")) {
+			snapshot.Error = "PNG header is incomplete."
+			return snapshot, nil
+		}
+		snapshot.Width = binary.BigEndian.Uint32(data[16:20])
+		snapshot.Height = binary.BigEndian.Uint32(data[20:24])
+	case bytes.HasPrefix(data, []byte("qoif")):
+		snapshot.Format = "QOI"
+		if len(data) < 14 {
+			snapshot.Error = "QOI header is incomplete."
+			return snapshot, nil
+		}
+		snapshot.Width = binary.BigEndian.Uint32(data[4:8])
+		snapshot.Height = binary.BigEndian.Uint32(data[8:12])
+	default:
+		snapshot.Error = "This file format isn't supported for preview."
+		return snapshot, nil
+	}
+	if snapshot.Width == 0 || snapshot.Height == 0 || snapshot.Width > maxPreviewImageDimension || snapshot.Height > maxPreviewImageDimension || uint64(snapshot.Width)*uint64(snapshot.Height) > maxPreviewImagePixels {
+		snapshot.Error = "Image dimensions exceed the 64 MiB decoded preview limit."
+		return snapshot, nil
+	}
+	snapshot.Data = data
+	return snapshot, nil
+}
+
 func binaryTextProbeReason(sample []byte) string {
 	if len(sample) == 0 {
 		return ""
@@ -192,6 +279,7 @@ func binaryTextProbeReason(sample []byte) string {
 	for _, signature := range [][]byte{
 		{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a},
 		{0xff, 0xd8, 0xff},
+		{'q', 'o', 'i', 'f'},
 		{'G', 'I', 'F', '8', '7', 'a'},
 		{'G', 'I', 'F', '8', '9', 'a'},
 		{'B', 'M'},

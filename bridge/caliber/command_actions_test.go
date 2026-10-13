@@ -157,3 +157,24 @@ func TestShellActionIDsMapToUniqueNonzeroAlicornTokens(t *testing.T) {
 		seen[token] = string(id)
 	}
 }
+
+func TestImageTabActionsAllowCloseAndNavigationWithoutEditing(t *testing.T) {
+	state := stateFromApplication(1, application.PresentationState{Active: "image", Documents: []application.PresentationDocument{
+		{ID: "image", ViewKind: application.FileViewImage, CanUndo: true, CanRedo: true},
+		{ID: "text", ViewKind: application.FileViewText},
+	}})
+	actions := make(map[string]ActionState)
+	for _, action := range state.Actions {
+		actions[action.ID] = action
+	}
+	for _, id := range []commands.ID{commands.DocumentClose, commands.TabNext, commands.TabPrevious, commands.QuickOpen} {
+		if !actions[string(id)].Enabled {
+			t.Fatalf("image navigation action %s is disabled", id)
+		}
+	}
+	for _, id := range []commands.ID{commands.FileSave, commands.EditUndo, commands.EditRedo, commands.EditIndentLines} {
+		if actions[string(id)].Enabled {
+			t.Fatalf("image text action %s is enabled", id)
+		}
+	}
+}

@@ -132,6 +132,16 @@ App :: struct {
 	workspace_path:         string,
 	backend_library:        string,
 	error_message:          string,
+	error_notice_fingerprint: u64,
+	error_notice_initialized: bool,	error_notice_active: bool,
+	image_preview_handle: alicorn.Image_Handle,
+	image_preview_document_id: string,
+	image_preview_revision: u64,
+	image_preview_error: string,
+	image_preview_width: int,
+	image_preview_height: int,
+	image_preview_views: [dynamic]Image_Preview_View,
+	image_scroll_owner: alicorn.Node_ID,
 	recovery_notice_dismissed: bool,
 	close_document_id:      string,
 	save_as_confirmation_open: bool,
@@ -791,6 +801,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		navigate_tab(app, rt, -1)
 		return true
 	}
+	if key == .Zoom_In || key == .Zoom_Out || key == .Zoom_Reset {
+		if image_preview_handle_zoom_key(app, rt, key) { return true }
+	}
 	if key == .Zoom_In { return editor_text_zoom_step(app, rt, 1) }
 	if key == .Zoom_Out { return editor_text_zoom_step(app, rt, -1) }
 	if key == .Zoom_Reset { return editor_text_zoom_set(app, rt, 1) }
@@ -809,6 +822,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return false
 	}
 	if key == .Find {
+		if document, found := find_document(&app.backend.state, app.backend.state.active); found && (document.view_kind == "image" || document.view_kind == "unsupported") { return true }
 		find_open_surface(app)
 		alicorn.invalidate_root(rt, "Scratchpad Find opened")
 		return true
@@ -2683,6 +2697,9 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	image_preview_views_destroy(app)
+	if len(app.image_preview_document_id) > 0 { delete(app.image_preview_document_id, context.allocator) }
+	if len(app.image_preview_error) > 0 { delete(app.image_preview_error, context.allocator) }
 	delete(app.retired_brand_marks)
 	app.retired_brand_marks = {}
 	if app.backend.started {

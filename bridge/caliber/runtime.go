@@ -810,6 +810,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "application_error", err)
 		}
 	case "replace_document", "find_replace_current", "paste_document":
+		if _, readOnly := r.app.FileViews[application.DocumentID(request.DocumentID)]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		replacement := make([]byte, len(request.Replacement))
 		for i, value := range request.Replacement {
 			replacement[i] = byte(value)
@@ -881,6 +884,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			sourceRefreshNeeded = true
 		}
 	case "find_replace_all":
+		if _, readOnly := r.app.FileViews[application.DocumentID(request.DocumentID)]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		replacement := make([]byte, len(request.Replacement))
 		for i, value := range request.Replacement {
 			replacement[i] = byte(value)
@@ -913,6 +919,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 	case "execute_command":
 		documentID := application.DocumentID(request.DocumentID)
+		if _, readOnly := r.app.FileViews[documentID]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		doc := r.app.Documents[documentID]
 		if doc == nil || doc.Editor == nil {
 			return commandError(request, "unknown_document", errors.New("unknown document"))
@@ -993,6 +1002,12 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 	case string(commands.EditUndo), string(commands.EditRedo):
 		documentID := application.DocumentID(request.DocumentID)
+		if documentID == "" {
+			documentID = r.app.Active
+		}
+		if _, readOnly := r.app.FileViews[documentID]; readOnly {
+			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
+		}
 		var err error
 		if request.Command == string(commands.EditUndo) {
 			err = r.app.UndoDocument(documentID)
@@ -1079,6 +1094,26 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		response, err := r.readVisibleLines(request)
 		if err != nil {
 			return commandError(request, "application_error", err)
+		}
+		return response
+	case "read_image":
+		data, err := r.app.ImagePreviewBytes(application.DocumentID(request.DocumentID), request.ImageRevision)
+		if err != nil {
+			return commandError(request, "image_unavailable", err)
+		}
+		resourceID, generation, err := r.caliber.publishResource(data)
+		if err != nil {
+			return commandError(request, "resource_unavailable", err)
+		}
+		response := okResponse(request.RequestID, r.lifecycle, r.revision)
+		response.BasedOnRevision = request.BasedOnRevision
+		response.Resource = &ResourceDescriptor{
+			ResourceID:     resourceID,
+			Generation:     generation,
+			DocumentID:     request.DocumentID,
+			ApplicationRev: r.applicationRevision,
+			ImageRevision:  request.ImageRevision,
+			ByteLen:        uint64(len(data)),
 		}
 		return response
 	default:

@@ -95,6 +95,7 @@ type CommandRequest struct {
 	SourceAnchorRevision uint64   `json:"source_anchor_revision,omitempty"`
 	SourceAnchorByte     uint64   `json:"source_anchor_byte,omitempty"`
 	SourceAnchorLine     uint64   `json:"source_anchor_line,omitempty"`
+	ImageRevision        uint64   `json:"image_revision,omitempty"`
 }
 
 type Response struct {
@@ -149,6 +150,7 @@ type ResourceDescriptor struct {
 	Truncated        bool   `json:"truncated"`
 	StartByte        uint64 `json:"start_byte"`
 	LineByteLength   uint64 `json:"line_byte_length,omitempty"`
+	ImageRevision    uint64 `json:"image_revision,omitempty"`
 	MetadataByteLen  uint64 `json:"metadata_byte_len,omitempty"`
 	HasSourceAnchor  bool   `json:"has_source_anchor,omitempty"`
 	SourceAnchorByte uint64 `json:"source_anchor_byte,omitempty"`
@@ -275,6 +277,12 @@ type StateDocument struct {
 	Language             string  `json:"language,omitempty"`
 	PresentationRevision uint64  `json:"presentation_revision,omitempty"`
 	PresentationReady    bool    `json:"presentation_ready,omitempty"`
+	ViewKind             string  `json:"view_kind,omitempty"`
+	ImageFormat          string  `json:"image_format,omitempty"`
+	ImageRevision        uint64  `json:"image_revision,omitempty"`
+	ImageWidth           uint32  `json:"image_width,omitempty"`
+	ImageHeight          uint32  `json:"image_height,omitempty"`
+	ViewError            string  `json:"view_error,omitempty"`
 }
 
 type DirectoryListing struct {
@@ -481,6 +489,13 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.EditorAnchorByte > uint64(^uint(0)>>1) || request.EditorCursorByte > uint64(^uint(0)>>1) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_editor_selection", "editor selection does not fit the host word size", false), false
+		}
+	case "read_image":
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if request.ImageRevision == 0 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_image_revision", "image_revision is required", false), false
 		}
 	case "read_visible_lines":
 		if request.DocumentID == "" {
@@ -762,6 +777,12 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			CanUndo:            document.CanUndo,
 			CanRedo:            document.CanRedo,
 			Language:           document.Language,
+			ViewKind:           string(document.ViewKind),
+			ImageFormat:        document.ImageFormat,
+			ImageRevision:      document.ImageRevision,
+			ImageWidth:         document.ImageWidth,
+			ImageHeight:        document.ImageHeight,
+			ViewError:          document.ViewError,
 		}
 		if presentationEnabled {
 			stateDocument.PresentationRevision = document.PresentationRevision
@@ -769,11 +790,14 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		}
 		state.Documents = append(state.Documents, stateDocument)
 		if document.ID == snapshot.Active {
-			commandContext.CanUndo = document.CanUndo
-			commandContext.CanRedo = document.CanRedo
+			isText := document.ViewKind == "" || document.ViewKind == application.FileViewText
+			commandContext.ReadOnlyDocument = !isText
+			commandContext.EditorFocused = isText
+			commandContext.CanUndo = document.CanUndo && isText
+			commandContext.CanRedo = document.CanRedo && isText
 			commandContext.RootLanguage = document.Language
-			commandContext.Markdown = document.Language == "markdown"
-			commandContext.Code = document.Language != "markdown"
+			commandContext.Markdown = document.Language == "markdown" && isText
+			commandContext.Code = document.Language != "markdown" && isText
 		}
 	}
 	registry := commands.DefaultRegistry()

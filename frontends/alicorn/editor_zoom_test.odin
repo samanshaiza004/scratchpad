@@ -16,7 +16,7 @@ test_editor_zoom_is_bounded_and_discoverable :: proc(t: ^testing.T) {
 	for item in app.view_items {
 		if item.label == "Zoom In" { zoom_in_found = true }
 		if item.label == "Zoom Out" { zoom_out_found = true }
-		if item.label == "Reset Editor Zoom" { zoom_reset_found = true }
+		if item.label == "Reset Zoom" { zoom_reset_found = true }
 	}
 	testing.expect(t, zoom_in_found && zoom_out_found && zoom_reset_found,
 		"the View menu should expose editor zoom in, out, and reset")

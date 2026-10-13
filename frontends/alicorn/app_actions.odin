@@ -12,6 +12,12 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 		alicorn.invalidate_root(rt, "Scratchpad opened recent workspaces")
 		return
 	}
+	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) || command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) || command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET) {
+		key := host.Application_Key.Zoom_Reset
+		if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) { key = .Zoom_In }
+		if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) { key = .Zoom_Out }
+		if image_preview_handle_zoom_key(app, rt, key) { return }
+	}
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) { _ = editor_text_zoom_step(app, rt, 1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) { _ = editor_text_zoom_step(app, rt, -1); return }
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET) { _ = editor_text_zoom_set(app, rt, 1); return }
@@ -329,19 +335,20 @@ sync_menu_states :: proc(app: ^App) {
 		item.state = menu_action_state(&app.backend.state, item.command)
 	}
 	active_document, has_document := find_document(&app.backend.state, app.backend.state.active)
+	has_text := has_document && (active_document.view_kind == "" || active_document.view_kind == "text")
 	for &item in app.document_items {
 		if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_FORMAT) {
-			item.state.enabled = has_document && active_document.language == "markdown"
+			item.state.enabled = has_text && active_document.language == "markdown"
 		} else if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) {
-			item.state.enabled = has_document
+			item.state.enabled = has_text
 		} else if item.kind == .Command && item.command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) {
-			item.state.enabled = has_document
+			item.state.enabled = has_text
 		}
 	}
 	active_view: ^Editor_View_State
 	active_window: ^Editor_Window
 	window_matches := false
-	if has_document {
+	if has_text {
 		if view_index := editor_view_find(app.editor_views[:], active_document.id); view_index >= 0 {
 			active_view = &app.editor_views[view_index]
 			active_window, window_matches = editor_view_window(
@@ -382,11 +389,11 @@ sync_menu_states :: proc(app: ^App) {
 				window_end := active_window.start_byte+u64(len(active_window.source))
 				paste_range_available = start_byte >= active_window.start_byte && end_byte <= window_end
 			}
-			item.state = alicorn.Action_State{enabled=has_document && paste_range_available && app.services.clipboard.get_text != nil}
+			item.state = alicorn.Action_State{enabled=has_text && paste_range_available && app.services.clipboard.get_text != nil}
 		case ACTION_EDIT_SELECT_ALL:
-			item.state = alicorn.Action_State{enabled=has_document && editor_current_byte_length(app, active_document) > 0}
+			item.state = alicorn.Action_State{enabled=has_text && editor_current_byte_length(app, active_document) > 0}
 		case ACTION_EDIT_DELETE_LINE:
-			item.state = alicorn.Action_State{enabled=has_document}
+			item.state = alicorn.Action_State{enabled=has_text}
 		}
 		if composition_active {
 			switch string_for_action_id(item.command) {
@@ -486,7 +493,7 @@ init_menus :: proc(app: ^App) {
 	app.view_items = [8]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN), label="Zoom In", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+' , {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT), label="Zoom Out", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Editor Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_COMMAND_PALETTE), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}},
 		{kind=.Separator},

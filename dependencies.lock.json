@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "master",
-    "revision": "180b3f9835c0a269c6eb8d26751e1a31fbd737cd"
+    "ref": "codex/image-color-fidelity",
+    "revision": "bd36e70cb56d55e0875b3540fe1975b08aa7ee8e"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

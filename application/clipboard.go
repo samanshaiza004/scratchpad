@@ -32,6 +32,9 @@ func (a *Application) PasteDocument(
 	if a == nil {
 		return editor.AppliedEdit{}, errors.New("nil application")
 	}
+	if _, readOnly := a.FileViews[id]; readOnly {
+		return editor.AppliedEdit{}, ErrReadOnlyFileView
+	}
 	doc := a.Documents[id]
 	if doc == nil || doc.Editor == nil {
 		return editor.AppliedEdit{}, errors.New("unknown document")
