@@ -34,7 +34,7 @@ build_app :: proc(
 		&ui,
 		.Root,
 		label="scratchpad-alicorn-workbench",
-		style=alicorn.layout_style(.Column, grow=1, gap=12, clip=true),
+		style=alicorn.layout_style(.Column, grow=1, gap=8, clip=true),
 		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
 	)
 	workbench_style_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
@@ -59,28 +59,28 @@ build_app :: proc(
 			initial=split_initial,
 			min_first=180,
 			min_second=480,
-			style=alicorn.layout_style(.Row, grow=1, gap=12, clip=true),
+			style=alicorn.layout_style(.Row, grow=1, gap=2, clip=true),
 			label="scratchpad-workspace-editor-split",
 		)
 		app.workspace_editor_split_node = workspace_split.id
 		app.workspace_sidebar_width = workspace_split.position
 		alicorn.split_first_begin(&ui, workspace_split)
-		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=14, gap=12, clip=true), color=alicorn.style_color(&ui, .Surface))
-		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=32, gap=6))
-		if alicorn.button(&ui, "Files", key=alicorn.key_string("workspace-panel-files"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{selected=!app.workspace_search_mode}, variant=.Tab) {
+		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), color=alicorn.style_color(&ui, .Surface))
+		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=30, gap=4))
+		if alicorn.button(&ui, "Files", key=alicorn.key_string("workspace-panel-files"), style=alicorn.layout_style(.Row, grow=1, height=28), state=alicorn.Button_State{selected=!app.workspace_search_mode}, variant=.Tab) {
 			workspace_search_cancel_active(app)
 			workspace_search_match_clear_all(app)
 			app.workspace_search_mode = false
 			app.workspace_search_query_node = 0
 			app.editor_focus_pending = true
 		}
-		if alicorn.button(&ui, "Search", key=alicorn.key_string("workspace-panel-search"), style=alicorn.layout_style(.Row, grow=1, height=30), state=alicorn.Button_State{selected=app.workspace_search_mode}, variant=.Tab) {
+		if alicorn.button(&ui, "Search", key=alicorn.key_string("workspace-panel-search"), style=alicorn.layout_style(.Row, grow=1, height=28), state=alicorn.Button_State{selected=app.workspace_search_mode}, variant=.Tab) {
 			app.workspace_search_mode = true
 			app.workspace_search_focus_pending = true
 		}
 		alicorn.container_end(&ui)
 		if app.workspace_search_mode {
-			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=34))
+			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=32))
 			app.workspace_search_query_node = query_node
 			if app.workspace_search_error != "" { alicorn.text(&ui, app.workspace_search_error) }
 			else if !state.has_workspace { alicorn.text(&ui, "Open a workspace to search.") }
@@ -107,7 +107,7 @@ build_app :: proc(
 				alicorn.virtual_list_end(&ui, search_list)
 			}
 		} else {
-			alicorn.container_begin(&ui, .Container, label="workspace-root-row", style=alicorn.layout_style(.Row, height=34, gap=6, align=.Center))
+			alicorn.container_begin(&ui, .Container, label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center))
 			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)

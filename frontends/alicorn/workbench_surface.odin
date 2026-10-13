@@ -111,10 +111,10 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	viewport := alicorn.viewport_bounds(rt)
 	panel_width := min(640, max(viewport.w-32, 200))
 	panel_height := min(700, max(viewport.h-32, 180))
-	header_height := max(32, 28*scale)
-	footer_height := max(44, 40*scale)
-	control_height := max(34, 30*scale)
-	body_height := max(panel_height-36-header_height-footer_height-16, 24)
+	header_height := max(30, 26*scale)
+	footer_height := max(42, 38*scale)
+	control_height := max(32, 30*scale)
+	body_height := max(panel_height-28-header_height-footer_height-12, 24)
 
 	host_appearance := alicorn.style_root_accessibility_observation_get(rt)
 	status_summary := fmt.tprintf(
@@ -124,11 +124,11 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 		settings_accessibility_observed_value(host_appearance, .Reduce_Transparency, host_appearance.preferences.reduce_transparency),
 		settings_accessibility_observed_value(host_appearance, .Differentiate_Without_Color, host_appearance.preferences.differentiate_without_color),
 	)
-	row_gap := max(10, 8*scale)
-	option_gap := max(4, 4*scale)
-	sample_gap := max(8, 6*scale)
-	sample_inner_gap := max(6, 4*scale)
-	section_gap := max(14, 10*scale)
+	row_gap := max(8, 6*scale)
+	option_gap := max(3, 3*scale)
+	sample_gap := max(6, 4*scale)
+	sample_inner_gap := max(5, 3*scale)
+	section_gap := max(12, 8*scale)
 	section_heights := settings_form_section_heights(rt, panel_width, scale, status_summary)
 	section_row_heights := [3]f32{
 		section_heights[0]+section_gap,
@@ -144,7 +144,7 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	}
 
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-settings-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
-	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=panel_width, height=panel_height, padding=18, gap=8, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
+	alicorn.container_begin(ui, .Container, label="scratchpad-settings", style=alicorn.layout_style(.Column, width=panel_width, height=panel_height, padding=14, gap=6, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
 	alicorn.container_begin(ui, .Container, label="scratchpad-settings-header", style=alicorn.layout_style(.Row, height=header_height, align=.Center))
 	alicorn.text(ui, "Settings", style=alicorn.layout_style(.Row, height=header_height, grow=1))
 	alicorn.container_end(ui)
@@ -162,13 +162,13 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 
 	if settings_list.first <= 0 && settings_list.last > 0 {
 	alicorn.container_begin(ui, .Container, label="settings-section-appearance", key=alicorn.key_string("settings-section-appearance"), style=alicorn.layout_style(.Column, width=-1, height=section_row_heights[0], gap=row_gap, align=.Start))
-	alicorn.text(ui, "Appearance", key=alicorn.key_string("settings-appearance-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(24, 22*scale)))
-	alicorn.text(ui, "Theme", key=alicorn.key_string("settings-theme-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(22, 20*scale)))
-	alicorn.container_begin(ui, .Container, label="settings-theme-choice-row", style=alicorn.layout_style(.Row, height=max(40, 36*scale), gap=8, align=.Center))
-	if alicorn.button(ui, "Warm", key=alicorn.key_string("settings-theme-warm"), style=alicorn.layout_style(.Row, grow=1, height=max(38, 34*scale)), state=alicorn.Button_State{selected=app.theme_choice == .Warm}, variant=.Quiet) {
+	alicorn.text(ui, "Appearance", key=alicorn.key_string("settings-appearance-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(22, 20*scale)))
+	alicorn.text(ui, "Theme", key=alicorn.key_string("settings-theme-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(20, 18*scale)))
+	alicorn.container_begin(ui, .Container, label="settings-theme-choice-row", style=alicorn.layout_style(.Row, height=max(36, 32*scale), gap=6, align=.Center))
+	if alicorn.button(ui, "Warm", key=alicorn.key_string("settings-theme-warm"), style=alicorn.layout_style(.Row, grow=1, height=max(34, 30*scale)), state=alicorn.Button_State{selected=app.theme_choice == .Warm}, variant=.Quiet) {
 		if !frame_deferred_action_schedule(app, .Action, ACTION_VIEW_THEME_WARM) { set_error(app, "Could not queue the Warm theme change.") }
 	}
-	if alicorn.button(ui, "Cool Light", key=alicorn.key_string("settings-theme-cool-light"), style=alicorn.layout_style(.Row, grow=1, height=max(38, 34*scale)), state=alicorn.Button_State{selected=app.theme_choice == .Cool_Light}, variant=.Quiet) {
+	if alicorn.button(ui, "Cool Light", key=alicorn.key_string("settings-theme-cool-light"), style=alicorn.layout_style(.Row, grow=1, height=max(34, 30*scale)), state=alicorn.Button_State{selected=app.theme_choice == .Cool_Light}, variant=.Quiet) {
 		if !frame_deferred_action_schedule(app, .Action, ACTION_VIEW_THEME_COOL_LIGHT) { set_error(app, "Could not queue the Cool Light theme change.") }
 	}
 	alicorn.container_end(ui)
@@ -177,7 +177,7 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	}
 	if settings_list.first <= 1 && settings_list.last > 1 {
 	alicorn.container_begin(ui, .Container, label="settings-section-workspace", key=alicorn.key_string("settings-section-workspace"), style=alicorn.layout_style(.Column, width=-1, height=section_row_heights[1], gap=row_gap, align=.Start))
-	alicorn.text(ui, "Workspace", key=alicorn.key_string("settings-workspace-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(24, 22*scale)))
+	alicorn.text(ui, "Workspace", key=alicorn.key_string("settings-workspace-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(22, 20*scale)))
 	ignored_change := alicorn.checkbox(ui, "Show ignored files in the file tree", app.show_ignored_files, key=alicorn.key_string("settings-show-ignored-files"), style=alicorn.layout_style(.Row, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=control_height), disabled=!app.backend.started || !app.backend.state.has_workspace)
 	if ignored_change.changed { tree_set_show_ignored_files(app, rt, ignored_change.value) }
 	alicorn.text(ui, "Workspace search continues to honor ignore rules.", key=alicorn.key_string("settings-workspace-search-note"), style=alicorn.layout_style(.Row, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT), text_style=alicorn.Text_Style{overflow=.Wrap})
@@ -186,7 +186,7 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	}
 	if settings_list.first <= 2 && settings_list.last > 2 {
 	alicorn.container_begin(ui, .Container, label="settings-section-accessibility", key=alicorn.key_string("settings-section-accessibility"), style=alicorn.layout_style(.Column, width=-1, height=section_row_heights[2], gap=row_gap, align=.Start))
-	alicorn.text(ui, "Accessibility appearance", key=alicorn.key_string("settings-accessibility-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(24, 22*scale)))
+	alicorn.text(ui, "Accessibility appearance", key=alicorn.key_string("settings-accessibility-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(22, 20*scale)))
 	system_preferences_change := alicorn.checkbox(ui, "Use system accessibility preferences", !app.accessibility_appearance_override_enabled, key=alicorn.key_string("settings-accessibility-use-system"), style=alicorn.layout_style(.Row, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=control_height))
 	if system_preferences_change.changed {
 		app.accessibility_appearance_override_enabled = !system_preferences_change.value
@@ -220,11 +220,11 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	alicorn.container_end(ui)
 
 	alicorn.container_begin(ui, .Container, label="settings-appearance-samples", style=alicorn.layout_style(.Column, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, gap=sample_gap, align=.Start))
-	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Selection), key=alicorn.key_string("settings-accessibility-material-sample"), label="settings-accessibility-material-sample", style=alicorn.layout_style(.Column, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=9, gap=sample_inner_gap, align=.Start), material=app.floating_surface_material, physical_height=0.5)
+	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Selection), key=alicorn.key_string("settings-accessibility-material-sample"), label="settings-accessibility-material-sample", style=alicorn.layout_style(.Column, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=8, gap=sample_inner_gap, align=.Start), material=app.floating_surface_material, physical_height=0.5)
 	alicorn.text(ui, "Selection tint + relief", key=alicorn.key_string("settings-accessibility-material-title"), style=alicorn.layout_style(.Row, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT))
 	alicorn.text(ui, "Transparency makes it opaque and removes shadows.", key=alicorn.key_string("settings-accessibility-material-note"), style=alicorn.layout_style(.Row, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT), text_style=alicorn.Text_Style{overflow=.Wrap})
 	alicorn.surface_end(ui)
-	if alicorn.button(ui, "Selected state sample", key=alicorn.key_string("settings-accessibility-selected-sample"), style=alicorn.layout_style(.Row, width=min(260*scale, panel_width-72), height=control_height), state=alicorn.Button_State{selected=true}, variant=.Quiet) {
+	if alicorn.button(ui, "Selected state sample", key=alicorn.key_string("settings-accessibility-selected-sample"), style=alicorn.layout_style(.Row, width=min(260*scale, panel_width-56), height=control_height), state=alicorn.Button_State{selected=true}, variant=.Quiet) {
 		// This sample has no action; selection is held to expose the recipe's
 		// non-color indicator while the preference is toggled.
 	}
@@ -290,19 +290,19 @@ settings_form_section_heights :: proc(
 	scale: f32,
 	status_summary: string,
 ) -> [3]f32 {
-	form_text_width := max(panel_width-36-alicorn.SCROLLBAR_THICKNESS-4, 1)
-	sample_text_width := max(form_text_width-18, 1)
-	row_gap := max(10, 8*scale)
-	option_gap := max(4, 4*scale)
-	sample_gap := max(8, 6*scale)
-	sample_inner_gap := max(6, 4*scale)
-	control_height := max(34, 30*scale)
-	heading_height := max(24, 22*scale)
+	form_text_width := max(panel_width-28-alicorn.SCROLLBAR_THICKNESS-4, 1)
+	sample_text_width := max(form_text_width-16, 1)
+	row_gap := max(8, 6*scale)
+	option_gap := max(3, 3*scale)
+	sample_gap := max(6, 4*scale)
+	sample_inner_gap := max(5, 3*scale)
+	control_height := max(32, 30*scale)
+	heading_height := max(22, 20*scale)
 
 	appearance_items := [3]f32{
 		heading_height,
-		max(22, 20*scale),
-		max(40, 36*scale),
+		max(20, 18*scale),
+		max(36, 32*scale),
 	}
 	appearance_height := settings_column_height(appearance_items[:], row_gap)
 
@@ -325,7 +325,7 @@ settings_form_section_heights :: proc(
 		settings_measured_text_height(rt, "Selection tint + relief", sample_text_width, scale),
 		settings_measured_text_height(rt, "Transparency makes it opaque and removes shadows.", sample_text_width, scale),
 	}
-	sample_surface_height := settings_column_height(sample_surface_items[:], sample_inner_gap, 9)
+	sample_surface_height := settings_column_height(sample_surface_items[:], sample_inner_gap, 8)
 	sample_items := [2]f32{sample_surface_height, control_height}
 	samples_height := settings_column_height(sample_items[:], sample_gap)
 

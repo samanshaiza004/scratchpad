@@ -9,10 +9,10 @@ import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 TREE_SEMANTIC_NAMESPACE :: u64(0x5343524154434850)
-TREE_ROW_HEIGHT :: 28
-TREE_INDENT_WIDTH :: f32(14)
-TREE_DISCLOSURE_ICON_SIZE :: f32(12)
+TREE_ROW_HEIGHT :: 26
+TREE_INDENT_WIDTH :: f32(12)
 TREE_TYPE_ICON_SIZE :: f32(16)
+TREE_ROW_GAP :: f32(4)
 TREE_SCROLL_KEY :: "scratchpad-workspace-tree"
 
 Tree_Directory :: struct {
@@ -68,9 +68,9 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			ui,
 			"",
 			key=alicorn.key_string(row.path),
-			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT, padding=4, gap=5, align=.Center),
+			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT, gap=TREE_ROW_GAP, align=.Center),
 			state=alicorn.Button_State{selected=selected},
-			content_style=alicorn.button_content_style(.Start, padding_x=0, padding_y=0),
+			content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=0),
 			variant=.Quiet,
 		)
 		if row_button != 0 {
@@ -94,14 +94,9 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			if row.is_dir { _ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id, .On) }
 
 			if row.depth > 0 {
-				tree_row_spacer(ui, "tree-row-indent", f32(row.depth)*TREE_INDENT_WIDTH)
-			}
-			if row.is_dir {
-				disclosure_icon := alicorn.Icon_ID.Chevron_Right
-				if row.expanded { disclosure_icon = .Chevron_Down }
-				_ = alicorn.icon(ui, disclosure_icon, key=alicorn.key_string("tree-row-disclosure"), size=TREE_DISCLOSURE_ICON_SIZE)
-			} else {
-				tree_row_spacer(ui, "tree-row-disclosure-slot", TREE_DISCLOSURE_ICON_SIZE)
+				// The Row gap also sits between the depth spacer and type icon,
+				// so subtract it to keep each nesting level exactly 12 units wide.
+				tree_row_indent(ui, max(f32(row.depth)*TREE_INDENT_WIDTH-TREE_ROW_GAP, 0))
 			}
 			file_icon := alicorn.Icon_ID.File
 			if row.is_dir {
@@ -126,8 +121,8 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	}
 }
 
-tree_row_spacer :: proc(ui: ^alicorn.UI, key: string, width: f32) {
-	alicorn.container_begin(ui, .Container, key=alicorn.key_string(key), style=alicorn.layout_style(width=width, height=1))
+tree_row_indent :: proc(ui: ^alicorn.UI, width: f32) {
+	alicorn.container_begin(ui, .Container, key=alicorn.key_string("tree-row-indent"), style=alicorn.layout_style(width=width, height=1))
 	alicorn.container_end(ui)
 }
 
