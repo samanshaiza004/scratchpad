@@ -79,8 +79,9 @@ type releaseDeps struct {
 }
 
 type releaseSDL struct {
-	Version string `json:"version"`
-	Linkage string `json:"linkage"`
+	Version           string `json:"version"`
+	Linkage           string `json:"linkage"`
+	RecipeFingerprint string `json:"recipeFingerprint,omitempty"`
 }
 
 type releaseValidation struct {
@@ -117,12 +118,15 @@ type moduleRecord struct {
 	dir     string
 }
 
-func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, version string) error {
+func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, version string, staticSDL bool) error {
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		return fmt.Errorf("consumer packages are supported only on Windows and macOS, not %s", runtime.GOOS)
 	}
 	if runtime.GOOS == "windows" && runtime.GOARCH != "amd64" {
 		return fmt.Errorf("Scratchpad Windows packages require amd64, got %s", runtime.GOARCH)
+	}
+	if staticSDL && runtime.GOOS != "windows" {
+		return errors.New("static SDL packaging currently supports Windows x64 only")
 	}
 	if runtime.GOOS == "darwin" && runtime.GOARCH != "arm64" {
 		return fmt.Errorf("Scratchpad macOS packages require arm64, got %s", runtime.GOARCH)
@@ -169,6 +173,14 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return err
 	}
+	var staticRecipe *windowsStaticLinkRecipe
+	if staticSDL {
+		recipe, err := prepareWindowsStaticLinkRecipe(alicornRoot, odinExe)
+		if err != nil {
+			return fmt.Errorf("prepare Alicorn static native-link recipe: %w", err)
+		}
+		staticRecipe = &recipe
+	}
 	var macSDLRuntime, macSDLLicense string
 	if runtime.GOOS == "darwin" {
 		macSDLRuntime, macSDLLicense, err = buildPinnedMacSDL(root, buildDir)
@@ -188,26 +200,38 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 	if err := generateScratchpadThemes(root, alicornRoot, buildDir, odinExe, collectionArg); err != nil {
 		return err
 	}
-	accessKitFlags, err := accessKitLinkerFlags(alicornRoot)
-	if err != nil {
-		return err
+	accessKitFlags := ""
+	if staticRecipe == nil {
+		accessKitFlags, err = accessKitLinkerFlags(alicornRoot)
+		if err != nil {
+			return err
+		}
 	}
 	frontendEnv := buildEnv
 	if runtime.GOOS == "darwin" {
 		frontendEnv = setEnv(frontendEnv, "MACOSX_DEPLOYMENT_TARGET", "13.0")
 		frontendEnv, err = prepareNativeFrontendEnvWithPrefix(frontendEnv, filepath.Dir(filepath.Dir(macSDLRuntime)))
 	} else {
-		frontendEnv, err = prepareNativeFrontendEnv(root, buildEnv)
+		if staticRecipe != nil {
+			frontendEnv = setEnv(buildEnv, "ODIN_ROOT", staticRecipe.Environment.ODINRoot)
+		} else {
+			frontendEnv, err = prepareNativeFrontendEnv(root, buildEnv)
+		}
 	}
 	if err != nil {
 		return err
 	}
-	executable, err := buildFrontend(root, buildDir, odinExe, collectionArg, accessKitFlags, true, true, frontendEnv)
+	var executable string
+	if staticRecipe != nil {
+		executable, err = buildFrontendWithOptions(root, buildDir, staticRecipe.Odin.Executable, collectionArg, "", staticRecipe.Odin.CompilerArguments, false, true, true, frontendEnv)
+	} else {
+		executable, err = buildFrontend(root, buildDir, odinExe, collectionArg, accessKitFlags, true, true, frontendEnv)
+	}
 	if err != nil {
 		return err
 	}
 
-	goModules, licenseNames, err := stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, buildDir, macSDLLicense)
+	goModules, licenseNames, err := stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, buildDir, macSDLLicense, staticRecipe)
 	if err != nil {
 		return err
 	}
@@ -239,7 +263,13 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 		Dependencies: releaseDeps{GoModules: goModules},
 		Licenses:     licenseNames,
 	}
-	appExecutable, err := assembleConsumerPackage(root, alicornRoot, odinExe, executable, buildDir, appDir, metadataPath, manifest, version, macSDLRuntime)
+	sdlLinkage := "shared"
+	sdlVersion := ""
+	if staticRecipe != nil {
+		sdlLinkage = "static"
+		sdlVersion = staticRecipe.Artifacts.SDL.Version
+	}
+	appExecutable, err := assembleConsumerPackage(root, alicornRoot, odinExe, executable, buildDir, appDir, metadataPath, manifest, version, macSDLRuntime, sdlLinkage, sdlVersion)
 	if err != nil {
 		return err
 	}
@@ -247,8 +277,11 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 	if err != nil {
 		return err
 	}
+	if staticRecipe != nil {
+		manifest.Dependencies.SDL3.RecipeFingerprint = staticRecipe.Provenance.Fingerprint
+	}
 	if runtime.GOOS == "windows" {
-		if err := consumerPackageSmoke(root, appExecutable, staging); err != nil {
+		if err := consumerPackageSmokeWithOptions(root, appExecutable, staging, staticRecipe != nil); err != nil {
 			return err
 		}
 	}
@@ -272,6 +305,9 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 		}
 	}
 	archiveName := fmt.Sprintf("Scratchpad-v%s-%s-%s.zip", version, runtime.GOOS, runtime.GOARCH)
+	if staticRecipe != nil {
+		archiveName = fmt.Sprintf("Scratchpad-v%s-%s-%s-static-sdl.zip", version, runtime.GOOS, runtime.GOARCH)
+	}
 	archivePath := filepath.Join(staging, archiveName)
 	if runtime.GOOS == "windows" {
 		if err := zipDirectory(appDir, archivePath, "Scratchpad"); err != nil {
@@ -280,7 +316,7 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 		if err := verifyWindowsGuiSubsystem(filepath.Join(appDir, "Scratchpad.exe")); err != nil {
 			return err
 		}
-		if err := windowsArchiveSmoke(root, archivePath, staging); err != nil {
+		if err := windowsArchiveSmoke(root, archivePath, staging, staticRecipe != nil); err != nil {
 			return err
 		}
 	} else {
@@ -423,7 +459,15 @@ func lockedRevision(root, dependency string) string {
 	return "unknown"
 }
 
-func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, buildDir, macSDLLicense string) ([]goModuleLicense, []string, error) {
+func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, buildDir, macSDLLicense string, staticRecipe *windowsStaticLinkRecipe) ([]goModuleLicense, []string, error) {
+	accessKitApache := filepath.Join(alicornRoot, ".deps", "accesskit", "accesskit-c-0.23.1", "LICENSE-APACHE")
+	accessKitMIT := filepath.Join(alicornRoot, ".deps", "accesskit", "accesskit-c-0.23.1", "LICENSE-MIT")
+	sdlLicense := filepath.Join(root, "packaging", "SDL-LICENSE.txt")
+	if staticRecipe != nil {
+		accessKitApache = staticRecipe.Artifacts.AccessKit.Licenses[0]
+		accessKitMIT = staticRecipe.Artifacts.AccessKit.Licenses[1]
+		sdlLicense = staticRecipe.Artifacts.SDL.License
+	}
 	licenseSources := []licenseSource{
 		{name: "Scratchpad-LICENSE.txt", path: filepath.Join(root, "LICENSE")},
 		{name: "Alicorn-LICENSE.txt", path: filepath.Join(alicornRoot, "LICENSE")},
@@ -432,8 +476,8 @@ func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, build
 		{name: "Runa-LICENSE.txt", path: filepath.Join(alicornRoot, "third_party", "Runa", "LICENSE")},
 		{name: "Caliber-LICENSE-APACHE.txt", path: filepath.Join(caliberRoot, "LICENSE-APACHE")},
 		{name: "Caliber-LICENSE-MIT.txt", path: filepath.Join(caliberRoot, "LICENSE-MIT")},
-		{name: "AccessKit-LICENSE-APACHE.txt", path: filepath.Join(alicornRoot, ".deps", "accesskit", "accesskit-c-0.23.1", "LICENSE-APACHE")},
-		{name: "AccessKit-LICENSE-MIT.txt", path: filepath.Join(alicornRoot, ".deps", "accesskit", "accesskit-c-0.23.1", "LICENSE-MIT")},
+		{name: "AccessKit-LICENSE-APACHE.txt", path: accessKitApache},
+		{name: "AccessKit-LICENSE-MIT.txt", path: accessKitMIT},
 		{name: "Odin-LICENSE.txt", path: filepath.Join(filepath.Dir(odinExe), "LICENSE")},
 	}
 	if runtime.GOOS == "windows" {
@@ -445,7 +489,7 @@ func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, build
 	if runtime.GOOS == "darwin" {
 		licenseSources = append(licenseSources, licenseSource{name: "SDL-LICENSE.txt", path: macSDLLicense})
 	} else {
-		licenseSources = append(licenseSources, licenseSource{name: "SDL-LICENSE.txt", path: filepath.Join(root, "packaging", "SDL-LICENSE.txt")})
+		licenseSources = append(licenseSources, licenseSource{name: "SDL-LICENSE.txt", path: sdlLicense})
 	}
 	goroot, err := commandOutput(root, goExe, "env", "GOROOT")
 	if err != nil {
@@ -700,7 +744,7 @@ func safeFilePart(value string) string {
 	return strings.Trim(builder.String(), "-_")
 }
 
-func assembleConsumerPackage(root, alicornRoot, odinExe, executable, buildDir, appDir, metadataPath string, manifest scratchpadBuildManifest, version, macSDLRuntime string) (string, error) {
+func assembleConsumerPackage(root, alicornRoot, odinExe, executable, buildDir, appDir, metadataPath string, manifest scratchpadBuildManifest, version, macSDLRuntime, sdlLinkage, sdlVersion string) (string, error) {
 	sdlLicense := filepath.Join(buildDir, "licenses", "SDL-LICENSE.txt")
 	accessKitApache := filepath.Join(buildDir, "licenses", "AccessKit-LICENSE-APACHE.txt")
 	accessKitMIT := filepath.Join(buildDir, "licenses", "AccessKit-LICENSE-MIT.txt")
@@ -711,10 +755,15 @@ func assembleConsumerPackage(root, alicornRoot, odinExe, executable, buildDir, a
 		}
 		args := []string{
 			"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(alicornRoot, "tools", "package_app.ps1"),
-			"-Executable", executable, "-Metadata", metadataPath, "-SDLLinkage", "Shared",
-			"-SDLRuntime", filepath.Join(buildDir, "SDL3.dll"), "-SDLLicense", sdlLicense,
+			"-Executable", executable, "-Metadata", metadataPath, "-SDLLinkage", sdlLinkage,
+			"-SDLLicense", sdlLicense,
 			"-AccessKitLicenseApache", accessKitApache, "-AccessKitLicenseMIT", accessKitMIT,
 			"-OutputDirectory", appDir,
+		}
+		if sdlLinkage == "shared" {
+			args = append(args, "-SDLRuntime", filepath.Join(buildDir, "SDL3.dll"))
+		} else {
+			args = append(args, "-SDLVersion", sdlVersion)
 		}
 		if err := runCommand(root, nil, "Alicorn Windows dependency package audit", powershell, args...); err != nil {
 			return "", err
@@ -793,6 +842,10 @@ func writePackageBuildManifest(appDir string, manifest scratchpadBuildManifest) 
 }
 
 func consumerPackageSmoke(root, executable, tempParent string) error {
+	return consumerPackageSmokeWithOptions(root, executable, tempParent, false)
+}
+
+func consumerPackageSmokeWithOptions(root, executable, tempParent string, isolateWindowsPath bool) error {
 	smokeRoot, err := os.MkdirTemp(tempParent, ".relocated-smoke-")
 	if err != nil {
 		return err
@@ -812,6 +865,13 @@ func consumerPackageSmoke(root, executable, tempParent string) error {
 	env = setEnv(env, "SCRATCHPAD_DISABLE_RECOVERY", "1")
 	env = setEnv(env, "SCRATCHPAD_DISABLE_SESSION", "1")
 	if runtime.GOOS == "windows" {
+		if isolateWindowsPath {
+			systemRoot := os.Getenv("SystemRoot")
+			if systemRoot == "" {
+				return errors.New("cannot isolate static-package smoke PATH: SystemRoot is unset")
+			}
+			env = setEnv(env, "PATH", filepath.Join(systemRoot, "System32")+string(os.PathListSeparator)+systemRoot)
+		}
 		env = setEnv(env, "APPDATA", configDir)
 		env = setEnv(env, "LOCALAPPDATA", configDir)
 		env = setEnv(env, "USERPROFILE", smokeRoot)
@@ -948,7 +1008,7 @@ func unzipArchive(source, destination string) error {
 	return nil
 }
 
-func windowsArchiveSmoke(root, archive string, tempParent string) error {
+func windowsArchiveSmoke(root, archive string, tempParent string, isolateWindowsPath bool) error {
 	extractDir, err := os.MkdirTemp(tempParent, ".zip-smoke-")
 	if err != nil {
 		return err
@@ -961,7 +1021,7 @@ func windowsArchiveSmoke(root, archive string, tempParent string) error {
 	if err := verifyWindowsGuiSubsystem(executable); err != nil {
 		return err
 	}
-	return consumerPackageSmoke(root, executable, tempParent)
+	return consumerPackageSmokeWithOptions(root, executable, tempParent, isolateWindowsPath)
 }
 
 func macArchiveSmoke(root, archive string, tempParent string) error {

@@ -59,6 +59,7 @@ func run(args []string) error {
 	release := flags.Bool("release", false, "build optimized native artifacts")
 	version := flags.String("version", "", "consumer package version (required for package)")
 	outArg := flags.String("out", "", "artifact directory (package defaults under out/packages)")
+	staticSDL := flags.Bool("static-sdl", false, "package Windows with Alicorn's prepared static SDL recipe")
 	workspace := flags.String("workspace", "", "initial Scratchpad workspace directory; defaults to this checkout")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -68,6 +69,12 @@ func run(args []string) error {
 	}
 	if command != "build" && command != "test" && command != "smoke" && command != "run" && command != "package" {
 		return fmt.Errorf("unknown command %q; expected build, test, smoke, run, or package", command)
+	}
+	if *staticSDL && command != "package" {
+		return errors.New("--static-sdl is supported only by the package command")
+	}
+	if *staticSDL && runtime.GOOS != "windows" {
+		return errors.New("--static-sdl currently supports Windows x64 packages only")
 	}
 
 	root, err := repoRoot()
@@ -134,7 +141,11 @@ func run(args []string) error {
 			if *version == "" {
 				return errors.New("package requires --version, for example --version 0.1.1")
 			}
-			out = filepath.Join("out", "packages", fmt.Sprintf("Scratchpad-v%s-%s-%s", strings.TrimPrefix(*version, "v"), runtime.GOOS, runtime.GOARCH))
+			name := fmt.Sprintf("Scratchpad-v%s-%s-%s", strings.TrimPrefix(*version, "v"), runtime.GOOS, runtime.GOARCH)
+			if *staticSDL {
+				name += "-static-sdl"
+			}
+			out = filepath.Join("out", "packages", name)
 		} else {
 			out = "out/alicorn"
 		}
@@ -147,7 +158,7 @@ func run(args []string) error {
 		return err
 	}
 	if command == "package" {
-		return packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, out, *version)
+		return packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, out, *version, *staticSDL)
 	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
@@ -540,7 +551,11 @@ func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg str
 }
 
 func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, release, consumerBuild bool, env []string) (string, error) {
-	if runtime.GOOS == "windows" {
+	return buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags, nil, true, release, consumerBuild, env)
+}
+
+func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags string, compilerArguments []string, stageSharedSDL, release, consumerBuild bool, env []string) (string, error) {
+	if runtime.GOOS == "windows" && stageSharedSDL {
 		sdl := filepath.Join(filepath.Dir(odinExe), "vendor", "sdl3", "SDL3.dll")
 		if info, err := os.Stat(sdl); err != nil || info.Size() < 100_000 {
 			return "", fmt.Errorf("a real Odin distribution with vendor/sdl3/SDL3.dll is required (missing or invalid: %s)", sdl)
@@ -552,6 +567,7 @@ func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, rel
 	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
 	args = appendDarwinMinimumOSVersion(args, runtime.GOOS)
 	args = appendLinkerFlags(args, nativeFrontendLinkerFlagsFor(runtime.GOOS, env, accessKitFlags))
+	args = append(args, compilerArguments...)
 	if release {
 		args = append(args, "-o:speed")
 	}

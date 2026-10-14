@@ -2,6 +2,12 @@ name: Consumer package candidates
 
 on:
   workflow_dispatch:
+    inputs:
+      static_sdl:
+        description: 'Also build and smoke-test the Windows static SDL package (opt-in, expensive on a cold runner)'
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'cmd/alicorn-dev/**'
@@ -16,6 +22,7 @@ on:
 
 jobs:
   package:
+    if: github.event_name == 'pull_request' || !inputs.static_sdl
     strategy:
       fail-fast: false
       matrix:
@@ -70,3 +77,104 @@ jobs:
           name: scratchpad-v0.1.1-${{ matrix.output }}
           path: out/packages/${{ matrix.output }}/
           if-no-files-found: error
+
+  static-sdl-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.static_sdl
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: laytan/setup-odin@v2
+        with:
+          token: false
+          release: nightly
+      - name: Set up MSVC linker and Windows SDK
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install 64-bit MinGW-w64 for Go cgo
+        uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Add 64-bit cgo compiler to PATH
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:MSYS2_LOCATION 'ucrt64\bin')
+      - name: Build, audit, and smoke the static SDL package
+        shell: pwsh
+        run: |
+          & .\tools\caliber.ps1 sync --project-root $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Locked dependency sync failed before the static SDL build.'
+          }
+          $alicornRoot = Join-Path $env:GITHUB_WORKSPACE '.deps\alicorn'
+          if (-not (Test-Path -LiteralPath $alicornRoot -PathType Container)) {
+            throw "Locked Alicorn checkout is missing: $alicornRoot"
+          }
+          subst R: $alicornRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create a short drive mapping for the Alicorn checkout.'
+          }
+          try {
+            .\tools\alicorn.ps1 package --alicorn-root R:\ --version 0.1.1 --static-sdl --out out\packages\windows-static-sdl
+          } finally {
+            subst R: /d
+          }
+      - name: Verify static recipe manifest and launch extracted package
+        shell: pwsh
+        run: |
+          $packageRoot = (Resolve-Path 'out\packages\windows-static-sdl').Path
+          $manifest = Get-Content (Join-Path $packageRoot 'release-manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.dependencies.sdl3.linkage -ne 'static') {
+            throw 'Release manifest does not report static SDL linkage.'
+          }
+          if ($manifest.validation.nativeDependencyAudit -ne 'passed' -or $manifest.validation.relocatedArchiveLaunch -ne 'passed') {
+            throw 'Package audit or relocated archive smoke did not pass.'
+          }
+          if ($manifest.artifacts.Count -ne 1) {
+            throw 'Expected exactly one static SDL package archive.'
+          }
+          $archive = Join-Path $packageRoot $manifest.artifacts[0].name
+          if (-not (Test-Path $archive -PathType Leaf)) {
+            throw "Package archive is missing: $archive"
+          }
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'scratchpad-static-sdl-extracted'
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot -Force
+          $executable = Join-Path $extractRoot 'Scratchpad\Scratchpad.exe'
+          if (-not (Test-Path $executable -PathType Leaf)) {
+            throw 'Extracted package does not contain Scratchpad.exe.'
+          }
+          if (Get-ChildItem -LiteralPath (Join-Path $extractRoot 'Scratchpad') -Filter 'SDL3.dll' -Recurse) {
+            throw 'Static SDL package unexpectedly contains SDL3.dll.'
+          }
+          $smokeRoot = Join-Path $env:RUNNER_TEMP 'scratchpad-static-sdl-launch'
+          $workspace = Join-Path $smokeRoot 'workspace'
+          $config = Join-Path $smokeRoot 'config'
+          $unrelatedWorkingDirectory = Join-Path $smokeRoot 'unrelated-working-directory'
+          New-Item -ItemType Directory -Force -Path $workspace, $config, $unrelatedWorkingDirectory | Out-Null
+          $env:SCRATCHPAD_ALICORN_SMOKE = '1'
+          $env:SCRATCHPAD_ALICORN_WORKSPACE = $workspace
+          $env:SCRATCHPAD_DISABLE_RECOVERY = '1'
+          $env:SCRATCHPAD_DISABLE_SESSION = '1'
+          $env:APPDATA = $config
+          $env:LOCALAPPDATA = $config
+          $env:USERPROFILE = $smokeRoot
+          $env:PATH = (Join-Path $env:SystemRoot 'System32') + ';' + $env:SystemRoot
+          $process = Start-Process -FilePath $executable -WorkingDirectory $unrelatedWorkingDirectory -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Extracted static SDL package exited with code $($process.ExitCode)."
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scratchpad-v0.1.1-windows-static-sdl
+          path: out/packages/windows-static-sdl/
+          if-no-files-found: error
+          retention-days: 7
