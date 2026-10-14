@@ -13,7 +13,9 @@ The Windows static package check is also available as an opt-in run of the
 `static_sdl` input enabled. This keeps static SDL preparation out of routine
 Go-only test runs; the job builds the package, checks its audit manifest and
 SDL DLL absence, and launches the extracted archive from an unrelated working
-directory.
+directory. The package step uses a temporary short drive mapping because MSVC's
+CMake try-compile FileTracker can fail under the recipe's nested staging path
+on a hosted Windows runner.
 
 This is an opt-in package experiment. The existing Windows package command
 continues to produce the shared-SDL portable ZIP. Static mode asks the pinned

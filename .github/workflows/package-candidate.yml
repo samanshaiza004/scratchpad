@@ -110,7 +110,19 @@ jobs:
         run: Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:MSYS2_LOCATION 'ucrt64\bin')
       - name: Build, audit, and smoke the static SDL package
         shell: pwsh
-        run: .\tools\alicorn.ps1 package --version 0.1.1 --static-sdl --out out\packages\windows-static-sdl
+        run: |
+          subst R: $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create a short drive mapping for the static SDL build.'
+          }
+          Push-Location
+          try {
+            Set-Location R:\
+            .\tools\alicorn.ps1 package --version 0.1.1 --static-sdl --out out\packages\windows-static-sdl
+          } finally {
+            Pop-Location
+            subst R: /d
+          }
       - name: Verify static recipe manifest and launch extracted package
         shell: pwsh
         run: |
