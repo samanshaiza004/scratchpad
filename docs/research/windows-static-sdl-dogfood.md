@@ -8,6 +8,13 @@ static native-link recipe:
     --out out/packages/windows-static-sdl
 ```
 
+The Windows static package check is also available as an opt-in run of the
+`Consumer package candidates` GitHub Actions workflow. Dispatch it with the
+`static_sdl` input enabled. This keeps static SDL preparation out of routine
+Go-only test runs; the job builds the package, checks its audit manifest and
+SDL DLL absence, and launches the extracted archive from an unrelated working
+directory.
+
 This is an opt-in package experiment. The existing Windows package command
 continues to produce the shared-SDL portable ZIP. Static mode asks the pinned
 Alicorn checkout for a validated recipe, sets its `ODIN_ROOT` on the Odin
