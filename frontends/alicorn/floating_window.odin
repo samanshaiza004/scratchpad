@@ -540,6 +540,7 @@ floating_window_build :: proc(
 	alicorn.surface_end(&ui)
 	alicorn.style_environment_pop(&ui, workbench_scope)
 	alicorn.end_frame(&ui)
+	editor_view_restore_after_frame(app, rt, app.editor_scroll_owner)
 	if app.editor_focus_pending && app.editor_scroll_owner != 0 {
 		if alicorn.focus(rt, app.editor_scroll_owner) { app.editor_focus_pending = false }
 	}

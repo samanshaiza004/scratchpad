@@ -61,6 +61,15 @@ build_app :: proc(
 		state := &app.backend.state
 		split_initial := state.sidebar_width
 		if split_initial < 180 || split_initial > 2048 { split_initial = 250 }
+		if app.workspace_split_restore_runtime != rt {
+			app.workspace_split_restore_runtime = rt
+			app.workspace_split_restore_token = alicorn.restore_token_next(rt)
+			app.workspace_split_restore_complete = false
+		}
+		split_restore := alicorn.Split_Restore_Request{}
+		if !app.workspace_split_restore_complete {
+			split_restore = alicorn.Split_Restore_Request{token=app.workspace_split_restore_token, preferred_position=split_initial}
+		}
 		workspace_split := alicorn.split_begin(
 			&ui,
 			key=alicorn.key_string("scratchpad-workspace-editor-split"),
@@ -70,6 +79,7 @@ build_app :: proc(
 			min_second=480,
 			style=alicorn.layout_style(.Row, grow=1, gap=2, clip=true),
 			label="scratchpad-workspace-editor-split",
+			restore=split_restore,
 		)
 		app.workspace_editor_split_node = workspace_split.id
 		app.workspace_sidebar_width = workspace_split.position
@@ -381,6 +391,18 @@ build_app :: proc(
 
 	alicorn.end_frame(&ui)
 	image_preview_after_frame(app, rt)
+	if !app.workspace_split_restore_complete &&
+	   app.workspace_split_restore_token != alicorn.RESTORE_TOKEN_NONE &&
+	   app.workspace_editor_split_node != 0 {
+		split_restore_state, found := alicorn.restore_state_query(
+			rt, .Split, app.workspace_editor_split_node, app.workspace_split_restore_token,
+		)
+		if found && split_restore_state.outcome != .None &&
+		   split_restore_state.outcome != .Requested && split_restore_state.outcome != .Deferred {
+			app.workspace_split_restore_complete = true
+		}
+	}
+	editor_view_restore_after_frame(app, rt, app.editor_scroll_owner)
 	if app.editor_focus_pending && app.image_scroll_owner != 0 {
 		if alicorn.focus(rt, app.image_scroll_owner) { app.editor_focus_pending = false }
 	}

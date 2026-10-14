@@ -123,6 +123,8 @@ Editor_View_State :: struct {
 	wrap_mode: Editor_Wrap_Mode,
 	restore_y_pending: bool,
 	restore_x_pending: bool,
+	restore_runtime: ^alicorn.Runtime,
+	restore_token: alicorn.Restore_Token,
 	selection_anchor:  u64,
 	caret_byte:        u64,
 	anchor_affinity:   alicorn.Text_Affinity,

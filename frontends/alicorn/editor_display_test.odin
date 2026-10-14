@@ -558,6 +558,38 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 		}
 	}
 
+	// Dogfood the durable restore request through Scratchpad's real virtualized
+	// editor. The requested offset should seed a nonzero first row and complete
+	// with the runtime's resolved value before Scratchpad saves the view again.
+	restore_view_index := editor_view_find(app.editor_views[:], active.id)
+	testing.expect(t, restore_view_index >= 0, "the active Scratchpad document should own application-side view state")
+	if restore_view_index >= 0 {
+		dogfood_view := &app.editor_views[restore_view_index]
+		dogfood_view.scroll_y = 500
+		dogfood_view.restore_y_pending = true
+		dogfood_view.restore_runtime = nil
+		dogfood_view.restore_token = alicorn.RESTORE_TOKEN_NONE
+		alicorn.invalidate_root(&rt, "Scratchpad restoration dogfood fixture")
+		_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
+		restore_dogfood_state, restore_found := alicorn.restore_state_query(&rt, .Scroll, app.editor_scroll_owner)
+		restored_rows := len(app.editor_row_targets) > 0 && app.editor_row_targets[0].logical_line > 0
+		first_restored_line := u64(0)
+		if len(app.editor_row_targets) > 0 { first_restored_line = app.editor_row_targets[0].logical_line }
+		live_restored_scroll := alicorn.scroll_region_state(&rt, app.editor_scroll_owner)
+		testing.expect(t, restored_rows,
+			fmt.tprintf("the durable scroll request should seed the virtual list near its saved logical position (rows=%d first=%d live_y=%v saved_y=%v)",
+				len(app.editor_row_targets), first_restored_line, live_restored_scroll.offset_y, dogfood_view.scroll_y))
+		testing.expect(t, restore_found && restore_dogfood_state.outcome == .Applied &&
+			abs(restore_dogfood_state.requested.y-500) < 0.1 && abs(restore_dogfood_state.resolved.y-500) < 0.1,
+			"Scratchpad should report the applied scroll request and its resolved offset")
+		dogfood_view.scroll_y = 0
+		dogfood_view.restore_y_pending = true
+		dogfood_view.restore_runtime = nil
+		dogfood_view.restore_token = alicorn.RESTORE_TOKEN_NONE
+		alicorn.invalidate_root(&rt, "Scratchpad restoration dogfood reset")
+		_ = build_app(rawptr(&app), &rt, 1100, 720, 1)
+	}
+
 	// Simulate wheel movement, then rebuild. The newly observed retained offset
 	// must be saved rather than mistaken for a stale view that needs restoring.
 	vertical_changed := alicorn.scroll_region_set_offset(&rt, app.editor_scroll_owner, 1_000, "test editor wheel scroll")
@@ -578,6 +610,15 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	}
 	testing.expect(t, workspace_split_id != 0, "the Scratchpad tree and editor should use Alicorn's retained split primitive")
 	if workspace_split_id == 0 { return }
+	split_restore, split_restore_found := alicorn.restore_state_query(
+		&rt, .Split, workspace_split_id, app.workspace_split_restore_token,
+	)
+	expected_sidebar := app.backend.state.sidebar_width
+	if expected_sidebar < 180 || expected_sidebar > 2048 { expected_sidebar = 250 }
+	testing.expect(t, split_restore_found &&
+		(split_restore.outcome == .Applied || split_restore.outcome == .Clamped) &&
+		abs(split_restore.preferred.x-expected_sidebar) < 0.1,
+		"the persisted Scratchpad sidebar width should flow through Alicorn's split restore contract")
 	workspace_split, split_found := rt.nodes[workspace_split_id]
 	testing.expect(t, split_found && workspace_split.split_min_first == 180 && workspace_split.split_min_second == 480,
 		"the workspace split should preserve useful minimum widths for both panes")
