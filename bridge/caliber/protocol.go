@@ -379,8 +379,8 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	switch request.Command {
 	case "snapshot", "ping", "refresh_workspace", "list_workspace_files", "clear_recent_workspaces":
 	case "reorder_documents":
-		if len(request.DocumentOrder) < 2 || len(request.DocumentOrder) > 4096 {
-			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_order", "document_order must contain between 2 and 4096 document IDs", false), false
+		if len(request.DocumentOrder) < 1 || len(request.DocumentOrder) > 4096 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_order", "document_order must contain between 1 and 4096 document IDs", false), false
 		}
 		for _, id := range request.DocumentOrder {
 			if id == "" || !utf8.ValidString(id) || strings.ContainsRune(id, 0) {

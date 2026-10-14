@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "master",
-    "revision": "9f2c528cfb9eb397cc8b1ac1218c0b632409c3de"
+    "ref": "codex/secondary-native-windows",
+    "revision": "c940c0ad13e8be570314f0536d12a13b42b56050"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

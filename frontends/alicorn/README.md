@@ -54,3 +54,21 @@ Scratchpad installs its bundled Atkinson UI and monospace faces through Alicorn'
 Compared with the retired Shirei workbench, Alicorn does not yet provide the outline sidebar (code symbols, Markdown headings, tasks, and links), fold/collapse controls for code and Markdown, editor font-zoom commands, or expand-selection. It restores the last saved workspace, open documents, active document, editor positions, sidebar width, and recent workspace list; crash-recovery data remains a separate lifecycle. The detailed coverage and follow-up list is in [Alicorn coverage](../../docs/frontends/alicorn/PARITY.md). These remaining product gaps are distinct from native-platform verification still pending for v0.1.0.
 
 The retired Shirei and GPUI source is preserved at Git ref `archive/pre-v0.1.0-frontends`; it is no longer an active build target.
+
+
+## Floating documents
+
+Drag a text-document tab outside the Scratchpad window to open it in a compact
+floating editor. The document remains in the shared authoritative workspace,
+but its tab and editor view move to the child window. The floating editor has an
+independent Alicorn Runtime, source-window reader, and accessibility reader; edits still flow through
+Scratchpad's shared serial edit lane. Use **Return to tabs** (or close the
+floating window) to put the document back in the primary tab strip. **On top**
+is an optional native window setting. Image and unsupported-file tabs are not
+detachable yet.
+
+Detaching promotes a preview to a regular document and selects the next primary
+tab, or the preceding tab when detaching the last one. On Windows, document
+metadata, Save, On top, Return to tabs, and native caption controls share one
+workbench-themed title bar. Context menus and persistent operation notices
+use the selected workbench theme.

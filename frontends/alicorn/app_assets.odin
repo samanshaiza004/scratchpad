@@ -21,6 +21,7 @@ Scratchpad_Image_Retirement :: struct {
 scratchpad_application_initialize :: proc(state: rawptr, rt: ^alicorn.Runtime) {
     if state == nil || rt == nil { return }
     app := cast(^App)state
+    if app.primary_runtime == nil { app.primary_runtime = rt }
     _ = alicorn.font_load_bytes(rt, .UI, SCRATCHPAD_UI_FONT_DATA)
     _ = alicorn.font_load_italic_bytes(rt, .UI, SCRATCHPAD_UI_ITALIC_FONT_DATA)
     _ = alicorn.font_load_bytes(rt, .Monospace, SCRATCHPAD_MONO_FONT_DATA)

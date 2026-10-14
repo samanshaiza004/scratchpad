@@ -224,7 +224,7 @@ func TestRuntimeStartsWithPlatformTrashAdapter(t *testing.T) {
 	}
 }
 
-func TestOpenPathPreviewDispositionPublishesPreviewState(t *testing.T) {
+func TestSinglePreviewPromotionSurvivesNextPreviewOpen(t *testing.T) {
 	root := t.TempDir()
 	first := filepath.Join(root, "first.md")
 	second := filepath.Join(root, "second.md")
@@ -248,9 +248,24 @@ func TestOpenPathPreviewDispositionPublishesPreviewState(t *testing.T) {
 		t.Fatalf("first preview open: response=%+v state=%+v", opened, state)
 	}
 
+	// Tearing off the only preview tab sends its current one-item order. That
+	// explicit tab interaction must pin it even though the order is unchanged.
 	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
 		Version:         ProtocolVersion,
 		RequestID:       92,
+		BasedOnRevision: state.ApplicationRev,
+		Command:         "reorder_documents",
+		DocumentOrder:   []string{state.Documents[0].ID},
+	}))
+	promoted := decodeResponse(t, runtime.Pump())
+	state = latestStateForTest(t, runtime)
+	if !promoted.OK || len(state.Documents) != 1 || state.Documents[0].Preview {
+		t.Fatalf("single preview reorder did not pin document: response=%+v state=%+v", promoted, state)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version:         ProtocolVersion,
+		RequestID:       93,
 		BasedOnRevision: state.ApplicationRev,
 		Command:         "open_path",
 		Path:            second,
@@ -258,8 +273,8 @@ func TestOpenPathPreviewDispositionPublishesPreviewState(t *testing.T) {
 	}))
 	secondResponse := decodeResponse(t, runtime.Pump())
 	state = latestStateForTest(t, runtime)
-	if !secondResponse.OK || len(state.Documents) != 1 || !state.Documents[0].Preview || state.Documents[0].Path != second {
-		t.Fatalf("second preview open did not replace clean first preview: response=%+v state=%+v", secondResponse, state)
+	if !secondResponse.OK || len(state.Documents) != 2 || state.Documents[0].Preview || !state.Documents[1].Preview || state.Documents[0].Path != first || state.Documents[1].Path != second {
+		t.Fatalf("second preview open did not preserve promoted first document: response=%+v state=%+v", secondResponse, state)
 	}
 }
 

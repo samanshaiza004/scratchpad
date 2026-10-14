@@ -14,6 +14,7 @@ Deferred_Action_Kind :: enum {
 	Close_With_Discard,
 	Cancel_Close_Prompt,
 	Save_As_Path,
+	Save_Document,
 	Conflict_Reload,
 	Conflict_Keep_Mine,
 }
@@ -21,6 +22,7 @@ Deferred_Action_Kind :: enum {
 Deferred_Action :: struct {
 	kind:        Deferred_Action_Kind,
 	value:       string,
+	document_id: string,
 	path:        string,
 	relative_path: string,
 	name:        string,
@@ -44,9 +46,15 @@ deferred_action_enqueue :: proc(
 	source_is_dir := false,
 	discard := false,
 	workspace_root := "",
+	document_id := "",
 ) -> bool {
 	if app == nil || len(app.deferred_actions) >= MAX_DEFERRED_ACTIONS { return false }
 	action := Deferred_Action{kind=kind}
+	if document_id != "" {
+		copy, err := strings.clone(document_id, context.allocator)
+		if err != nil { return false }
+		action.document_id = copy
+	}
 	if len(value) > 0 {
 		value_copy, err := strings.clone(value, context.allocator)
 		if err != nil { deferred_action_destroy(&action); return false }
@@ -87,6 +95,7 @@ deferred_action_enqueue :: proc(
 deferred_action_destroy :: proc(action: ^Deferred_Action) {
 	if action == nil { return }
 	if len(action.value) > 0 { delete(action.value, context.allocator) }
+	delete(action.document_id, context.allocator)
 	if len(action.path) > 0 { delete(action.path, context.allocator) }
 	if len(action.relative_path) > 0 { delete(action.relative_path, context.allocator) }
 	if len(action.name) > 0 { delete(action.name, context.allocator) }
@@ -176,7 +185,16 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		ordered_remove(&app.deferred_actions, 0)
 		switch action.kind {
 		case .Action:
-			dispatch_action(app, rt, action.value)
+			if action.document_id != "" && !document_is_open(&app.backend.state, action.document_id) { deferred_action_destroy(&action); continue }
+			if floating := app.floating_window; floating != nil && action.document_id == floating.document_id {
+				floating_app, scope := floating_editor_scope_enter(floating, floating.runtime)
+				if floating_app != nil { dispatch_action(floating_app, floating.runtime, action.value); floating_editor_scope_leave(floating, floating_app, &scope) }
+			} else {
+				if action.document_id != "" && document_is_open(&app.backend.state, action.document_id) && action.document_id != app.backend.state.active { select_document(app, rt, action.document_id) }
+				dispatch_action(app, rt, action.value)
+			}
+		case .Save_Document:
+			floating_window_save(app, rt, action.value)
 		case .Select_Document:
 			select_document(app, rt, action.value)
 		case .Close_Document:

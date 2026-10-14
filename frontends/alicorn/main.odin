@@ -89,12 +89,16 @@ App :: struct {
 	accessibility_appearance: alicorn.Accessibility_Appearance_Preferences,
 	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
+	primary_runtime: ^alicorn.Runtime,
+	floating_window: ^Floating_Window_State,
+	editor_visible_window_lane_override: ^bridge.Visible_Window_Lane,
 	paper_surface_material: alicorn.Material_ID,
 	raised_surface_material: alicorn.Material_ID,
 	floating_surface_material: alicorn.Material_ID,
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	accessibility_source_lane: Accessibility_Source_Lane,
+	accessibility_source_lane_override: ^Accessibility_Source_Lane,
 	accessibility_projection: Editor_Accessibility_Projection,
 	accessibility_source_error: string,
 	accessibility_source_error_document_id: string,
@@ -448,27 +452,8 @@ editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.
 	view.viewport_anchor_resolved = false
 }
 
-application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
-	app := cast(^App)state
-	if !app.backend.started { return }
-	app.smoke_wake_observed = true
-	if !bridge.editor_edit_lane_is_active(&app.editor_edit_lane) {
-		changed, ok, message := bridge.backend_consume_wake(&app.backend)
-		if !ok { set_error(app, message); alicorn.invalidate_root(rt, "Scratchpad backend state read failed"); return }
-		if changed {
-			editor_capture_source_anchor_before_publication(app, rt)
-			sync_runtime_actions(app, rt)
-			sync_menu_states(app)
-			tree_sync_workspace(app, rt)
-			editor_views_prune(app)
-			editor_window_rejection_clear(app)
-			alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
-		}
-	}
-	image_preview_take_completion(app, rt)
-	_ = workspace_search_sync_wake(app, rt)
-	quick_open_take_completion(app, rt)
-	window_result, window_found := bridge.visible_window_lane_take(&app.visible_window_lane)
+application_visible_window_wake :: proc(app: ^App, rt: ^alicorn.Runtime, lane: ^bridge.Visible_Window_Lane) {
+	window_result, window_found := bridge.visible_window_lane_take(lane)
 	if window_found {
 		installed := false
 		visible_error_changed := false
@@ -576,14 +561,68 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 			app.editor_window_error, _ = strings.clone(window_result.error, context.allocator)
 			visible_error_changed = true
 		}
-		bridge.visible_window_lane_result_destroy(&window_result, app.visible_window_lane.allocator)
+		bridge.visible_window_lane_result_destroy(&window_result, lane.allocator)
 		if installed || visible_error_changed {
 			alicorn.invalidate_root(rt, "Scratchpad bounded editor window completed")
 		}
 	}
+}
+
+application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
+	app := cast(^App)state
+	if !app.backend.started { return }
+	app.smoke_wake_observed = true
+	if !bridge.editor_edit_lane_is_active(&app.editor_edit_lane) {
+		changed, ok, message := bridge.backend_consume_wake(&app.backend)
+		if !ok { set_error(app, message); alicorn.invalidate_root(rt, "Scratchpad backend state read failed"); return }
+		if changed {
+			editor_capture_source_anchor_before_publication(app, rt)
+			if floating := app.floating_window; floating != nil {
+				floating_app, floating_scope := floating_editor_scope_enter(floating, floating.runtime)
+				if floating_app != nil {
+					editor_capture_source_anchor_before_publication(floating_app, floating.runtime)
+					editor_window_rejection_clear(floating_app)
+					floating_editor_scope_leave(floating, floating_app, &floating_scope)
+				}
+			}
+			sync_runtime_actions(app, rt)
+			sync_menu_states(app)
+			tree_sync_workspace(app, rt)
+			editor_views_prune(app)
+			editor_window_rejection_clear(app)
+			alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
+		}
+	}
+	image_preview_take_completion(app, rt)
+	_ = workspace_search_sync_wake(app, rt)
+	quick_open_take_completion(app, rt)
+	if floating := app.floating_window; floating != nil && !document_is_open(&app.backend.state, floating.document_id) {
+		floating.return_to_tabs = false
+		host.application_close_window(app.services.windows)
+	}
+	application_visible_window_wake(app, rt, &app.visible_window_lane)
+	if floating := app.floating_window; floating != nil && floating.visible_window_lane.thread != nil {
+		floating_app, floating_scope := floating_editor_scope_enter(floating, floating.runtime)
+		if floating_app != nil {
+			application_visible_window_wake(floating_app, floating.runtime, &floating.visible_window_lane)
+			editor_accessibility_take_completion(floating_app, floating.runtime)
+			editor_accessibility_requests_drain(floating_app, floating.runtime)
+			floating_editor_scope_leave(floating, floating_app, &floating_scope)
+		}
+	}
 	edit_result, edit_found := bridge.editor_edit_lane_take(&app.editor_edit_lane)
 	if edit_found {
-		editor_handle_edit_result(app, rt, &edit_result)
+		floating := app.floating_window
+		if floating != nil && len(app.editor_edits) > 0 && app.editor_edits[0].document_id == floating.document_id {
+			floating_app, floating_scope := floating_editor_scope_enter(floating, floating.runtime)
+			if floating_app != nil {
+				editor_handle_edit_result(floating_app, floating.runtime, &edit_result, run_deferred=false)
+				floating_editor_scope_leave(floating, floating_app, &floating_scope)
+				sync_runtime_actions(app, rt)
+				sync_menu_states(app)
+				if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+			}
+		} else { editor_handle_edit_result(app, rt, &edit_result) }
 		bridge.editor_edit_lane_result_destroy(&edit_result, app.editor_edit_lane.allocator)
 		alicorn.invalidate_root(rt, "Scratchpad optimistic editor edit acknowledged")
 	}
@@ -1973,7 +2012,7 @@ editor_reconcile_applied_replacement :: proc(
 	return true
 }
 
-editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Editor_Edit_Lane_Result) {
+editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Editor_Edit_Lane_Result, run_deferred := true) {
 	if app == nil || result == nil { return }
 	if len(app.editor_edits) == 0 {
 		shutdown_note_edit_failure(app)
@@ -1989,7 +2028,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		editor_views_prune(app)
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
-		if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+		if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad discarded edits after an out-of-order acknowledgement") }
 		return
 	}
@@ -2010,7 +2049,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			delete(failed_document, context.allocator)
 			editor_views_prune(app)
 			sync_menu_states(app)
-			if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+			if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 			if rt != nil { alicorn.invalidate_root(rt, "Scratchpad recovered from an inconsistent edit acknowledgement") }
 			return
 		}
@@ -2025,7 +2064,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				delete(failed_document, context.allocator)
 				editor_views_prune(app)
 				sync_menu_states(app)
-				if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+				if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 				if rt != nil { alicorn.invalidate_root(rt, "Scratchpad reloaded after edit acknowledgement reconciliation failed") }
 				return
 			}
@@ -2053,7 +2092,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		editor_remove_edit(app, 0)
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
-		if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+		if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad accepted an optimistic document edit") }
 		return
 	}
@@ -2088,7 +2127,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 	editor_views_prune(app)
 	sync_menu_states(app)
 	_, _ = editor_dispatch_next_edit(app)
-	if len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+	if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad rejected an optimistic document edit") }
 }
 

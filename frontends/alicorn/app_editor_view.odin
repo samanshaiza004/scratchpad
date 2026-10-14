@@ -166,7 +166,7 @@ editor_wrap_viewport_size :: proc(
 	return max(width, 240), max(height, EDITOR_ROW_HEIGHT*text_scale)
 }
 
-build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
+build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document, show_heading := true) {
 	view_index := editor_view_find(app.editor_views[:], document.id)
 	view_created := view_index < 0
 	view_ok := true
@@ -203,7 +203,6 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		app.editor_presented_document_id = presented_id
 		editor_view_mark_active(view)
 	}
-	alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
 	display_line_count := document.line_count
 	if view.optimistic_pending_edits > 0 {
 		if view.optimistic_line_delta < 0 {
@@ -213,10 +212,13 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			display_line_count += u64(view.optimistic_line_delta)
 		}
 	}
+	if show_heading {
+		alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
 	heading := fmt.tprintf("%s  ·  %s  ·  %d lines", document_title(document.path), document.language, display_line_count)
 	alicorn.text(ui, heading)
 	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	alicorn.container_end(ui)
+	} else if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	if document.status == "conflict" {
 		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string("document-conflict-actions"), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=alicorn.style_color(ui, .Subtle_Surface))
 		alicorn.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
@@ -724,7 +726,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		}
 		if !editor_window_request_is_rejected(app, request) {
 			generation, accepted, request_error := bridge.visible_window_lane_request(
-				&app.visible_window_lane,
+				editor_visible_window_lane(app),
 				document.id,
 				app.backend.state.application_rev,
 				document.editor_revision,

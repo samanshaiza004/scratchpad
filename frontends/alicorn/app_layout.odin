@@ -22,10 +22,16 @@ build_app :: proc(
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
 	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
 	_ = find_capture_text_field(rt, app.quick_open_node, &app.quick_open_query)
-	if active, found := find_document(&app.backend.state, app.backend.state.active); found && (active.view_kind == "image" || active.view_kind == "unsupported") {
+	if active, found := find_document(&app.backend.state, app.backend.state.active); found &&
+	   (active.view_kind == "image" || active.view_kind == "unsupported" || floating_window_contains(app, active.id)) {
 		if app.find_open { find_close_surface(app) }
 		app.editor_scroll_owner = 0
 		app.editor_restore_scroll = false
+		app.editor_restore_vertical = false
+		app.editor_restore_horizontal = false
+		app.editor_focus_pending = false
+		app.editor_input_anchor_node = 0
+		if floating_window_contains(app, active.id) { editor_accessibility_retire(app, rt) }
 	}
 	app.image_scroll_owner = 0
 	if app.find_open { find_refresh_if_needed(app, rt) }
@@ -121,38 +127,47 @@ build_app :: proc(
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
 		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=app.raised_surface_material, physical_height=0.65)
 		if len(state.documents) > 0 {
-			tab_items := make([]alicorn.Tab_Bar_Item, len(state.documents), allocator=context.temp_allocator)
-			defer delete(tab_items, context.temp_allocator)
-			for document, index in state.documents {
+			tab_items := make([dynamic]alicorn.Tab_Bar_Item, 0, len(state.documents), allocator=context.temp_allocator)
+			defer delete(tab_items)
+			detached_document_id := ""
+			if app.floating_window != nil { detached_document_id = app.floating_window.document_id }
+			tab_document_indices := floating_window_tab_document_indices(state.documents, detached_document_id, context.temp_allocator)
+			defer delete(tab_document_indices)
+			for index in tab_document_indices {
+				document := state.documents[index]
 				title := document_title(document.path)
 				if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
-				tab_items[index] = alicorn.Tab_Bar_Item{
+				append(&tab_items, alicorn.Tab_Bar_Item{
 					key=alicorn.key_string(document.id),
 					label=title,
 					selected=state.active == document.id,
 					closable=true,
 					dirty=document.dirty,
 					semantic_id=document_tab_semantic_id(document.id),
-				}
+				})
 			}
-			tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
-			tab_options.height = 32
-			tab_options.close_policy = .Selected_Or_Hover
-			tab_options.drag_type = SCRATCHPAD_DRAG_TABS
-			tab_result := alicorn.tab_bar(
-				&ui,
-				alicorn.key_string("scratchpad-document-tab-bar"),
-				tab_items[:],
-				tab_options,
-				alicorn.layout_style(.Row, grow=1, height=32, clip=true),
-			)
-			if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(state.documents) {
-				document_id := state.documents[tab_result.item_index].id
-				action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
-				if !frame_deferred_action_schedule(app, action, document_id) {
-					set_error(app, "Could not queue the document tab action until the current frame is complete.")
-					alicorn.invalidate_root(rt, "Scratchpad could not defer a document tab action")
+			if len(tab_items) > 0 {
+				tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
+				tab_options.height = 32
+				tab_options.close_policy = .Selected_Or_Hover
+				tab_options.drag_type = SCRATCHPAD_DRAG_TABS
+				tab_result := alicorn.tab_bar(
+					&ui,
+					alicorn.key_string("scratchpad-document-tab-bar"),
+					tab_items[:],
+					tab_options,
+					alicorn.layout_style(.Row, grow=1, height=32, clip=true),
+				)
+				if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(tab_document_indices) {
+					document_id := state.documents[tab_document_indices[tab_result.item_index]].id
+					action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
+					if !frame_deferred_action_schedule(app, action, document_id) {
+						set_error(app, "Could not queue the document tab action until the current frame is complete.")
+						alicorn.invalidate_root(rt, "Scratchpad could not defer a document tab action")
+					}
 				}
+			} else {
+				alicorn.text(&ui, "No documents in this window", style=alicorn.layout_style(.Row, grow=1, height=32))
 			}
 		} else {
 			alicorn.text(&ui, "No documents open")
@@ -211,7 +226,15 @@ build_app :: proc(
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
-				switch active.view_kind {
+				if floating_window_contains(app, active.id) {
+					alicorn.container_begin(&ui, .Container, label="floating-document-placeholder", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=10))
+					alicorn.text(&ui, "No document open in this window.")
+					if alicorn.button(&ui, "Return to tabs", key=alicorn.key_string("floating-document-return-main"), style=alicorn.layout_style(.Row, width=140, height=32), variant=.Toolbar) {
+						floating_window_return_to_tabs(app)
+					}
+					alicorn.container_end(&ui)
+				} else {
+					switch active.view_kind {
 				case "image":
 					editor_accessibility_retire(app, rt)
 					build_image_preview(app, &ui, rt, active, dpi_scale)
@@ -220,6 +243,7 @@ build_app :: proc(
 					build_unsupported_file_view(app, &ui, active)
 				case:
 					build_document_editor(app, &ui, rt, active)
+					}
 				}
 				alicorn.component_end(&ui)
 			}
@@ -237,7 +261,7 @@ build_app :: proc(
 		}
 		alicorn.style_environment_pop(&ui, editor_theme_scope)
 		alicorn.surface_end(&ui)
-		if active, found := find_document(state, state.active); found {
+		if active, found := find_document(state, state.active); found && !floating_window_contains(app, active.id) {
 			build_document_status(app, &ui, rt, active)
 		}
 		alicorn.container_end(&ui)

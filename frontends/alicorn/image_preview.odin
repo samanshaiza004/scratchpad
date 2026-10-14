@@ -298,18 +298,28 @@ build_unsupported_file_view :: proc(app: ^App, ui: ^alicorn.UI, document: bridge
 	alicorn.container_end(ui)
 }
 
-scratchpad_error_notice_fingerprint :: proc(message: string) -> u64 {
+scratchpad_error_notice_fingerprint :: proc(message: string, style_environment: alicorn.Style_Environment) -> u64 {
 	if len(message) == 0 { return 0 }
 	hash := u64(0xCBF29CE484222325)
 	for index in 0..<len(message) {
 		hash = (hash ~ u64(message[index])) * u64(0x100000001B3)
 	}
+	hash = (hash ~ u64(u32(style_environment.theme))) * u64(0x100000001B3)
+	hash = (hash ~ u64(transmute(u32)style_environment.density)) * u64(0x100000001B3)
+	hash = (hash ~ u64(transmute(u32)style_environment.text_scale)) * u64(0x100000001B3)
+	hash = (hash ~ u64(u32(style_environment.accent))) * u64(0x100000001B3)
+	if style_environment.accessibility_set { hash = (hash ~ 1) * u64(0x100000001B3) }
+	if style_environment.accessibility.increased_contrast { hash = (hash ~ 2) * u64(0x100000001B3) }
+	if style_environment.accessibility.reduce_motion { hash = (hash ~ 3) * u64(0x100000001B3) }
+	if style_environment.accessibility.reduce_transparency { hash = (hash ~ 4) * u64(0x100000001B3) }
+	if style_environment.accessibility.differentiate_without_color { hash = (hash ~ 5) * u64(0x100000001B3) }
 	return hash
 }
 
 scratchpad_error_notice_sync :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil { return }
-	fingerprint := scratchpad_error_notice_fingerprint(app.error_message)
+	style_environment := scratchpad_workbench_style_environment(app)
+	fingerprint := scratchpad_error_notice_fingerprint(app.error_message, style_environment)
 	if app.error_notice_initialized && app.error_notice_fingerprint == fingerprint { return }
 	app.error_notice_initialized = true
 	app.error_notice_fingerprint = fingerprint
@@ -324,13 +334,20 @@ scratchpad_error_notice_sync :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		for end > 0 && end < len(details) && u8(details[end])&0xC0 == 0x80 { end = end-1 }
 		details = details[:end]
 	}
+	message := app.error_message
+	if len(message) > alicorn.NOTICE_MESSAGE_MAX_BYTES {
+		end := alicorn.NOTICE_MESSAGE_MAX_BYTES
+		for end > 0 && end < len(message) && u8(message[end])&0xC0 == 0x80 { end -= 1 }
+		message = message[:end]
+	}
 	app.error_notice_active = alicorn.notice_post(rt, alicorn.Notice{
 		id="scratchpad-operation-error",
 		title="Operation needs attention",
-		message="Scratchpad could not complete the requested operation.",
+		message=message,
 		details=details,
 		severity=.Error,
 		lifetime=.Persistent,
 		placement=.Toast,
+		style_environment=style_environment,
 	}, 1)
 }

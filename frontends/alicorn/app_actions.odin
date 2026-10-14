@@ -114,14 +114,14 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		// The current published action state can still say disabled while a
 		// local edit is waiting for acknowledgement. Queue history navigation
 		// behind that edit so the refreshed state decides whether it is enabled.
-		if !deferred_action_enqueue(app, .Action, value=action_id) {
+		if !deferred_action_enqueue(app, .Action, value=action_id, document_id=app.backend.state.active) {
 			set_error(app, "Could not queue Undo/Redo behind pending editor edits.")
 		}
 		alicorn.invalidate_root(rt, "Scratchpad history action queued behind pending editor edits")
 		return
 	}
 	entry, found := find_action(&app.backend.state, action_id)
-	if !found || !entry.visible { return }
+	if !found || (!entry.visible && app.editor_visible_window_lane_override == nil) { return }
 	markdown_selection_command := action_id == ACTION_DOCUMENT_FORMAT ||
 	                     action_id == ACTION_ITEM_TOGGLE ||
 	                     action_id == ACTION_MARKDOWN_TOGGLE_STRONG ||
@@ -146,11 +146,11 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if markdown_selection_command {
 		document, document_found := find_document(&app.backend.state, app.backend.state.active)
 		if !document_found || document.language != "markdown" { return }
-	} else if !entry.enabled {
+	} else if !entry.enabled && app.editor_visible_window_lane_override == nil {
 		return
 	}
 	if len(app.editor_edits) > 0 {
-		if !deferred_action_enqueue(app, .Action, value=action_id) {
+		if !deferred_action_enqueue(app, .Action, value=action_id, document_id=app.backend.state.active) {
 			set_error(app, "Could not queue the command behind pending editor edits.")
 		}
 		alicorn.invalidate_root(rt, "Scratchpad command queued behind editor edits")
