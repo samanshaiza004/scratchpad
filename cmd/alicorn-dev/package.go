@@ -436,6 +436,12 @@ func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, build
 		{name: "AccessKit-LICENSE-MIT.txt", path: filepath.Join(alicornRoot, ".deps", "accesskit", "accesskit-c-0.23.1", "LICENSE-MIT")},
 		{name: "Odin-LICENSE.txt", path: filepath.Join(filepath.Dir(odinExe), "LICENSE")},
 	}
+	if runtime.GOOS == "windows" {
+		licenseSources = append(licenseSources, licenseSource{
+			name: "Windows-Caption-LICENSE.txt",
+			path: filepath.Join(alicornRoot, "third_party", "windows_caption", "LICENSE"),
+		})
+	}
 	if runtime.GOOS == "darwin" {
 		licenseSources = append(licenseSources, licenseSource{name: "SDL-LICENSE.txt", path: macSDLLicense})
 	} else {
