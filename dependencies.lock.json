@@ -3,7 +3,7 @@
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
     "ref": "codex/secondary-native-windows",
-    "revision": "5cdeb2d7e0bb97f2982d764b5af45a80d3dc11d9"
+    "revision": "bae58e99e7268c9347c4d67db8c31b14f8531b1c"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
