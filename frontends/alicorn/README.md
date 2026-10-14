@@ -41,7 +41,12 @@ Run the same commands for either theme file; explain prints token values and ali
 
 ## Editor typography
 
-Open **Settings → Typography** to choose an installed editor font, change its
+Settings uses separate Appearance, Editor, Workspace, and Accessibility pages.
+Large windows show a category sidebar; smaller windows use a category selector.
+Each page scrolls independently of the fixed header and Done action. Font and
+theme changes apply immediately.
+
+Open **Settings → Editor** to choose an installed editor font, change its
 logical pixel size, or reset to bundled Atkinson Hyperlegible Mono at 16 px.
 The searchable picker lists monospaced families first and also allows
 proportional families for prose. Its results are virtualized; each listed name

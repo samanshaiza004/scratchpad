@@ -208,6 +208,7 @@ App :: struct {
 	frame_deferred_action_pending: bool,
 	show_ignored_files:     bool,
 	settings_surface_open:  bool,
+	settings_category: Settings_Category,
 	recent_workspaces_open: bool,
 	workspace_search_mode:  bool,
 	workspace_search_query: string,

@@ -55,8 +55,8 @@ test_editor_font_picker_virtualization_caps_visible_rows :: proc(t: ^testing.T) 
 		return
 	}
 	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("font-picker-test-root"), style=alicorn.layout_style(grow=1))
-	scratchpad_editor_font_picker_build(&app, &ui, &rt)
 	alicorn.container_end(&ui)
+	scratchpad_editor_font_picker_build(&app, &ui, &rt)
 	alicorn.end_frame(&ui)
 	list, found := alicorn.node_info(&rt, app.editor_font_picker_results_owner)
 	panel, panel_found := alicorn.node_info(&rt, app.editor_font_picker_panel_node)
@@ -66,12 +66,12 @@ test_editor_font_picker_virtualization_caps_visible_rows :: proc(t: ^testing.T) 
 		"font results should use a virtual list whose extent represents every catalog entry")
 	testing.expect(t, found && list.scroll_viewport_height <= f32(EDITOR_FONT_PICKER_MAX_VISIBLE_ROWS)*EDITOR_FONT_PICKER_ROW_HEIGHT+0.1,
 		"the searchable font picker should keep its visible result window near ten rows")
-	focused_result, focused_result_found := alicorn.node_by_key(&rt, alicorn.key_string("Family 005"), .Button)
+	focused_result, focused_result_found := alicorn.node_by_key(&rt, alicorn.key_string("Family 000"), .Button)
 	testing.expect(t, focused_result_found && alicorn.focus(&rt, focused_result),
 		"a visible font result should be focusable through normal Tab traversal")
 	app.editor_font_picker_selected = 2
 	_ = scratchpad_editor_font_picker_handle_key(&app, &rt, .Return)
-	testing.expect(t, !app.editor_font_picker_open && app.editor_font_pending_family == "Family 005",
+	testing.expect(t, !app.editor_font_picker_open && app.editor_font_pending_family == "Family 000",
 		"Enter on a focused result should apply that focused family even when query selection points elsewhere")
 	delete(app.editor_font_pending_family, context.allocator)
 }
@@ -127,10 +127,10 @@ editor_font_picker_dual_modal_test_build :: proc(t: ^testing.T, app: ^App, rt: ^
 	}
 	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("settings-font-picker-test-root"), style=alicorn.layout_style(grow=1), color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background))
 	scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme, text_scale=1})
+	alicorn.container_end(&ui)
 	settings_surface_build(app, &ui, rt, 1)
 	if app.editor_font_picker_open { scratchpad_editor_font_picker_build(app, &ui, rt) }
 	alicorn.style_environment_pop(&ui, scope)
-	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
 	scratchpad_editor_font_picker_restore_focus_after_frame(app, rt)
 	return true
@@ -146,14 +146,12 @@ test_editor_font_picker_keeps_settings_modal_behind_and_restores_family_focus ::
 	if !fonts_loaded { return }
 	app: App
 	app.settings_surface_open = true
+	app.settings_category = .Editor
 	app.accessibility_appearance_override_enabled = true
 	app.editor_font_catalog = make([dynamic]System_Font_Family, 1, allocator=context.temp_allocator)
 	defer delete(app.editor_font_catalog)
 	app.editor_font_catalog[0] = System_Font_Family{family="Picker Test Mono", monospaced=true}
 	app.editor_font_catalog_ready = true
-	if !editor_font_picker_dual_modal_test_build(t, &app, &rt) { return }
-	scroll_id := settings_test_find_node(&rt, "scratchpad-settings-scroll", "")
-	_ = alicorn.scroll_region_set_offset(&rt, scroll_id, 100000, "Scroll to Typography for picker modal fixture")
 	if !editor_font_picker_dual_modal_test_build(t, &app, &rt) { return }
 	family_button, family_found := alicorn.node_by_key(&rt, alicorn.key_string("settings-editor-font-family"), .Button)
 	testing.expect(t, family_found && alicorn.focus(&rt, family_button),
