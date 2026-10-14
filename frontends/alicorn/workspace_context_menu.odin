@@ -177,6 +177,10 @@ workspace_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Ru
 
 application_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
 	app := cast(^App)state
+	if app.editor_font_picker_open {
+		_ = scratchpad_editor_font_picker_pointer(app, rt, event, target)
+		return
+	}
 	if app.quick_open_open {
 		_ = quick_open_pointer(app, rt, event, target)
 		return

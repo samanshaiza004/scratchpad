@@ -14,6 +14,8 @@ Scratchpad_Theme_Choice :: enum u8 {
 Scratchpad_Theme_Preferences :: struct {
 	version: u32   `json:"version"`,
 	theme:   string `json:"theme"`,
+	editor_font_family: string `json:"editor_font_family"`,
+	editor_font_size: f32 `json:"editor_font_size"`,
 }
 
 scratchpad_theme_choice_name :: proc(choice: Scratchpad_Theme_Choice) -> string {
@@ -51,19 +53,32 @@ scratchpad_theme_preferences_location :: proc(config_root: string, allocator := 
 }
 
 scratchpad_theme_preferences_load :: proc(path: string) -> (choice: Scratchpad_Theme_Choice, loaded: bool) {
-	choice = .Warm
+	preferences, found := scratchpad_user_preferences_load(path, context.temp_allocator)
+	defer { delete(preferences.theme, context.temp_allocator); delete(preferences.editor_font_family, context.temp_allocator) }
+	if !found { return .Warm, false }
+	return scratchpad_theme_choice_parse(preferences.theme)
+}
+
+// Font fields extend the version-1 file additively. Existing theme-only files
+// retain their theme and use bundled typography; bad font fields fall back alone.
+scratchpad_user_preferences_load :: proc(path: string, allocator := context.allocator) -> (preferences: Scratchpad_Theme_Preferences, loaded: bool) {
+	preferences.editor_font_size = EDITOR_FONT_SIZE_DEFAULT
 	if path == "" { return }
 	data, read_error := os.read_entire_file(path, context.temp_allocator)
 	if read_error != nil { return }
 	defer delete(data, context.temp_allocator)
-	preferences: Scratchpad_Theme_Preferences
-	if json.unmarshal(data, &preferences, allocator=context.temp_allocator) != nil { return }
-	defer delete(preferences.theme, context.temp_allocator)
-	if preferences.version != SCRATCHPAD_THEME_PREFERENCES_VERSION { return }
-	return scratchpad_theme_choice_parse(preferences.theme)
+	if json.unmarshal(data, &preferences, allocator=allocator) != nil || preferences.version != SCRATCHPAD_THEME_PREFERENCES_VERSION {
+		delete(preferences.theme, allocator)
+		delete(preferences.editor_font_family, allocator)
+		return Scratchpad_Theme_Preferences{editor_font_size=EDITOR_FONT_SIZE_DEFAULT}, false
+	}
+	if !(preferences.editor_font_size >= EDITOR_FONT_SIZE_MIN && preferences.editor_font_size <= EDITOR_FONT_SIZE_MAX) {
+		preferences.editor_font_size = EDITOR_FONT_SIZE_DEFAULT
+	}
+	return preferences, true
 }
 
-scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_Theme_Choice) -> bool {
+scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_Theme_Choice, font_family := "", font_size := EDITOR_FONT_SIZE_DEFAULT) -> bool {
 	if directory == "" || (choice != .Warm && choice != .Cool_Light) { return false }
 	directory_error := os.mkdir_all(directory)
 	if directory_error != nil && !(directory_error == .Exist && os.is_directory(directory)) { return false }
@@ -74,6 +89,8 @@ scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_
 	preferences := Scratchpad_Theme_Preferences{
 		version=SCRATCHPAD_THEME_PREFERENCES_VERSION,
 		theme=scratchpad_theme_choice_name(choice),
+		editor_font_family=font_family,
+		editor_font_size=font_size,
 	}
 	encoded, encode_error := json.marshal(preferences, allocator=context.temp_allocator)
 	if encode_error != nil { return false }
@@ -92,4 +109,11 @@ scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_
 	defer _ = os.remove(temporary_path)
 	if os.write_entire_file(temporary_path, encoded) != nil { return false }
 	return os.rename(temporary_path, path) == nil
+}
+
+scratchpad_preferences_save :: proc(app: ^App) {
+	if app != nil && app.theme_preferences_directory != "" &&
+	   !scratchpad_theme_preferences_save(app.theme_preferences_directory, app.theme_choice, app.editor_font_family, scratchpad_editor_font_size(app)) {
+		set_error(app, "Settings changed for this session, but Scratchpad could not save the preference.")
+	}
 }

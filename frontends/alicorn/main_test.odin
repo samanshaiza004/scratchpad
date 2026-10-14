@@ -654,23 +654,25 @@ settings_test_layout_case :: proc(t: ^testing.T, scale: f32) {
 		settings_accessibility_observed_value(status, .Reduce_Transparency, status.preferences.reduce_transparency),
 		settings_accessibility_observed_value(status, .Differentiate_Without_Color, status.preferences.differentiate_without_color),
 	)
-	section_heights := settings_form_section_heights(&rt, 640, scale, status_summary)
+	section_heights := settings_form_section_heights(&rt, 640, scale, status_summary, scratchpad_editor_font_size(&app))
 	section_gap := max(12, 8*scale)
-	expected_content_height := section_heights[0]+section_gap+section_heights[1]+section_gap+section_heights[2]
+	expected_content_height := section_heights[0]+section_gap+section_heights[1]+section_gap+section_heights[2]+section_gap+section_heights[3]
 	testing.expect(t, abs(scroll.content_height-expected_content_height) < 0.1,
-		fmt.tprintf("Settings scale %.2f scroll extent %.2f should equal measured section sum %.2f (%.2f, %.2f, %.2f)", scale, scroll.content_height, expected_content_height, section_heights[0], section_heights[1], section_heights[2]))
-	section_tops := [3]f32{
+		fmt.tprintf("Settings scale %.2f scroll extent %.2f should equal measured section sum %.2f (%.2f, %.2f, %.2f, %.2f)", scale, scroll.content_height, expected_content_height, section_heights[0], section_heights[1], section_heights[2], section_heights[3]))
+	section_tops := [4]f32{
 		0,
 		section_heights[0]+section_gap,
 		section_heights[0]+section_gap+section_heights[1]+section_gap,
+		section_heights[0]+section_gap+section_heights[1]+section_gap+section_heights[2]+section_gap,
 	}
-	section_labels := [3]string{
+	section_labels := [4]string{
 		"settings-section-appearance",
 		"settings-section-workspace",
 		"settings-section-accessibility",
+		"settings-section-typography",
 	}
 
-	for section_index in 0..<3 {
+	for section_index in 0..<4 {
 		_ = alicorn.scroll_region_set_offset(&rt, scroll_id, section_tops[section_index], "Settings section geometry regression")
 		_ = settings_test_build(&app, &rt, scale)
 		section_id := settings_test_find_node(&rt, "", section_labels[section_index])
@@ -737,6 +739,16 @@ settings_test_layout_case :: proc(t: ^testing.T, scale: f32) {
 				testing.expect(t, info_ok && control_hit == id,
 					fmt.tprintf("Settings control %s should be hit-testable when scrolled into view", key))
 			}
+		}
+		if section_index == 3 {
+			for key in ([3]string{"settings-editor-font-family", "settings-editor-font-size-down", "settings-editor-font-size-up"}) {
+				id := settings_test_find_node(&rt, key, "")
+				testing.expect(t, id != 0, fmt.tprintf("Typography control %s should be present", key))
+			}
+			preview_id := settings_test_find_node(&rt, "settings-editor-font-preview", "")
+			testing.expect(t, preview_id != 0 && rt.nodes[preview_id].font == .Monospace &&
+				rt.nodes[preview_id].text_style.font_size == scratchpad_editor_font_size(&app),
+				"the Settings sample should preview the currently active editor face and logical size")
 		}
 	}
 

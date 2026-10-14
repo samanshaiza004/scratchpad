@@ -129,13 +129,15 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	sample_gap := max(6, 4*scale)
 	sample_inner_gap := max(5, 3*scale)
 	section_gap := max(12, 8*scale)
-	section_heights := settings_form_section_heights(rt, panel_width, scale, status_summary)
-	section_row_heights := [3]f32{
+	section_heights := settings_form_section_heights(rt, panel_width, scale, status_summary, scratchpad_editor_font_size(app))
+	section_row_heights := [4]f32{
 		section_heights[0]+section_gap,
 		section_heights[1]+section_gap,
-		section_heights[2],
+		section_heights[2]+section_gap,
+		section_heights[3],
 	}
-	form_content_height := section_row_heights[0]+section_row_heights[1]+section_row_heights[2]
+	form_content_height := section_row_heights[0]+section_row_heights[1]+section_row_heights[2]+section_row_heights[3]
+	_ = form_content_height
 	height_index: alicorn.Virtual_List_Height_Index
 	if !alicorn.virtual_list_height_index_init(&height_index, len(section_row_heights), control_height, context.temp_allocator) { return }
 	defer alicorn.virtual_list_height_index_destroy(&height_index)
@@ -234,6 +236,36 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	alicorn.text(ui, "Reduce Motion is forwarded to Alicorn; current controls have no animated style transitions. View → Zoom tests text scaling.", key=alicorn.key_string("settings-accessibility-motion-note"), style=alicorn.layout_style(.Row, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT), text_style=alicorn.Text_Style{overflow=.Wrap})
 	alicorn.container_end(ui)
 	}
+	if settings_list.first <= 3 && settings_list.last > 3 {
+	alicorn.container_begin(ui, .Container, label="settings-section-typography", key=alicorn.key_string("settings-section-typography"), style=alicorn.layout_style(.Column, width=-1, height=section_row_heights[3], gap=row_gap, align=.Start))
+	alicorn.text(ui, "Typography", key=alicorn.key_string("settings-typography-heading"), style=alicorn.layout_style(.Row, width=-1, height=max(22, 20*scale)))
+	alicorn.text(ui, "Editor font family", key=alicorn.key_string("settings-editor-font-family-label"), style=alicorn.layout_style(.Row, width=-1, height=max(20, 18*scale)))
+	family_label := app.editor_font_family
+	if family_label == "" { family_label = "Atkinson Hyperlegible Mono (bundled default)" }
+	if alicorn.button(ui, fmt.tprintf("%s  ▾", family_label), key=alicorn.key_string("settings-editor-font-family"), style=alicorn.layout_style(.Row, width=-1, height=control_height), text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=8), variant=.Quiet) {
+		scratchpad_editor_font_picker_open(app, rt)
+	}
+	alicorn.text(ui, "Editor font size", key=alicorn.key_string("settings-editor-font-size-label"), style=alicorn.layout_style(.Row, width=-1, height=max(20, 18*scale)))
+	alicorn.container_begin(ui, .Container, label="settings-editor-font-size-controls", style=alicorn.layout_style(.Row, width=-1, height=control_height, gap=6, align=.Center))
+	editor_font_size := scratchpad_editor_font_size(app)
+	if alicorn.button(ui, "−", key=alicorn.key_string("settings-editor-font-size-down"), style=alicorn.layout_style(.Row, width=control_height, height=control_height), state=alicorn.Button_State{disabled=editor_font_size <= EDITOR_FONT_SIZE_MIN}, variant=.Quiet) {
+		_ = scratchpad_editor_font_request(app, rt, app.editor_font_family, max(EDITOR_FONT_SIZE_MIN, editor_font_size-1))
+	}
+	alicorn.text(ui, fmt.tprintf("%.1f px", editor_font_size), key=alicorn.key_string("settings-editor-font-size-value"), style=alicorn.layout_style(.Row, width=72, height=control_height))
+	if alicorn.button(ui, "+", key=alicorn.key_string("settings-editor-font-size-up"), style=alicorn.layout_style(.Row, width=control_height, height=control_height), state=alicorn.Button_State{disabled=editor_font_size >= EDITOR_FONT_SIZE_MAX}, variant=.Quiet) {
+		_ = scratchpad_editor_font_request(app, rt, app.editor_font_family, min(EDITOR_FONT_SIZE_MAX, editor_font_size+1))
+	}
+	alicorn.container_end(ui)
+	alicorn.text(ui, "Editor only; monospaced families first. Preview updates when selected.", key=alicorn.key_string("settings-editor-font-note"), style=alicorn.layout_style(.Row, width=-1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT), text_style=alicorn.Text_Style{overflow=.Wrap})
+	alicorn.text(ui, "Live editor preview", key=alicorn.key_string("settings-editor-font-preview-label"), style=alicorn.layout_style(.Row, width=-1, height=max(20, 18*scale)))
+	editor_preview := "┌─ Editor ───────────┐\n│ Café  λ = 0.1     │\n└────────────────────┘"
+	preview_height := settings_measured_font_preview_height(rt, editor_preview, max(panel_width-28-alicorn.SCROLLBAR_THICKNESS-4, 1), editor_font_size*scale)
+	alicorn.text(ui, editor_preview, key=alicorn.key_string("settings-editor-font-preview"), style=alicorn.layout_style(.Row, width=-1, height=preview_height), font=.Monospace, text_style=alicorn.Text_Style{font_size=editor_font_size, overflow=.Clip})
+	if alicorn.button(ui, "Reset typography", key=alicorn.key_string("settings-editor-font-reset"), style=alicorn.layout_style(.Row, width=160, height=control_height), variant=.Quiet) {
+		_ = scratchpad_editor_font_request(app, rt, "", EDITOR_FONT_SIZE_DEFAULT)
+	}
+	alicorn.container_end(ui)
+	}
 	alicorn.virtual_list_end(ui, settings_list)
 
 	alicorn.container_begin(ui, .Container, label="scratchpad-settings-footer", style=alicorn.layout_style(.Row, height=footer_height, gap=8, align=.Center))
@@ -273,6 +305,17 @@ settings_measured_text_height :: proc(
 	return max(24*scale, size*1.25)
 }
 
+settings_measured_font_preview_height :: proc(rt: ^alicorn.Runtime, value: string, width, font_size: f32) -> f32 {
+	if rt == nil || value == "" { return 0 }
+	run, ok := alicorn.runtime_text_run_build(rt, value, font_size, max(width, 1), font=.Monospace)
+	if ok {
+		height := run.height
+		alicorn.text_run_destroy(&run)
+		return height
+	}
+	return max(font_size*3*1.25, font_size*3)
+}
+
 settings_measured_checkbox_height :: proc(
 	rt: ^alicorn.Runtime,
 	label: string,
@@ -289,7 +332,8 @@ settings_form_section_heights :: proc(
 	panel_width: f32,
 	scale: f32,
 	status_summary: string,
-) -> [3]f32 {
+	editor_font_size: f32 = EDITOR_FONT_SIZE_DEFAULT,
+) -> [4]f32 {
 	form_text_width := max(panel_width-28-alicorn.SCROLLBAR_THICKNESS-4, 1)
 	sample_text_width := max(form_text_width-16, 1)
 	row_gap := max(8, 6*scale)
@@ -341,7 +385,20 @@ settings_form_section_heights :: proc(
 		settings_measured_text_height(rt, "Reduce Motion is forwarded to Alicorn; current controls have no animated style transitions. View → Zoom tests text scaling.", form_text_width, scale),
 	}
 	accessibility_height := settings_column_height(accessibility_items[:], row_gap)
-	return [3]f32{appearance_height, workspace_height, accessibility_height}
+	editor_preview := "┌─ Editor ───────────┐\n│ Café  λ = 0.1     │\n└────────────────────┘"
+	typography_items := [9]f32{
+		heading_height,
+		max(20, 18*scale),
+		control_height,
+		max(20, 18*scale),
+		control_height,
+		settings_measured_text_height(rt, "Editor only; monospaced families first. Preview updates when selected.", form_text_width, scale),
+		max(20, 18*scale),
+		settings_measured_font_preview_height(rt, editor_preview, form_text_width, editor_font_size*scale),
+		control_height,
+	}
+	typography_height := settings_column_height(typography_items[:], row_gap)
+	return [4]f32{appearance_height, workspace_height, accessibility_height, typography_height}
 }
 settings_accessibility_observed_value :: proc(
 	observation: alicorn.Accessibility_Appearance_Observation,

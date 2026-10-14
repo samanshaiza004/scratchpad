@@ -434,6 +434,7 @@ command_palette_execute_selected :: proc(app: ^App, rt: ^alicorn.Runtime) -> boo
 }
 
 command_palette_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
+	scratchpad_editor_font_picker_text_change(state, rt, change)
 	quick_open_text_change(state, rt, change)
 	app := cast(^App)state
 	if app == nil || rt == nil || !app.command_palette_open || change.node != app.command_palette_node || !change.changed { return }

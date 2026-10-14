@@ -10,6 +10,7 @@ build_app :: proc(
 	dpi_scale: f32,
 ) -> alicorn.Node_ID {
 	app := cast(^App)state
+	scratchpad_editor_font_apply_pending(app, rt)
 	scratchpad_application_assets_release_retired(app, rt)
 	scratchpad_image_preview_sync(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
@@ -22,6 +23,7 @@ build_app :: proc(
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
 	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
 	_ = find_capture_text_field(rt, app.quick_open_node, &app.quick_open_query)
+	_ = find_capture_text_field(rt, app.editor_font_picker_query_node, &app.editor_font_picker_query)
 	if active, found := find_document(&app.backend.state, app.backend.state.active); found &&
 	   (active.view_kind == "image" || active.view_kind == "unsupported" || floating_window_contains(app, active.id)) {
 		if app.find_open { find_close_surface(app) }
@@ -369,6 +371,7 @@ build_app :: proc(
 		recent_workspaces_surface_build(app, &ui, rt)
 	} else if app.settings_surface_open {
 		settings_surface_build(app, &ui, rt, 1)
+		if app.editor_font_picker_open { scratchpad_editor_font_picker_build(app, &ui, rt) }
 	} else if app.quick_open_open {
 		quick_open_build(app, &ui, rt)
 	} else if app.command_palette_open {
@@ -385,6 +388,7 @@ build_app :: proc(
 	frame_deferred_action_run(app, rt)
 	command_palette_restore_focus_after_frame(app, rt)
 	quick_open_restore_focus_after_frame(app, rt)
+	scratchpad_editor_font_picker_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
