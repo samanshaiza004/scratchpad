@@ -111,16 +111,21 @@ jobs:
       - name: Build, audit, and smoke the static SDL package
         shell: pwsh
         run: |
-          subst R: $env:GITHUB_WORKSPACE
+          & .\tools\caliber.ps1 sync --project-root $env:GITHUB_WORKSPACE
           if ($LASTEXITCODE -ne 0) {
-            throw 'Could not create a short drive mapping for the static SDL build.'
+            throw 'Locked dependency sync failed before the static SDL build.'
           }
-          Push-Location
+          $alicornRoot = Join-Path $env:GITHUB_WORKSPACE '.deps\alicorn'
+          if (-not (Test-Path -LiteralPath $alicornRoot -PathType Container)) {
+            throw "Locked Alicorn checkout is missing: $alicornRoot"
+          }
+          subst R: $alicornRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create a short drive mapping for the Alicorn checkout.'
+          }
           try {
-            Set-Location R:\
-            .\tools\alicorn.ps1 package --version 0.1.1 --static-sdl --out out\packages\windows-static-sdl
+            .\tools\alicorn.ps1 package --alicorn-root R:\ --version 0.1.1 --static-sdl --out out\packages\windows-static-sdl
           } finally {
-            Pop-Location
             subst R: /d
           }
       - name: Verify static recipe manifest and launch extracted package
