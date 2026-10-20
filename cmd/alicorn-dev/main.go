@@ -393,7 +393,8 @@ func buildCaliberAndBackend(root, caliberRoot, goExe, out string, release bool) 
 	if release {
 		cargoArgs = append(cargoArgs, "--release")
 	}
-	if err := runCommand(caliberRoot, nil, "cargo", "cargo", cargoArgs...); err != nil {
+	buildEnv := nativeCompilerEnv(runtime.GOOS, os.Environ())
+	if err := runCommand(caliberRoot, buildEnv, "cargo", "cargo", cargoArgs...); err != nil {
 		return nil, "", err
 	}
 	caliberLibrary := caliberLibraryFromTarget(caliberTarget, release)
@@ -405,11 +406,11 @@ func buildCaliberAndBackend(root, caliberRoot, goExe, out string, release bool) 
 	}
 	backend := filepath.Join(out, backendLibraryName())
 	backendDir := filepath.Join(root, "bridge", "caliber")
-	goEnv := os.Environ()
+	goEnv := buildEnv
 	goEnv = setEnv(goEnv, "CGO_ENABLED", "1")
 	goEnv = setEnv(goEnv, "CALIBER_ROOT", caliberRoot)
-	goEnv = setEnv(goEnv, "CGO_CFLAGS", strings.TrimSpace(os.Getenv("CGO_CFLAGS")+" -I"+filepath.ToSlash(filepath.Join(caliberRoot, "include"))))
-	cgoLdflags := "-L" + filepath.Dir(caliberLibrary)
+	goEnv = setEnv(goEnv, "CGO_CFLAGS", strings.TrimSpace(envValue(goEnv, "CGO_CFLAGS")+" -I"+quoteLinkerPath(filepath.ToSlash(filepath.Join(caliberRoot, "include")))))
+	cgoLdflags := strings.TrimSpace(envValue(goEnv, "CGO_LDFLAGS") + " -L" + quoteLinkerPath(filepath.Dir(caliberLibrary)))
 	if runtime.GOOS == "linux" {
 		// Linux does not search the executable directory for a shared
 		// dependency by default; make the staged Caliber sibling discoverable.
@@ -515,9 +516,9 @@ func envValue(env []string, key string) string {
 // never parses theme files or depends on the compiler package.
 func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg string) error {
 	themeTool := filepath.Join(out, "alicorn-theme"+exeSuffix())
-	if err := runCommand(root, nil, "build Alicorn theme compiler", odinExe,
-		"build", filepath.Join(alicornRoot, "tools", "theme"), collectionArg,
-		"-out:"+themeTool); err != nil {
+	args := []string{"build", filepath.Join(alicornRoot, "tools", "theme"), collectionArg, "-out:" + themeTool}
+	args = appendDarwinMinimumOSVersion(args, runtime.GOOS)
+	if err := runCommand(root, nativeCompilerEnv(runtime.GOOS, os.Environ()), "build Alicorn theme compiler", odinExe, args...); err != nil {
 		return fmt.Errorf("build Alicorn theme compiler: %w", err)
 	}
 
@@ -555,6 +556,15 @@ func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, rel
 }
 
 func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags string, compilerArguments []string, stageSharedSDL, release, consumerBuild bool, env []string) (string, error) {
+	if runtime.GOOS == "darwin" {
+		var cleanup func()
+		var err error
+		env, cleanup, err = prepareMacSDLCompiler(out, odinExe, env)
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+	}
 	if runtime.GOOS == "windows" && stageSharedSDL {
 		sdl := filepath.Join(filepath.Dir(odinExe), "vendor", "sdl3", "SDL3.dll")
 		if info, err := os.Stat(sdl); err != nil || info.Size() < 100_000 {
@@ -566,7 +576,11 @@ func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags 
 	}
 	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
 	args = appendDarwinMinimumOSVersion(args, runtime.GOOS)
-	args = appendLinkerFlags(args, nativeFrontendLinkerFlagsFor(runtime.GOOS, env, accessKitFlags))
+	linkerFlags := nativeFrontendLinkerFlagsFor(runtime.GOOS, env, accessKitFlags)
+	if runtime.GOOS == "darwin" {
+		linkerFlags += " -Wl,-t -Wl,-map," + quoteLinkerPath(filepath.Join(out, "native-link.map"))
+	}
+	args = appendLinkerFlags(args, linkerFlags)
 	args = append(args, compilerArguments...)
 	if release {
 		args = append(args, "-o:speed")
@@ -577,7 +591,13 @@ func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags 
 			args = append(args, "-subsystem:windows")
 		}
 	}
-	if err := runCommand(root, env, "odin", odinExe, args...); err != nil {
+	var err error
+	if runtime.GOOS == "darwin" {
+		err = runMacFrontendLink(root, out, env, odinExe, args)
+	} else {
+		err = runCommand(root, env, "odin", odinExe, args...)
+	}
+	if err != nil {
 		return "", fmt.Errorf("build Scratchpad Alicorn frontend: %w", err)
 	}
 	return filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), nil
