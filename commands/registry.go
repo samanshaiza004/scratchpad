@@ -158,6 +158,7 @@ func DefaultRegistry() Registry {
 		{ID: EditMoveLineDown, Title: "Move line down", Category: "edit", Bindings: []Keybinding{{Key: "alt+arrowdown"}}, Visible: editSurface, Enabled: editSurface},
 		{ID: EditDuplicateLine, Title: "Duplicate line", Category: "edit", Visible: editSurface, Enabled: editSurface},
 		{ID: EditJoinLines, Title: "Join lines", Category: "edit", Visible: editSurface, Enabled: editSurface},
+		{ID: SelectionExpand, Title: "Expand Selection", Category: "edit", Bindings: []Keybinding{{Key: "primary+alt+e"}}, Visible: editSurface, Enabled: editSurface},
 		{ID: CommentToggle, Title: "Toggle comment", Category: "code", Bindings: []Keybinding{{Key: "primary+/"}}, Visible: func(ctx CommandContext) bool { return ctx.Code }, Enabled: codeComment},
 		{ID: ItemToggle, Title: "Toggle task", Category: "markdown", Visible: markdown, Enabled: markdown},
 		{ID: DocumentFormat, Title: "Format table", Category: "markdown", Visible: markdownDocument, Enabled: func(ctx CommandContext) bool { return markdownDocument(ctx) && ctx.InTable }},

@@ -60,19 +60,20 @@ type InjectedRegion struct {
 // Projections are derived views. They are not authoritative document data and
 // can be discarded and rebuilt after a revision changes.
 type Projections struct {
-	Revision      uint64
-	Valid         bool
-	Injected      []InjectedRegion
-	Headings      []Heading
-	Folds         []Fold
-	Tasks         []Task
-	Links         []Link
-	Blocks        []BlockPresentation
-	blockTreeMax  []int
-	blockTreeSize int
-	Markdown      MarkdownPresentation
-	Tables        []TableProjection
-	Code          CodeProjection
+	Revision        uint64
+	Valid           bool
+	Injected        []InjectedRegion
+	Headings        []Heading
+	Folds           []Fold
+	Tasks           []Task
+	Links           []Link
+	Blocks          []BlockPresentation
+	blockTreeMax    []int
+	blockTreeSize   int
+	Markdown        MarkdownPresentation
+	Tables          []TableProjection
+	Code            CodeProjection
+	SelectionRanges []SelectionRange
 }
 
 // IndexBlocks prepares parser-produced blocks for bounded viewport queries.
@@ -211,12 +212,13 @@ type BlockPresentation struct {
 // CodeProjection is disposable language-derived data. Its spans are indexed
 // by source byte range so the UI can request only the visible portion.
 type CodeProjection struct {
-	Revision   uint64
-	Language   string
-	Highlights []HighlightSpan
-	Symbols    []Symbol
-	Folds      []LanguageFold
-	maxEnds    []int
+	Revision        uint64
+	Language        string
+	Highlights      []HighlightSpan
+	Symbols         []Symbol
+	Folds           []LanguageFold
+	SelectionRanges []SelectionRange
+	maxEnds         []int
 }
 
 func NewCodeProjection(revision uint64, language string, highlights []HighlightSpan, symbols []Symbol, folds []LanguageFold) CodeProjection {

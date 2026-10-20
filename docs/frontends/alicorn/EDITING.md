@@ -21,7 +21,7 @@ The frontend may keep bounded visible source windows and an optimistic projectio
 ## Invariants
 
 1. Cursor movement stays in the Alicorn frontend; cursor movement never crosses Caliber.
-2. Selection movement and changes stay in the Alicorn frontend; selection state never crosses Caliber.
+2. Ordinary selection movement stays in the Alicorn frontend. Semantic source commands such as Find and Expand Selection send only revision-tagged byte coordinates through Caliber and return ordinary directional selection coordinates.
 3. IME preedit/composition stays in the Alicorn frontend and is presentation state until commit; preedit never crosses Caliber. A commit becomes one ordinary bounded optimistic source edit.
 4. Whole-document bytes never cross Caliber. Source transfer remains bounded to the requested visible/resource window.
 5. Every source mutation must eventually converge to an authoritative Scratchpad editor revision. Optimistic frontend state is pending until accepted or reconciled with that authority.
@@ -53,6 +53,12 @@ The SDL host owns native plain-text clipboard access and returns UTF-8 text; it 
 ## Phase 4D — current-file Find and Replace
 
 Find queries the authoritative Go document buffer, including unsaved edits. Alicorn retains only bounded match coordinates and selection/focus state; those source-byte ranges remain valid through Markdown styling and soft-wrapped display rows. Find Next/Previous wraps at document ends and reveals an active match near the viewport center without moving a match already comfortably visible. Replace Current revalidates the exact query/range against the current editor revision before applying one ordinary source edit. Replace All computes literal, non-overlapping matches in Go and sends no document snapshot through Caliber; the entire replacement is one atomic undo transaction. Match coordinates refresh immediately against the new revision. Workspace-wide replacement and regular expressions are out of scope.
+
+## Semantic selection
+
+Edit → Expand Selection (`Ctrl+Alt+E` on Windows, `Cmd+Option+E` on macOS) and the command palette invoke the same `selection.expand` command. Repeating it chooses the smallest strict enclosing source range. Words, Unicode sentences, paragraphs, and the document remain available without language analysis. Markdown contributes complete inline constructs, blocks, and heading sections; current Go/TypeScript/TSX analysis contributes syntax parents. Ranges whose source revision differs are ignored; code falls back to text boundaries while analysis catches up. Markdown refreshes its existing command projection when needed.
+
+Expansion preserves anchor/caret direction and never returns endpoints inside a grapheme cluster. Text fallback ranges cannot cross a current syntax parent and make that parent unreachable. It changes neither source nor undo/save state. There is no remembered expansion stack: moving the caret or manually changing the selection starts the next expansion from that new selection. IME composition must be committed or cancelled before expansion. Providers lower ranges to plain source-byte pairs; no parser node or visual layout state crosses into the command or frontend.
 
 ## Phase 4E — authoritative undo and redo
 

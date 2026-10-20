@@ -2,7 +2,7 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "fix/macos-shared-secondary-window-files",
+    "ref": "master",
     "revision": "0f88a7fe9c69bd047abeb4421cc7d51e1ee7a0f6"
   },
   "caliber": {

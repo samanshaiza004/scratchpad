@@ -848,6 +848,7 @@ var shellActionIDs = []commands.ID{
 	commands.EditMoveLineDown,
 	commands.EditDuplicateLine,
 	commands.EditJoinLines,
+	commands.SelectionExpand,
 	commands.CommentToggle,
 	commands.ItemToggle,
 	commands.MarkdownToggleStrong,

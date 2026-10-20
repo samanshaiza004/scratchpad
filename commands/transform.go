@@ -25,6 +25,7 @@ const (
 type Request struct {
 	ID                 ID
 	Source             []byte
+	SourceRevision     uint64
 	Cursor             int
 	Anchor             int
 	RootLanguage       string
@@ -60,7 +61,10 @@ func NewRequest(doc *document.Document, id ID) (Request, error) {
 		return Request{}, errors.New("no active document")
 	}
 	source := doc.Editor.Buffer.Text()
-	request := Request{ID: id, Source: source, Cursor: doc.Editor.Cursor, Anchor: doc.Editor.Anchor, RootLanguage: doc.RootLanguage, ProjectionsCurrent: doc.DerivedCurrent()}
+	request := Request{ID: id, Source: source, SourceRevision: doc.Revision(), Cursor: doc.Editor.Cursor, Anchor: doc.Editor.Anchor, RootLanguage: doc.RootLanguage, ProjectionsCurrent: doc.DerivedCurrent()}
+	if request.ProjectionsCurrent {
+		request.Projections = doc.Projections
+	}
 	if doc.RootLanguage == "markdown" {
 		if request.ProjectionsCurrent {
 			request.Projections = doc.Projections
@@ -87,6 +91,9 @@ func NewRequest(doc *document.Document, id ID) (Request, error) {
 func Execute(request Request) Outcome {
 	if request.Cursor < 0 || request.Cursor > len(request.Source) || request.Anchor < 0 || request.Anchor > len(request.Source) {
 		return Outcome{Status: ResultFailed, Err: errors.New("caret outside source")}
+	}
+	if request.ID == SelectionExpand {
+		return expandSelection(request)
 	}
 	if request.RootLanguage != "markdown" && request.ID != CommentToggle && !isLineEditCommand(request.ID) {
 		return Outcome{Status: ResultUnavailable}

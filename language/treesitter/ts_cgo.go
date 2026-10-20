@@ -79,10 +79,13 @@ func (t *typeScriptImplementationCGo) Analyze(source []byte, revision uint64, ed
 	}
 	t.revision, t.hasRevision = revision, true
 	root := t.tree.RootNode()
-	return document.NewCodeProjection(revision, t.languageName,
+	folds, selections := collectSyntaxRanges(root, source)
+	projection := document.NewCodeProjection(revision, t.languageName,
 		captureHighlights(t.highlight, root, source),
 		captureSymbols(t.tags, root, source),
-		collectFolds(root, source)), nil
+		folds)
+	projection.SelectionRanges = selections
+	return projection, nil
 }
 
 func (t *typeScriptImplementationCGo) Close() {

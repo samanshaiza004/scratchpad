@@ -2293,6 +2293,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.lifecycle, allocator)
 	delete(response.outcome.code, allocator)
 	delete(response.outcome.message, allocator)
+	delete(response.command_outcome, allocator)
 	delete(response.close_decision.document_id, allocator)
 	delete(response.save_as_conflict.path, allocator)
 	delete(response.editor_selection.document_id, allocator)

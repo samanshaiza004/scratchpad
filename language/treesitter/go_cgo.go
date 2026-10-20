@@ -75,8 +75,10 @@ func (g *goImplementationCGo) Analyze(source []byte, revision uint64, edits []ed
 func (g *goImplementationCGo) lower(source []byte) document.CodeProjection {
 	highlights := captureHighlights(g.highlight, g.tree.RootNode(), source)
 	symbols := captureSymbols(g.tags, g.tree.RootNode(), source)
-	folds := collectFolds(g.tree.RootNode(), source)
-	return document.NewCodeProjection(g.revision, "go", highlights, symbols, folds)
+	folds, selections := collectSyntaxRanges(g.tree.RootNode(), source)
+	projection := document.NewCodeProjection(g.revision, "go", highlights, symbols, folds)
+	projection.SelectionRanges = selections
+	return projection
 }
 
 func (g *goImplementationCGo) Close() {
@@ -149,29 +151,32 @@ func captureSymbols(query *ts.Query, root *ts.Node, source []byte) []document.Sy
 	return symbols
 }
 
-func collectFolds(root *ts.Node, source []byte) []document.LanguageFold {
+// collectSyntaxRanges lowers the existing analysis tree to byte ranges. A
+// single cursor keeps traversal iterative, including for deeply nested syntax.
+func collectSyntaxRanges(root *ts.Node, source []byte) ([]document.LanguageFold, []document.SelectionRange) {
 	if root == nil {
-		return nil
+		return nil, nil
 	}
 	folds := make([]document.LanguageFold, 0)
-	var walk func(*ts.Node)
-	walk = func(node *ts.Node) {
+	var selections []document.SelectionRange
+	cursor := root.Walk()
+	defer cursor.Close()
+	for {
+		node := cursor.Node()
 		start, end := int(node.StartByte()), int(node.EndByte())
-		kind := node.Kind()
-		if end-start > 1 && isFoldNode(kind) && bytesContainNewline(source[start:end]) {
+		if node.IsNamed() && !node.IsMissing() && !node.IsError() {
+			selections = append(selections, document.SelectionRange{StartByte: start, EndByte: end})
+		}
+		if start >= 0 && end <= len(source) && end-start > 1 && isFoldNode(node.Kind()) && bytesContainNewline(source[start:end]) {
 			folds = append(folds, document.LanguageFold{StartByte: start, EndByte: end})
 		}
-		cursor := node.Walk()
-		defer cursor.Close()
 		if cursor.GotoFirstChild() {
-			for {
-				walk(cursor.Node())
-				if !cursor.GotoNextSibling() {
-					break
-				}
+			continue
+		}
+		for !cursor.GotoNextSibling() {
+			if !cursor.GotoParent() {
+				return folds, normalizeSelectionRanges(selections, len(source))
 			}
 		}
 	}
-	walk(root)
-	return folds
 }
