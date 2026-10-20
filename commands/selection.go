@@ -146,11 +146,11 @@ func expandSelectionASCII(request Request) Outcome {
 	if hasStrictTextExpansion(start, end, words, semanticCandidates) {
 		return chooseSelectionExpansion(request, start, end, false, cluster, words, nil, document.SelectionRange{}, semanticCandidates)
 	}
-	sentences := asciiSentenceRangesAt(source, start, end)
-	if !selectionASCIIContextSafe(source, start, end, words, sentences, semanticCandidates) {
+	sentences, sentenceSafe := asciiSentenceRangesAt(source, start, end)
+	if !sentenceSafe || !selectionASCIIContextSafe(source, start, end, words, sentences, semanticCandidates) {
 		return expandSelectionUnicode(request)
 	}
-	if hasStrictTextExpansion(start, end, sentences, semanticCandidates) {
+	if hasStrictTextExpansion(start, end, sentences, semanticCandidates) && !asciiSentenceRangesCrossParagraph(source, sentences) {
 		return chooseSelectionExpansion(request, start, end, false, cluster, words, sentences, document.SelectionRange{}, semanticCandidates)
 	}
 	paragraph := selectionParagraph(source, start, end)
@@ -314,9 +314,17 @@ func asciiWordConnector(b byte) bool {
 	return b == '\'' || b == '.' || b == ',' || b == ':'
 }
 
-func asciiSentenceRangesAt(source []byte, start, end int) []document.SelectionRange {
+func asciiSentenceRangesAt(source []byte, start, end int) ([]document.SelectionRange, bool) {
+	for _, b := range source[start:end] {
+		if b >= utf8.RuneSelf || b == '\r' {
+			return nil, false
+		}
+	}
 	sentenceStart := 0
 	for terminator := start - 1; terminator >= 0; terminator-- {
+		if source[terminator] >= utf8.RuneSelf || source[terminator] == '\r' {
+			return nil, false
+		}
 		if !isASCIISentenceTerminator(source[terminator]) {
 			continue
 		}
@@ -328,6 +336,9 @@ func asciiSentenceRangesAt(source []byte, start, end int) []document.SelectionRa
 	}
 	sentenceEnd := len(source)
 	for terminator := end; terminator < len(source); terminator++ {
+		if source[terminator] >= utf8.RuneSelf || source[terminator] == '\r' {
+			return nil, false
+		}
 		if !isASCIISentenceTerminator(source[terminator]) {
 			continue
 		}
@@ -338,9 +349,32 @@ func asciiSentenceRangesAt(source []byte, start, end int) []document.SelectionRa
 	}
 	candidate := trimSelectionSpace(source, sentenceStart, sentenceEnd)
 	if candidate.StartByte <= start && candidate.EndByte >= end && candidate.EndByte > candidate.StartByte {
-		return []document.SelectionRange{candidate}
+		return []document.SelectionRange{candidate}, true
 	}
-	return nil
+	return nil, true
+}
+
+func asciiSentenceRangesCrossParagraph(source []byte, sentences []document.SelectionRange) bool {
+	for _, sentence := range sentences {
+		lineStart := sentence.StartByte
+		for lineStart < sentence.EndByte {
+			relativeEnd := bytes.IndexByte(source[lineStart:sentence.EndByte], '\n')
+			if relativeEnd < 0 {
+				break
+			}
+			lineEnd := lineStart + relativeEnd
+			nextStart := lineEnd + 1
+			nextEnd := sentence.EndByte
+			if nextLineBreak := bytes.IndexByte(source[nextStart:sentence.EndByte], '\n'); nextLineBreak >= 0 {
+				nextEnd = nextStart + nextLineBreak
+			}
+			if len(bytes.TrimSpace(source[nextStart:nextEnd])) == 0 {
+				return true
+			}
+			lineStart = nextStart
+		}
+	}
+	return false
 }
 
 func isASCIISentenceTerminator(b byte) bool {

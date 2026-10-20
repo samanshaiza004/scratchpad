@@ -69,17 +69,31 @@ func TestSelectionExpandMixedTextFallsBackToUnicodeBoundaries(t *testing.T) {
 	fixtures := []string{
 		"first. next e\u0301 word. last",
 		"alpha 👩‍👩‍👧‍👦 beta. next",
+		"first。 Next sentence.",
+		"first。 Next. Third.",
+		"First sentence. Next。 Third sentence.",
+		"First！ Second sentence.",
+		"line one\n\nline two",
 		"line one\r\n\r\nline two",
 		"before क्‍ष after. next",
 	}
 	for _, fixture := range fixtures {
 		source := []byte(fixture)
 		for caret := 0; caret <= len(source); caret++ {
-			request := Request{ID: SelectionExpand, Source: source, Anchor: caret, Cursor: caret}
-			got := expandSelection(request)
-			want := expandSelectionUnicode(request)
-			if got.Status != want.Status || got.Anchor != want.Anchor || got.Cursor != want.Cursor {
-				t.Errorf("fixture %q caret %d: fast=%+v Unicode=%+v", fixture, caret, got, want)
+			gotAnchor, gotCursor := caret, caret
+			wantAnchor, wantCursor := caret, caret
+			for step := 0; step < 8; step++ {
+				got := expandSelection(Request{ID: SelectionExpand, Source: source, Anchor: gotAnchor, Cursor: gotCursor})
+				want := expandSelectionUnicode(Request{ID: SelectionExpand, Source: source, Anchor: wantAnchor, Cursor: wantCursor})
+				if got.Status != want.Status || got.Anchor != want.Anchor || got.Cursor != want.Cursor {
+					t.Errorf("fixture %q caret %d step %d: fast=%+v Unicode=%+v", fixture, caret, step, got, want)
+					break
+				}
+				if got.Anchor == gotAnchor && got.Cursor == gotCursor {
+					break
+				}
+				gotAnchor, gotCursor = got.Anchor, got.Cursor
+				wantAnchor, wantCursor = want.Anchor, want.Cursor
 			}
 		}
 	}

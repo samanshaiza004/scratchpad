@@ -13,31 +13,35 @@ import (
 
 // BenchmarkSelectionExpandLargeDocuments reports repeated-sample p95 and
 // allocation metrics for both the isolated expansion and the production
-// NewRequest+Execute path. The caret is near the end of each ASCII document to
-// stress the old whole-file segmentation path; the word case then expands into
-// the fixture's long sentence.
+// NewRequest+Execute path. Cases cover caret-to-word, word-to-sentence, and an
+// adversarial word inside a sentence extending through the entire document.
 func BenchmarkSelectionExpandLargeDocuments(b *testing.B) {
 	for _, size := range []int{1 << 20, 10 << 20} {
 		b.Run(fmt.Sprintf("%dMiB", size>>20), func(b *testing.B) {
-			const pattern = "word token. "
-			source := bytes.Repeat([]byte(pattern), (size+len(pattern)-1)/len(pattern))[:size]
-			patternStart := (len(source)/len(pattern) - 2) * len(pattern)
-			caret := patternStart + len("word ") + 2
+			const longSentencePattern = "word token. "
+			longSentenceSource := bytes.Repeat([]byte(longSentencePattern), (size+len(longSentencePattern)-1)/len(longSentencePattern))[:size]
+			longSentenceStart := (len(longSentenceSource)/len(longSentencePattern) - 2) * len(longSentencePattern)
+			caret := longSentenceStart + len("word ") + 2
+			const shortSentencePattern = "Word token. Next phrase. "
+			shortSentenceSource := bytes.Repeat([]byte(shortSentencePattern), (size+len(shortSentencePattern)-1)/len(shortSentencePattern))[:size]
+			shortSentenceStart := (len(shortSentenceSource)/len(shortSentencePattern) - 1) * len(shortSentencePattern)
 			requests := []struct {
 				name      string
+				source    []byte
 				request   Request
 				wantStart int
 				wantEnd   int
 			}{
-				{name: "caret", request: Request{ID: SelectionExpand, Source: source, Anchor: caret, Cursor: caret}, wantStart: patternStart + len("word "), wantEnd: patternStart + len("word token")},
-				{name: "word", request: Request{ID: SelectionExpand, Source: source, Anchor: patternStart + len("word "), Cursor: patternStart + len("word token")}, wantEnd: len(source)},
+				{name: "caret", source: longSentenceSource, request: Request{ID: SelectionExpand, Source: longSentenceSource, Anchor: caret, Cursor: caret}, wantStart: longSentenceStart + len("word "), wantEnd: longSentenceStart + len("word token")},
+				{name: "word-to-long-sentence", source: longSentenceSource, request: Request{ID: SelectionExpand, Source: longSentenceSource, Anchor: longSentenceStart + len("word "), Cursor: longSentenceStart + len("word token")}, wantEnd: len(longSentenceSource)},
+				{name: "word-to-sentence", source: shortSentenceSource, request: Request{ID: SelectionExpand, Source: shortSentenceSource, Anchor: shortSentenceStart + len("Word "), Cursor: shortSentenceStart + len("Word token")}, wantStart: shortSentenceStart, wantEnd: shortSentenceStart + len("Word token.")},
 			}
 			for _, sample := range requests {
 				b.Run("expand-only/"+sample.name, func(b *testing.B) {
-					benchmarkSelectionExpansion(b, source, sample, false)
+					benchmarkSelectionExpansion(b, sample.source, sample, false)
 				})
 				b.Run("user-action/"+sample.name, func(b *testing.B) {
-					benchmarkSelectionExpansion(b, source, sample, true)
+					benchmarkSelectionExpansion(b, sample.source, sample, true)
 				})
 			}
 		})
@@ -46,6 +50,7 @@ func BenchmarkSelectionExpandLargeDocuments(b *testing.B) {
 
 func benchmarkSelectionExpansion(b *testing.B, source []byte, sample struct {
 	name      string
+	source    []byte
 	request   Request
 	wantStart int
 	wantEnd   int
