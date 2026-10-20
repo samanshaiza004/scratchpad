@@ -122,6 +122,7 @@ type Application struct {
 	recentWorkspaces      []string
 	closed                []string
 	presentationRevision  uint64
+	projectionGeneration  uint64
 }
 
 func New(store workspace.FileStore) *Application {
