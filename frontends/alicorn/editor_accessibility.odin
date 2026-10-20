@@ -4,6 +4,11 @@ import "core:strings"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
+editor_accessibility_lane :: proc(app: ^App) -> ^Accessibility_Source_Lane {
+	if app.accessibility_source_lane_override != nil { return app.accessibility_source_lane_override }
+	return &app.accessibility_source_lane
+}
+
 editor_accessibility_semantic_runs_remove :: proc(
 	rt: ^alicorn.Runtime,
 	area_id: alicorn.Semantic_ID,
@@ -23,7 +28,7 @@ editor_accessibility_retire :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	                        len(app.accessibility_projection.document_id) > 0 ||
 	                        len(app.accessibility_source_error_document_id) > 0
 	if !has_projection_state { return }
-	accessibility_source_lane_cancel(&app.accessibility_source_lane)
+	accessibility_source_lane_cancel(editor_accessibility_lane(app))
 	editor_accessibility_projection_destroy(&app.accessibility_projection)
 	if rt != nil && app.accessibility_semantic_area_id.namespace != 0 {
 		_ = alicorn.semantic_text_area_remove(rt, app.accessibility_semantic_area_id)
@@ -55,9 +60,9 @@ editor_accessibility_clear_source_error :: proc(app: ^App) {
 
 editor_accessibility_take_completion :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil { return }
-	result, found := accessibility_source_lane_take(&app.accessibility_source_lane)
+	result, found := accessibility_source_lane_take(editor_accessibility_lane(app))
 	if !found { return }
-	defer accessibility_source_result_destroy(&result, app.accessibility_source_lane.allocator)
+	defer accessibility_source_result_destroy(&result, editor_accessibility_lane(app).allocator)
 	if !app.backend.started { return }
 	document, document_found := find_document(&app.backend.state, app.backend.state.active)
 	if !document_found || result.request.document_id != document.id ||
@@ -133,10 +138,10 @@ editor_accessibility_build_semantics :: proc(
 
 	error_matches := app.accessibility_source_error_document_id == document.id &&
 	                 app.accessibility_source_error_revision == document.editor_revision
-	lane_available := app.accessibility_source_lane.thread != nil
+	lane_available := editor_accessibility_lane(app).thread != nil
 	if !projection_matches && !error_matches && lane_available {
 		_, requested := accessibility_source_lane_request(
-			&app.accessibility_source_lane,
+			editor_accessibility_lane(app),
 			document.id,
 			document.editor_revision,
 			document.byte_length,

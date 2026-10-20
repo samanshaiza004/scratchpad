@@ -42,8 +42,12 @@ test_workspace_background_context_menu_targets_root_without_changing_selection :
 	defer tree_test_cleanup(t, &app, &rt)
 	defer editor_views_destroy(&app.editor_views)
 	defer delete(app.editor_edits)
+	styles_ready := scratchpad_styles_ensure(&app, &rt)
+	testing.expect(t, styles_ready, "the context-menu theme test should register Scratchpad themes")
+	if !styles_ready { return }
+	_ = scratchpad_theme_select(&app, &rt, .Cool_Light)
 	tree_sync_workspace(&app, &rt)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	tree_flatten_directory(&app, "", 0, &rows)
@@ -84,47 +88,54 @@ test_workspace_background_context_menu_targets_root_without_changing_selection :
 		"opening the background menu must not select or activate an unrelated tree row")
 	testing.expect(t, app.editor_views[selection_index].selection_anchor == 2 && app.editor_views[selection_index].caret_byte == 8,
 		"opening the background menu must preserve the existing editor selection")
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
+	if panel, panel_found := rt.nodes[rt.context_menu.panel]; panel_found {
+		testing.expect(t, panel.color == alicorn.style_theme_color(&rt, app.workbench_theme, .Surface) &&
+			panel.style_environment.theme == app.workbench_theme,
+			"the workspace context menu should use the selected Cool Light workbench surface and style environment")
+	} else {
+		testing.expect(t, false, "the themed workspace context menu should retain its popup panel")
+	}
 	new_file_item := test_workspace_context_menu_item(&rt, "New File…")
 	new_folder_item := test_workspace_context_menu_item(&rt, "New Folder…")
 	no_item_actions := test_workspace_context_menu_item(&rt, "Rename") == 0 && test_workspace_context_menu_item(&rt, "Move to Trash") == 0
 	testing.expect(t, new_file_item != 0 && new_folder_item != 0 && no_item_actions,
 		"the workspace-root menu should offer only its creation actions")
 	alicorn.context_menu_close(&rt)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 	testing.expect(t, alicorn.focused_node(&rt) == focus_before && alicorn.semantic_focus_state(&rt).id == semantic_before.id,
 		"dismissing a background menu should restore the prior keyboard and semantic focus")
 	testing.expect(t, app.editor_views[selection_index].selection_anchor == 2 && app.editor_views[selection_index].caret_byte == 8,
 		"dismissing the background menu should leave the editor selection unchanged")
 
 	workspace_context_menu_test_open_background(t, &app, &rt)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 	new_file_item = test_workspace_context_menu_item(&rt, "New File…")
 	if new_file_item == 0 { testing.expect(t, false, "root context menu should expose New File"); return }
 	_ = alicorn.focus(&rt, new_file_item)
 	_ = alicorn.context_menu_handle_key(&rt, .Activate)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 	testing.expect(t, app.workspace_mutation_kind == .Create_File && app.workspace_mutation_source == "" && app.workspace_mutation_source_is_dir,
 		"New File should enter the existing mutation flow with an explicit workspace-root destination")
 	workspace_mutation_set_name(&app, "created-from-background.txt")
 	workspace_mutation_submit(&app, &rt, false)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 	_, created_file_visible := test_workspace_tree_row(&rt, "created-from-background.txt")
 	testing.expect(t, created_file_visible,
 		"the normal refresh path should show a file created from the workspace-root context menu")
 
 	workspace_context_menu_test_open_background(t, &app, &rt)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 	new_folder_item = test_workspace_context_menu_item(&rt, "New Folder…")
 	if new_folder_item == 0 { testing.expect(t, false, "root context menu should expose New Folder"); return }
 	_ = alicorn.focus(&rt, new_folder_item)
 	_ = alicorn.context_menu_handle_key(&rt, .Activate)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 	testing.expect(t, app.workspace_mutation_kind == .Create_Folder && app.workspace_mutation_source == "" && app.workspace_mutation_source_is_dir,
 		"New Folder should enter the existing mutation flow with an explicit workspace-root destination")
 	workspace_mutation_set_name(&app, "folder-from-background")
 	workspace_mutation_submit(&app, &rt, false)
-	if !test_render_workspace_tree(t, &app, &rt) { return }
+	if !workspace_context_menu_test_render(&app, &rt) { return }
 	_, created_folder_visible := test_workspace_tree_row(&rt, "folder-from-background")
 	testing.expect(t, created_folder_visible,
 		"the normal refresh path should show a folder created from the workspace-root context menu")
@@ -143,4 +154,17 @@ workspace_context_menu_test_open_background :: proc(t: ^testing.T, app: ^App, rt
 	application_pointer(rawptr(app), rt, event, target)
 	testing.expect(t, alicorn.context_menu_is_open(rt) && app.workspace_context_target == .Workspace_Root,
 		"empty tree space should reopen the workspace-root context menu")
+}
+
+workspace_context_menu_test_render :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build { return false }
+	alicorn.container_begin(&ui, .Root, label="scratchpad-context-menu-theme-test", style=alicorn.layout_style(.Column, width=800, height=600, clip=true))
+	theme_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
+	build_workspace_tree(app, &ui, rt)
+	alicorn.container_end(&ui)
+	workspace_context_menu_build(app, &ui, rt)
+	alicorn.style_environment_pop(&ui, theme_scope)
+	alicorn.end_frame(&ui)
+	return true
 }
