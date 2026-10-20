@@ -3,7 +3,7 @@ package main
 import "core:mem"
 import "core:os"
 import "core:strings"
-import runa "../../.deps/alicorn/third_party/Runa"
+import runa "alicorn:third_party/Runa"
 
 System_Font_Family :: struct {
 	family: string,
