@@ -18,6 +18,117 @@ semantic_view_test_node :: proc(rt: ^alicorn.Runtime, key: string) -> (id: alico
 	return 0, false
 }
 
+semantic_view_test_frame :: proc(rt: ^alicorn.Runtime, app: ^App, document: bridge.State_Document, view: ^Editor_View_State) {
+	ui, build := alicorn.begin_frame(rt)
+	if !build { return }
+	alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(.Column, grow=1))
+	_ = semantic_view_render(app, &ui, document, view, "skim")
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+}
+
+@(test)
+test_semantic_view_excerpt_layout_is_compact_and_unclipped :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 520})
+	defer alicorn.destroy_runtime(&rt)
+	if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) ||
+	   !alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA) {
+		testing.expect(t, false, "semantic excerpt layout requires the real bundled fonts")
+		return
+	}
+	document := bridge.State_Document{id="excerpt-doc", language="tsx", view_density="skim", editor_revision=1, presentation_ready=true}
+	segments := [?]bridge.Semantic_View_Segment{{
+		document_id=document.id, source_revision=1, start_byte=10, end_byte=80,
+		source_start_line=18, source_end_line=19, label="function", section_context="App",
+		status="current", text="function App() {\n  const rows = useState([]);", omitted_before=true, omitted_after=true,
+	}}
+	view := Editor_View_State{semantic_window_owned=true, semantic_window=bridge.Semantic_View_Window{
+		document_id=document.id, mode="skim", revision=1, ready=true, supported=true, total=1, segments=segments[:],
+	}}
+	defer semantic_view_layout_destroy(&view.semantic_layout)
+	app: App
+	for frame in 0..<3 {
+		alicorn.invalidate_root(&rt, "settle semantic excerpt fixture")
+		ui, build := alicorn.begin_frame(&rt)
+		if !build { continue }
+		alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(.Column, grow=1))
+		_ = semantic_view_render(&app, &ui, document, &view, "skim")
+		alicorn.container_end(&ui)
+		alicorn.end_frame(&ui)
+	}
+	rows, markers, snippets := 0, 0, 0
+	for id in rt.order {
+		node := rt.nodes[id]
+		if node.label == "scratchpad-semantic-view-row" {
+			rows += 1
+			testing.expect(t, node.bounds.h < 140, fmt.tprintf("a two-line excerpt must not occupy a fixed oversized card: height=%g", node.bounds.h))
+		}
+		if strings.has_prefix(node.text, "… omitted source") {
+			markers += 1
+			testing.expect(t, node.text_run_valid && node.bounds.h+0.1 >= node.text_run.height,
+				fmt.tprintf("omission label must fit its shaped text: bounds=%g text=%g", node.bounds.h, node.text_run.height))
+			if strings.contains(node.text, "after") {
+				for candidate in rt.order {
+					if rt.nodes[candidate].text == segments[0].text {
+						snippet := rt.nodes[candidate]
+						testing.expect(t, node.bounds.y >= snippet.bounds.y+snippet.bounds.h,
+						"trailing omission must follow the source excerpt")
+					}
+				}
+			}
+		}
+		if node.text == segments[0].text {
+			snippets += 1
+			testing.expect(t, node.font == .Monospace, "code excerpts must use the editor's monospace font")
+		}
+	}
+	testing.expect(t, rows == 1 && markers == 2 && snippets == 1, fmt.tprintf("fixture must exercise the real semantic row and both omission labels: rows=%d markers=%d snippets=%d", rows, markers, snippets))
+}
+
+@(test)
+test_semantic_view_prose_reflows_at_narrow_width_and_editor_zoom :: proc(t: ^testing.T) {
+	scales := [?]f32{1, 1.5}
+	widths := [?]f32{280, 800}
+	for scale in scales {
+		for width in widths {
+			rt := alicorn.new_runtime(alicorn.Rect{0, 0, width, 700})
+			defer alicorn.destroy_runtime(&rt)
+			if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) { testing.expect(t, false, "prose requires the bundled UI font"); return }
+			document := bridge.State_Document{id="prose-doc", language="markdown", view_density="skim", editor_revision=1, presentation_ready=true}
+			segments := [?]bridge.Semantic_View_Segment{
+				{document_id=document.id, source_revision=1, start_byte=0, end_byte=9, status="current", text="# Heading", label="heading", ordinal=0},
+				{document_id=document.id, source_revision=1, start_byte=10, end_byte=200, status="current", label="paragraph opening", ordinal=1, omitted_before=true,
+				 text="This deliberately long paragraph must wrap into its measured row. Resizing the viewport or changing editor zoom must preserve all of these words without clipping text or leaving an oversized empty card."},
+			}
+			view := Editor_View_State{semantic_window_owned=true, semantic_window=bridge.Semantic_View_Window{
+				document_id=document.id, mode="skim", revision=1, ready=true, supported=true, generation=1, total=2, segments=segments[:],
+			}}
+			defer semantic_view_layout_destroy(&view.semantic_layout)
+			app := App{editor_text_scale=scale}
+			for frame in 0..<4 {
+				alicorn.invalidate_root(&rt, "settle wrapped semantic view")
+				semantic_view_test_frame(&rt, &app, document, &view)
+			}
+			shapes := rt.text_engine.shape_calls
+			alicorn.invalidate_root(&rt, "unrelated description rebuild")
+			semantic_view_test_frame(&rt, &app, document, &view)
+			testing.expect(t, rt.text_engine.shape_calls == shapes, "unchanged excerpts must reuse their measured text across unrelated rebuilds")
+			for id in rt.order {
+				node := rt.nodes[id]
+				if node.kind != .Text { continue }
+				for segment in segments {
+					if node.text == segment.text {
+						testing.expect(t, node.text_run_valid && node.bounds.h+0.1 >= node.text_run.height,
+							fmt.tprintf("wrapped excerpt must fit at width=%g scale=%g: bounds=%g text=%g actual_width=%g measured_width=%g", width, scale, node.bounds.h, node.text_run.height, node.bounds.w, view.semantic_layout.width))
+					}
+				}
+			}
+			testing.expect(t, alicorn.virtual_list_height_index_item_height(&view.semantic_layout.index, 1) >
+				alicorn.virtual_list_height_index_item_height(&view.semantic_layout.index, 0), "paragraph and heading must use their individual content heights")
+		}
+	}
+}
+
 @(test)
 test_semantic_view_controls_render_all_modes_and_select_current_density :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 520})
@@ -73,6 +184,9 @@ test_semantic_view_frontend_bridge_keeps_source_authoritative :: proc(t: ^testin
 	defer {
 		if app.backend.started { _, _ = bridge.backend_stop(&app.backend, context.allocator) }
 		editor_views_destroy(&app.editor_views, context.allocator)
+		tree_clear_directories(&app)
+		delete(app.tree_directories)
+		if app.tree_root_path != "" { delete(app.tree_root_path, context.allocator) }
 	}
 
 	opened := bridge.backend_command(&app.backend, "open_path", path=path, allocator=context.allocator)
@@ -151,4 +265,25 @@ test_semantic_view_frontend_bridge_keeps_source_authoritative :: proc(t: ^testin
 	}
 	bridge.backend_command_result_destroy(&after, context.allocator)
 	bridge.backend_command_result_destroy(&before, context.allocator)
+
+	// A toolbar command runs during description. The borrowed document strings
+	// must remain alive until this frame finishes, just as for tab switching.
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 520})
+	defer alicorn.destroy_runtime(&rt)
+	defer deferred_action_destroy(&app.frame_deferred_action)
+	application_revision := app.backend.state.application_rev
+	ui, build := alicorn.begin_frame(&rt)
+	if build {
+		alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(grow=1))
+		semantic_view_set_density(&app, &rt, document_id, "skim")
+		testing.expect(t, app.backend.state.application_rev == application_revision,
+			"changing a view during description must not replace the borrowed document snapshot")
+		testing.expect(t, app.frame_deferred_action_pending,
+			"the mode change must own its document ID until the frame has finished")
+		alicorn.container_end(&ui)
+		alicorn.end_frame(&ui)
+		frame_deferred_action_run(&app, &rt)
+		current, exists := find_document(&app.backend.state, document_id)
+		testing.expect(t, exists && current.view_density == "skim", "the deferred mode change must target the original document")
+	}
 }

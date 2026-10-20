@@ -10,6 +10,12 @@ displays only a bounded window of excerpts (up to 128 at a time); the source
 text for any one excerpt is capped at 256 bytes. Visible ellipses mark omitted
 source between excerpts or at the end of the projection.
 
+Excerpt rows use measured, wrapped text heights at the resolved viewport width
+and follow editor zoom. Code uses the editor's monospace font. Source metadata
+and omission markers are smaller, muted text; trailing omissions appear after
+their excerpt. These measurements are cached per projection page and reset
+when the viewport, font, or zoom changes.
+
 ## Initial deterministic policy
 
 - **Full** shows the ordinary editable source view.

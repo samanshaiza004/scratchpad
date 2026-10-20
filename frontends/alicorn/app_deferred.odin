@@ -17,6 +17,7 @@ Deferred_Action_Kind :: enum {
 	Save_Document,
 	Conflict_Reload,
 	Conflict_Keep_Mine,
+	Set_View_Density,
 }
 
 Deferred_Action :: struct {
@@ -104,13 +105,18 @@ deferred_action_destroy :: proc(action: ^Deferred_Action) {
 	action^ = Deferred_Action{}
 }
 
-frame_deferred_action_schedule :: proc(app: ^App, kind: Deferred_Action_Kind, value: string = "") -> bool {
+frame_deferred_action_schedule :: proc(app: ^App, kind: Deferred_Action_Kind, value: string = "", document_id: string = "") -> bool {
 	if app == nil || app.frame_deferred_action_pending { return false }
 	action := Deferred_Action{kind=kind}
 	if len(value) > 0 {
 		value_copy, err := strings.clone(value, context.allocator)
 		if err != nil { return false }
 		action.value = value_copy
+	}
+	if document_id != "" {
+		copy, err := strings.clone(document_id, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.document_id = copy
 	}
 	app.frame_deferred_action = action
 	app.frame_deferred_action_pending = true
@@ -131,6 +137,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		quick_open_open_path(app, rt, action.value)
 	case .Save_As_Path:
 		save_as_to_path(app, rt, action.value, action.path)
+	case .Set_View_Density:
+		semantic_view_set_density(app, rt, action.document_id, action.value)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -215,6 +223,8 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			editor_resolve_conflict_now(app, rt, action.value, false)
 		case .Conflict_Keep_Mine:
 			editor_resolve_conflict_now(app, rt, action.value, true)
+		case .Set_View_Density:
+			semantic_view_set_density(app, rt, action.document_id, action.value)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(
