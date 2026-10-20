@@ -71,6 +71,43 @@ func TestAppendLinkerFlags(t *testing.T) {
 	}
 }
 
+func TestApplicationMutationDiagnosticsCompilerArgument(t *testing.T) {
+	if got := appMutationDiagnosticCompilerArgs(false); len(got) != 0 {
+		t.Fatalf("disabled diagnostics compiler args = %v, want none", got)
+	}
+	got := appMutationDiagnosticCompilerArgs(true)
+	if len(got) != 2 || got[0] != "-debug" || got[1] != "-define:ALICORN_APP_MUTATION_DIAGNOSTICS=true" {
+		t.Fatalf("diagnostics compiler args = %v, want debug mode and the Alicorn compile-time define", got)
+	}
+}
+
+func TestValidateApplicationMutationDiagnosticsOption(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		enabled bool
+		release bool
+		wantErr string
+	}{
+		{name: "disabled release", command: "build", release: true},
+		{name: "debug test", command: "test", enabled: true},
+		{name: "debug run", command: "run", enabled: true},
+		{name: "reject package", command: "package", enabled: true, wantErr: "cannot be used with package"},
+		{name: "reject release", command: "build", enabled: true, release: true, wantErr: "requires a debug build"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateMutationDiagnosticsOption(test.command, test.enabled, test.release)
+			if test.wantErr == "" && err != nil {
+				t.Fatalf("unexpected option error: %v", err)
+			}
+			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+				t.Fatalf("option error = %v, want text containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestAppendDarwinMinimumOSVersion(t *testing.T) {
 	args := []string{"build", "frontends/alicorn"}
 	if got := appendDarwinMinimumOSVersion(args, "darwin"); len(got) != len(args)+1 || got[len(got)-1] != "-minimum-os-version:13.0" {

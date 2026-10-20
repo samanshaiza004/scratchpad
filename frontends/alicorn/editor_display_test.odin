@@ -460,9 +460,14 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 					alicorn.semantic_focus_state(&rt).id == semantic_focus_before_vertical_key,
 					"vertical keys outside this editor slice must not fall through to workspace-tree navigation")
 				clicked_caret := view.caret_byte
+				selection_revision_before_right := app.selection_diagnostic_revision
 				right_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right})
 				testing.expect(t, right_handled && view.caret_byte > clicked_caret,
 					"Right should move the read-only caret locally without an authoritative edit")
+				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+					testing.expect(t, app.selection_diagnostic_revision > selection_revision_before_right,
+						"keyboard caret navigation should advance the selection diagnostic revision")
+				}
 				anchor_before_extend := view.selection_anchor
 				shift_handled := editor_text_key(rawptr(&app), &rt, app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Right, shift=true})
 				testing.expect(t, shift_handled && view.selection_anchor == anchor_before_extend && view.caret_byte > view.selection_anchor,

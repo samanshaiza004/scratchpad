@@ -57,6 +57,7 @@ func run(args []string) error {
 	caliberRootArg := flags.String("caliber-root", os.Getenv("CALIBER_CANDIDATE_ROOT"), "Caliber checkout override for dependency validation")
 	allowCaliberRevision := flags.Bool("allow-caliber-revision", false, "allow a Caliber candidate different from the lock")
 	release := flags.Bool("release", false, "build optimized native artifacts")
+	mutationDiagnostics := flags.Bool("app-mutation-diagnostics", false, "enable Alicorn's debug-only application mutation diagnostics")
 	version := flags.String("version", "", "consumer package version (required for package)")
 	outArg := flags.String("out", "", "artifact directory (package defaults under out/packages)")
 	staticSDL := flags.Bool("static-sdl", false, "package Windows with Alicorn's prepared static SDL recipe")
@@ -69,6 +70,9 @@ func run(args []string) error {
 	}
 	if command != "build" && command != "test" && command != "smoke" && command != "run" && command != "package" {
 		return fmt.Errorf("unknown command %q; expected build, test, smoke, run, or package", command)
+	}
+	if err := validateMutationDiagnosticsOption(command, *mutationDiagnostics, *release); err != nil {
+		return err
 	}
 	if *staticSDL && command != "package" {
 		return errors.New("--static-sdl is supported only by the package command")
@@ -196,7 +200,8 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, false, frontendEnv)
+		exe, err := buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags,
+			appMutationDiagnosticCompilerArgs(*mutationDiagnostics), true, *release, false, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -229,6 +234,7 @@ func run(args []string) error {
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
 		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
+		testArgs = append(testArgs, appMutationDiagnosticCompilerArgs(*mutationDiagnostics)...)
 		testArgs = appendLinkerFlags(testArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
 		if err := runCommand(root, testEnv, "odin", odinExe, testArgs...); err != nil {
 			return fmt.Errorf("Alicorn workbench integration tests: %w", err)
@@ -239,7 +245,8 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		exe, err := buildFrontend(root, out, odinExe, collectionArg, accessKitFlags, *release, false, frontendEnv)
+		exe, err := buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags,
+			appMutationDiagnosticCompilerArgs(*mutationDiagnostics), true, *release, false, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -266,6 +273,26 @@ func run(args []string) error {
 		return runCommand(root, launchEnv, "Alicorn frontend", exe)
 	}
 	return nil
+}
+
+func validateMutationDiagnosticsOption(command string, enabled, release bool) error {
+	if !enabled {
+		return nil
+	}
+	if command == "package" {
+		return errors.New("--app-mutation-diagnostics is for debug builds and cannot be used with package")
+	}
+	if release {
+		return errors.New("--app-mutation-diagnostics requires a debug build; remove --release")
+	}
+	return nil
+}
+
+func appMutationDiagnosticCompilerArgs(enabled bool) []string {
+	if !enabled {
+		return nil
+	}
+	return []string{"-debug", "-define:ALICORN_APP_MUTATION_DIAGNOSTICS=true"}
 }
 
 func validateLockedRevision(dependency, actual, required string, allowCandidate bool) error {
