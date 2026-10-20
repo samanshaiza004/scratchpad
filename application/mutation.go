@@ -305,6 +305,8 @@ func (a *Application) applyPathMutation(plan PathMutationPlan) {
 		if doc == nil {
 			continue
 		}
+		delete(a.semanticViews, relocation.OldID)
+		delete(a.semanticViews, relocation.NewID)
 		oldLanguage := language.ID(doc.RootLanguage)
 		newLanguage := language.DetectPath(relocation.NewPath)
 		doc.Path = filepath.Clean(relocation.NewPath)

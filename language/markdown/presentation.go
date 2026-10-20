@@ -60,6 +60,11 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 		switch node := node.(type) {
 		case *ast.Heading:
 			appendHeadingPresentation(add, node, source, state.start, state.end)
+		case *ast.Paragraph:
+			start, end := blockRange(node, source, state.end)
+			if start < end {
+				projection.Paragraphs = append(projection.Paragraphs, document.ParagraphRange{StartByte: start, EndByte: end})
+			}
 		case *ast.CodeBlock:
 			start, end := blockRange(node, source, state.end)
 			add(start, end, document.PresentationCodeBlock)

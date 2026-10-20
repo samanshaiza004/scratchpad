@@ -68,6 +68,7 @@ type PresentationDocument struct {
 	CanUndo              bool
 	CanRedo              bool
 	Language             string
+	ViewDensity          ViewDensity
 	PresentationRevision uint64
 	PresentationReady    bool
 	ViewKind             FileViewKind
@@ -171,6 +172,7 @@ func (a *Application) Snapshot() PresentationState {
 			CanUndo:              doc.Editor.CanUndo(),
 			CanRedo:              doc.Editor.CanRedo(),
 			Language:             doc.RootLanguage,
+			ViewDensity:          a.ViewDensity(id),
 			PresentationRevision: doc.Revision(),
 			PresentationReady:    presentationReady,
 			ViewKind:             viewKind,

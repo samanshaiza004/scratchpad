@@ -80,6 +80,7 @@ type Conflict struct {
 }
 
 type ViewState struct {
+	Density            ViewDensity `json:"density,omitempty"`
 	ScrollY            float32
 	ScrollInitialized  bool
 	ScrollX            float32
@@ -123,6 +124,7 @@ type Application struct {
 	closed                []string
 	presentationRevision  uint64
 	projectionGeneration  uint64
+	semanticViews         map[DocumentID]semanticViewCache
 }
 
 func New(store workspace.FileStore) *Application {
@@ -135,6 +137,7 @@ func New(store workspace.FileStore) *Application {
 		Documents:            make(map[DocumentID]*document.Document),
 		FileViews:            make(map[DocumentID]FileView),
 		Views:                make(map[DocumentID]ViewState),
+		semanticViews:        make(map[DocumentID]semanticViewCache),
 		Stale:                make(map[DocumentID]bool),
 		Conflicts:            make(map[DocumentID]Conflict),
 		recoveryDone:         make(chan error, 1),
@@ -997,6 +1000,8 @@ func committedDurabilityWarning(err error, doc *document.Document, beforePath st
 func (a *Application) completeSaveAs(id DocumentID, doc *document.Document, beforePath string) {
 	newID := documentID(doc.Path)
 	if newID != id {
+		delete(a.semanticViews, id)
+		delete(a.semanticViews, newID)
 		delete(a.Documents, id)
 		a.Documents[newID] = doc
 		for i, existing := range a.Order {
@@ -1088,6 +1093,7 @@ func (a *Application) closeDocument(id DocumentID, discard bool, rememberClosed 
 	}
 	delete(a.Documents, id)
 	delete(a.FileViews, id)
+	delete(a.semanticViews, id)
 	if a.Preview == id {
 		a.Preview = ""
 	}

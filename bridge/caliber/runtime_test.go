@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"scratchpad/application"
@@ -464,6 +465,93 @@ func TestRequestIDsAreNumericAndCorrelated(t *testing.T) {
 	response := decodeResponse(t, runtime.Pump())
 	if !response.OK || response.RequestID != request.RequestID {
 		t.Fatalf("response = %+v, want request_id %d", response, request.RequestID)
+	}
+}
+
+func TestSemanticViewCommandsValidateModeAndBoundedWindow(t *testing.T) {
+	valid := []byte(`{"version":1,"request_id":7,"command":"set_view_density","document_id":"doc","view_density":"outline"}`)
+	request, response, ok := decodeCommandRequest(valid, lifecycleRunning)
+	if !ok || response.OK || request.ViewDensity != "outline" {
+		t.Fatalf("valid set_view_density decode = request %+v, response %+v, ok=%v", request, response, ok)
+	}
+	for _, input := range []string{
+		`{"version":1,"request_id":8,"command":"set_view_density","document_id":"doc","view_density":"tiny"}`,
+		`{"version":1,"request_id":9,"command":"read_view_window","document_id":"doc","projection_first":0,"projection_limit":257}`,
+	} {
+		_, rejected, accepted := decodeCommandRequest([]byte(input), lifecycleRunning)
+		if accepted || rejected.OK {
+			t.Errorf("invalid semantic view command accepted: %s", input)
+		}
+	}
+}
+
+func TestSemanticViewCommandsReturnRevisionTaggedSourceExcerpts(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "outline.md")
+	source := "# First\n\nOpening text.\n\n## Second\n\nMore text.\n"
+	writeFile(t, path, source)
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 71, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open document = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	if len(state.Documents) != 1 {
+		t.Fatalf("opened state has %d documents", len(state.Documents))
+	}
+	documentID := state.Documents[0].ID
+	doc := runtime.app.Documents[application.DocumentID(documentID)]
+	if doc == nil {
+		t.Fatal("opened document is missing")
+	}
+	doc.Editor.SetSelection(3, 5)
+	deadline := time.Now().Add(3 * time.Second)
+	for !doc.DerivedCurrent() && time.Now().Before(deadline) {
+		runtime.app.PollDerived(time.Now())
+		time.Sleep(time.Millisecond)
+	}
+	if !doc.DerivedCurrent() {
+		t.Fatal("Markdown analysis did not become current")
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 72, BasedOnRevision: state.ApplicationRev,
+		Command: "set_view_density", DocumentID: documentID, ViewDensity: string(application.ViewDensityOutline),
+	}))
+	changed := decodeResponse(t, runtime.Pump())
+	if !changed.OK {
+		t.Fatalf("set outline mode = %+v", changed)
+	}
+	state = latestStateForTest(t, runtime)
+	if state.Documents[0].ViewDensity != string(application.ViewDensityOutline) {
+		t.Fatalf("published view density = %q", state.Documents[0].ViewDensity)
+	}
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 73, BasedOnRevision: state.ApplicationRev,
+		Command: "read_view_window", DocumentID: documentID, ProjectionFirst: 0, ProjectionLimit: 1,
+	}))
+	read := decodeResponse(t, runtime.Pump())
+	window := read.SemanticViewWindow
+	if !read.OK || window == nil || !window.Ready || !window.Supported || window.Mode != string(application.ViewDensityOutline) {
+		t.Fatalf("semantic view response = %+v", read)
+	}
+	if window.Revision != state.Documents[0].EditorRevision || window.Total != 2 || len(window.Segments) != 1 {
+		t.Fatalf("bounded semantic window = %+v", window)
+	}
+	segment := window.Segments[0]
+	if segment.Status != string(application.ProjectionCurrent) || segment.SourceRevision != window.Revision || segment.Text != "# First" || segment.EndByte <= segment.StartByte {
+		t.Fatalf("source-mapped outline segment = %+v", segment)
+	}
+	anchor, cursor := doc.Editor.Selection()
+	if anchor != 3 || cursor != 5 || string(doc.Editor.Buffer.Text()) != source {
+		t.Fatalf("projection changed source/editor state: selection=%d:%d source=%q", anchor, cursor, doc.Editor.Buffer.Text())
 	}
 }
 

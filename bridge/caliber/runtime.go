@@ -1137,6 +1137,23 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			return commandError(request, "application_error", err)
 		}
 		return response
+	case "set_view_density":
+		if err := r.app.SetViewDensity(application.DocumentID(request.DocumentID), application.ViewDensity(request.ViewDensity)); err != nil {
+			return commandError(request, "application_error", err)
+		}
+	case "read_view_window":
+		publishState = false
+		if err := r.enablePresentationLocked(request.DocumentID); err != nil {
+			return commandError(request, "view_unavailable", err)
+		}
+		window, err := r.app.QueryView(application.DocumentID(request.DocumentID), int(request.ProjectionFirst), int(request.ProjectionLimit))
+		if err != nil {
+			return commandError(request, "view_unavailable", err)
+		}
+		response := okResponse(request.RequestID, r.lifecycle, r.revision)
+		response.BasedOnRevision = request.BasedOnRevision
+		response.SemanticViewWindow = semanticViewWindowFromApplication(window)
+		return response
 	case "read_image":
 		data, err := r.app.ImagePreviewBytes(application.DocumentID(request.DocumentID), request.ImageRevision)
 		if err != nil {
