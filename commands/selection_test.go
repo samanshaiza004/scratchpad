@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"math/rand"
 	"strings"
 	"testing"
 
@@ -27,6 +28,60 @@ func TestSelectionExpandPlainTextLadderAndManualReset(t *testing.T) {
 	out := Execute(request)
 	if string(source[out.Anchor:out.Cursor]) != "alpha" {
 		t.Fatalf("manual caret reset = %+v", out)
+	}
+}
+
+func TestSelectionExpandASCIIPathMatchesUnicodeReference(t *testing.T) {
+	fixtures := []string{
+		"alpha beta. Another sentence.\n\nSecond paragraph.",
+		"Mr. Smith said, \"Hello!\" Then left.",
+		"3.14 is pi. Next sentence.",
+		"first sentence. another sentence. and one more.",
+		"can't stop. don't go.",
+		"foo_bar baz42",
+		"   punctuation!?  Next.",
+		"Before **First. Second.** after.",
+	}
+	rng := rand.New(rand.NewSource(20261020))
+	const alphabet = "abcXYZ019_.'!?() \t\r\n,;:"
+	for i := 0; i < 64; i++ {
+		fixture := make([]byte, rng.Intn(64)+1)
+		for j := range fixture {
+			fixture[j] = alphabet[rng.Intn(len(alphabet))]
+		}
+		fixtures = append(fixtures, string(fixture))
+	}
+	for _, fixture := range fixtures {
+		source := []byte(fixture)
+		for caret := 0; caret <= len(source); caret++ {
+			request := Request{ID: SelectionExpand, Source: source, Anchor: caret, Cursor: caret}
+			got := expandSelectionASCII(request)
+			want := expandSelectionUnicode(request)
+			if got.Status != want.Status || got.Anchor != want.Anchor || got.Cursor != want.Cursor {
+				t.Errorf("fixture %q caret %d: ASCII=%+v Unicode=%+v selected %q vs %q",
+					fixture, caret, got, want, source[min(got.Anchor, got.Cursor):max(got.Anchor, got.Cursor)], source[min(want.Anchor, want.Cursor):max(want.Anchor, want.Cursor)])
+			}
+		}
+	}
+}
+
+func TestSelectionExpandMixedTextFallsBackToUnicodeBoundaries(t *testing.T) {
+	fixtures := []string{
+		"first. next e\u0301 word. last",
+		"alpha 👩‍👩‍👧‍👦 beta. next",
+		"line one\r\n\r\nline two",
+		"before क्‍ष after. next",
+	}
+	for _, fixture := range fixtures {
+		source := []byte(fixture)
+		for caret := 0; caret <= len(source); caret++ {
+			request := Request{ID: SelectionExpand, Source: source, Anchor: caret, Cursor: caret}
+			got := expandSelection(request)
+			want := expandSelectionUnicode(request)
+			if got.Status != want.Status || got.Anchor != want.Anchor || got.Cursor != want.Cursor {
+				t.Errorf("fixture %q caret %d: fast=%+v Unicode=%+v", fixture, caret, got, want)
+			}
+		}
 	}
 }
 
