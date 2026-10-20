@@ -23,6 +23,7 @@ Windows_DWrite_Guid :: struct {
 
 WINDOWS_DWRITE_FACTORY_IID := win.IID{0xB859EE5A, 0xD838, 0x4B5B, {0xA2, 0xE8, 0x1A, 0xDC, 0x7D, 0x93, 0xDB, 0x48}}
 WINDOWS_DWRITE_FONT1_IID := Windows_DWrite_Guid{0xACD16696, 0x8C14, 0x4F5D, {0x87, 0x7E, 0xFE, 0x3F, 0xC1, 0xD3, 0x27, 0x38}}
+WINDOWS_DWRITE_FONT3_IID := Windows_DWrite_Guid{0x29748ED6, 0x8C9C, 0x4A6A, {0xBE, 0x0B, 0xD9, 0x12, 0xE8, 0x53, 0x89, 0x44}}
 
 windows_system_fonts_discover :: proc(allocator := context.allocator) -> (families: [dynamic]System_Font_Family, error: string) {
 	families = make([dynamic]System_Font_Family, 0, allocator=allocator)
@@ -145,22 +146,26 @@ windows_dwrite_family_name :: proc(family: rawptr, allocator: mem.Allocator) -> 
 }
 
 windows_dwrite_font_location :: proc(font: rawptr, allocator: mem.Allocator) -> (path: string, face_index: u32, unsupported_reason: string) {
-	create_face := cast(proc "system" (rawptr, ^rawptr) -> win.HRESULT) windows_com_method(font, 13)
-	face: rawptr
-	if create_face(font, &face) < 0 || face == nil {
-		return "", 0, system_font_clone_string("DirectWrite could not open this font face.", allocator)
+	// A font-face reference exposes the file and collection index without
+	// materializing the face. This avoids doing unnecessary face work during
+	// catalog discovery and handles fonts DirectWrite cannot instantiate.
+	query_font3 := cast(proc "system" (rawptr, ^Windows_DWrite_Guid, ^rawptr) -> win.HRESULT) windows_com_method(font, 0)
+	font3: rawptr
+	if query_font3(font, &WINDOWS_DWRITE_FONT3_IID, &font3) < 0 || font3 == nil {
+		return "", 0, system_font_clone_string("This Windows version cannot query a DirectWrite font-face reference.", allocator)
 	}
-	defer windows_com_release(face)
-	get_face_index := cast(proc "system" (rawptr) -> u32) windows_com_method(face, 5)
-	face_index = get_face_index(face)
-	get_files := cast(proc "system" (rawptr, ^u32, rawptr) -> win.HRESULT) windows_com_method(face, 4)
-	file_count: u32
-	if get_files(face, &file_count, nil) < 0 || file_count != 1 {
-		return "", face_index, system_font_clone_string("This font face does not resolve to one local font file.", allocator)
+	defer windows_com_release(font3)
+	get_face_reference := cast(proc "system" (rawptr, ^rawptr) -> win.HRESULT) windows_com_method(font3, 21)
+	face_reference: rawptr
+	if get_face_reference(font3, &face_reference) < 0 || face_reference == nil {
+		return "", 0, system_font_clone_string("DirectWrite could not resolve a reference to this font face.", allocator)
 	}
+	defer windows_com_release(face_reference)
+	get_face_index := cast(proc "system" (rawptr) -> u32) windows_com_method(face_reference, 6)
+	face_index = get_face_index(face_reference)
+	get_font_file := cast(proc "system" (rawptr, ^rawptr) -> win.HRESULT) windows_com_method(face_reference, 8)
 	font_file: rawptr
-	file_count = 1
-	if get_files(face, &file_count, rawptr(&font_file)) < 0 || font_file == nil {
+	if get_font_file(face_reference, &font_file) < 0 || font_file == nil {
 		return "", face_index, system_font_clone_string("DirectWrite could not resolve the font file for this face.", allocator)
 	}
 	defer windows_com_release(font_file)

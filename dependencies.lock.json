@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "master",
-    "revision": "94b7034286146839144948e2083275dd29ebb0c9"
+    "ref": "fix/macos-shared-secondary-window-files",
+    "revision": "0f88a7fe9c69bd047abeb4421cc7d51e1ee7a0f6"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

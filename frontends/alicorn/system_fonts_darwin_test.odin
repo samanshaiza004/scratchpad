@@ -8,6 +8,7 @@ import "core:testing"
 system_fonts_darwin_ttc_postscript_match_test :: proc(t: ^testing.T) {
 	postscript_name := "Menlo-Regular"
 	name_table := make([]u8, 18+len(postscript_name)*2)
+	defer delete(name_table)
 	// Format 0 table with one Windows Unicode PostScript-name record.
 	name_table[2] = 0
 	name_table[3] = 1
@@ -31,6 +32,8 @@ system_fonts_darwin_ttc_postscript_match_test :: proc(t: ^testing.T) {
 @(test)
 system_fonts_darwin_discovery_smoke_test :: proc(t: ^testing.T) {
 	families, error := darwin_system_fonts_discover()
+	defer system_fonts_destroy(&families)
+	defer delete(error)
 	testing.expect(t, error == "", "CoreText should enumerate installed font descriptors")
 	if error != "" { return }
 	testing.expect(t, len(families) > 0, "the host should expose at least one installed font family")

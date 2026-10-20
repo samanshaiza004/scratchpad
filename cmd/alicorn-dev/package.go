@@ -105,6 +105,7 @@ type releaseManifest struct {
 	Licenses     []string          `json:"licenses"`
 	Validation   releaseValidation `json:"validation"`
 	Artifacts    []releaseArtifact `json:"artifacts"`
+	SignedImages []releaseArtifact `json:"signedImages,omitempty"`
 }
 
 type licenseSource struct {
@@ -130,19 +131,6 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 	}
 	if runtime.GOOS == "darwin" && runtime.GOARCH != "arm64" {
 		return fmt.Errorf("Scratchpad macOS packages require arm64, got %s", runtime.GOARCH)
-	}
-	if runtime.GOOS == "darwin" {
-		previous, wasSet := os.LookupEnv("MACOSX_DEPLOYMENT_TARGET")
-		if err := os.Setenv("MACOSX_DEPLOYMENT_TARGET", "13.0"); err != nil {
-			return fmt.Errorf("set macOS deployment target: %w", err)
-		}
-		defer func() {
-			if wasSet {
-				_ = os.Setenv("MACOSX_DEPLOYMENT_TARGET", previous)
-			} else {
-				_ = os.Unsetenv("MACOSX_DEPLOYMENT_TARGET")
-			}
-		}()
 	}
 	version = strings.TrimPrefix(version, "v")
 	if !validPackageVersion(version) {
@@ -251,14 +239,14 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 		return err
 	}
 
-	revision, err := gitOutput(root, "rev-parse", "HEAD")
+	source, err := packageSource(root, alicornRoot, caliberRoot)
 	if err != nil {
 		return err
 	}
 	manifest := scratchpadBuildManifest{
 		Schema:       1,
 		Application:  releaseApp{Name: "Scratchpad", Version: version, Executable: "Scratchpad"},
-		Source:       releaseSource{Scratchpad: strings.TrimSpace(revision), Alicorn: lockedRevision(root, "alicorn"), Caliber: lockedRevision(root, "caliber")},
+		Source:       source,
 		Target:       releaseTarget{OS: runtime.GOOS, Architecture: runtime.GOARCH, WindowsGUI: runtime.GOOS == "windows", MacAdHocSigned: runtime.GOOS == "darwin", Notarized: false},
 		Dependencies: releaseDeps{GoModules: goModules},
 		Licenses:     licenseNames,
@@ -338,7 +326,19 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 	}
 	artifacts := []releaseArtifact{{Name: archiveName, SHA256: archiveHash, Size: archiveInfo.Size()}}
 	manifest.Validation.RelocatedArchiveLaunch = "passed"
-	manifestBytes, err := json.MarshalIndent(makeReleaseManifest(manifest, artifacts), "", "  ")
+	release := makeReleaseManifest(manifest, artifacts)
+	if runtime.GOOS == "darwin" {
+		release.SignedImages, err = signedMacPackageImages(filepath.Join(appDir, "Scratchpad.app"))
+		if err != nil {
+			return err
+		}
+		for _, name := range []string{"native-link-trace.txt", "native-link.map", "native-link-input.json"} {
+			if err := copyPackageFile(filepath.Join(buildDir, name), filepath.Join(staging, name)); err != nil {
+				return err
+			}
+		}
+	}
+	manifestBytes, err := json.MarshalIndent(release, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -445,18 +445,16 @@ func publishPackageDirectory(output, staging string) error {
 	return nil
 }
 
-func lockedRevision(root, dependency string) string {
-	lock, err := readLock(root)
-	if err != nil {
-		return "unknown"
+func packageSource(root, alicornRoot, caliberRoot string) (releaseSource, error) {
+	var revisions []string
+	for _, dir := range []string{root, alicornRoot, caliberRoot} {
+		revision, err := gitOutput(dir, "rev-parse", "HEAD")
+		if err != nil {
+			return releaseSource{}, fmt.Errorf("inspect package source at %s: %w", dir, err)
+		}
+		revisions = append(revisions, strings.TrimSpace(revision))
 	}
-	if dependency == "alicorn" {
-		return lock.Alicorn.Revision
-	}
-	if dependency == "caliber" {
-		return lock.Caliber.Revision
-	}
-	return "unknown"
+	return releaseSource{Scratchpad: revisions[0], Alicorn: revisions[1], Caliber: revisions[2]}, nil
 }
 
 func stageConsumerLicenses(root, alicornRoot, caliberRoot, goExe, odinExe, buildDir, macSDLLicense string, staticRecipe *windowsStaticLinkRecipe) ([]goModuleLicense, []string, error) {
@@ -696,10 +694,11 @@ func buildPinnedMacSDL(root, buildDir string) (runtimeLibrary, license string, e
 		"-DSDL_TESTS=OFF", "-DSDL_INSTALL_TESTS=OFF", "-DSDL_DISABLE_INSTALL_DOCS=ON",
 		"-DSDL_FRAMEWORK=OFF", "-DSDL_RPATH=OFF",
 	}
-	if err := runCommand(root, nil, "configure pinned shared SDL", "cmake", configure...); err != nil {
+	buildEnv := nativeCompilerEnv(runtime.GOOS, os.Environ())
+	if err := runCommand(root, buildEnv, "configure pinned shared SDL", "cmake", configure...); err != nil {
 		return "", "", err
 	}
-	if err := runCommand(root, nil, "build pinned shared SDL", "cmake", "--build", cmakeBuild, "--config", "Release", "--target", "SDL3-shared"); err != nil {
+	if err := runCommand(root, buildEnv, "build pinned shared SDL", "cmake", "--build", cmakeBuild, "--config", "Release", "--target", "SDL3-shared"); err != nil {
 		return "", "", err
 	}
 	if err := runCommand(root, nil, "install pinned shared SDL", "cmake", "--install", cmakeBuild, "--config", "Release"); err != nil {
@@ -815,10 +814,27 @@ func verifyWindowsGuiSubsystem(executable string) error {
 }
 
 func signAndVerifyMacBundle(bundle string) error {
-	if err := runCommand(".", nil, "apply ad-hoc macOS code signature", "codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", bundle); err != nil {
+	images, err := macPackageImagePaths(bundle)
+	if err != nil {
 		return err
 	}
-	return runCommand(".", nil, "verify macOS app signature", "codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle)
+	// Sign nested code first. Refresh its hashes and all resources before
+	// sealing the app. A subsequent --deep sign would invalidate those hashes.
+	for _, image := range images[1:] {
+		if err := runCommand(".", nil, "sign bundled macOS library", "codesign", "--force", "--sign", "-", "--timestamp=none", image); err != nil {
+			return err
+		}
+	}
+	if err := refreshMacPackageHashes(bundle); err != nil {
+		return err
+	}
+	if err := runCommand(".", nil, "seal macOS app signature", "codesign", "--force", "--sign", "-", "--timestamp=none", bundle); err != nil {
+		return err
+	}
+	if err := runCommand(".", nil, "verify macOS app signature", "codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle); err != nil {
+		return err
+	}
+	return verifyMacPackageHashes(bundle)
 }
 
 func writePackageBuildManifest(appDir string, manifest scratchpadBuildManifest) error {
@@ -1035,6 +1051,9 @@ func macArchiveSmoke(root, archive string, tempParent string) error {
 	}
 	bundle := filepath.Join(extractDir, "Scratchpad.app")
 	if err := runCommand(root, nil, "verify extracted macOS app signature", "codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle); err != nil {
+		return err
+	}
+	if err := verifyMacPackageHashes(bundle); err != nil {
 		return err
 	}
 	return consumerPackageSmoke(root, filepath.Join(bundle, "Contents", "MacOS", "Scratchpad"), tempParent)

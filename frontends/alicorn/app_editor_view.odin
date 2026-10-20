@@ -374,14 +374,19 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		target_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, target_line)
 		target_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, target_line)
 		if target_height <= 0 { target_height = EDITOR_ROW_HEIGHT*text_scale }
-		desired_y, _ := editor_reveal_content_offset(
-			scroll_y, viewport_height, target_top, target_height, request.alignment,
-		)
-		max_y := max(view.wrap_height_index.total_height-viewport_height, 0)
-		desired_y = min(max(desired_y, 0), max_y)
-		scroll_y = desired_y
-		view.scroll_y = desired_y
-		view.restore_y_pending = true
+		// Only move far enough to realize an offscreen logical line here. A
+		// wrapped line can exceed the viewport while its requested caret is
+		// already visible; after-frame reveal uses the exact source geometry.
+		if target_top+target_height <= scroll_y || target_top >= scroll_y+viewport_height {
+			desired_y, _ := editor_reveal_content_offset(
+				scroll_y, viewport_height, target_top, target_height, request.alignment,
+			)
+			max_y := max(view.wrap_height_index.total_height-viewport_height, 0)
+			desired_y = min(max(desired_y, 0), max_y)
+			scroll_y = desired_y
+			view.scroll_y = desired_y
+			view.restore_y_pending = true
+		}
 	} else if request.pending && request.document_id == document.id &&
 	          request.editor_revision < document.editor_revision {
 		editor_reveal_request_clear(&view.reveal_request)
