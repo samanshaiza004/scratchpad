@@ -146,6 +146,8 @@ test_system_font_reader_extracts_the_requested_collection_face :: proc(t: ^testi
 @(test)
 test_windows_system_font_catalog_smoke :: proc(t: ^testing.T) {
 	when ODIN_OS == .Windows {
+		windows_dwrite_trace_enabled = true
+		defer windows_dwrite_trace_enabled = false
 		families, discovery_error := system_fonts_discover(context.allocator)
 		defer system_fonts_destroy(&families, context.allocator)
 		defer delete(discovery_error)
