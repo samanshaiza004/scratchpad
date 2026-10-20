@@ -330,11 +330,13 @@ editor_reveal_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		editor_reveal_request_clear(&view.reveal_request)
 		return
 	}
-	if request.editor_revision != document.editor_revision || !app.editor_window_ready ||
-	   app.editor_window.document_id != document.id || app.editor_window.editor_revision != request.editor_revision {
+	window, window_matches := editor_view_window(view, &app.editor_window,
+		app.editor_window_ready, document.id, request.editor_revision)
+	if request.editor_revision != document.editor_revision || !window_matches ||
+	   window.editor_revision != request.editor_revision {
 		return
 	}
-	line, line_found := editor_window_line(&app.editor_window, request.logical_line)
+	line, line_found := editor_window_line(window, request.logical_line)
 	if !line_found { return }
 	target, target_found := editor_row_target_for_source(
 		app.editor_row_targets[:], line.logical_line, request.source_start,
@@ -350,7 +352,7 @@ editor_reveal_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if viewport_height <= 0 { viewport_height = owner.bounds.h }
 	if viewport_height <= 0 { return }
 
-	display_line, display_found := editor_display_line_for_target(&app.editor_window, line, target)
+	display_line, display_found := editor_display_line_for_target(window, line, target)
 	if !display_found { return }
 	match_start := min(max(request.source_start, line.source_start), line.source_end)
 	match_end := min(max(request.source_end, match_start), line.source_end)

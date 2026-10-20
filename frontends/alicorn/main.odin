@@ -2553,12 +2553,29 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 				next_window, projected, _ := editor_window_replace_bytes(window, start_byte, end_byte, applied)
 				view_index := editor_view_find(app.editor_views[:], document_id)
 				if projected && view_index >= 0 {
-						editor_wrap_heights_apply_edit(
-						&app.editor_views[view_index], window, start_byte, end_byte, applied,
-						editor_count_line_breaks(window.source[int(start_byte-window.start_byte):int(end_byte-window.start_byte)]),
-							editor_text_scale_effective(app),
-					)
 					view = &app.editor_views[view_index]
+					removed := window.source[int(start_byte-window.start_byte):int(end_byte-window.start_byte)]
+					// Capture the old geometry before invalidating the edited line's
+					// height. The viewport may start deep inside that wrapped line.
+					scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
+					if scroll.id != 0 && view.wrap_height_index_ready {
+						metrics := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll.offset_y, scroll.viewport_height)
+						if anchor, found := editor_window_line(window, u64(metrics.first)); found {
+							mapped_byte := editor_rebase_replacement_position(anchor.source_start, start_byte, removed, applied)
+							if mapped, mapped_found := editor_line_for_source(&next_window, mapped_byte); mapped_found {
+								view.viewport_anchor_byte = mapped.source_start
+								view.viewport_anchor_line = mapped.logical_line
+								view.viewport_anchor_revision = response.edit.editor_revision
+								view.viewport_anchor_offset = scroll.offset_y-alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, metrics.first)
+								view.viewport_anchor_pending = true
+								view.viewport_anchor_resolved = true
+							}
+						}
+					}
+					editor_wrap_heights_apply_edit(
+						view, window, start_byte, end_byte, applied,
+						editor_count_line_breaks(removed), editor_text_scale_effective(app),
+					)
 					if view.optimistic_window_ready {
 						editor_window_destroy(&view.optimistic_window)
 					}
@@ -2623,7 +2640,15 @@ editor_apply_backend_selection :: proc(
 	}
 	if !selection_only {
 		editor_preedit_clear(view)
-		editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
+		// Paste already rebases the measured line identities with its accepted
+		// source edit. Keep those heights when restoring that same selection;
+		// undo/redo and other unprojected revisions still need a fresh index.
+		source, source_matches := editor_view_window(view, &app.editor_window,
+			app.editor_window_ready, selection.document_id, selection.editor_revision)
+		if view.authoritative_revision != selection.editor_revision || !source_matches ||
+		   source.editor_revision != selection.editor_revision {
+			editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
+		}
 		view.authoritative_revision = selection.editor_revision
 	}
 	view.selection_anchor = selection.anchor_byte
