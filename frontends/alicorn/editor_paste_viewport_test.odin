@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -230,7 +231,7 @@ editor_paste_test_viewport :: proc(t: ^testing.T, scenario: Editor_Paste_Test_Ca
 
 @(test)
 test_editor_selection_restore_retains_heights_only_for_matching_source :: proc(t: ^testing.T) {
-	for fixture in [?]struct { source_id: string, source_revision: u64, source_ready, optimistic, preserve: bool }{
+	cases := [?]struct { source_id: string, source_revision: u64, source_ready, optimistic, preserve: bool }{
 		{"selection-doc", 5, true, false, true},
 		{"selection-doc", 5, true, true, true},
 		{"other-doc", 5, true, false, false},
@@ -238,7 +239,8 @@ test_editor_selection_restore_retains_heights_only_for_matching_source :: proc(t
 		{"selection-doc", 4, true, false, false},
 		{"selection-doc", 4, true, true, false},
 		{"selection-doc", 5, false, false, false},
-	} {
+	}
+	for fixture in cases {
 		app: App
 		documents := [?]bridge.State_Document{{id="selection-doc", editor_revision=5, line_count=50, byte_length=100}}
 		app.backend.state.documents = documents[:]

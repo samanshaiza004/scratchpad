@@ -328,7 +328,7 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 
 floating_window_drag_outside :: proc(rt: ^alicorn.Runtime, event: alicorn.Drag_Event) -> bool {
 	if rt == nil || event.kind != .Cancelled || !event.has_pointer_position { return false }
-	viewport := rt.viewport
+	viewport := alicorn.viewport_bounds(rt)
 	return event.pointer_x < viewport.x || event.pointer_y < viewport.y ||
 		event.pointer_x >= viewport.x+viewport.w || event.pointer_y >= viewport.y+viewport.h
 }

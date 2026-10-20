@@ -42,9 +42,20 @@ jobs:
           cache: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: laytan/setup-odin@v2
+        if: runner.os != 'macOS'
         with:
           token: false
           release: nightly
+      - name: Install supported macOS Odin SDK
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ./tools/caliber.sh sync --project-root "$GITHUB_WORKSPACE"
+          odin_root="$RUNNER_TEMP/scratchpad-odin"
+          sh .deps/alicorn/tools/setup_macos_odin.sh "$odin_root"
+          echo "$odin_root" >> "$GITHUB_PATH"
+          echo "ODIN_ROOT=$odin_root" >> "$GITHUB_ENV"
+          echo "ALICORN_ODIN=$odin_root/odin" >> "$GITHUB_ENV"
       - name: Set up MSVC linker and Windows SDK
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
