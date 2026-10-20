@@ -230,6 +230,7 @@ func projectInjectedGo(regions []document.InjectedRegion, source []byte, revisio
 	var highlights []document.HighlightSpan
 	var symbols []document.Symbol
 	var folds []document.LanguageFold
+	var selectionRanges []document.SelectionRange
 	// One adapter per projection: cheaper than per-fence construction and
 	// safe to reuse because each region is fully reparsed (nil edits reset
 	// the incremental tree). defer guarantees Close on every return path.
@@ -268,9 +269,15 @@ func projectInjectedGo(regions []document.InjectedRegion, source []byte, revisio
 			fold.EndByte += region.StartByte
 			folds = append(folds, fold)
 		}
+		for _, sourceRange := range code.SelectionRanges {
+			sourceRange.StartByte += region.StartByte
+			sourceRange.EndByte += region.StartByte
+			selectionRanges = append(selectionRanges, sourceRange)
+		}
 	}
-	if len(highlights) > 0 || len(symbols) > 0 || len(folds) > 0 {
+	if len(highlights) > 0 || len(symbols) > 0 || len(folds) > 0 || len(selectionRanges) > 0 {
 		projection.Code = document.NewCodeProjection(revision, "go", highlights, symbols, folds)
+		projection.Code.SelectionRanges = selectionRanges
 	}
 	return firstErr
 }

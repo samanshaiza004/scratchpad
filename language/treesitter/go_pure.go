@@ -69,7 +69,10 @@ func (g *goImplementationPure) Analyze(source []byte, revision uint64, edits []e
 		return document.CodeProjection{}, fmt.Errorf("Go parser returned no tree")
 	}
 	g.revision, g.hasRevision = revision, true
-	return document.NewCodeProjection(revision, "go", pureHighlights(g.highlight, g.tree), pureSymbols(g.tags, g.tree, source), pureFolds(g.language, g.tree.RootNode(), source)), nil
+	folds, selections := pureSyntaxRanges(g.language, g.tree.RootNode(), source)
+	projection := document.NewCodeProjection(revision, "go", pureHighlights(g.highlight, g.tree), pureSymbols(g.tags, g.tree, source), folds)
+	projection.SelectionRanges = selections
+	return projection, nil
 }
 
 func (g *goImplementationPure) Close() {
@@ -114,22 +117,29 @@ func pureSymbols(query *gotreesitter.Query, tree *gotreesitter.Tree, source []by
 	return symbols
 }
 
-func pureFolds(language *gotreesitter.Language, root *gotreesitter.Node, source []byte) []document.LanguageFold {
+func pureSyntaxRanges(language *gotreesitter.Language, root *gotreesitter.Node, source []byte) ([]document.LanguageFold, []document.SelectionRange) {
 	if root == nil {
-		return nil
+		return nil, nil
 	}
 	folds := make([]document.LanguageFold, 0)
-	var walk func(*gotreesitter.Node)
-	walk = func(node *gotreesitter.Node) {
+	var selections []document.SelectionRange
+	cursor := gotreesitter.NewTreeCursor(root, nil)
+	for {
+		node := cursor.CurrentNode()
 		start, end := int(node.StartByte()), int(node.EndByte())
-		kind := node.Type(language)
-		if end-start > 1 && isFoldNode(kind) && bytesContainNewline(source[start:end]) {
+		if node.IsNamed() && !node.IsMissing() && !node.IsError() {
+			selections = append(selections, document.SelectionRange{StartByte: start, EndByte: end})
+		}
+		if start >= 0 && end <= len(source) && end-start > 1 && isFoldNode(node.Type(language)) && bytesContainNewline(source[start:end]) {
 			folds = append(folds, document.LanguageFold{StartByte: start, EndByte: end})
 		}
-		for _, child := range node.Children() {
-			walk(child)
+		if cursor.GotoFirstChild() {
+			continue
+		}
+		for !cursor.GotoNextSibling() {
+			if !cursor.GotoParent() {
+				return folds, normalizeSelectionRanges(selections, len(source))
+			}
 		}
 	}
-	walk(root)
-	return folds
 }

@@ -50,11 +50,13 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 			collectStructuralProjection(node, source, projection)
 			state := presentationNodeRange{start: len(source)}
 			appendNodeValueRange(&state, node)
+			state.selection = selectionSourceRange(node, state.start, state.end)
 			stack = append(stack, state)
 			return ast.WalkContinue, nil
 		}
 		state := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
+		state.selection = appendSelectionRange(projection, node, source, state.selection)
 		switch node := node.(type) {
 		case *ast.Heading:
 			appendHeadingPresentation(add, node, source, state.start, state.end)
@@ -103,6 +105,9 @@ func collectPresentation(root ast.Node, source []byte, revision uint64, projecti
 			appendAutoLinkPresentation(add, node, source, state.start, state.end)
 		case *markdownast.Strikethrough:
 			appendInlinePresentation(add, node, source, document.PresentationStrike, 2, state.start, state.end)
+		}
+		if len(stack) > 0 {
+			stack[len(stack)-1].selection.include(state.selection.start, state.selection.end)
 		}
 		if len(stack) > 0 && state.start < state.end {
 			if state.start < stack[len(stack)-1].start {
@@ -217,8 +222,9 @@ func fencedCodeRange(block *ast.CodeBlock) (int, int, bool) {
 }
 
 type presentationNodeRange struct {
-	start int
-	end   int
+	start     int
+	end       int
+	selection selectionNodeRange
 }
 
 func appendNodeValueRange(state *presentationNodeRange, node ast.Node) {

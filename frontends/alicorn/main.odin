@@ -66,6 +66,7 @@ ACTION_EDIT_MOVE_LINE_DOWN :: "edit.move-line-down"
 ACTION_EDIT_DUPLICATE_LINE :: "edit.duplicate-line"
 ACTION_EDIT_JOIN_LINES :: "edit.join-lines"
 ACTION_COMMENT_TOGGLE :: "comment.toggle"
+ACTION_SELECTION_EXPAND :: "selection.expand"
 ACTION_VIEW_EDITOR_ZOOM_IN :: "view.editor-zoom-in"
 ACTION_VIEW_EDITOR_ZOOM_OUT :: "view.editor-zoom-out"
 ACTION_VIEW_EDITOR_ZOOM_RESET :: "view.editor-zoom-reset"
@@ -282,7 +283,7 @@ App :: struct {
 	dialog_sequence:        u64,
 	dialog_action:          string,
 	file_items:             [7]host.Application_Menu_Item,
-	edit_items:             [10]host.Application_Menu_Item,
+	edit_items:             [11]host.Application_Menu_Item,
 	workspace_items:        [7]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
 	view_items:             [8]host.Application_Menu_Item,

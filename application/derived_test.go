@@ -407,6 +407,14 @@ func TestDerivedProjectionComposesFencedGoIntoMarkdown(t *testing.T) {
 	if doc.Projections.Code.Highlights[0].StartByte < region.StartByte {
 		t.Fatalf("injected highlight was not translated: %+v region=%+v", doc.Projections.Code.Highlights[0], region)
 	}
+	if len(doc.Projections.Code.SelectionRanges) == 0 || doc.Projections.Code.Revision != doc.Revision() {
+		t.Fatalf("missing current injected selection ranges: %+v", doc.Projections.Code)
+	}
+	for _, span := range doc.Projections.Code.SelectionRanges {
+		if span.StartByte < region.StartByte || span.EndByte > region.EndByte {
+			t.Fatalf("injected selection range was not translated: %+v region=%+v", span, region)
+		}
+	}
 }
 
 func writeTestFile(path string, data []byte) error {

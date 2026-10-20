@@ -105,8 +105,8 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		alicorn.invalidate_root(rt, "Scratchpad Settings opened")
 		return
 	}
-	if editor_active_preedit(app) && (action_id == ACTION_EDIT_UNDO || action_id == ACTION_EDIT_REDO) {
-		set_error(app, "Finish or cancel the active text composition before using Undo or Redo.")
+	if editor_active_preedit(app) && (action_id == ACTION_EDIT_UNDO || action_id == ACTION_EDIT_REDO || action_id == ACTION_SELECTION_EXPAND) {
+		set_error(app, "Finish or cancel the active text composition before changing editor history or expanding selection.")
 		alicorn.invalidate_root(rt, "Scratchpad history command refused during IME composition")
 		return
 	}
@@ -208,7 +208,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		 ACTION_EDIT_DELETE_LINE,
 		 ACTION_EDIT_INDENT_LINES, ACTION_EDIT_OUTDENT_LINES, ACTION_EDIT_INSERT_LINE_ABOVE,
 		 ACTION_EDIT_INSERT_LINE_BELOW, ACTION_EDIT_MOVE_LINE_UP, ACTION_EDIT_MOVE_LINE_DOWN,
-		 ACTION_EDIT_DUPLICATE_LINE, ACTION_EDIT_JOIN_LINES, ACTION_COMMENT_TOGGLE,
+		 ACTION_EDIT_DUPLICATE_LINE, ACTION_EDIT_JOIN_LINES, ACTION_COMMENT_TOGGLE, ACTION_SELECTION_EXPAND,
 		 ACTION_MARKDOWN_TABLE_NEXT, ACTION_MARKDOWN_TABLE_PREVIOUS, ACTION_MARKDOWN_TABLE_ENTER:
 		document, found := find_document(&app.backend.state, app.backend.state.active)
 		if !found { break }
@@ -303,7 +303,7 @@ sync_runtime_actions :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			}
 		}
 		if action.id == ACTION_EDIT_UNDO && editor_has_pending_active_document_edit(app) { enabled = true }
-		if composition_active && (action.id == ACTION_EDIT_UNDO || action.id == ACTION_EDIT_REDO) { enabled = false }
+		if composition_active && (action.id == ACTION_EDIT_UNDO || action.id == ACTION_EDIT_REDO || action.id == ACTION_SELECTION_EXPAND) { enabled = false }
 		accepted := alicorn.action_update(rt,
 			alicorn.Action_Descriptor{id=action_id_for(action.id), name=action.id, label=action.title},
 			alicorn.Action_State{enabled=enabled, checked=action.checked},
@@ -394,10 +394,12 @@ sync_menu_states :: proc(app: ^App) {
 			item.state = alicorn.Action_State{enabled=has_text && editor_current_byte_length(app, active_document) > 0}
 		case ACTION_EDIT_DELETE_LINE:
 			item.state = alicorn.Action_State{enabled=has_text}
+		case ACTION_SELECTION_EXPAND:
+			item.state = alicorn.Action_State{enabled=has_text}
 		}
 		if composition_active {
 			switch string_for_action_id(item.command) {
-			case ACTION_EDIT_UNDO, ACTION_EDIT_REDO, ACTION_EDIT_CUT, ACTION_EDIT_PASTE, ACTION_EDIT_SELECT_ALL:
+			case ACTION_EDIT_UNDO, ACTION_EDIT_REDO, ACTION_EDIT_CUT, ACTION_EDIT_PASTE, ACTION_EDIT_SELECT_ALL, ACTION_SELECTION_EXPAND:
 				item.state.enabled = false
 			case ACTION_EDIT_COPY:
 				item.state = alicorn.Action_State{enabled=active_view != nil && len(active_view.preedit_text) > 0 && app.services.clipboard.set_text != nil}
@@ -414,6 +416,7 @@ string_for_action_id :: proc(id: host.Application_Command_ID) -> string {
 	if id == action_id_for(ACTION_EDIT_PASTE) { return ACTION_EDIT_PASTE }
 	if id == action_id_for(ACTION_EDIT_SELECT_ALL) { return ACTION_EDIT_SELECT_ALL }
 	if id == action_id_for(ACTION_EDIT_DELETE_LINE) { return ACTION_EDIT_DELETE_LINE }
+	if id == action_id_for(ACTION_SELECTION_EXPAND) { return ACTION_SELECTION_EXPAND }
 	return ""
 }
 
@@ -456,7 +459,7 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE_AS), label="Save As…", shortcut=host.Application_Menu_Shortcut{'S', {.Primary, .Shift}}},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_CLOSE), label="Close Document", shortcut=host.Application_Menu_Shortcut{'W', {.Primary}}},
 	}
-	app.edit_items = [10]host.Application_Menu_Item{
+	app.edit_items = [11]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_EDIT_UNDO), label="Undo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_REDO), label="Redo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary, .Shift}}},
 		{kind=.Separator},
@@ -465,6 +468,7 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_EDIT_PASTE), label="Paste", shortcut=host.Application_Menu_Shortcut{'V', {.Primary}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_SELECT_ALL), label="Select All", shortcut=host.Application_Menu_Shortcut{'A', {.Primary}}},
+		{kind=.Command, command=action_id_for(ACTION_SELECTION_EXPAND), label="Expand Selection", shortcut=host.Application_Menu_Shortcut{'E', {.Primary, .Alt}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_DELETE_LINE), label="Delete Line", shortcut=host.Application_Menu_Shortcut{'K', {.Primary, .Shift}}},
 	}
