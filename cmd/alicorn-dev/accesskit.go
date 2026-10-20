@@ -102,15 +102,12 @@ func bootstrapAccessKitWindows(alicornRoot string) error {
 	if _, err := os.Stat(helper); err != nil {
 		return fmt.Errorf("AccessKit library is missing and Alicorn bootstrap helper is unavailable at %s: %w", helper, err)
 	}
-	powershell, err := exec.LookPath("powershell.exe")
-	if err != nil {
-		powershell, err = exec.LookPath("pwsh.exe")
-	}
+	powershell, err := accessKitPowerShell(exec.LookPath)
 	if err != nil {
 		return fmt.Errorf("AccessKit library is missing; Powershell is required to run Alicorn's pinned bootstrap helper: %w", err)
 	}
 	quotedHelper := strings.ReplaceAll(helper, "'", "''")
-	script := fmt.Sprintf(". '%s'; Get-AlicornAccessKit | Out-Null", quotedHelper)
+	script := fmt.Sprintf("$ErrorActionPreference = 'Stop'; . '%s'; Get-AlicornAccessKit | Out-Null", quotedHelper)
 	cmd := exec.Command(powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	cmd.Dir = alicornRoot
 	cmd.Stdout = os.Stdout
@@ -119,6 +116,17 @@ func bootstrapAccessKitWindows(alicornRoot string) error {
 		return fmt.Errorf("run Alicorn's AccessKit bootstrap helper: %w", err)
 	}
 	return nil
+}
+
+// CI launches this driver from PowerShell 7. Starting Windows PowerShell 5
+// beneath it inherits a cross-version PSModulePath and can hide Get-FileHash.
+// Prefer pwsh when available, retaining the legacy fallback for older hosts.
+func accessKitPowerShell(lookPath func(string) (string, error)) (string, error) {
+	powershell, err := lookPath("pwsh.exe")
+	if err != nil {
+		return lookPath("powershell.exe")
+	}
+	return powershell, nil
 }
 
 func bootstrapAccessKitDarwin(alicornRoot string) error {
