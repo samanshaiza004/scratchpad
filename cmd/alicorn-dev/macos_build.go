@@ -1,6 +1,7 @@
 package main
 
 import (
+	"debug/macho"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,11 +29,27 @@ func nativeCompilerEnv(goos string, env []string) []string {
 		env = setEnv(env, key, strings.TrimSpace(value+" "+flag))
 	}
 	if value := envValue(env, "CARGO_ENCODED_RUSTFLAGS"); value != "" {
-		env = setEnv(env, "CARGO_ENCODED_RUSTFLAGS", value+"\x1f-C\x1flink-arg="+flag)
+		env = setEnv(env, "CARGO_ENCODED_RUSTFLAGS", value+"\x1f-C\x1flink-arg="+flag+"\x1f-C\x1fstrip=none")
 	} else {
-		env = setEnv(env, "RUSTFLAGS", strings.TrimSpace(envValue(env, "RUSTFLAGS")+" -C link-arg="+flag))
+		// LLVM's Mach-O debug stripper in affected Rust distributions can leave
+		// an unaligned LINKEDIT pool rejected by macOS 27's linker and dyld.
+		// Keep the linker-produced image, never repair its bytes afterward.
+		// https://github.com/rust-lang/rust/issues/157750
+		env = setEnv(env, "RUSTFLAGS", strings.TrimSpace(envValue(env, "RUSTFLAGS")+" -C link-arg="+flag+" -C strip=none"))
 	}
 	return env
+}
+
+func verifyDarwinLinkeditAlignment(path string) error {
+	image, err := macho.Open(path)
+	if err != nil {
+		return fmt.Errorf("inspect macOS library %s: %w", path, err)
+	}
+	defer image.Close()
+	if image.Magic == macho.Magic64 && image.Symtab != nil && image.Symtab.Stroff%8 != 0 {
+		return fmt.Errorf("macOS library %s has a misaligned LINKEDIT string pool (offset %#x); rebuild with Rust strip=none and the supported compiler inputs", path, image.Symtab.Stroff)
+	}
+	return nil
 }
 
 // Odin adds its macOS system library paths before extra -L flags. Give this

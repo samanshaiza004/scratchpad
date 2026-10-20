@@ -152,7 +152,7 @@ func TestMacBackendDeploymentTargetWithWarmCache(t *testing.T) {
 	root := t.TempDir()
 	caliber := filepath.Join(root, "caliber")
 	writeNativeFixture(t, filepath.Join(caliber, "Cargo.toml"), "[package]\nname = \"caliber-ffi\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[lib]\ncrate-type = [\"cdylib\"]\n")
-	writeNativeFixture(t, filepath.Join(caliber, "src", "lib.rs"), "#[no_mangle]\npub extern \"C\" fn caliber_fixture() -> i32 { 42 }\n")
+	writeNativeFixture(t, filepath.Join(caliber, "src", "lib.rs"), "#[no_mangle]\npub extern \"C\" fn caliber_fixture() -> i32 { std::env::var_os(\"SCRATCHPAD_MACOS_LINK_PROBE\").map(|s| s.len() as i32).unwrap_or(42) }\n")
 	writeNativeFixture(t, filepath.Join(caliber, "include", "caliber.h"), "int caliber_fixture(void);\n")
 	bridge := filepath.Join(root, "bridge", "caliber")
 	writeNativeFixture(t, filepath.Join(bridge, "go.mod"), "module deployment-fixture\ngo 1.25.5\n")
@@ -184,6 +184,9 @@ func main() {}
 			}
 		}
 		for _, image := range []string{library, filepath.Join(out, backendLibraryName())} {
+			if err := verifyDarwinLinkeditAlignment(image); err != nil {
+				t.Fatal(err)
+			}
 			commands, err := commandOutput(root, "otool", "-l", image)
 			if err != nil {
 				t.Fatal(err)

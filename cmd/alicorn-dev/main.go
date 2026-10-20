@@ -401,6 +401,11 @@ func buildCaliberAndBackend(root, caliberRoot, goExe, out string, release bool) 
 	if _, err := os.Stat(caliberLibrary); err != nil {
 		return nil, "", fmt.Errorf("locked Caliber library was not produced at %s: %w", caliberLibrary, err)
 	}
+	if runtime.GOOS == "darwin" {
+		if err := verifyDarwinLinkeditAlignment(caliberLibrary); err != nil {
+			return nil, "", err
+		}
+	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return nil, "", err
 	}
