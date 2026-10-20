@@ -85,10 +85,7 @@ scratchpad_theme_select :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratch
 	app.theme_choice = choice
 	if app.brand_mark != 0 { _ = scratchpad_brand_mark_replace(app, rt, choice) }
 	scratchpad_theme_apply_registered(app)
-	if app.theme_preferences_directory != "" &&
-	   !scratchpad_theme_preferences_save(app.theme_preferences_directory, choice) {
-		set_error(app, "Theme changed for this session, but Scratchpad could not save the preference.")
-	}
+	scratchpad_preferences_save(app)
 	alicorn.invalidate_root(rt, "Scratchpad theme preference changed")
 	return true
 }

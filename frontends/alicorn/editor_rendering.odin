@@ -310,6 +310,29 @@ editor_view_sync_scroll :: proc(
 	return result
 }
 
+editor_view_restore_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime, owner: alicorn.Node_ID) {
+	if app == nil || rt == nil || owner == 0 { return }
+	view_index := editor_view_find(app.editor_views[:], app.backend.state.active)
+	if view_index < 0 { return }
+	view := &app.editor_views[view_index]
+	if view.restore_runtime != rt || view.restore_token == alicorn.RESTORE_TOKEN_NONE { return }
+	restore, found := alicorn.restore_state_query(rt, .Scroll, owner, view.restore_token)
+	if !found { return }
+	if restore.outcome == .Requested || restore.outcome == .Deferred {
+		view.restore_y_pending = true
+		view.scroll_y = restore.requested.y
+		return
+	}
+	if restore.outcome == .Applied || restore.outcome == .Clamped {
+		view.scroll_y = restore.resolved.y
+	} else if live := alicorn.scroll_region_state(rt, owner); live.id != 0 {
+		view.scroll_y = live.offset_y
+	}
+	view.restore_y_pending = false
+	view.restore_runtime = nil
+	view.restore_token = alicorn.RESTORE_TOKEN_NONE
+}
+
 editor_line_number_text :: proc(line_number: u64) -> string {
 	return fmt.tprintf("%d", line_number)
 }

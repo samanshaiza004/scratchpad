@@ -410,10 +410,11 @@ floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 
 floating_window_initialize :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	if state == nil || rt == nil { return }
+	window := cast(^Floating_Window_State)state
+	window.runtime = rt
 	_ = alicorn.font_load_bytes(rt, .UI, SCRATCHPAD_UI_FONT_DATA)
 	_ = alicorn.font_load_italic_bytes(rt, .UI, SCRATCHPAD_UI_ITALIC_FONT_DATA)
-	_ = alicorn.font_load_bytes(rt, .Monospace, SCRATCHPAD_MONO_FONT_DATA)
-	_ = alicorn.font_load_italic_bytes(rt, .Monospace, SCRATCHPAD_MONO_ITALIC_FONT_DATA)
+	_ = scratchpad_editor_font_install(rt, scratchpad_editor_font_regular_bytes(window.owner), scratchpad_editor_font_italic_bytes(window.owner))
 }
 
 floating_window_services :: proc(state: rawptr, services: host.Application_Services) {
@@ -539,6 +540,7 @@ floating_window_build :: proc(
 	alicorn.surface_end(&ui)
 	alicorn.style_environment_pop(&ui, workbench_scope)
 	alicorn.end_frame(&ui)
+	editor_view_restore_after_frame(app, rt, app.editor_scroll_owner)
 	if app.editor_focus_pending && app.editor_scroll_owner != 0 {
 		if alicorn.focus(rt, app.editor_scroll_owner) { app.editor_focus_pending = false }
 	}

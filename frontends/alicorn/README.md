@@ -39,6 +39,36 @@ From the repository root, check and explain authored tokens with:
 
 Run the same commands for either theme file; explain prints token values and alias provenance, material parameters and source location, or the authored recipe fields and source location.
 
+## Editor typography
+
+Settings uses separate Appearance, Editor, Workspace, and Accessibility pages.
+Large windows show a category sidebar; smaller windows use a category selector.
+Each page scrolls independently of the fixed header and Done action. Font and
+theme changes apply immediately.
+
+Open **Settings → Editor** to choose an installed editor font, change its
+logical pixel size, or reset to bundled Atkinson Hyperlegible Mono at 16 px.
+The searchable picker lists monospaced families first and also allows
+proportional families for prose. Its results are virtualized; each listed name
+uses the workbench font, and the selected face appears in the live Settings
+preview and the editor. Fonts without an accessible compatible regular face
+are reported as unavailable rather than silently substituted.
+
+The preference shares the existing atomic `preferences.json` file with the
+theme. Existing theme-only files keep their theme and gain default typography.
+Font preferences store a family name and size, resolve local faces at startup,
+and fall back to the bundled face when a family disappears. Failed selections
+leave the last working font active. The main editor and floating document use
+the same regular and optional authentic italic faces, while UI typography stays
+unchanged. View → Zoom changes and persists the editor size; Reset Zoom restores
+16 px without changing the family.
+
+Windows discovery uses DirectWrite; macOS uses CoreText. Scratchpad supplies
+the chosen bytes to Alicorn and resets its own wrapped-row and table-layout
+measurements before rebuilding. Font files and extracted collection faces are
+limited to 64 MiB. See [font implementation and validation](../../docs/frontends/alicorn/EDITOR-FONTS.md)
+for platform coverage and current limitations.
+
 ## Included behavior
 
 Alicorn provides native File/Workspace/Edit/View menus; reorderable document tabs and tab drag-and-drop; dirty-close decisions and deferred app shutdown with Save All / Discard All / Cancel; saved-session restoration with per-document editor positions and recent workspaces; a virtualized workspace tree with search, quick open, create, rename, move, OS trash, and file/directory drag-and-drop; current-file Find/Replace and Go to Line; clipboard, undo/redo, IME composition, recovery, conflict resolution, and Save As; a command palette; live Markdown typography and editing commands; Tree-sitter syntax highlighting for Go, TypeScript, and TSX; table navigation/formatting; prose and cell-aware table wrapping; and per-document wrap override.

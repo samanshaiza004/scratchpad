@@ -86,6 +86,26 @@ App :: struct {
 	theme_choice: Scratchpad_Theme_Choice,
 	theme_preferences_directory: string,
 	theme_preferences_path: string,
+	editor_font_family: string,
+	editor_font_data: []u8,
+	editor_font_italic_data: []u8,
+	editor_font_catalog: [dynamic]System_Font_Family,
+	editor_font_catalog_ready: bool,
+	editor_font_catalog_error: string,
+	editor_font_pending: bool,
+	editor_font_pending_family: string,
+	editor_font_pending_size: f32,
+	editor_font_pending_persist: bool,
+	editor_font_picker_open: bool,
+	editor_font_picker_query: string,
+	editor_font_picker_selected: int,
+	editor_font_picker_query_node: alicorn.Node_ID,
+	editor_font_picker_results_owner: alicorn.Node_ID,
+	editor_font_picker_focus_pending: bool,
+	editor_font_picker_previous_focus: alicorn.Node_ID,
+	editor_font_picker_restore_pending: bool,
+	editor_font_picker_overlay_node: alicorn.Node_ID,
+	editor_font_picker_panel_node: alicorn.Node_ID,
 	accessibility_appearance: alicorn.Accessibility_Appearance_Preferences,
 	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
@@ -183,11 +203,15 @@ App :: struct {
 	workspace_mutation_dirty: bool,
 	workspace_editor_split_node: alicorn.Node_ID,
 	workspace_sidebar_width: f32,
+	workspace_split_restore_runtime: ^alicorn.Runtime,
+	workspace_split_restore_token: alicorn.Restore_Token,
+	workspace_split_restore_complete: bool,
 	workspace_mutation_queued: bool,
 	frame_deferred_action: Deferred_Action,
 	frame_deferred_action_pending: bool,
 	show_ignored_files:     bool,
 	settings_surface_open:  bool,
+	settings_category: Settings_Category,
 	recent_workspaces_open: bool,
 	workspace_search_mode:  bool,
 	workspace_search_query: string,
@@ -834,6 +858,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	if app.workspace_mutation_kind != .None {
 		return workspace_mutation_handle_key(app, rt, key)
 	}
+	if app.editor_font_picker_open { return scratchpad_editor_font_picker_handle_key(app, rt, key) }
 	if app.settings_surface_open {
 		return settings_surface_handle_key(app, rt, key)
 	}
@@ -2792,6 +2817,7 @@ application_stop :: proc(state: rawptr) {
 	find_set_message(&app.find_error, "")
 	find_set_message(&app.command_palette_query, "")
 	quick_open_destroy(app)
+	scratchpad_editor_font_destroy(app)
 	find_set_message(&app.workspace_search_query, "")
 	find_set_message(&app.workspace_search_started_query, "")
 	find_set_message(&app.workspace_search_started_root, "")
@@ -2821,8 +2847,13 @@ main :: proc() {
 		if ok {
 			app.theme_preferences_directory = preferences_directory
 			app.theme_preferences_path = preferences_path
-			if choice, found := scratchpad_theme_preferences_load(preferences_path); found {
-				app.theme_choice = choice
+			if preferences, found := scratchpad_user_preferences_load(preferences_path, context.allocator); found {
+				app.theme_choice, _ = scratchpad_theme_choice_parse(preferences.theme)
+				app.editor_text_scale = preferences.editor_font_size/EDITOR_FONT_SIZE_DEFAULT
+				app.editor_font_pending_family = preferences.editor_font_family
+				app.editor_font_pending_size = preferences.editor_font_size
+				app.editor_font_pending = preferences.editor_font_family != ""
+				delete(preferences.theme, context.allocator)
 			}
 		}
 	}

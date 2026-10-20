@@ -407,6 +407,18 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	// source lanes consume scroll_x. This leaves the gutter and clipped text
 	// lane fixed while long source lines move inside that lane.
 	alicorn.virtual_list_height_index_rebuild_prefix(&view.wrap_height_index)
+	scroll_restore := alicorn.Scroll_Restore_Request{}
+	if view.restore_y_pending {
+		if view.restore_runtime != rt || view.restore_token == alicorn.RESTORE_TOKEN_NONE {
+			view.restore_runtime = rt
+			view.restore_token = alicorn.restore_token_next(rt)
+		}
+		scroll_restore = alicorn.Scroll_Restore_Request{
+			token=view.restore_token,
+			offset_x=previous_scroll.offset_x,
+			offset_y=scroll_y,
+		}
+	}
 	editor_scroll := alicorn.scroll_region_begin(
 		ui,
 		key=alicorn.key_string("editor-scroll-region"),
@@ -417,6 +429,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		label="scratchpad-visible-document-lines",
 		axes=.Both,
 		focusable=true,
+		restore=scroll_restore,
 	)
 	editor_accessibility_build_semantics(app, ui, rt, document, editor_scroll.id, view)
 	list_metrics := alicorn.virtual_list_variable_metrics(
@@ -466,6 +479,13 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		list.scroll.max_scroll_x,
 		horizontal_ready,
 	)
+	if scroll_restore.token != alicorn.RESTORE_TOKEN_NONE {
+		// Keep the app's requested value until Alicorn resolves it against the
+		// final viewport and (if needed) corrects the virtualized range.
+		view.scroll_y = scroll_restore.offset_y
+		view.restore_y_pending = true
+		restore.vertical = false
+	}
 	if restore.vertical || restore.horizontal {
 		app.editor_restore_scroll = true
 		app.editor_restore_vertical = restore.vertical

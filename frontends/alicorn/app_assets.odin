@@ -5,8 +5,8 @@ import alicorn "alicorn:runtime"
 
 SCRATCHPAD_UI_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Variable.ttf")
 SCRATCHPAD_UI_ITALIC_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Italic-Variable.ttf")
-SCRATCHPAD_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
-SCRATCHPAD_MONO_ITALIC_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Italic-Variable.ttf")
+SCRATCHPAD_MONO_FONT_DATA := #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
+SCRATCHPAD_MONO_ITALIC_FONT_DATA := #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Italic-Variable.ttf")
 SCRATCHPAD_WARM_MARK_DATA :: #load("assets/scratchpad-mark-warm.png")
 SCRATCHPAD_COOL_MARK_DATA :: #load("assets/scratchpad-mark-cool-light.png")
 
