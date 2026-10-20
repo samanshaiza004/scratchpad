@@ -146,18 +146,22 @@ test_system_font_reader_extracts_the_requested_collection_face :: proc(t: ^testi
 @(test)
 test_windows_system_font_catalog_smoke :: proc(t: ^testing.T) {
 	when ODIN_OS == .Windows {
-		windows_dwrite_trace_enabled = true
-		defer windows_dwrite_trace_enabled = false
 		families, discovery_error := system_fonts_discover(context.allocator)
 		defer system_fonts_destroy(&families, context.allocator)
 		defer delete(discovery_error)
 		testing.expect(t, discovery_error == "" && len(families) > 0,
 			"Windows should return installed font families from DirectWrite")
+		has_selectable_regular_face := false
 		for i in 1..<len(families) {
 			previous, current := families[i-1], families[i]
 			testing.expect(t, (!current.monospaced || previous.monospaced) &&
 				(previous.monospaced != current.monospaced || strings.compare(previous.family, current.family) <= 0),
 				"Windows DirectWrite catalog should sort monospaced families first and names alphabetically")
 		}
+		for family in families {
+			if family.regular_path != "" { has_selectable_regular_face = true }
+		}
+		testing.expect(t, has_selectable_regular_face,
+			"Windows DirectWrite should resolve at least one selectable font file without creating a font face")
 	}
 }
