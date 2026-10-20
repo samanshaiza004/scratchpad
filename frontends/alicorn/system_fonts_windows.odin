@@ -28,10 +28,14 @@ WINDOWS_DWRITE_FONT1_IID := Windows_DWrite_Guid{0xACD16696, 0x8C14, 0x4F5D, {0x8
 windows_dwrite_trace_enabled: bool
 windows_dwrite_trace_family: int = -1
 windows_dwrite_trace_font: int = -1
+windows_dwrite_trace_name: string
+windows_dwrite_trace_weight: int = -1
+windows_dwrite_trace_style: int = -1
+windows_dwrite_trace_stretch: int = -1
 
 windows_dwrite_trace :: proc(stage: string) {
 	if windows_dwrite_trace_enabled {
-		fmt.println("[DWRITE-TRACE]", windows_dwrite_trace_family, windows_dwrite_trace_font, stage)
+		fmt.println("[DWRITE-TRACE]", windows_dwrite_trace_family, windows_dwrite_trace_font, windows_dwrite_trace_name, windows_dwrite_trace_weight, windows_dwrite_trace_style, windows_dwrite_trace_stretch, stage)
 	}
 }
 
@@ -61,10 +65,15 @@ windows_system_fonts_discover :: proc(allocator := context.allocator) -> (famili
 	for family_index in 0..<family_count {
 		windows_dwrite_trace_family = int(family_index)
 		windows_dwrite_trace_font = -1
+		windows_dwrite_trace_name = ""
+		windows_dwrite_trace_weight = -1
+		windows_dwrite_trace_style = -1
+		windows_dwrite_trace_stretch = -1
 		windows_dwrite_trace("family begin")
 		family_interface: rawptr
 		if get_family(collection, family_index, &family_interface) < 0 || family_interface == nil { continue }
 		family_name := windows_dwrite_family_name(family_interface, allocator)
+		windows_dwrite_trace_name = family_name
 		windows_dwrite_trace("family name complete")
 		if family_name == "" { windows_com_release(family_interface); continue }
 		family := System_Font_Family{family=family_name}
@@ -100,6 +109,9 @@ windows_system_fonts_discover :: proc(allocator := context.allocator) -> (famili
 					if best_regular != nil { windows_com_release(best_regular) }
 					best_regular = font
 					regular_delta = delta
+					windows_dwrite_trace_weight = int(weight)
+					windows_dwrite_trace_style = int(style)
+					windows_dwrite_trace_stretch = int(stretch)
 					font = nil
 				} else if style != 0 && delta < italic_delta {
 					if best_italic != nil { windows_com_release(best_italic) }
@@ -180,7 +192,9 @@ windows_dwrite_family_name :: proc(family: rawptr, allocator: mem.Allocator) -> 
 
 windows_dwrite_font_location :: proc(font: rawptr, allocator: mem.Allocator) -> (path: string, face_index: u32, unsupported_reason: string) {
 	windows_dwrite_trace("create font face begin")
-	create_face := cast(proc "system" (rawptr, ^rawptr) -> win.HRESULT) windows_com_method(font, 13)
+	create_face_method := windows_com_method(font, 13)
+	windows_dwrite_trace("create font face method retrieved")
+	create_face := cast(proc "system" (rawptr, ^rawptr) -> win.HRESULT) create_face_method
 	face: rawptr
 	if create_face(font, &face) < 0 || face == nil {
 		return "", 0, system_font_clone_string("DirectWrite could not open this font face.", allocator)
