@@ -18,6 +18,7 @@ type ProjectionSegment struct {
 	EndByte        int
 	Label          string
 	Context        string
+	Depth          int
 }
 
 // ProjectionKey identifies a presentation occurrence within one application's

@@ -18,6 +18,7 @@ Deferred_Action_Kind :: enum {
 	Conflict_Reload,
 	Conflict_Keep_Mine,
 	Set_View_Density,
+	Go_To_Projection_Source,
 }
 
 Deferred_Action :: struct {
@@ -32,6 +33,10 @@ Deferred_Action :: struct {
 	workspace_mutation_kind: Workspace_Mutation_Kind,
 	source_is_dir: bool,
 	discard:     bool,
+	editor_revision: u64,
+	source_start: u64,
+	source_end: u64,
+	source_line: u64,
 }
 
 MAX_DEFERRED_ACTIONS :: 64
@@ -48,6 +53,10 @@ deferred_action_enqueue :: proc(
 	discard := false,
 	workspace_root := "",
 	document_id := "",
+	editor_revision: u64 = 0,
+	source_start: u64 = 0,
+	source_end: u64 = 0,
+	source_line: u64 = 0,
 ) -> bool {
 	if app == nil || len(app.deferred_actions) >= MAX_DEFERRED_ACTIONS { return false }
 	action := Deferred_Action{kind=kind}
@@ -82,6 +91,10 @@ deferred_action_enqueue :: proc(
 		action.workspace_root = root_copy
 	}
 	action.workspace_mutation_kind = workspace_mutation_kind
+	action.editor_revision = editor_revision
+	action.source_start = source_start
+	action.source_end = source_end
+	action.source_line = source_line
 	action.source_is_dir = source_is_dir
 	action.discard = discard
 	if len(disposition) > 0 {
@@ -105,7 +118,16 @@ deferred_action_destroy :: proc(action: ^Deferred_Action) {
 	action^ = Deferred_Action{}
 }
 
-frame_deferred_action_schedule :: proc(app: ^App, kind: Deferred_Action_Kind, value: string = "", document_id: string = "") -> bool {
+frame_deferred_action_schedule :: proc(
+	app: ^App,
+	kind: Deferred_Action_Kind,
+	value: string = "",
+	document_id: string = "",
+	editor_revision: u64 = 0,
+	source_start: u64 = 0,
+	source_end: u64 = 0,
+	source_line: u64 = 0,
+) -> bool {
 	if app == nil || app.frame_deferred_action_pending { return false }
 	action := Deferred_Action{kind=kind}
 	if len(value) > 0 {
@@ -118,6 +140,10 @@ frame_deferred_action_schedule :: proc(app: ^App, kind: Deferred_Action_Kind, va
 		if err != nil { deferred_action_destroy(&action); return false }
 		action.document_id = copy
 	}
+	action.editor_revision = editor_revision
+	action.source_start = source_start
+	action.source_end = source_end
+	action.source_line = source_line
 	app.frame_deferred_action = action
 	app.frame_deferred_action_pending = true
 	return true
@@ -139,6 +165,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		save_as_to_path(app, rt, action.value, action.path)
 	case .Set_View_Density:
 		semantic_view_set_density(app, rt, action.document_id, action.value)
+	case .Go_To_Projection_Source:
+		semantic_view_go_to_source(app, rt, action.document_id, action.editor_revision, action.source_start, action.source_end, action.source_line)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -225,6 +253,8 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			editor_resolve_conflict_now(app, rt, action.value, true)
 		case .Set_View_Density:
 			semantic_view_set_density(app, rt, action.document_id, action.value)
+		case .Go_To_Projection_Source:
+			semantic_view_go_to_source(app, rt, action.document_id, action.editor_revision, action.source_start, action.source_end, action.source_line)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(

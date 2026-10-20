@@ -295,6 +295,7 @@ Semantic_View_Segment :: struct {
 	source_revision: u64 `json:"source_revision"`,
 	start_byte: int `json:"start_byte"`,
 	end_byte: int `json:"end_byte"`,
+	depth: int `json:"depth"`,
 	source_start_line: int `json:"source_start_line"`,
 	source_end_line: int `json:"source_end_line"`,
 	label: string `json:"label"`,
@@ -306,6 +307,8 @@ Semantic_View_Segment :: struct {
 	truncated: bool `json:"truncated"`,
 	omitted_before: bool `json:"omitted_before"`,
 	omitted_after: bool `json:"omitted_after"`,
+	omitted_before_lines: int `json:"omitted_before_lines"`,
+	omitted_after_lines: int `json:"omitted_after_lines"`,
 }
 
 Save_As_Conflict :: struct {
@@ -1556,6 +1559,7 @@ semantic_view_window_clone :: proc(source: Semantic_View_Window, allocator: mem.
 		target.source_revision = segment.source_revision
 		target.start_byte = segment.start_byte
 		target.end_byte = segment.end_byte
+		target.depth = segment.depth
 		target.source_start_line = segment.source_start_line
 		target.source_end_line = segment.source_end_line
 		target.generation = segment.generation
@@ -1563,6 +1567,8 @@ semantic_view_window_clone :: proc(source: Semantic_View_Window, allocator: mem.
 		target.truncated = segment.truncated
 		target.omitted_before = segment.omitted_before
 		target.omitted_after = segment.omitted_after
+		target.omitted_before_lines = segment.omitted_before_lines
+		target.omitted_after_lines = segment.omitted_after_lines
 		target.document_id, err = strings.clone(segment.document_id, allocator)
 		if err != nil { semantic_view_window_destroy(&copy, allocator); return {}, false }
 		target.label, err = strings.clone(segment.label, allocator)

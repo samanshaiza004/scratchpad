@@ -30,12 +30,14 @@ const MaxViewExcerptBytes = 256
 // Text is display-only; edits continue to target the authoritative document.
 type ViewSegment struct {
 	ProjectionSegmentView
-	Text            string
-	Truncated       bool
-	SourceStartLine int
-	SourceEndLine   int
-	OmittedBefore   bool
-	OmittedAfter    bool
+	Text               string
+	Truncated          bool
+	SourceStartLine    int
+	SourceEndLine      int
+	OmittedBefore      bool
+	OmittedAfter       bool
+	OmittedBeforeLines int
+	OmittedAfterLines  int
 }
 
 // ViewWindow is a bounded snapshot for one reduced document view. A supported
@@ -163,6 +165,16 @@ func (a *Application) QueryView(id DocumentID, first, limit int) (ViewWindow, er
 		}
 		omittedBefore := segment.StartByte > previousEnd
 		omittedAfter := ordinal == projectionWindow.Total-1 && segment.EndByte < doc.Editor.Buffer.ByteLen()
+		previousLine := -1
+		if previousEnd > 0 {
+			previousLine, _ = doc.Editor.Buffer.LineAt(previousEnd - 1)
+		}
+		omittedBeforeLines := max(startLine-previousLine-1, 0)
+		omittedAfterLines := 0
+		if omittedAfter {
+			lastLine, _ := doc.Editor.Buffer.LineAt(doc.Editor.Buffer.ByteLen() - 1)
+			omittedAfterLines = max(lastLine-endLine, 0)
+		}
 		window.Segments[i] = ViewSegment{
 			ProjectionSegmentView: segment,
 			Text:                  text,
@@ -171,6 +183,8 @@ func (a *Application) QueryView(id DocumentID, first, limit int) (ViewWindow, er
 			SourceEndLine:         endLine + 1,
 			OmittedBefore:         omittedBefore,
 			OmittedAfter:          omittedAfter,
+			OmittedBeforeLines:    omittedBeforeLines,
+			OmittedAfterLines:     omittedAfterLines,
 		}
 	}
 	return window, nil
@@ -182,18 +196,22 @@ func semanticViewSegments(doc *document.Document, id DocumentID, mode ViewDensit
 	}
 	revision := doc.Revision()
 	segments := make([]ProjectionSegment, 0)
-	add := func(start, end int, label, context string) {
+	add := func(start, end int, label, context string, depth ...int) {
 		if start < 0 || end <= start || end > doc.Editor.Buffer.ByteLen() {
 			return
 		}
+		level := 0
+		if len(depth) > 0 {
+			level = max(depth[0], 0)
+		}
 		segments = append(segments, ProjectionSegment{
 			DocumentID: id, SourceRevision: revision,
-			StartByte: start, EndByte: end, Label: label, Context: context,
+			StartByte: start, EndByte: end, Label: label, Context: context, Depth: level,
 		})
 	}
 	if doc.RootLanguage == string(language.Markdown) {
 		for _, heading := range doc.Projections.Headings {
-			add(heading.StartByte, heading.EndByte, "heading", fmt.Sprintf("level %d", heading.Level))
+			add(heading.StartByte, heading.EndByte, "heading", "", max(heading.Level-1, 0))
 		}
 		if mode == ViewDensitySkim {
 			headingIndex := 0

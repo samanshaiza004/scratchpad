@@ -18,13 +18,37 @@ semantic_view_test_node :: proc(rt: ^alicorn.Runtime, key: string) -> (id: alico
 	return 0, false
 }
 
-semantic_view_test_frame :: proc(rt: ^alicorn.Runtime, app: ^App, document: bridge.State_Document, view: ^Editor_View_State) {
+semantic_view_test_frame :: proc(rt: ^alicorn.Runtime, app: ^App, document: bridge.State_Document, view: ^Editor_View_State, mode := "skim") {
 	ui, build := alicorn.begin_frame(rt)
 	if !build { return }
 	alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(.Column, grow=1))
-	_ = semantic_view_render(app, &ui, document, view, "skim")
+	_ = semantic_view_render(app, &ui, document, view, mode)
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
+}
+
+semantic_view_test_dispatch_source_navigation :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	document_id: string,
+	revision, source_start, source_end, source_line: u64,
+) -> bool {
+	alicorn.invalidate_root(rt, "schedule semantic source navigation from a row action")
+	ui, build := alicorn.begin_frame(rt)
+	if !build { return false }
+	alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(.Column, grow=1))
+	queued := frame_deferred_action_schedule(
+		app, .Go_To_Projection_Source,
+		document_id=document_id,
+		editor_revision=revision,
+		source_start=source_start,
+		source_end=source_end,
+		source_line=source_line,
+	)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	if queued { frame_deferred_action_run(app, rt) }
+	return queued
 }
 
 @(test)
@@ -41,6 +65,7 @@ test_semantic_view_excerpt_layout_is_compact_and_unclipped :: proc(t: ^testing.T
 		document_id=document.id, source_revision=1, start_byte=10, end_byte=80,
 		source_start_line=18, source_end_line=19, label="function", section_context="App",
 		status="current", text="function App() {\n  const rows = useState([]);", omitted_before=true, omitted_after=true,
+		omitted_before_lines=12, omitted_after_lines=3,
 	}}
 	view := Editor_View_State{semantic_window_owned=true, semantic_window=bridge.Semantic_View_Window{
 		document_id=document.id, mode="skim", revision=1, ready=true, supported=true, total=1, segments=segments[:],
@@ -56,18 +81,18 @@ test_semantic_view_excerpt_layout_is_compact_and_unclipped :: proc(t: ^testing.T
 		alicorn.container_end(&ui)
 		alicorn.end_frame(&ui)
 	}
-	rows, markers, snippets := 0, 0, 0
+	rows, markers, snippets, actions := 0, 0, 0, 0
 	for id in rt.order {
 		node := rt.nodes[id]
 		if node.label == "scratchpad-semantic-view-row" {
 			rows += 1
 			testing.expect(t, node.bounds.h < 140, fmt.tprintf("a two-line excerpt must not occupy a fixed oversized card: height=%g", node.bounds.h))
 		}
-		if strings.has_prefix(node.text, "… omitted source") {
+		if strings.has_prefix(node.text, "···") {
 			markers += 1
 			testing.expect(t, node.text_run_valid && node.bounds.h+0.1 >= node.text_run.height,
 				fmt.tprintf("omission label must fit its shaped text: bounds=%g text=%g", node.bounds.h, node.text_run.height))
-			if strings.contains(node.text, "after") {
+			if node.text == "··· 3 lines omitted ···" {
 				for candidate in rt.order {
 					if rt.nodes[candidate].text == segments[0].text {
 						snippet := rt.nodes[candidate]
@@ -77,12 +102,52 @@ test_semantic_view_excerpt_layout_is_compact_and_unclipped :: proc(t: ^testing.T
 				}
 			}
 		}
-		if node.text == segments[0].text {
+		if node.kind == .Text && node.text == segments[0].text {
 			snippets += 1
 			testing.expect(t, node.font == .Monospace, "code excerpts must use the editor's monospace font")
 		}
+		if node.kind == .Button && node.label == "Go to source" {
+			actions += 1
+			testing.expect(t, node.focusable && node.bounds.w > 0, "every source excerpt must have a keyboard-reachable source action")
+		}
 	}
-	testing.expect(t, rows == 1 && markers == 2 && snippets == 1, fmt.tprintf("fixture must exercise the real semantic row and both omission labels: rows=%d markers=%d snippets=%d", rows, markers, snippets))
+	testing.expect(t, rows == 1 && markers == 2 && snippets == 1 && actions == 1, fmt.tprintf("fixture must exercise the real semantic row, source action and both compact omission labels: rows=%d markers=%d snippets=%d actions=%d", rows, markers, snippets, actions))
+}
+
+@(test)
+test_semantic_outline_indents_markdown_heading_levels :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 600})
+	defer alicorn.destroy_runtime(&rt)
+	if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) { testing.expect(t, false, "outline hierarchy requires the bundled UI font"); return }
+	document := bridge.State_Document{id="hierarchy-doc", language="markdown", view_density="outline", editor_revision=1, presentation_ready=true}
+	segments := [?]bridge.Semantic_View_Segment{
+		{document_id=document.id, source_revision=1, start_byte=0, end_byte=12, source_start_line=1, label="heading", depth=0, status="current", text="# Root", ordinal=0},
+		{document_id=document.id, source_revision=1, start_byte=20, end_byte=32, source_start_line=4, label="heading", depth=1, status="current", text="## Child", ordinal=1, omitted_before=true, omitted_before_lines=2},
+		{document_id=document.id, source_revision=1, start_byte=40, end_byte=54, source_start_line=7, label="heading", depth=2, status="current", text="### Nested", ordinal=2, omitted_before=true, omitted_before_lines=2},
+	}
+	view := Editor_View_State{semantic_window_owned=true, semantic_window=bridge.Semantic_View_Window{
+		document_id=document.id, mode="outline", revision=1, ready=true, supported=true, generation=1, total=3, segments=segments[:],
+	}}
+	defer semantic_view_layout_destroy(&view.semantic_layout)
+	app: App
+	for frame in 0..<4 {
+		alicorn.invalidate_root(&rt, "settle semantic outline hierarchy")
+		semantic_view_test_frame(&rt, &app, document, &view, "outline")
+	}
+	positions: [3]f32
+	found := [3]bool{}
+	heading_texts := [?]string{"# Root", "## Child", "### Nested"}
+	for id in rt.order {
+		node := rt.nodes[id]
+		for text, index in heading_texts {
+			if node.kind == .Text && node.text == text { positions[index], found[index] = node.bounds.x, true }
+		}
+	}
+	for index in 0..<3 { testing.expect(t, found[index], "all heading levels should appear in the Outline") }
+	if found[0] && found[1] && found[2] {
+		testing.expect(t, positions[1] > positions[0]+10 && positions[2] > positions[1]+10,
+			fmt.tprintf("heading depth should be visible through indentation: x=%v", positions))
+	}
 }
 
 @(test)
@@ -144,7 +209,7 @@ test_semantic_view_controls_render_all_modes_and_select_current_density :: proc(
 	testing.expect(t, build, "semantic-view toolbar should begin a root description")
 	if !build { return }
 	alicorn.container_begin(&ui, .Root, label="semantic-view-test-root", style=alicorn.layout_style(grow=1, gap=8))
-	semantic_view_controls(&app, &ui, &rt, document)
+	semantic_view_controls(&app, &ui, &rt, document, nil)
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
 
@@ -184,6 +249,7 @@ test_semantic_view_frontend_bridge_keeps_source_authoritative :: proc(t: ^testin
 	defer {
 		if app.backend.started { _, _ = bridge.backend_stop(&app.backend, context.allocator) }
 		editor_views_destroy(&app.editor_views, context.allocator)
+		set_error(&app, "")
 		tree_clear_directories(&app)
 		delete(app.tree_directories)
 		if app.tree_root_path != "" { delete(app.tree_root_path, context.allocator) }
@@ -235,7 +301,11 @@ test_semantic_view_frontend_bridge_keeps_source_authoritative :: proc(t: ^testin
 	testing.expect(t,
 		window.document_id == document_id && window.mode == "outline" && window.revision == before_revision &&
 		window.supported && window.total == 2 && len(window.segments) == 2,
-		"the reduced view must identify its document, selected density, current revision and bounded outline")
+		fmt.tprintf("the reduced view must identify its document, selected density, current revision and bounded outline: id=%s mode=%s revision=%d expected=%d supported=%v total=%d returned=%d", window.document_id, window.mode, window.revision, before_revision, window.supported, window.total, len(window.segments)))
+	if len(window.segments) == 2 {
+		testing.expect(t, window.segments[1].depth == 1,
+			fmt.tprintf("Outline bridge must preserve heading depth: got %d, want 1", window.segments[1].depth))
+	}
 	if len(window.segments) == 2 {
 		first := window.segments[0]
 		testing.expect(t, first.status == "current" && first.source_revision == before_revision &&
@@ -285,5 +355,33 @@ test_semantic_view_frontend_bridge_keeps_source_authoritative :: proc(t: ^testin
 		frame_deferred_action_run(&app, &rt)
 		current, exists := find_document(&app.backend.state, document_id)
 		testing.expect(t, exists && current.view_density == "skim", "the deferred mode change must target the original document")
+		if exists {
+			source_start := u64(len(source)-len("More source.\n"))
+			source_end := source_start+u64(len("More source."))
+			queued := semantic_view_test_dispatch_source_navigation(
+				&app, &rt, document_id, before_revision, source_start, source_end, 7,
+			)
+			testing.expect(t, queued, "the excerpt's Go to source action must queue a post-description navigation")
+			navigated, still_open := find_document(&app.backend.state, document_id)
+			view_index := editor_view_find(app.editor_views[:], document_id)
+			navigation_ok := still_open && navigated.view_density == "full" && view_index >= 0
+			if navigation_ok {
+				source_view := &app.editor_views[view_index]
+				navigation_ok = source_view.caret_byte == source_start && source_view.selection_anchor == source_start &&
+					source_view.reveal_request.pending &&
+					source_view.reveal_request.editor_revision == before_revision &&
+					source_view.reveal_request.logical_line == 6 &&
+					source_view.reveal_request.source_start == source_start &&
+					source_view.reveal_request.source_end == source_end
+			}
+			testing.expect(t, navigation_ok, "Go to source must switch to Full and queue a revision-matched reveal to the excerpt's source location")
+			caret_before_stale := app.editor_views[view_index].caret_byte if view_index >= 0 else 0
+			stale_queued := semantic_view_test_dispatch_source_navigation(
+				&app, &rt, document_id, before_revision+1, 0, 1, 1,
+			)
+			view_index = editor_view_find(app.editor_views[:], document_id)
+			stale_unchanged := view_index >= 0 && app.editor_views[view_index].caret_byte == caret_before_stale
+			testing.expect(t, stale_queued && stale_unchanged && app.error_message != "", "a stale excerpt must report an error without moving the caret")
+		}
 	}
 }

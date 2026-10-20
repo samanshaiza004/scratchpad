@@ -142,21 +142,24 @@ type SemanticViewWindow struct {
 }
 
 type SemanticViewSegment struct {
-	DocumentID      string `json:"document_id"`
-	SourceRevision  uint64 `json:"source_revision"`
-	StartByte       int    `json:"start_byte"`
-	EndByte         int    `json:"end_byte"`
-	SourceStartLine int    `json:"source_start_line"`
-	SourceEndLine   int    `json:"source_end_line"`
-	Label           string `json:"label"`
-	Context         string `json:"context"`
-	Generation      uint64 `json:"generation"`
-	Ordinal         int    `json:"ordinal"`
-	Status          string `json:"status"`
-	Text            string `json:"text"`
-	Truncated       bool   `json:"truncated,omitempty"`
-	OmittedBefore   bool   `json:"omitted_before,omitempty"`
-	OmittedAfter    bool   `json:"omitted_after,omitempty"`
+	DocumentID         string `json:"document_id"`
+	SourceRevision     uint64 `json:"source_revision"`
+	StartByte          int    `json:"start_byte"`
+	EndByte            int    `json:"end_byte"`
+	Depth              int    `json:"depth,omitempty"`
+	SourceStartLine    int    `json:"source_start_line"`
+	SourceEndLine      int    `json:"source_end_line"`
+	Label              string `json:"label"`
+	Context            string `json:"context"`
+	Generation         uint64 `json:"generation"`
+	Ordinal            int    `json:"ordinal"`
+	Status             string `json:"status"`
+	Text               string `json:"text"`
+	Truncated          bool   `json:"truncated,omitempty"`
+	OmittedBefore      bool   `json:"omitted_before,omitempty"`
+	OmittedAfter       bool   `json:"omitted_after,omitempty"`
+	OmittedBeforeLines int    `json:"omitted_before_lines,omitempty"`
+	OmittedAfterLines  int    `json:"omitted_after_lines,omitempty"`
 }
 
 // SaveAsConflict carries an opaque, one-shot confirmation token. The
@@ -790,11 +793,12 @@ func semanticViewWindowFromApplication(window application.ViewWindow) *SemanticV
 		result.Segments[i] = SemanticViewSegment{
 			DocumentID: string(segment.DocumentID), SourceRevision: segment.SourceRevision,
 			StartByte: segment.StartByte, EndByte: segment.EndByte, Label: segment.Label,
-			Context: segment.Context, Generation: segment.PresentationKey.Generation,
+			Context: segment.Context, Depth: segment.Depth, Generation: segment.PresentationKey.Generation,
 			Ordinal: segment.PresentationKey.Ordinal, Status: string(segment.Status),
 			Text: segment.Text, Truncated: segment.Truncated,
 			SourceStartLine: segment.SourceStartLine, SourceEndLine: segment.SourceEndLine,
 			OmittedBefore: segment.OmittedBefore, OmittedAfter: segment.OmittedAfter,
+			OmittedBeforeLines: segment.OmittedBeforeLines, OmittedAfterLines: segment.OmittedAfterLines,
 		}
 	}
 	return result

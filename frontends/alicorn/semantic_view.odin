@@ -8,6 +8,7 @@ SEMANTIC_VIEW_WINDOW_SIZE :: u64(128)
 
 Semantic_View_Row_Layout :: struct {
 	height, meta_height, marker_height, text_height: f32,
+	indent: f32,
 	font: alicorn.Font_Role,
 }
 
@@ -32,6 +33,10 @@ semantic_view_snippet :: proc(segment: bridge.Semantic_View_Segment) -> string {
 	return fmt.tprintf("%s…", segment.text) if segment.truncated else segment.text
 }
 
+semantic_view_omission_marker :: proc(line_count: int) -> string {
+	return fmt.tprintf("··· %d lines omitted ···", line_count) if line_count > 0 else "···"
+}
+
 semantic_view_text_height :: proc(rt: ^alicorn.Runtime, value: string, width, size: f32, font: alicorn.Font_Role, weight := alicorn.FONT_WEIGHT_REGULAR) -> f32 {
 	run, ok := alicorn.runtime_text_run_build(rt, value, size=size, max_width=max(width, 1), font=font, font_weight=weight)
 	if !ok { return size*1.5 }
@@ -40,7 +45,7 @@ semantic_view_text_height :: proc(rt: ^alicorn.Runtime, value: string, width, si
 	return height
 }
 
-semantic_view_measure_window :: proc(rt: ^alicorn.Runtime, view: ^Editor_View_State, document: bridge.State_Document, width, scale: f32) -> bool {
+semantic_view_measure_window :: proc(rt: ^alicorn.Runtime, view: ^Editor_View_State, document: bridge.State_Document, mode: string, width, scale: f32) -> bool {
 	window := &view.semantic_window
 	layout := &view.semantic_layout
 	if !layout.ready || layout.width != width || layout.scale != scale || layout.generation != window.generation ||
@@ -62,11 +67,18 @@ semantic_view_measure_window :: proc(rt: ^alicorn.Runtime, view: ^Editor_View_St
 		if index >= len(layout.rows) { break }
 		row: Semantic_View_Row_Layout
 		row.font = .UI if document.language == "markdown" else .Monospace
-		content_width := max(width-16*scale, 1)
+		if mode == "outline" && segment.label == "heading" { row.indent = f32(max(segment.depth, 0))*18*scale }
+		content_width := max(width-16*scale-row.indent, 1)
 		row.meta_height, row.marker_height = meta_height, marker_height
 		weight := alicorn.FONT_WEIGHT_SEMIBOLD if segment.label == "heading" else alicorn.FONT_WEIGHT_REGULAR
 		row.text_height = semantic_view_text_height(rt, semantic_view_snippet(segment), content_width, alicorn.DEFAULT_TEXT_SIZE*scale, row.font, weight)
 		markers := int(segment.omitted_before)+int(segment.omitted_after)
+		if segment.omitted_before {
+			row.marker_height = alicorn.maxf(row.marker_height, semantic_view_text_height(rt, semantic_view_omission_marker(segment.omitted_before_lines), content_width, 11*scale, .UI))
+		}
+		if segment.omitted_after {
+			row.marker_height = alicorn.maxf(row.marker_height, semantic_view_text_height(rt, semantic_view_omission_marker(segment.omitted_after_lines), content_width, 11*scale, .UI))
+		}
 		row.height = 16*scale+row.meta_height+row.text_height+f32(markers)*row.marker_height+f32(1+markers)*3*scale
 		layout.rows[index] = row
 		changed = alicorn.virtual_list_height_index_set_height(&layout.index, segment.ordinal, row.height) || changed
@@ -90,7 +102,7 @@ semantic_view_title :: proc(mode: string) -> string {
 	return "Full"
 }
 
-semantic_view_controls :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
+semantic_view_controls :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document, view: ^Editor_View_State) {
 	selected := semantic_view_density(document)
 	alicorn.container_begin(ui, .Container, label="scratchpad-semantic-view-controls", style=alicorn.layout_style(.Row, height=34, gap=6, align=.Center))
 	alicorn.text(ui, "View")
@@ -107,6 +119,16 @@ semantic_view_controls :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 		) {
 			semantic_view_set_density(app, rt, document.id, mode)
 		}
+	}
+	if selected != "full" {
+		count := 0
+		if view != nil && view.semantic_window_owned && view.semantic_window.document_id == document.id &&
+		   view.semantic_window.revision == document.editor_revision && view.semantic_window.mode == selected {
+			count = view.semantic_window.total
+		}
+		hint := "Read only · Full to edit"
+		if count > 0 { hint = fmt.tprintf("%d excerpts · Read only · Full to edit", count) }
+		semantic_view_muted_text(ui, "view-hint", hint, 20, 12)
 	}
 	alicorn.container_end(ui)
 }
@@ -137,6 +159,67 @@ semantic_view_set_density :: proc(app: ^App, rt: ^alicorn.Runtime, document_id, 
 		}
 	}
 	bridge.backend_command_result_destroy(&result, context.allocator)
+}
+
+semantic_view_go_to_source :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	document_id: string,
+	expected_revision, source_start, source_end, source_line: u64,
+) {
+	if app == nil || rt == nil || !app.backend.started || document_id == "" { return }
+	if len(app.editor_edits) > 0 || editor_active_preedit(app) {
+		set_error(app, "Finish pending text input before navigating from this excerpt.")
+		alicorn.invalidate_root(rt, "Scratchpad deferred source navigation until text input is committed")
+		return
+	}
+	document, found := find_document(&app.backend.state, document_id)
+	if !found || document.editor_revision != expected_revision {
+		set_error(app, "This excerpt is out of date. Reopen the current view before navigating.")
+		alicorn.invalidate_root(rt, "Scratchpad rejected a stale semantic source destination")
+		return
+	}
+	if app.backend.state.active != document_id {
+		select_document(app, rt, document_id)
+		document, found = find_document(&app.backend.state, document_id)
+		if !found || app.backend.state.active != document_id || document.editor_revision != expected_revision {
+			set_error(app, "This excerpt is no longer available in the active document.")
+			alicorn.invalidate_root(rt, "Scratchpad could not activate a semantic source destination")
+			return
+		}
+	}
+	if semantic_view_density(document) != "full" {
+		semantic_view_set_density(app, rt, document_id, "full")
+		document, found = find_document(&app.backend.state, document_id)
+		if !found || document.editor_revision != expected_revision || semantic_view_density(document) != "full" {
+			set_error(app, "Could not return to the current source before navigating.")
+			alicorn.invalidate_root(rt, "Scratchpad could not switch to the source editor")
+			return
+		}
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document_id)
+	if !view_ok {
+		set_error(app, "Could not retain the source location for this excerpt.")
+		alicorn.invalidate_root(rt, "Scratchpad could not retain a semantic source destination")
+		return
+	}
+	view := &app.editor_views[view_index]
+	start := min(source_start, document.byte_length)
+	end := min(max(source_end, start), document.byte_length)
+	line := u64(0)
+	if document.line_count > 0 { line = min(max(source_line, u64(1)), document.line_count)-1 }
+	view.selection_anchor, view.caret_byte = start, start
+	view.anchor_affinity, view.caret_affinity = .Leading, .Leading
+	view.preferred_x_set = false
+	view.pending_goto_line = false
+	view.restore_y_pending, view.restore_x_pending = false, false
+	if !editor_reveal_request_set(view, document_id, expected_revision, start, end, line, .Center_When_Needed) {
+		set_error(app, "Could not queue the source location for this excerpt.")
+		alicorn.invalidate_root(rt, "Scratchpad failed to queue a semantic source reveal")
+		return
+	}
+	app.editor_focus_pending = true
+	alicorn.invalidate_root(rt, "Scratchpad navigated from a current semantic excerpt to its source")
 }
 
 semantic_view_cache_matches :: proc(view: ^Editor_View_State, document: bridge.State_Document, mode: string) -> bool {
@@ -201,16 +284,12 @@ semantic_view_render :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_
 		alicorn.text(ui, "No structural excerpts are available. The source is unchanged; switch to Full to edit it.")
 		return true
 	}
-	alicorn.container_begin(ui, .Container, label="scratchpad-semantic-view-notice", style=alicorn.layout_style(.Row, height=34, padding=6, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
-	alicorn.text(ui, fmt.tprintf("%s · %d excerpts · Read only (Full to edit)", semantic_view_title(mode), window.total))
-	alicorn.container_end(ui)
-
 	text_scale := editor_text_scale_effective(app)
 	style_scope := alicorn.style_environment_push(ui, alicorn.Style_Environment{text_scale=text_scale})
 	defer alicorn.style_environment_pop(ui, style_scope)
 	width := ui.runtime.viewport.w
 	if view.semantic_layout.width > 0 { width = view.semantic_layout.width }
-	_ = semantic_view_measure_window(ui.runtime, view, document, width, text_scale)
+	_ = semantic_view_measure_window(ui.runtime, view, document, mode, width, text_scale)
 	list_key := fmt.tprintf("scratchpad-semantic-view-scroll-%s", document.id)
 	list := alicorn.virtual_list_begin_variable(
 		ui,
@@ -221,7 +300,7 @@ semantic_view_render :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_
 		focusable=true,
 	)
 	if list.scroll.id == 0 { return true }
-	if semantic_view_measure_window(ui.runtime, view, document, list.scroll.viewport_width, text_scale) {
+	if semantic_view_measure_window(ui.runtime, view, document, mode, list.scroll.viewport_width, text_scale) {
 		alicorn.invalidate_root(ui.runtime, "Scratchpad measured the resolved excerpt viewport")
 	}
 	page_first := window.first
@@ -229,7 +308,7 @@ semantic_view_render :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_
 	if list.first < page_first || list.last > page_end {
 		_ = semantic_view_read_window(app, view, document, mode, list.first)
 		window = &view.semantic_window
-		if semantic_view_measure_window(ui.runtime, view, document, list.scroll.viewport_width, text_scale) {
+		if semantic_view_measure_window(ui.runtime, view, document, mode, list.scroll.viewport_width, text_scale) {
 			alicorn.invalidate_root(ui.runtime, "Scratchpad measured the next excerpt page")
 		}
 	}
@@ -250,24 +329,53 @@ semantic_view_render :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_
 				key=alicorn.key_u64(u64(segment.ordinal)),
 				style=alicorn.layout_style(.Column, width=-1, height=row.height, padding=8*text_scale, gap=3*text_scale, clip=true),
 			)
-			meta := segment.label
-			if segment.section_context != "" { meta = fmt.tprintf("%s · %s", segment.label, segment.section_context) }
+			meta := fmt.tprintf("Line %d", segment.source_start_line)
 			if segment.source_start_line > 0 {
-				line_range := fmt.tprintf("line %d", segment.source_start_line)
+				line_range := fmt.tprintf("Line %d", segment.source_start_line)
 				if segment.source_end_line > segment.source_start_line {
-					line_range = fmt.tprintf("lines %d–%d", segment.source_start_line, segment.source_end_line)
+					line_range = fmt.tprintf("Lines %d–%d", segment.source_start_line, segment.source_end_line)
 				}
-				meta = fmt.tprintf("%s · %s", meta, line_range)
+				meta = line_range
 			}
+			if mode == "skim" && document.language != "markdown" && segment.section_context != "" {
+				meta = fmt.tprintf("%s · %s", meta, segment.section_context)
+			}
+			alicorn.container_begin(ui, .Container, label="scratchpad-semantic-view-row-heading", style=alicorn.layout_style(.Row, width=-1, height=row.meta_height, gap=8, align=.Center))
 			semantic_view_muted_text(ui, "meta", meta, row.meta_height, 12)
+			if alicorn.button(
+				ui, "Go to source",
+				key=alicorn.key_pair(segment.generation, u64(segment.ordinal)),
+				style=alicorn.layout_style(.Row, width=104, height=row.meta_height),
+				text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
+				content_style=alicorn.button_content_style(.Center, .Center, padding_x=2, padding_y=0),
+				variant=.Quiet,
+			) {
+				if !frame_deferred_action_schedule(
+					app, .Go_To_Projection_Source,
+					document_id=segment.document_id,
+					editor_revision=segment.source_revision,
+					source_start=u64(segment.start_byte),
+					source_end=u64(segment.end_byte),
+					source_line=u64(segment.source_start_line),
+				) {
+					set_error(app, "Could not queue navigation to this source excerpt.")
+				}
+			}
+			alicorn.container_end(ui)
 			if segment.omitted_before {
-				semantic_view_muted_text(ui, "before", "… omitted source before …", row.marker_height, 11)
+				semantic_view_muted_text(ui, "before", semantic_view_omission_marker(segment.omitted_before_lines), row.marker_height, 11)
 			}
 			weight := alicorn.FONT_WEIGHT_SEMIBOLD if segment.label == "heading" else alicorn.FONT_WEIGHT_REGULAR
-			alicorn.text(ui, semantic_view_snippet(segment), style=alicorn.layout_style(.Row, width=-1, height=row.text_height, clip=true), font=row.font,
+			alicorn.container_begin(ui, .Container, label="scratchpad-semantic-view-source-line", style=alicorn.layout_style(.Row, width=-1, height=row.text_height, gap=0, clip=true))
+			if row.indent > 0 {
+				alicorn.container_begin(ui, .Container, label="scratchpad-semantic-view-outline-indent", style=alicorn.layout_style(.Row, width=row.indent, height=row.text_height))
+				alicorn.container_end(ui)
+			}
+			alicorn.text(ui, semantic_view_snippet(segment), style=alicorn.layout_style(.Row, grow=1, height=row.text_height, clip=true), font=row.font,
 				text_style=alicorn.Text_Style{font_weight=weight, overflow=.Wrap})
+			alicorn.container_end(ui)
 			if segment.omitted_after {
-				semantic_view_muted_text(ui, "after", "… omitted source after …", row.marker_height, 11)
+				semantic_view_muted_text(ui, "after", semantic_view_omission_marker(segment.omitted_after_lines), row.marker_height, 11)
 			}
 			alicorn.container_end(ui)
 		}

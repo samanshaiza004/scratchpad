@@ -52,7 +52,7 @@ func TestChangingDocumentViewDensityPreservesSourceRevisionAndSelection(t *testi
 
 func TestOutlineViewReturnsCurrentSourceMappedHeadings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "outline.md")
-	source := []byte("# Introduction\n\nOpening paragraph.\n\n## Details\n\nMore text.\n")
+	source := []byte("# Introduction\n\nOpening paragraph.\n\n## Details\n\n### Nested\n\nMore text.\n")
 	if err := writeTestFile(path, source); err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +75,16 @@ func TestOutlineViewReturnsCurrentSourceMappedHeadings(t *testing.T) {
 	if !window.Ready || !window.Supported || window.Mode != ViewDensityOutline || window.Revision != doc.Revision() {
 		t.Fatalf("outline window state = %+v", window)
 	}
-	if window.Total != 2 || len(window.Segments) != 2 {
-		t.Fatalf("outline segments = %d of %d, want both headings", len(window.Segments), window.Total)
+	if window.Total != 3 || len(window.Segments) != 3 {
+		t.Fatalf("outline segments = %d of %d, want all three headings", len(window.Segments), window.Total)
 	}
-	for i, want := range []string{"# Introduction", "## Details"} {
+	for i, want := range []string{"# Introduction", "## Details", "### Nested"} {
 		segment := window.Segments[i]
 		if segment.Text != want || segment.Status != ProjectionCurrent || segment.StartByte < 0 || segment.EndByte <= segment.StartByte {
 			t.Errorf("outline segment %d = %+v, want current source range %q", i, segment, want)
+		}
+		if segment.Depth != i {
+			t.Errorf("outline segment %d depth = %d, want %d", i, segment.Depth, i)
 		}
 	}
 	if doc.Revision() != window.Revision || !bytes.Equal(doc.Editor.Buffer.Text(), source) {
@@ -132,6 +135,9 @@ func TestSkimViewKeepsStructuralLandmarksAndOneParagraphOpeningPerSection(t *tes
 	}
 	if !window.Segments[1].OmittedBefore || !window.Segments[len(window.Segments)-1].OmittedAfter {
 		t.Fatalf("skim must visibly identify omitted boundaries: first paragraph=%+v final code=%+v", window.Segments[1], window.Segments[len(window.Segments)-1])
+	}
+	if window.Segments[1].OmittedBeforeLines <= 0 || window.Segments[len(window.Segments)-1].OmittedAfterLines <= 0 {
+		t.Fatalf("known omission boundaries should carry positive source-line counts: before=%+v after=%+v", window.Segments[1], window.Segments[len(window.Segments)-1])
 	}
 }
 
