@@ -56,7 +56,7 @@ func TestMacFinalSignedManifest(t *testing.T) {
 		"application": map[string]any{"executable": "Contents/MacOS/Scratchpad", "sha256": exeHash,
 			"resources": []any{map[string]any{"name": "Contents/Resources/notice.txt", "sha256": noticeHash}}},
 		"dependencies": map[string]any{"bundled": []any{map[string]any{"name": "Contents/Frameworks/libfixture.dylib", "sha256": libraryHash}}},
-		"host":         map[string]any{"alicornRevision": "candidate", "sdlVersion": "3.4.16", "sdlLinkage": "shared"},
+		"host":         map[string]any{"alicornRevision": "candidate", "sdlVersion": "3.4.18", "sdlLinkage": "shared"},
 	}
 	data, _ := json.Marshal(metadata)
 	writeNativeFixture(t, filepath.Join(appDir, "alicorn-package.json"), string(data))
@@ -107,7 +107,7 @@ func TestMacFrontendLinksSelectedSDL(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "pinned SDL")
 	library := filepath.Join(prefix, "lib", "libSDL3.dylib")
-	writeNativeFixture(t, filepath.Join(root, "sdl.c"), "int SDL_GetVersion(void) { return 3004016; }\n")
+	writeNativeFixture(t, filepath.Join(root, "sdl.c"), "int SDL_GetVersion(void) { return 3004018; }\n")
 	if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestMacFrontendLinksSelectedSDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probe: %v: %s", err, output)
 	}
-	if strings.TrimSpace(string(output)) != "3004016" {
+	if strings.TrimSpace(string(output)) != "3004018" {
 		t.Fatalf("linked SDL symbol returned %s", output)
 	}
 }

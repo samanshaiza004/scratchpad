@@ -49,7 +49,7 @@ func TestSafePackageOutputIsConfinedToOut(t *testing.T) {
 
 func TestReadSDLSourceVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "SDL_version.h")
-	header := "#define SDL_MAJOR_VERSION 3\n#define SDL_MINOR_VERSION 4\n#define SDL_MICRO_VERSION 16\n"
+	header := "#define SDL_MAJOR_VERSION 3\n#define SDL_MINOR_VERSION 4\n#define SDL_MICRO_VERSION 18\n"
 	if err := os.WriteFile(path, []byte(header), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +57,8 @@ func TestReadSDLSourceVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "3.4.16" {
-		t.Fatalf("readSDLSourceVersion = %q, want 3.4.16", version)
+	if version != "3.4.18" {
+		t.Fatalf("readSDLSourceVersion = %q, want 3.4.18", version)
 	}
 }
 
@@ -95,7 +95,7 @@ func TestGoToolchainLicensePath(t *testing.T) {
 
 func TestReadSDLPackageMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alicorn-package.json")
-	manifest := `{"host":{"sdlVersion":"3.4.16","sdlLinkage":"shared"}}`
+	manifest := `{"host":{"sdlVersion":"3.4.18","sdlLinkage":"shared"}}`
 	if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestReadSDLPackageMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metadata != (releaseSDL{Version: "3.4.16", Linkage: "shared"}) {
+	if metadata != (releaseSDL{Version: "3.4.18", Linkage: "shared"}) {
 		t.Fatalf("readSDLPackageMetadata = %#v", metadata)
 	}
 	if err := os.WriteFile(path, []byte(`{"host":{}}`), 0o644); err != nil {

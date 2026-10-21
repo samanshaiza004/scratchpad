@@ -34,7 +34,7 @@ Go runtime modules, native audit results, and the archive hash.
   pinned Alicorn revision.
 - Windows: 64-bit Go, MSVC/Windows SDK, and 64-bit MinGW-w64 for cgo.
 - macOS: Apple Silicon, Xcode Command Line Tools, CMake, `curl`, and `tar`.
-  The package command downloads SDL 3.4.16 from the pinned upstream release,
+  The package command downloads SDL 3.4.18 from the pinned upstream release,
   verifies its SHA-256, and builds the shared runtime that Alicorn requires.
 
 macOS packaging ad-hoc signs the final app after all dependency path rewriting,
