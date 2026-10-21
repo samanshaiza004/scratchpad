@@ -830,12 +830,12 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	case .Off: wrap_label = "Off"
 	case .Auto: wrap_label = "Auto"
 	}
-	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=32, gap=10, padding=8, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
-	alicorn.container_begin(ui, .Container, label="document-status-information", style=alicorn.layout_style(.Row, grow=1, height=24, gap=12, align=.Center))
+	alicorn.container_begin(ui, .Container, label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=40, gap=10, padding=8, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
+	alicorn.container_begin(ui, .Container, label="document-status-information", style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=12, align=.Center))
 	alicorn.text(ui, location, key=alicorn.key_string("document-status-location"), style=alicorn.layout_style(.Row, width=176, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 	alicorn.text(ui, document_info, key=alicorn.key_string("document-status-document-info"), style=alicorn.layout_style(.Row, grow=1, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 	alicorn.container_end(ui)
-	alicorn.container_begin(ui, .Container, label="document-status-actions", style=alicorn.layout_style(.Row, height=24, gap=8, align=.Center))
+	alicorn.container_begin(ui, .Container, label="document-status-actions", style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=8, align=.Center))
 	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=88, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		editor_toggle_wrap_mode(app, rt)
 	}

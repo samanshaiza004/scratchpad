@@ -134,6 +134,7 @@ App :: struct {
 	deferred_actions:       [dynamic]Deferred_Action,
 	editor_edit_sequence:   u64,
 	editor_views:           [dynamic]Editor_View_State,
+	selection_diagnostic_revision: u64,
 	editor_row_targets:     [dynamic]Editor_Row_Target,
 	editor_window:          Editor_Window,
 	editor_window_ready:    bool,
@@ -593,14 +594,67 @@ application_visible_window_wake :: proc(app: ^App, rt: ^alicorn.Runtime, lane: ^
 	}
 }
 
+// The wake diagnostic fingerprint covers only the compact presentation
+// readiness metadata consumed by the editor description. It deliberately
+// avoids hashing source bytes or projection payloads.
+application_projection_diagnostic_signature :: proc(state: ^bridge.State_Envelope) -> u64 {
+	if state == nil { return 0 }
+	hash := u64(14695981039346656037)
+	prime := u64(1099511628211)
+	hash = (hash ~ u64(len(state.documents))) * prime
+	for document in state.documents {
+		hash = (hash ~ u64(len(document.id))) * prime
+		for index in 0..<len(document.id) {
+			hash = (hash ~ u64(document.id[index])) * prime
+		}
+		hash = (hash ~ document.presentation_revision) * prime
+		ready := u64(0)
+		if document.presentation_ready { ready = 1 }
+		hash = (hash ~ ready) * prime
+	}
+	return hash
+}
+
+application_selection_diagnostic_revision_advance :: proc(app: ^App) {
+	if app == nil { return }
+	if app.selection_diagnostic_revision < 0xFFFF_FFFF_FFFF_FFFF {
+		app.selection_diagnostic_revision += 1
+	}
+}
+
 application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^App)state
 	if !app.backend.started { return }
 	app.smoke_wake_observed = true
 	if !bridge.editor_edit_lane_is_active(&app.editor_edit_lane) {
+		application_scope: alicorn.Application_Mutation_Scope
+		projection_scope: alicorn.Application_Mutation_Scope
+		before_application_revision := u64(0)
+		before_publication_revision := u64(0)
+		before_projection_signature := u64(0)
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			before_application_revision = app.backend.state.application_rev
+			before_publication_revision = app.backend.state.revision
+			before_projection_signature = application_projection_diagnostic_signature(&app.backend.state)
+		}
 		changed, ok, message := bridge.backend_consume_wake(&app.backend)
 		if !ok { set_error(app, message); alicorn.invalidate_root(rt, "Scratchpad backend state read failed"); return }
 		if changed {
+			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+				if before_application_revision != app.backend.state.application_rev {
+					application_scope = alicorn.application_mutation_begin(
+						rt, "backend document-state adoption", .Description,
+						before_application_revision, "Caliber state publication adopted by the frontend",
+					)
+				}
+				after_projection_signature := application_projection_diagnostic_signature(&app.backend.state)
+				if before_projection_signature != after_projection_signature {
+					projection_scope = alicorn.application_mutation_begin(
+						rt, "derived editor projection adoption", .Description,
+						before_publication_revision, "document presentation metadata changed",
+					)
+				}
+			}
 			editor_capture_source_anchor_before_publication(app, rt)
 			if floating := app.floating_window; floating != nil {
 				floating_app, floating_scope := floating_editor_scope_enter(floating, floating.runtime)
@@ -616,6 +670,10 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 			editor_views_prune(app)
 			editor_window_rejection_clear(app)
 			alicorn.invalidate_root(rt, "Scratchpad Caliber state publication")
+			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+				alicorn.application_mutation_end(rt, &projection_scope, app.backend.state.revision)
+				alicorn.application_mutation_end(rt, &application_scope, app.backend.state.application_rev)
+			}
 		}
 	}
 	image_preview_take_completion(app, rt)
@@ -1096,7 +1154,16 @@ editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^
 	old_anchor, old_caret := view.selection_anchor, view.caret_byte
 	old_anchor_affinity, old_caret_affinity := view.anchor_affinity, view.caret_affinity
 	source_byte, affinity, hit := editor_source_at_pointer(app, rt, view.drag_pointer_x, view.drag_pointer_y, true)
-	if hit { _ = editor_extend_pointer_selection(view, window, source_byte, affinity) }
+	selection_scope: alicorn.Application_Mutation_Scope
+	if hit {
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			selection_scope = alicorn.application_mutation_begin(
+				rt, "active editor selection", .Description, app.selection_diagnostic_revision,
+				"pointer selection drag",
+			)
+		}
+		_ = editor_extend_pointer_selection(view, window, source_byte, affinity)
+	}
 	outside, dx, dy := editor_pointer_outside_viewport(rt, app.editor_scroll_owner, view.drag_pointer_x, view.drag_pointer_y)
 	scrolled := false
 	if outside {
@@ -1108,7 +1175,15 @@ editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^
 	editor_schedule_selection_autoscroll(app, outside && scrolled)
 	changed := old_anchor != view.selection_anchor || old_caret != view.caret_byte ||
 	           old_anchor_affinity != view.anchor_affinity || old_caret_affinity != view.caret_affinity
-	if changed && !scrolled { alicorn.invalidate_root(rt, "Scratchpad editor pointer selection extended") }
+	if changed {
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			application_selection_diagnostic_revision_advance(app)
+		}
+		if !scrolled { alicorn.invalidate_root(rt, "Scratchpad editor pointer selection extended") }
+	}
+	when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+		if hit { alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision) }
+	}
 	return changed || scrolled
 }
 
@@ -1196,12 +1271,31 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 		view.pending_document_edge = .None
 		view.pending_document_edge_shift = false
 		window, authoritative := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
-		if !authoritative || !editor_apply_pointer_selection(view, window, source_byte, affinity, event.click_count, event.modifiers.shift) { return }
+		if !authoritative { return }
+		selection_scope: alicorn.Application_Mutation_Scope
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			selection_scope = alicorn.application_mutation_begin(
+				rt, "active editor selection", .Description, app.selection_diagnostic_revision,
+				"pointer selection placed",
+			)
+		}
+		if !editor_apply_pointer_selection(view, window, source_byte, affinity, event.click_count, event.modifiers.shift) {
+			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+				alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+			}
+			return
+		}
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			application_selection_diagnostic_revision_advance(app)
+		}
 		view.dragging_selection = true
 		view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
 		view.drag_pointer_valid = true
 		_ = alicorn.focus(rt, app.editor_scroll_owner)
 		alicorn.invalidate_root(rt, "Scratchpad editor pointer selection placed")
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+		}
 	}
 }
 
@@ -1626,6 +1720,13 @@ editor_text_key :: proc(
 		view.preferred_x_set = false
 	}
 	if next_caret == old_caret && next_affinity == old_affinity { return true }
+	selection_scope: alicorn.Application_Mutation_Scope
+	when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+		selection_scope = alicorn.application_mutation_begin(
+			rt, "active editor selection", .Description, app.selection_diagnostic_revision,
+			"keyboard caret navigation",
+		)
+	}
 	editor_undo_group_break(view)
 	if !shift {
 		view.selection_anchor = next_caret
@@ -1633,6 +1734,9 @@ editor_text_key :: proc(
 	}
 	view.caret_byte = next_caret
 	view.caret_affinity = next_affinity
+	when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+		application_selection_diagnostic_revision_advance(app)
+	}
 	if target_line, target_found := editor_line_for_source(window, next_caret); target_found {
 		_ = editor_ensure_line_visible(rt, view, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
 		if caret_target, target_available := editor_row_target_for_source(app.editor_row_targets[:], target_line.logical_line, next_caret); target_available {
@@ -1655,6 +1759,9 @@ editor_text_key :: proc(
 		}
 	}
 	alicorn.invalidate_root(rt, "Scratchpad read-only editor caret navigation")
+	when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+		alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+	}
 	return true
 }
 
@@ -2652,10 +2759,26 @@ editor_apply_backend_selection :: proc(
 		}
 		view.authoritative_revision = selection.editor_revision
 	}
+	selection_changed := view.selection_anchor != selection.anchor_byte || view.caret_byte != selection.cursor_byte ||
+		view.anchor_affinity != .Leading || view.caret_affinity != .Trailing
+	selection_scope: alicorn.Application_Mutation_Scope
+	if selection_changed {
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			selection_scope = alicorn.application_mutation_begin(
+				rt, "active editor selection", .Description, app.selection_diagnostic_revision,
+				"backend command selection result",
+			)
+		}
+	}
 	view.selection_anchor = selection.anchor_byte
 	view.caret_byte = selection.cursor_byte
 	view.anchor_affinity = .Leading
 	view.caret_affinity = .Trailing
+	if selection_changed {
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			application_selection_diagnostic_revision_advance(app)
+		}
+	}
 	view.preferred_x_set = false
 	view.pending_document_edge = .None
 	view.pending_document_edge_shift = false
@@ -2677,6 +2800,11 @@ editor_apply_backend_selection :: proc(
 	}
 	reason := "Scratchpad restored selection after Undo/Redo" if !selection_only else "Scratchpad applied selection-only command result"
 	alicorn.invalidate_root(rt, reason)
+	if selection_changed {
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+			alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+		}
+	}
 }
 
 editor_line_fully_visible :: proc(
