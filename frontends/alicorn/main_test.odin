@@ -951,12 +951,18 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
 	sidebar_id, panel_tabs_id, workspace_root_id: alicorn.Node_ID
+	status_bar_id, status_actions_id: alicorn.Node_ID
+	wrap_semantic_id, goto_semantic_id: alicorn.Semantic_ID
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
 		if !found || !node.active { continue }
 		if node.label == "files-sidebar" { sidebar_id = node_id }
 		if node.label == "workspace-panel-tabs" { panel_tabs_id = node_id }
 		if node.label == "workspace-root-row" { workspace_root_id = node_id }
+		if node.label == "document-status-bar" { status_bar_id = node_id }
+		if node.label == "document-status-actions" { status_actions_id = node_id }
+		if node.kind == .Button && node.label == "Wrap: Auto" { wrap_semantic_id = node.semantic_id }
+		if node.kind == .Button && node.label == "Go to Line…" { goto_semantic_id = node.semantic_id }
 	}
 
 	testing.expect(t, files_found && files_variant == .Tab && files_selected,
@@ -984,6 +990,19 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		testing.expect(t, tabs_style.height == 30 && tabs_style.gap == 4 && root_style.height == 26,
 			"workspace tabs and root path should use compact aligned heights")
 	}
+	status_bar, status_bar_found := rt.nodes[status_bar_id]
+	status_actions, status_actions_found := rt.nodes[status_actions_id]
+	wrap_semantic, wrap_semantic_found := alicorn.semantic_node_lookup(&rt, wrap_semantic_id)
+	goto_semantic, goto_semantic_found := alicorn.semantic_node_lookup(&rt, goto_semantic_id)
+	testing.expect(t, status_bar_found && status_bar.style.height == alicorn.LAYOUT_SIZE_FIT_CONTENT &&
+		status_bar.style.min_height == 40 && status_bar.bounds.h >= 40,
+		"the editor status toolbar should opt into Row content-height measurement and contain its padded controls")
+	testing.expect(t, status_actions_found && status_actions.style.height == alicorn.LAYOUT_SIZE_FIT_CONTENT &&
+		status_actions.style.min_height == 24,
+		"the editor's horizontal action group should retain its content-measured height")
+	testing.expect(t, wrap_semantic_found && wrap_semantic.role == .Button &&
+		goto_semantic_found && goto_semantic.role == .Button,
+		"the measured toolbar should keep Wrap and Go to Line available as semantic controls")
 
 	inspection := alicorn.inspect(&rt)
 	testing.expect(t, strings.contains(inspection, "button recipe: variant=tab") &&

@@ -517,8 +517,8 @@ floating_window_build :: proc(
 		window.caption_actions[0].state.enabled = floating_window_document_dirty(app, document) && document.status != "conflict"
 		window.caption_actions[1].state.checked = window.always_on_top
 		when ODIN_OS != .Windows {
-			alicorn.container_begin(&ui, .Container, label="floating-document-toolbar", style=alicorn.layout_style(.Row, height=36, padding=6, gap=6, align=.Center), color=alicorn.style_color(&ui, .Surface))
-			alicorn.text(&ui, title, style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+			alicorn.container_begin(&ui, .Container, label="floating-document-toolbar", style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=38, max_height=72, padding=6, gap=6, align=.Center, clip=true), color=alicorn.style_color(&ui, .Surface))
+			alicorn.text(&ui, title, style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Wrap})
 			if alicorn.button(&ui, "Save", key=alicorn.key_string("floating-save"), style=alicorn.layout_style(.Row, width=54, height=26), variant=.Toolbar) { floating_window_save(app, rt, window.document_id) }
 			if alicorn.button(&ui, "On top", key=alicorn.key_string("floating-topmost"), style=alicorn.layout_style(.Row, width=68, height=26), state=alicorn.Button_State{selected=window.always_on_top}, variant=.Toolbar) { floating_window_toggle_topmost(window) }
 			if alicorn.button(&ui, "Return to tabs", key=alicorn.key_string("floating-return"), style=alicorn.layout_style(.Row, width=108, height=26), variant=.Toolbar) { floating_window_return_to_tabs(app) }
