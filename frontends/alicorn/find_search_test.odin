@@ -5,6 +5,38 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
+test_editor_focus_pending_waits_for_editor_owner :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer alicorn.destroy_runtime(&rt)
+	app := App{editor_focus_pending=true}
+
+	find_restore_after_frame(&app, &rt)
+	testing.expect(t, app.editor_focus_pending,
+		"an editor focus request must survive a frame where its target is temporarily absent")
+
+	ui, build := alicorn.begin_frame(&rt)
+	testing.expect(t, build, "the next frame should describe the editor focus target")
+	if !build { return }
+	alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(.Column, grow=1))
+	scroll := alicorn.scroll_region_begin(
+		&ui,
+		key=alicorn.key_string("focus-pending-editor"),
+		content_height=900,
+		style=alicorn.layout_style(grow=1, clip=true),
+		label="focus-pending-editor",
+		axes=.Vertical,
+		focusable=true,
+	)
+	alicorn.scroll_region_end(&ui)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	app.editor_scroll_owner = scroll.id
+	find_restore_after_frame(&app, &rt)
+	testing.expect(t, !app.editor_focus_pending && alicorn.focused_node(&rt) == scroll.id,
+		"the pending request should focus the editor once its scroll target exists")
+}
+
+@(test)
 test_string_bytes_to_wire_preserves_ascii_and_utf8_bytes :: proc(t: ^testing.T) {
 	ascii, ascii_ok := string_bytes_to_wire("Superman")
 	testing.expect(t, ascii_ok && len(ascii) == 8, "ASCII replacement should allocate one wire value per source byte")

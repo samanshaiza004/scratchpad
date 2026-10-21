@@ -362,6 +362,9 @@ test_semantic_view_frontend_bridge_keeps_source_authoritative :: proc(t: ^testin
 				&app, &rt, document_id, before_revision, source_start, source_end, 7,
 			)
 			testing.expect(t, queued, "the excerpt's Go to source action must queue a post-description navigation")
+			find_restore_after_frame(&app, &rt)
+			testing.expect(t, app.editor_focus_pending,
+				"source navigation must retain its editor-focus request while the current reduced-view frame has no editor owner")
 			navigated, still_open := find_document(&app.backend.state, document_id)
 			view_index := editor_view_find(app.editor_views[:], document_id)
 			navigation_ok := still_open && navigated.view_density == "full" && view_index >= 0
