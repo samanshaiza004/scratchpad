@@ -45,6 +45,7 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		return
 	}
 
+	session_ui_expand_focus_ancestors(app)
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)
@@ -56,8 +57,10 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		style=alicorn.layout_style(grow=1, clip=true),
 		label="scratchpad-workspace-tree",
 		focusable=true,
+	restore=session_ui_tree_scroll_request(app),
 	)
 	app.tree_scroll_owner = list.scroll.id
+	session_ui_restore_tree_focus(app, rt, rows[:])
 	_ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, tree_semantic_id("", true), .On)
 	focus_state := alicorn.semantic_focus_state(rt)
 	for position := list.first; position < list.last; position += 1 {

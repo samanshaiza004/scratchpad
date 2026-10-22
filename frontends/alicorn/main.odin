@@ -208,6 +208,12 @@ App :: struct {
 	workspace_mutation_source_is_dir: bool,
 	workspace_mutation_dirty: bool,
 	workspace_editor_split_node: alicorn.Node_ID,
+	session_ui: bridge.Session_UI,
+	session_ui_runtime: ^alicorn.Runtime,
+	session_ui_initialized: bool,
+	session_ui_tree_restore_complete: bool,
+	session_ui_restore_pending: bool,
+	session_ui_restore_token: alicorn.Restore_Token,
 	workspace_sidebar_width: f32,
 	workspace_split_restore_runtime: ^alicorn.Runtime,
 	workspace_split_restore_token: alicorn.Restore_Token,
@@ -417,6 +423,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 		return false, "editor edit worker did not join cleanly"
 	}
 	_, _, _ = bridge.backend_consume_wake(&app.backend)
+	session_ui_capture(app, app.session_ui_runtime)
 	documents := make([dynamic]bridge.Backend_Stop_Session_Document, 0, len(app.editor_views), allocator=context.temp_allocator)
 	defer delete(documents)
 	for view in app.editor_views {
@@ -431,6 +438,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 		})
 	}
 	session := bridge.Backend_Stop_Session{
+	ui=app.session_ui,
 		active=app.backend.state.active,
 		sidebar_width=app.workspace_sidebar_width,
 		documents=documents[:],
@@ -2945,6 +2953,7 @@ application_stop :: proc(state: rawptr) {
 	tree_clear_directories(app)
 	if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
 	app.tree_root_path = ""
+	delete(app.session_ui.tree_path, context.allocator)
 	tree_clear_focused_path(app)
 	app.tree_scroll_owner = 0
 	editor_window_destroy(&app.editor_window)

@@ -17,6 +17,7 @@ build_app :: proc(
 	scratchpad_editor_font_apply_pending(app, rt)
 	scratchpad_application_assets_release_retired(app, rt)
 	scratchpad_image_preview_sync(app, rt)
+	session_ui_prepare(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	_ = find_capture_text_field(rt, app.find_query_node, &app.find_query)
@@ -414,6 +415,7 @@ build_app :: proc(
 	}
 	editor_reveal_after_frame(app, rt)
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
+	session_ui_after_frame(app, rt)
 	scratchpad_application_assets_build_completed(app)
 	return root
 }

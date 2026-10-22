@@ -224,23 +224,24 @@ type Outcome struct {
 }
 
 type StateEnvelope struct {
-	Schema                       uint32          `json:"schema"`
-	Revision                     uint64          `json:"revision"`
-	ApplicationRev               uint64          `json:"application_revision"`
-	HasWorkspace                 bool            `json:"has_workspace"`
-	WorkspaceRoot                string          `json:"workspace_root,omitempty"`
-	RecentWorkspaces             []string        `json:"recent_workspaces,omitempty"`
-	SidebarWidth                 float32         `json:"sidebar_width,omitempty"`
-	Active                       string          `json:"active,omitempty"`
-	StartupNotice                string          `json:"startup_notice,omitempty"`
-	Documents                    []StateDocument `json:"documents"`
-	Actions                      []ActionState   `json:"actions,omitempty"`
-	WorkspaceSearchGeneration    uint64          `json:"workspace_search_generation,omitempty"`
-	WorkspaceSearchSequence      uint64          `json:"workspace_search_sequence,omitempty"`
-	WorkspaceSearchCount         uint64          `json:"workspace_search_count,omitempty"`
-	WorkspaceSearchPageAvailable bool            `json:"workspace_search_page_available,omitempty"`
-	WorkspaceSearchDone          bool            `json:"workspace_search_done,omitempty"`
-	WorkspaceSearchTruncated     bool            `json:"workspace_search_truncated,omitempty"`
+	SessionUI                    application.SessionUI `json:"session_ui,omitempty"`
+	Schema                       uint32                `json:"schema"`
+	Revision                     uint64                `json:"revision"`
+	ApplicationRev               uint64                `json:"application_revision"`
+	HasWorkspace                 bool                  `json:"has_workspace"`
+	WorkspaceRoot                string                `json:"workspace_root,omitempty"`
+	RecentWorkspaces             []string              `json:"recent_workspaces,omitempty"`
+	SidebarWidth                 float32               `json:"sidebar_width,omitempty"`
+	Active                       string                `json:"active,omitempty"`
+	StartupNotice                string                `json:"startup_notice,omitempty"`
+	Documents                    []StateDocument       `json:"documents"`
+	Actions                      []ActionState         `json:"actions,omitempty"`
+	WorkspaceSearchGeneration    uint64                `json:"workspace_search_generation,omitempty"`
+	WorkspaceSearchSequence      uint64                `json:"workspace_search_sequence,omitempty"`
+	WorkspaceSearchCount         uint64                `json:"workspace_search_count,omitempty"`
+	WorkspaceSearchPageAvailable bool                  `json:"workspace_search_page_available,omitempty"`
+	WorkspaceSearchDone          bool                  `json:"workspace_search_done,omitempty"`
+	WorkspaceSearchTruncated     bool                  `json:"workspace_search_truncated,omitempty"`
 }
 
 // ActionState publishes the canonical Scratchpad command vocabulary to any
@@ -753,6 +754,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		WorkspaceRoot:    snapshot.WorkspaceRoot,
 		RecentWorkspaces: snapshot.RecentWorkspaces,
 		SidebarWidth:     snapshot.SidebarWidth,
+		SessionUI:        snapshot.SessionUI,
 		Active:           string(snapshot.Active),
 		Documents:        make([]StateDocument, 0, len(snapshot.Documents)),
 		Actions:          make([]ActionState, 0, len(shellActionIDs)),

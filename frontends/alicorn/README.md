@@ -106,3 +106,14 @@ tab, or the preceding tab when detaching the last one. On Windows, document
 metadata, Save, On top, Return to tabs, and native caption controls share one
 workbench-themed title bar. Context menus and persistent operation notices
 use the selected workbench theme.
+
+## Durable UI restoration
+
+Clean sessions also retain the focused workspace-tree path and tree scroll, or
+the editor focus area. These are additive application fields in the existing
+version-1 session, written through Go's atomic session persistence. Alicorn node
+IDs and restore tokens never enter that file. Startup expands only the focused
+path's ancestors and restores through a fresh tree owner; deleted or hidden paths
+fall back to the editor (or tree owner when no document exists). A virtualized
+focus target remains logical until its row is described. Last-minute split and
+tree-scroll input is captured at shutdown even without another description.

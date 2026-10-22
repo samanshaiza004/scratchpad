@@ -93,6 +93,7 @@ type Application struct {
 	Workspace             workspace.Workspace
 	HasWorkspace          bool
 	SidebarWidth          float32
+	SessionUI             SessionUI
 	Documents             map[DocumentID]*document.Document
 	FileViews             map[DocumentID]FileView
 	Order                 []DocumentID
