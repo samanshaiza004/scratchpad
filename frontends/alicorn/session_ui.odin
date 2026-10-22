@@ -29,6 +29,27 @@ session_ui_prepare :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	app.session_ui_restore_token = alicorn.restore_token_next(rt)
 }
 
+// Session_UI is a one-time, application-owned startup snapshot rather than a
+// per-workspace cache. A live workspace transition must retire its relative
+// tree path and retained viewport state instead of applying them to the next
+// root (or replaying them if the user later returns to the original root).
+session_ui_workspace_changed :: proc(app: ^App, rt: ^alicorn.Runtime = nil) {
+	if app == nil || !app.session_ui_initialized { return }
+	active_rt := rt
+	if active_rt == nil { active_rt = app.session_ui_runtime }
+	if active_rt != nil && app.tree_scroll_owner != 0 {
+		_ = alicorn.restore_cancel(active_rt, .Scroll, app.tree_scroll_owner, app.session_ui_restore_token)
+		_ = alicorn.restore_cancel(active_rt, .Semantic_Focus, app.tree_scroll_owner, app.session_ui_restore_token)
+		_ = alicorn.scroll_region_set_offset(active_rt, app.tree_scroll_owner, 0, "Scratchpad workspace changed")
+	}
+	delete(app.session_ui.tree_path, context.allocator)
+	app.session_ui.tree_path = ""
+	app.session_ui.tree_is_dir = false
+	app.session_ui.tree_scroll_y = 0
+	app.session_ui_restore_pending = false
+	app.session_ui_tree_restore_complete = true
+}
+
 session_ui_expand_focus_ancestors :: proc(app: ^App) {
 	if !app.session_ui_restore_pending || app.session_ui.focus != "tree" { return }
 	path := app.session_ui.tree_path

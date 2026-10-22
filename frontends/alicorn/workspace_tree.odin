@@ -133,6 +133,8 @@ tree_sync_workspace :: proc(app: ^App, rt: ^alicorn.Runtime = nil) {
 	if app == nil || !app.backend.started { return }
 	workspace_root := app.backend.state.workspace_root if app.backend.state.has_workspace else ""
 	if app.tree_root_path == workspace_root && (workspace_root == "" || tree_directory_index(app, "") >= 0) { return }
+	workspace_changed := app.tree_root_path != workspace_root
+	if workspace_changed { session_ui_workspace_changed(app, rt) }
 	tree_clear_directories(app)
 	delete(app.tree_directories)
 	app.tree_directories = {}

@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/durable-ui-scratchpad-integration",
-    "revision": "b6a3b66e1e293ff606df4004814534f9fdc4f6ae"
+    "ref": "codex/durable-ui-restoration",
+    "revision": "3fb92121a8af35c5419440a6b24eac11631fdd1a"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
