@@ -4,6 +4,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 Theme_Switch_Test_Nodes :: struct {
@@ -239,6 +240,11 @@ test_full_application_theme_switch_preserves_modal_tab_syntax_and_caret :: proc(
 	init_menus(&app)
 
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 680})
+	app.window_chrome_metrics = host.Window_Chrome_Metrics{
+		header={0, 0, 1000, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
+		content_start_x=80,
+		display_scale=1,
+	}
 	defer {
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		editor_window_destroy(&app.editor_window, context.allocator)

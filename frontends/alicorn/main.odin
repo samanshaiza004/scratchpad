@@ -111,6 +111,10 @@ App :: struct {
 	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
 	primary_runtime: ^alicorn.Runtime,
+	window_chrome_metrics: host.Window_Chrome_Metrics,
+	window_chrome_header_node: alicorn.Node_ID,
+	window_chrome_regions: [3]host.Window_Chrome_Region,
+	window_chrome_region_count: int,
 	floating_window: ^Floating_Window_State,
 	editor_visible_window_lane_override: ^bridge.Visible_Window_Lane,
 	paper_surface_material: alicorn.Material_ID,
@@ -3018,6 +3022,15 @@ main :: proc() {
 	when ODIN_OS == .Windows {
 		window_decorations = .Integrated_Title_Bar
 	}
+	window_chrome_height: f32
+	window_chrome_metrics: host.Window_Chrome_Metrics_Proc
+	window_chrome_layout: host.Window_Chrome_Layout_Proc
+	when ODIN_OS == .Darwin {
+		window_decorations = .Content_Title_Bar
+		window_chrome_height = SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT
+		window_chrome_metrics = scratchpad_content_titlebar_metrics
+		window_chrome_layout = scratchpad_content_titlebar_layout
+	}
 	window_chrome_appearance: host.Application_Chrome_Appearance_Proc
 	when ODIN_OS == .Windows {
 		window_chrome_appearance = scratchpad_window_chrome_appearance
@@ -3030,6 +3043,9 @@ main :: proc() {
 		height=760,
 		menus=app.menus[:],
 		window_decorations=window_decorations,
+		window_chrome_height=window_chrome_height,
+		window_chrome_metrics=window_chrome_metrics,
+		window_chrome_layout=window_chrome_layout,
 		window_chrome_appearance=window_chrome_appearance,
 		on_initialize=scratchpad_application_initialize,
 		build=build_app,

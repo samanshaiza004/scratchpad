@@ -2,6 +2,10 @@ package main
 
 import "core:fmt"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
+
+SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT :: f32(42)
+SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT :: f32(34)
 
 build_app :: proc(
 	state: rawptr,
@@ -46,14 +50,19 @@ build_app :: proc(
 		sync_menu_states(app)
 	}
 
+	root_gap := f32(8)
+	when ODIN_OS == .Darwin { root_gap = 0 }
 	root := alicorn.container_begin(
 		&ui,
 		.Root,
 		label="scratchpad-alicorn-workbench",
-		style=alicorn.layout_style(.Column, grow=1, gap=8, clip=true),
+		style=alicorn.layout_style(.Column, grow=1, gap=root_gap, clip=true),
 		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
 	)
 	workbench_style_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
+	when ODIN_OS == .Darwin {
+		scratchpad_content_titlebar_build(app, &ui, rt, logical_width)
+	}
 
 	if app.backend.started && !app.backend.state.has_workspace && len(app.backend.state.documents) == 0 {
 		build_start_screen(app, &ui, rt)
@@ -137,54 +146,11 @@ build_app :: proc(
 		alicorn.split_second_begin(&ui, workspace_split)
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
-		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=app.raised_surface_material, physical_height=0.65)
-		if len(state.documents) > 0 {
-			tab_items := make([dynamic]alicorn.Tab_Bar_Item, 0, len(state.documents), allocator=context.temp_allocator)
-			defer delete(tab_items)
-			detached_document_id := ""
-			if app.floating_window != nil { detached_document_id = app.floating_window.document_id }
-			tab_document_indices := floating_window_tab_document_indices(state.documents, detached_document_id, context.temp_allocator)
-			defer delete(tab_document_indices)
-			for index in tab_document_indices {
-				document := state.documents[index]
-				title := document_title(document.path)
-				if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
-				append(&tab_items, alicorn.Tab_Bar_Item{
-					key=alicorn.key_string(document.id),
-					label=title,
-					selected=state.active == document.id,
-					closable=true,
-					dirty=document.dirty,
-					semantic_id=document_tab_semantic_id(document.id),
-				})
-			}
-			if len(tab_items) > 0 {
-				tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
-				tab_options.height = 32
-				tab_options.close_policy = .Selected_Or_Hover
-				tab_options.drag_type = SCRATCHPAD_DRAG_TABS
-				tab_result := alicorn.tab_bar(
-					&ui,
-					alicorn.key_string("scratchpad-document-tab-bar"),
-					tab_items[:],
-					tab_options,
-					alicorn.layout_style(.Row, grow=1, height=32, clip=true),
-				)
-				if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(tab_document_indices) {
-					document_id := state.documents[tab_document_indices[tab_result.item_index]].id
-					action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
-					if !frame_deferred_action_schedule(app, action, document_id) {
-						set_error(app, "Could not queue the document tab action until the current frame is complete.")
-						alicorn.invalidate_root(rt, "Scratchpad could not defer a document tab action")
-					}
-				}
-			} else {
-				alicorn.text(&ui, "No documents in this window", style=alicorn.layout_style(.Row, grow=1, height=32))
-			}
-		} else {
-			alicorn.text(&ui, "No documents open")
+		when ODIN_OS != .Darwin {
+			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=app.raised_surface_material, physical_height=0.65)
+			scratchpad_document_tabs_build(app, &ui, rt, width=0, height=32, compact=false, show_empty=true)
+			alicorn.surface_end(&ui)
 		}
-		alicorn.surface_end(&ui)
 		if app.find_open {
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), color=alicorn.style_color(&ui, .Subtle_Surface))
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
@@ -461,4 +427,161 @@ build_startup_notice :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		alicorn.invalidate_root(rt, "Scratchpad recovery notice dismissed")
 	}
 	alicorn.container_end(ui)
+}
+
+scratchpad_content_titlebar_metrics :: proc(state: rawptr, rt: ^alicorn.Runtime, metrics: host.Window_Chrome_Metrics) {
+	app := cast(^App)state
+	if app == nil { return }
+	app.window_chrome_metrics = metrics
+}
+
+scratchpad_content_titlebar_layout :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host.Window_Chrome_Layout {
+	app := cast(^App)state
+	if app == nil { return {} }
+	return host.Window_Chrome_Layout{
+		header=app.window_chrome_header_node,
+		regions=app.window_chrome_regions[:app.window_chrome_region_count],
+	}
+}
+
+scratchpad_content_titlebar_region_add :: proc(
+	app: ^App,
+	node: alicorn.Node_ID,
+	kind: host.Window_Chrome_Region_Kind,
+) {
+	if app == nil || node == 0 || app.window_chrome_region_count >= len(app.window_chrome_regions) { return }
+	app.window_chrome_regions[app.window_chrome_region_count] = host.Window_Chrome_Region{node=node, kind=kind}
+	app.window_chrome_region_count += 1
+}
+
+scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, logical_width: int) {
+	if app == nil || ui == nil || rt == nil { return }
+	app.window_chrome_header_node = 0
+	app.window_chrome_region_count = 0
+	metrics := app.window_chrome_metrics
+	if metrics.header.h <= 0 { return }
+	if metrics.header.y > 0 {
+		alicorn.container_begin(ui, .Container, label="scratchpad-macos-titlebar-safe-area",
+			style=alicorn.layout_style(.Row, height=metrics.header.y))
+		alicorn.container_end(ui)
+	}
+	header := alicorn.container_begin(
+		ui,
+		.Container,
+		label="scratchpad-macos-content-titlebar",
+		style=alicorn.layout_style(.Row, height=metrics.header.h, gap=0, align=.Center, clip=true),
+		color=alicorn.style_color(ui, .Subtle_Surface),
+	)
+	app.window_chrome_header_node = header
+
+	leading_width := clamp(metrics.content_start_x, 0, f32(max(logical_width, 0)))
+	leading_drag := alicorn.container_begin(
+		ui,
+		.Container,
+		label="scratchpad-macos-titlebar-leading-drag",
+		style=alicorn.layout_style(.Row, width=leading_width, height=metrics.header.h),
+	)
+	scratchpad_content_titlebar_region_add(app, leading_drag, .Window_Drag)
+	alicorn.container_end(ui)
+
+	visible_tabs := 0
+	for document in app.backend.state.documents {
+		if app.floating_window != nil && document.id == app.floating_window.document_id { continue }
+		visible_tabs += 1
+	}
+	available_width := max(f32(max(logical_width, 0))-leading_width, 0)
+	drag_reserve := min(160, available_width*0.2)
+	tab_width := min(f32(visible_tabs)*180, max(available_width-drag_reserve, 0))
+	if visible_tabs > 0 && tab_width > 0 {
+		tab_region := alicorn.container_begin(
+			ui,
+			.Container,
+			label="scratchpad-macos-titlebar-tabs-region",
+			style=alicorn.layout_style(.Row, width=tab_width, height=metrics.header.h, align=.Center, clip=true),
+		)
+		scratchpad_content_titlebar_region_add(app, tab_region, .Interactive)
+		scratchpad_document_tabs_build(
+			app, ui, rt,
+			width=tab_width,
+			height=SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT,
+			compact=true,
+			show_empty=false,
+		)
+		alicorn.container_end(ui)
+	}
+
+	trailing_drag := alicorn.container_begin(
+		ui,
+		.Container,
+		label="scratchpad-macos-titlebar-trailing-drag",
+		style=alicorn.layout_style(.Row, grow=1, height=metrics.header.h),
+	)
+	scratchpad_content_titlebar_region_add(app, trailing_drag, .Window_Drag)
+	alicorn.container_end(ui)
+	alicorn.container_end(ui)
+}
+
+scratchpad_document_tabs_build :: proc(
+	app: ^App,
+	ui: ^alicorn.UI,
+	rt: ^alicorn.Runtime,
+	width, height: f32,
+	compact: bool,
+	show_empty: bool,
+) {
+	if app == nil || ui == nil || rt == nil { return }
+	state := &app.backend.state
+	detached_document_id := ""
+	if app.floating_window != nil { detached_document_id = app.floating_window.document_id }
+	tab_document_indices := floating_window_tab_document_indices(state.documents, detached_document_id, context.temp_allocator)
+	defer delete(tab_document_indices)
+	if len(tab_document_indices) == 0 {
+		if show_empty {
+			empty_label := "No documents open" if len(state.documents) == 0 else "No documents in this window"
+			alicorn.text(ui, empty_label, style=alicorn.layout_style(.Row, grow=1, height=height))
+		}
+		return
+	}
+	tab_items := make([dynamic]alicorn.Tab_Bar_Item, 0, len(tab_document_indices), allocator=context.temp_allocator)
+	defer delete(tab_items)
+	for index in tab_document_indices {
+		document := state.documents[index]
+		title := document_title(document.path)
+		if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
+		append(&tab_items, alicorn.Tab_Bar_Item{
+			key=alicorn.key_string(document.id),
+			label=title,
+			selected=state.active == document.id,
+			closable=true,
+			dirty=document.dirty,
+			semantic_id=document_tab_semantic_id(document.id),
+		})
+	}
+	tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
+	tab_options.height = height
+	tab_options.close_policy = .Selected_Or_Hover
+	tab_options.drag_type = SCRATCHPAD_DRAG_TABS
+	tab_style := alicorn.layout_style(.Row, grow=1, height=height, clip=true)
+	if compact {
+		tab_options.min_tab_width = 112
+		tab_options.max_tab_width = 180
+		tab_options.gap = 0
+		tab_options.presentation = .Compact
+		tab_style = alicorn.layout_style(.Row, width=width, height=height, clip=true)
+	}
+	tab_result := alicorn.tab_bar(
+		ui,
+		alicorn.key_string("scratchpad-document-tab-bar"),
+		tab_items[:],
+		tab_options,
+		tab_style,
+	)
+	if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(tab_document_indices) {
+		document_id := state.documents[tab_document_indices[tab_result.item_index]].id
+		action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
+		if !frame_deferred_action_schedule(app, action, document_id) {
+			set_error(app, "Could not queue the document tab action until the current frame is complete.")
+			alicorn.invalidate_root(rt, "Scratchpad could not defer a document tab action")
+		}
+	}
 }

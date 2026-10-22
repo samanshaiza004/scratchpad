@@ -6,6 +6,7 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 @(test)
@@ -114,6 +115,53 @@ test_recoverable_ime_text_survives_document_switch_and_blocks_close :: proc(t: ^
 
 ALICORN_TEST_UI_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleNext-Variable.ttf")
 ALICORN_TEST_MONO_FONT_DATA :: #load("../../.deps/alicorn/assets/fonts/AtkinsonHyperlegibleMono-Variable.ttf")
+
+@(test)
+test_macos_content_titlebar_uses_retained_tab_and_drag_regions :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 600})
+	defer alicorn.destroy_runtime(&rt)
+	if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) {
+		testing.expect(t, false, "titlebar tabs should use the bundled application font")
+		return
+	}
+	app: App
+	documents := [1]bridge.State_Document{{id="doc-one", path="/workspace/One.md"}}
+	app.backend.state.documents = documents[:]
+	app.backend.state.active = "doc-one"
+	scratchpad_content_titlebar_metrics(rawptr(&app), &rt, host.Window_Chrome_Metrics{
+		header={0, 0, 900, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
+		content_start_x=80,
+		display_scale=2,
+	})
+
+	ui, ready := alicorn.begin_frame(&rt)
+	testing.expect(t, ready, "titlebar fixture should begin a normal application description")
+	if !ready { return }
+	alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(.Column, grow=1))
+	scratchpad_content_titlebar_build(&app, &ui, &rt, 900)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+
+	layout := scratchpad_content_titlebar_layout(rawptr(&app), &rt)
+	header, header_found := alicorn.node_info(&rt, layout.header)
+	testing.expect(t, header_found && header.bounds == alicorn.Rect{0, 0, 900, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
+		"the measured titlebar header should match the retained top-row bounds")
+	testing.expect(t, len(layout.regions) == 3 &&
+		layout.regions[0].kind == .Window_Drag &&
+		layout.regions[1].kind == .Interactive &&
+		layout.regions[2].kind == .Window_Drag,
+		"native-light reservation and trailing blank space should remain draggable around the ordinary tab strip")
+	if len(layout.regions) == 3 {
+		leading, leading_found := alicorn.node_info(&rt, layout.regions[0].node)
+		tabs, tabs_found := alicorn.node_info(&rt, layout.regions[1].node)
+		trailing, trailing_found := alicorn.node_info(&rt, layout.regions[2].node)
+		testing.expect(t, leading_found && tabs_found && trailing_found &&
+			leading.bounds == alicorn.Rect{0, 0, 80, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT} &&
+			tabs.bounds.x == 80 && tabs.bounds.w == 180 &&
+			trailing.bounds.x == 260 && trailing.bounds.w == 640,
+			"the public chrome layout should publish exact resolved node geometry without fixed window-offset guesses")
+	}
+}
 
 @(test)
 test_workbench_errors_use_non_reflowing_notice_overlay :: proc(t: ^testing.T) {
@@ -920,6 +968,11 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	init_menus(&app)
 
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 600})
+	app.window_chrome_metrics = host.Window_Chrome_Metrics{
+		header={0, 0, 900, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
+		content_start_x=80,
+		display_scale=1,
+	}
 	defer {
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		editor_views_destroy(&app.editor_views)
