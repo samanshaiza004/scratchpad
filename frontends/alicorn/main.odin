@@ -3040,6 +3040,10 @@ main :: proc() {
 		window_chrome_metrics = scratchpad_content_titlebar_metrics
 		window_chrome_layout = scratchpad_content_titlebar_layout
 	}
+	when ODIN_OS == .Windows {
+		window_chrome_metrics = scratchpad_content_titlebar_metrics
+		window_chrome_layout = scratchpad_content_titlebar_layout
+	}
 	window_chrome_appearance: host.Application_Chrome_Appearance_Proc
 	when ODIN_OS == .Windows {
 		window_chrome_appearance = scratchpad_window_chrome_appearance

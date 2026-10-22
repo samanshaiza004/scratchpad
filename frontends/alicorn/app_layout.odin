@@ -52,7 +52,7 @@ build_app :: proc(
 	}
 
 	root_gap := f32(8)
-	when ODIN_OS == .Darwin { root_gap = 0 }
+	when ODIN_OS == .Darwin || ODIN_OS == .Windows { root_gap = 0 }
 	root := alicorn.container_begin(
 		&ui,
 		.Root,
@@ -61,7 +61,7 @@ build_app :: proc(
 		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
 	)
 	workbench_style_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
-	when ODIN_OS == .Darwin {
+	when ODIN_OS == .Darwin || ODIN_OS == .Windows {
 		scratchpad_content_titlebar_build(app, &ui, rt, logical_width)
 	}
 
@@ -147,7 +147,7 @@ build_app :: proc(
 		alicorn.split_second_begin(&ui, workspace_split)
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
-		when ODIN_OS != .Darwin {
+		when ODIN_OS != .Darwin && ODIN_OS != .Windows {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=app.raised_surface_material, physical_height=0.65)
 			scratchpad_document_tabs_build(app, &ui, rt, width=0, height=32, compact=false, show_empty=true)
 			alicorn.surface_end(&ui)
@@ -463,49 +463,59 @@ scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alico
 	metrics := app.window_chrome_metrics
 	if metrics.header.h <= 0 { return }
 	if metrics.header.y > 0 {
-		alicorn.container_begin(ui, .Container, label="scratchpad-macos-titlebar-safe-area",
+		alicorn.container_begin(ui, .Container, label="scratchpad-titlebar-safe-area",
 			style=alicorn.layout_style(.Row, height=metrics.header.y))
 		alicorn.container_end(ui)
 	}
+	window_width := f32(max(logical_width, 0))
+	leading_width := clamp(metrics.content_start_x, 0, window_width)
+	content_end_x := metrics.content_end_x
+	if content_end_x <= 0 { content_end_x = window_width }
+	content_end_x = clamp(content_end_x, leading_width, window_width)
+	available_width := max(content_end_x-leading_width, 0)
 	header := alicorn.container_begin(
 		ui,
 		.Container,
-		label="scratchpad-macos-content-titlebar",
+		label="scratchpad-content-titlebar",
 		style=alicorn.layout_style(.Row, height=metrics.header.h, gap=0, align=.Center, clip=true),
 		color=alicorn.style_color(ui, .Subtle_Surface),
 	)
 	app.window_chrome_header_node = header
 
-	leading_width := clamp(metrics.content_start_x, 0, f32(max(logical_width, 0)))
 	leading_drag := alicorn.container_begin(
 		ui,
 		.Container,
-		label="scratchpad-macos-titlebar-leading-drag",
+		label="scratchpad-titlebar-leading-drag",
 		style=alicorn.layout_style(.Row, width=leading_width, height=metrics.header.h),
 	)
 	scratchpad_content_titlebar_region_add(app, leading_drag, .Window_Drag)
 	alicorn.container_end(ui)
+	middle := alicorn.container_begin(
+		ui,
+		.Container,
+		label="scratchpad-titlebar-content-band",
+		style=alicorn.layout_style(.Row, width=available_width, height=metrics.header.h, align=.Center, clip=true),
+	)
 
 	visible_tabs := 0
 	for document in app.backend.state.documents {
 		if app.floating_window != nil && document.id == app.floating_window.document_id { continue }
 		visible_tabs += 1
 	}
-	available_width := max(f32(max(logical_width, 0))-leading_width, 0)
 	drag_reserve := min(160, available_width*0.2)
 	tab_width := min(f32(visible_tabs)*180, max(available_width-drag_reserve, 0))
 	if visible_tabs > 0 && tab_width > 0 {
 		tab_region := alicorn.container_begin(
 			ui,
 			.Container,
-			label="scratchpad-macos-titlebar-tabs-region",
+			label="scratchpad-titlebar-tabs-region",
 			style=alicorn.layout_style(.Row, width=tab_width, height=metrics.header.h, align=.Center, clip=true),
 		)
 		scratchpad_content_titlebar_region_add(app, tab_region, .Interactive)
 		scratchpad_document_tabs_build(
 			app, ui, rt,
 			width=tab_width,
-			height=SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT,
+			height=min(SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT, metrics.header.h),
 			compact=true,
 			show_empty=false,
 		)
@@ -515,10 +525,11 @@ scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alico
 	trailing_drag := alicorn.container_begin(
 		ui,
 		.Container,
-		label="scratchpad-macos-titlebar-trailing-drag",
+		label="scratchpad-titlebar-trailing-drag",
 		style=alicorn.layout_style(.Row, grow=1, height=metrics.header.h),
 	)
 	scratchpad_content_titlebar_region_add(app, trailing_drag, .Window_Drag)
+	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 }
