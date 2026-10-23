@@ -21,6 +21,7 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		app.paper_surface_material = alicorn.MATERIAL_FLAT
 		app.raised_surface_material = alicorn.MATERIAL_FLAT
 		app.floating_surface_material = alicorn.MATERIAL_FLAT
+		app.relief_materials = {}
 		app.style_theme_runtime = rt
 	}
 	if app.warm_workbench_theme == 0 {

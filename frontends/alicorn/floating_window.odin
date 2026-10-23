@@ -37,6 +37,7 @@ Floating_Window_State :: struct {
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
 	paper_surface_material, raised_surface_material, floating_surface_material: alicorn.Material_ID,
+	relief_materials: Scratchpad_Relief_Materials,
 	always_on_top: bool,
 	return_to_tabs: bool,
 	was_primary_active: bool,
@@ -88,6 +89,7 @@ Floating_Window_Scope :: struct {
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
 	paper_surface_material, raised_surface_material, floating_surface_material: alicorn.Material_ID,
+	relief_materials: Scratchpad_Relief_Materials,
 }
 
 editor_visible_window_lane :: proc(app: ^App) -> ^bridge.Visible_Window_Lane {
@@ -191,6 +193,7 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 		paper_surface_material=app.paper_surface_material,
 		raised_surface_material=app.raised_surface_material,
 		floating_surface_material=app.floating_surface_material,
+		relief_materials=app.relief_materials,
 	}
 	// Transfer the primary active-ID allocation into scope. The temporary child
 	// ID belongs to the envelope, so a backend refresh can dispose it safely.
@@ -238,6 +241,7 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 	app.paper_surface_material = state.paper_surface_material
 	app.raised_surface_material = state.raised_surface_material
 	app.floating_surface_material = state.floating_surface_material
+	app.relief_materials = state.relief_materials
 	return
 }
 
@@ -272,6 +276,7 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	state.paper_surface_material = app.paper_surface_material
 	state.raised_surface_material = app.raised_surface_material
 	state.floating_surface_material = app.floating_surface_material
+	state.relief_materials = app.relief_materials
 	state.accessibility_projection = app.accessibility_projection
 	state.accessibility_source_error = app.accessibility_source_error
 	state.accessibility_source_error_document_id = app.accessibility_source_error_document_id
@@ -334,6 +339,7 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	app.paper_surface_material = scope.paper_surface_material
 	app.raised_surface_material = scope.raised_surface_material
 	app.floating_surface_material = scope.floating_surface_material
+	app.relief_materials = scope.relief_materials
 }
 
 floating_window_drag_outside :: proc(rt: ^alicorn.Runtime, event: alicorn.Drag_Event) -> bool {
@@ -537,7 +543,7 @@ floating_window_build :: proc(
 	}
 	style_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
 	padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
-	alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("floating-document-surface"), label="floating-document-surface", style=alicorn.layout_style(.Column, grow=1, padding=padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=-0.75)
+	alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("floating-document-surface"), label="floating-document-surface", style=alicorn.layout_style(.Column, grow=1, padding=padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75))
 	if document, found := find_document(&app.backend.state, window.document_id); found {
 		if alicorn.component_begin(&ui, alicorn.key_string(document.id)) {
 			build_document_editor(app, &ui, rt, document, show_heading=false)

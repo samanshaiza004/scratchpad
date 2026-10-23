@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Executable = 'out/alicorn/scratchpad-alicorn.exe', [string]$OutputDirectory = 'out/workbench-relief')
+param([string]$Executable = 'out/alicorn/scratchpad-alicorn.exe', [string]$OutputDirectory = 'out/workbench-relief', [switch]$Workbench)
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $ExecutablePath = (Resolve-Path (Join-Path $Root $Executable)).Path
@@ -14,10 +14,11 @@ try {
     $env:SCRATCHPAD_DISABLE_RECOVERY = '1'
     $env:SCRATCHPAD_ALICORN_WORKSPACE = $Root
     foreach ($Appearance in @('flat', 'relief', 'contrast')) {
-        $env:SCRATCHPAD_APPEARANCE_FIXTURE = $Appearance
+        $env:SCRATCHPAD_APPEARANCE_FIXTURE = if ($Workbench) { "workbench-$Appearance" } else { $Appearance }
         $CapturePath = Join-Path $OutputPath $Appearance
         New-Item -ItemType Directory -Force -Path $CapturePath | Out-Null
-        $Process = Start-Process -FilePath $ExecutablePath -ArgumentList @('--capture-after=0', "--capture-dir=`"$CapturePath`"") -WorkingDirectory $Root -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $CapturePath 'stdout.txt') -RedirectStandardError (Join-Path $CapturePath 'stderr.txt')
+        $CaptureAfter = if ($Workbench) { '--capture-after=1' } else { '--capture-after=0' }
+        $Process = Start-Process -FilePath $ExecutablePath -ArgumentList @($CaptureAfter, "--capture-dir=`"$CapturePath`"") -WorkingDirectory $Root -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $CapturePath 'stdout.txt') -RedirectStandardError (Join-Path $CapturePath 'stderr.txt')
         if (-not $Process.WaitForExit(15000)) {
             $Process.Kill()
             throw "Appearance capture timed out: $Appearance"

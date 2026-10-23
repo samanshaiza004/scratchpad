@@ -3,7 +3,7 @@
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
     "ref": "codex/workbench-relief",
-    "revision": "a3b0d5a22de2b22d0775366192226abe2a31715d"
+    "revision": "b84f30db7298e8b8b52c25c658b2588ee0fc6cc7"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

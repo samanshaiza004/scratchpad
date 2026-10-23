@@ -123,6 +123,8 @@ App :: struct {
 	paper_surface_material: alicorn.Material_ID,
 	raised_surface_material: alicorn.Material_ID,
 	floating_surface_material: alicorn.Material_ID,
+	relief_materials: Scratchpad_Relief_Materials,
+	appearance_fixture_workbench: bool,
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	accessibility_source_lane: Accessibility_Source_Lane,
@@ -406,6 +408,12 @@ start_backend :: proc(app: ^App) {
 	app.recovery_notice_dismissed = false
 		set_error(app, "")
 		tree_sync_workspace(app)
+		if app.appearance_fixture_workbench && app.backend.state.has_workspace {
+			// Exercise the real editor, title-bar tab and status strip in captures.
+			opened := bridge.backend_command(&app.backend, "open_path", path=fmt.tprintf("%s/caliber.config.json", app.backend.state.workspace_root))
+			if !opened.ok { set_error(app, opened.message) }
+			bridge.backend_command_result_destroy(&opened, context.allocator)
+		}
 	}
 }
 
@@ -455,6 +463,11 @@ application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	app := cast(^App)state
 	app.waker = waker
 	start_backend(app)
+	if app.appearance_fixture_workbench {
+		// One fixture-only deadline lets document loading settle before the host
+		// captures at one second. It adds no periodic wake to ordinary operation.
+		_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 1_200_000_000)
+	}
 }
 
 application_services :: proc(state: rawptr, services: host.Application_Services) {
@@ -3046,11 +3059,15 @@ main :: proc() {
 	// real Settings scene without writing a user preference.
 	if fixture, found := os.lookup_env("SCRATCHPAD_APPEARANCE_FIXTURE", context.allocator); found {
 		defer delete(fixture, context.allocator)
-		if fixture == "flat" || fixture == "relief" || fixture == "contrast" {
-			app.theme_choice = .Flat if fixture == "flat" else .Workbench_Relief
-			app.settings_surface_open = true
+		name := fixture
+		workbench := strings.has_prefix(fixture, "workbench-")
+		if workbench { name = fixture[len("workbench-"):] }
+		if name == "flat" || name == "relief" || name == "contrast" {
+			app.appearance_fixture_workbench = workbench
+			app.theme_choice = .Flat if name == "flat" else .Workbench_Relief
+			app.settings_surface_open = !app.appearance_fixture_workbench
 			app.settings_category = .Editor
-			if fixture == "contrast" {
+			if name == "contrast" {
 				app.accessibility_appearance_override_enabled = true
 				app.accessibility_appearance = {increased_contrast=true, reduce_transparency=true}
 			}
