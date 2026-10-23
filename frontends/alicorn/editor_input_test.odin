@@ -178,6 +178,11 @@ test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 	editor_clipboard_command(&app, &rt, ACTION_EDIT_PASTE)
 	testing.expect(t, len(app.editor_edits) == 0 && clipboard.reads == 1,
 		"an empty clipboard should be a no-op even when the selection is outside the loaded window")
+	writes_before_bounded_cut := clipboard.writes
+	editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
+	testing.expect(t, len(app.editor_edits) == 0 && clipboard.writes == writes_before_bounded_cut &&
+		strings.contains(app.error_message, "full selection is outside the loaded source window"),
+		"a selection outside the bounded source window must be rejected before changing the clipboard")
 
 	document, document_found := find_document(&app.backend.state, "clipboard-doc")
 	editor_clipboard_command(&app, &rt, ACTION_EDIT_SELECT_ALL)
@@ -214,6 +219,20 @@ test_editor_clipboard_commands_preserve_bounds_and_utf8 :: proc(t: ^testing.T) {
 	testing.expect(t, clipboard.writes == 2 && len(app.editor_edits) == edit_count &&
 		view.optimistic_window.source[0] == 0xFF && strings.contains(app.error_message, "invalid UTF-8"),
 		"Copy and Cut must refuse invalid UTF-8 source bytes without writing or deleting them")
+	view.optimistic_window.source[0] = 'a'
+	oversized_pending, pending_error := make([]u8, int(bridge.MAX_EDIT_BYTES)+1, allocator=context.allocator)
+	if pending_error == nil {
+		append(&app.editor_edits, Editor_Edit_Intent{replacement=oversized_pending})
+		view.selection_anchor, view.caret_byte = 0, 1
+		writes_before_queue_cut := clipboard.writes
+		editor_clipboard_command(&app, &rt, ACTION_EDIT_CUT)
+		testing.expect(t, clipboard.writes == writes_before_queue_cut && len(app.editor_edits) == edit_count+1 &&
+			view.optimistic_window.source[0] == 'a' && strings.contains(app.error_message, "Cut was not performed"),
+			"Cut must preflight edit-queue capacity before changing the clipboard")
+		editor_remove_edit(&app, len(app.editor_edits)-1)
+	} else {
+		testing.expect(t, false, "Cut queue-capacity fixture should allocate")
+	}
 }
 
 @(test)

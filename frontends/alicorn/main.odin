@@ -2611,13 +2611,19 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			alicorn.invalidate_root(rt, "Scratchpad refused to send invalid source bytes to the UTF-8 clipboard")
 			return
 		}
+		if action_id == ACTION_EDIT_CUT && editor_pending_replacement_bytes(app) > int(bridge.MAX_EDIT_BYTES) {
+			set_error(app, "Pending local edits reached the bounded 128 KiB queue limit; Cut was not performed.")
+			alicorn.invalidate_root(rt, "Scratchpad refused Cut before clipboard write because the edit queue is full")
+			return
+		}
 		if !host.ClipboardSetText(app.services.clipboard, string(bytes)) {
 			set_error(app, "Could not copy text to the system clipboard.")
 			alicorn.invalidate_root(rt, "Scratchpad clipboard write failed")
 			return
 		}
-		if action_id == ACTION_EDIT_CUT {
-			_ = editor_apply_local_replace(app, rt, start_byte, end_byte, {}, start_byte, start_byte)
+		if action_id == ACTION_EDIT_CUT && !editor_apply_local_replace(app, rt, start_byte, end_byte, {}, start_byte, start_byte) {
+			set_error(app, "The selected text was copied, but Cut could not queue the document edit. The document was not changed.")
+			alicorn.invalidate_root(rt, "Scratchpad document Cut failed after clipboard copy")
 		}
 	case ACTION_EDIT_PASTE:
 		text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)

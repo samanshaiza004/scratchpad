@@ -105,18 +105,23 @@ find_query_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) -> al
 
 // Native Edit shortcuts run before text-field key handling. Keep clipboard
 // operations and history local to whichever Find or Replace box owns focus.
+application_focused_text_field :: proc(rt: ^alicorn.Runtime) -> (node_id: alicorn.Node_ID, state: alicorn.Text_Field_Interaction, value: string, found: bool) {
+	if rt == nil { return }
+	node_id = alicorn.focused_node(rt)
+	interaction, state_ok := alicorn.text_field_interaction(rt, node_id)
+	text_value, value_ok := alicorn.text_field_value(rt, node_id)
+	state = interaction
+	value = text_value
+	found = state_ok && value_ok && state.focused && state.can_edit
+	return
+}
+
 find_focused_text_field :: proc(app: ^App, rt: ^alicorn.Runtime) -> (node_id: alicorn.Node_ID, is_query, found: bool) {
 	if app == nil || rt == nil || !app.find_open { return }
-	focused := alicorn.focused_node(rt)
-	if focused == app.find_query_node && focused != 0 {
-		node_id, is_query = focused, true
-	} else if focused == app.find_replace_node && focused != 0 {
-		node_id = focused
-	} else {
-		return
-	}
-	field, exists := rt.nodes[node_id]
-	found = exists && field.active && field.kind == .Text_Field
+	focused_id, interaction, _, focused := application_focused_text_field(rt)
+	if !focused || !interaction.can_edit { return }
+	if focused_id == app.find_query_node && focused_id != 0 { return focused_id, true, true }
+	if focused_id == app.find_replace_node && focused_id != 0 { return focused_id, false, true }
 	return
 }
 
@@ -127,62 +132,81 @@ find_text_field_history_for :: proc(app: ^App, is_query: bool) -> ^Find_Text_Edi
 }
 
 find_text_field_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) -> bool {
-	node_id, is_query, focused := find_focused_text_field(app, rt)
+	node_id, interaction, value, focused := application_focused_text_field(rt)
 	if !focused { return false }
-	field := rt.nodes[node_id]
-	if field.composition.active {
+	if app == nil { return true }
+	is_query := app != nil && app.find_open && node_id == app.find_query_node
+	is_replace := app != nil && app.find_open && node_id == app.find_replace_node
+	if interaction.composition_active {
 		set_error(app, "Finish or cancel the active text composition before using this edit command.")
-		alicorn.invalidate_root(rt, "Scratchpad Find/Replace edit command refused during IME composition")
+		alicorn.invalidate_root(rt, "Scratchpad text field edit command refused during IME composition")
 		return true
 	}
 	switch action_id {
 	case ACTION_EDIT_SELECT_ALL:
-		_ = alicorn.set_text_selection(rt, node_id, 0, len(field.text))
-		alicorn.invalidate_root(rt, "Scratchpad selected all text in the focused Find field")
+		_ = alicorn.set_text_selection(rt, node_id, 0, len(value))
+		alicorn.invalidate_root(rt, "Scratchpad selected all text in the focused text field")
 	case ACTION_EDIT_COPY, ACTION_EDIT_CUT:
-		start := min(field.selection_anchor.byte, field.selection_focus.byte)
-		end := max(field.selection_anchor.byte, field.selection_focus.byte)
-		if start == end { return true }
-		if app.services.clipboard.set_text == nil || !host.ClipboardSetText(app.services.clipboard, field.text[start:end]) {
-			set_error(app, "Could not copy text from the focused Find field.")
-			alicorn.invalidate_root(rt, "Scratchpad Find/Replace clipboard write failed")
-			return true
-		}
+		start, end := interaction.selection_start, interaction.selection_end
+		if !interaction.has_selection { return true }
+		selected, err := strings.clone(value[start:end], context.allocator)
+		if err != nil { set_error(app, "Could not retain the selected text."); return true }
+		defer delete(selected, context.allocator)
 		if action_id == ACTION_EDIT_CUT {
 			change := alicorn.process_text_command(rt, node_id, .Delete_Forward)
-			if len(change.text) > 0 { delete(change.text, rt.persistent_allocator) }
+			changed := change.changed
+			alicorn.text_change_destroy(rt, &change)
+			if !changed {
+				set_error(app, "Cut could not remove the selected text.")
+				alicorn.invalidate_root(rt, "Scratchpad text field Cut deletion failed")
+				return true
+			}
+		}
+		if app.services.clipboard.set_text == nil || !host.ClipboardSetText(app.services.clipboard, selected) {
+			set_error(app, "Could not copy selected text to the system clipboard.")
+			alicorn.invalidate_root(rt, "Scratchpad text field clipboard write failed")
+			if action_id == ACTION_EDIT_CUT {
+				_ = alicorn.set_text_selection(rt, node_id, start, start)
+				rollback := alicorn.process_text_input(rt, node_id, selected)
+				alicorn.text_change_destroy(rt, &rollback)
+			}
+			return true
+		}
+		if is_query {
+			find_text_history_observe(&app.find_query_edit_history, app.find_query.text)
+		} else if is_replace {
+			// The app-owned string is synchronized at the next description.
 		}
 	case ACTION_EDIT_PASTE:
-		if app.services.clipboard.get_text == nil { return true }
+		if app == nil || app.services.clipboard.get_text == nil { return true }
 		text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
 		if !clipboard_ok {
 			set_error(app, "Could not read text from the system clipboard.")
-			alicorn.invalidate_root(rt, "Scratchpad Find/Replace clipboard read failed")
+			alicorn.invalidate_root(rt, "Scratchpad text field clipboard read failed")
 			return true
 		}
 		defer delete(text, context.allocator)
 		if len(text) == 0 { return true }
-		start := min(field.selection_anchor.byte, field.selection_focus.byte)
-		end := max(field.selection_anchor.byte, field.selection_focus.byte)
 		limit := int(bridge.MAX_EDIT_BYTES)
 		if is_query { limit = int(bridge.MAX_FIND_QUERY_BYTES) }
-		if len(field.text)-(end-start)+len(text) > limit {
-			message := "Pasted replacement text exceeds the 128 KiB per-edit limit."
+		if len(value)-(interaction.selection_end-interaction.selection_start)+len(text) > limit {
+			message := "Pasted text exceeds the 128 KiB per-edit limit."
 			if is_query { message = "Pasted Find query exceeds the 4 KiB search limit." }
 			set_error(app, message)
-			alicorn.invalidate_root(rt, "Scratchpad rejected oversized Find/Replace clipboard text")
+			alicorn.invalidate_root(rt, "Scratchpad rejected oversized text-field clipboard input")
 			return true
 		}
 		change := alicorn.process_text_input(rt, node_id, text)
-		if len(change.text) > 0 { delete(change.text, rt.persistent_allocator) }
+		alicorn.text_change_destroy(rt, &change)
 	}
 	return true
 }
-
 find_text_field_replace_value :: proc(app: ^App, rt: ^alicorn.Runtime, node_id: alicorn.Node_ID, is_query: bool, value: string) -> bool {
-	field, found := rt.nodes[node_id]
-	if !found || !field.active || field.kind != .Text_Field || field.composition.active { return false }
-	same_value := field.text == value
+	focused_node, field_state, _, found := application_focused_text_field(rt)
+	if !found || focused_node != node_id || node_id == 0 || !field_state.can_edit || field_state.composition_active { return false }
+	current, value_ok := alicorn.text_field_value(rt, node_id)
+	if !value_ok { return false }
+	same_value := current == value
 	if is_query {
 		if !alicorn.text_field_buffer_set(&app.find_query, value) { return false }
 	} else {
@@ -191,21 +215,24 @@ find_text_field_replace_value :: proc(app: ^App, rt: ^alicorn.Runtime, node_id: 
 		if len(app.find_replace_text) > 0 { delete(app.find_replace_text, context.allocator) }
 		app.find_replace_text = copy
 	}
-	_ = alicorn.set_text_selection(rt, node_id, 0, len(field.text))
+	_ = alicorn.set_text_selection(rt, node_id, 0, len(current))
 	change := alicorn.process_text_input(rt, node_id, value)
 	changed := change.changed
-	if len(change.text) > 0 { delete(change.text, rt.persistent_allocator) }
+	alicorn.text_change_destroy(rt, &change)
 	return changed || same_value
 }
 
 find_text_field_history_command :: proc(app: ^App, rt: ^alicorn.Runtime, redo: bool) -> bool {
-	node_id, is_query, focused := find_focused_text_field(app, rt)
+	node_id, interaction, value, focused := application_focused_text_field(rt)
 	if !focused { return false }
-	field := rt.nodes[node_id]
+	is_find_query := app != nil && app.find_open && node_id == app.find_query_node
+	is_find_replace := app != nil && app.find_open && node_id == app.find_replace_node
+	if !is_find_query && !is_find_replace { return true }
+	is_query := is_find_query
 	history := find_text_field_history_for(app, is_query)
 	if history == nil { return true }
-	find_text_history_initialize(history, field.text)
-	if field.composition.active {
+	find_text_history_initialize(history, value)
+	if interaction.composition_active {
 		set_error(app, "Finish or cancel the active text composition before changing Find field history.")
 		alicorn.invalidate_root(rt, "Scratchpad Find/Replace history command refused during IME composition")
 		return true
@@ -216,7 +243,7 @@ find_text_field_history_command :: proc(app: ^App, rt: ^alicorn.Runtime, redo: b
 	if len(source^) == 0 { return true }
 	last := len(source^)-1
 	target := source^[last]
-	current, err := strings.clone(field.text, context.allocator)
+	current, err := strings.clone(value, context.allocator)
 	if err != nil {
 		set_error(app, "Could not retain Find field history.")
 		alicorn.invalidate_root(rt, "Scratchpad Find/Replace history allocation failed")
@@ -242,31 +269,26 @@ find_text_field_history_command :: proc(app: ^App, rt: ^alicorn.Runtime, redo: b
 }
 
 find_sync_focused_edit_menu_states :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	node_id, is_query, focused := find_focused_text_field(app, rt)
+	if app == nil || rt == nil { return }
+	node_id, interaction, _, focused := application_focused_text_field(rt)
 	if !focused { return }
-	field := rt.nodes[node_id]
-	history := find_text_field_history_for(app, is_query)
-	selected := field.selection_anchor.byte != field.selection_focus.byte
-	composition := field.composition.active
 	for &item in app.edit_items {
 		if item.kind != .Command { continue }
 		switch string_for_action_id(item.command) {
-		case ACTION_EDIT_UNDO:
-			item.state = alicorn.Action_State{enabled=!composition && history != nil && len(history.undo) > 0}
-		case ACTION_EDIT_REDO:
-			item.state = alicorn.Action_State{enabled=!composition && history != nil && len(history.redo) > 0}
-		case ACTION_EDIT_COPY:
-			item.state = alicorn.Action_State{enabled=!composition && selected && app.services.clipboard.set_text != nil}
-		case ACTION_EDIT_CUT:
-			item.state = alicorn.Action_State{enabled=!composition && selected && app.services.clipboard.set_text != nil}
+		case ACTION_EDIT_UNDO, ACTION_EDIT_REDO, ACTION_EDIT_COPY, ACTION_EDIT_CUT, ACTION_EDIT_SELECT_ALL:
+			// Keep shortcuts routable when paint-only selection/caret changes
+			// do not cause an application description. Handlers inspect the
+			// current selection/history and safely consume no-op commands.
+			item.state = alicorn.Action_State{enabled=!interaction.composition_active}
 		case ACTION_EDIT_PASTE:
-			item.state = alicorn.Action_State{enabled=!composition && app.services.clipboard.get_text != nil}
-		case ACTION_EDIT_SELECT_ALL:
-			item.state = alicorn.Action_State{enabled=!composition && len(field.text) > 0}
+			item.state = alicorn.Action_State{enabled=!interaction.composition_active && app.services.clipboard.get_text != nil}
 		}
+		_ = alicorn.action_update(rt,
+			alicorn.Action_Descriptor{id=item.command, name=string_for_action_id(item.command), label=item.label},
+			item.state,
+		)
 	}
 }
-
 workspace_search_match_clear_all :: proc(app: ^App) {
 	if app == nil { return }
 	for &view in app.editor_views { workspace_search_match_clear(&view) }

@@ -7,6 +7,95 @@ import "core:sync"
 import "core:testing"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
+import host "alicorn:native/sdl_gpu"
+
+@(test)
+test_focused_text_field_cut_uses_public_state_and_rolls_back_clipboard_failure :: proc(t: ^testing.T) {
+	clipboard := Editor_Test_Clipboard{text="", read_ok=true, write_ok=true}
+	app: App
+	app.services.clipboard = host.Clipboard_Service{data=rawptr(&clipboard), set_text=editor_test_clipboard_set_text}
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 360, 120})
+	defer {
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	ui, build := alicorn.begin_frame(&rt)
+	if !build { testing.expect(t, false, "the initial frame should build"); return }
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("focused-edit-test-root"), style=alicorn.layout_style(grow=1))
+	field := alicorn.text_field(&ui, "a🙂bc", key=alicorn.key_string("focused-edit-test-field"))
+	_ = alicorn.button(&ui, "Other focus", key=alicorn.key_string("focused-edit-test-button"))
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	button, button_found := alicorn.node_by_key(&rt, alicorn.key_string("focused-edit-test-button"), .Button)
+	testing.expect(t, button_found, "the unrelated button should be retained")
+	testing.expect(t, alicorn.focus(&rt, field), "the text input should accept focus")
+	_ = alicorn.set_text_selection(&rt, field, 1, 5)
+	application_menu_command(rawptr(&app), &rt, action_id_for(ACTION_EDIT_CUT))
+	remaining, remaining_ok := alicorn.text_field_value(&rt, field)
+	testing.expect(t, remaining_ok && remaining == "abc" && clipboard.last_write == "🙂",
+		"Cut should use the focused field's grapheme-safe selection and update the clipboard")
+
+	clipboard.write_ok = false
+	_ = alicorn.set_text_selection(&rt, field, 0, 1)
+	application_menu_command(rawptr(&app), &rt, action_id_for(ACTION_EDIT_CUT))
+	remaining, remaining_ok = alicorn.text_field_value(&rt, field)
+	testing.expect(t, remaining_ok && remaining == "abc",
+		"a failed clipboard write should roll back the text-field deletion")
+
+	_ = alicorn.focus(&rt, button)
+	testing.expect(t, !find_text_field_clipboard_command(&app, &rt, ACTION_EDIT_CUT) &&
+		!editor_command_focus_owned(&app, &rt),
+		"an unrelated focused control must not route Cut to the document editor")
+}
+
+@(test)
+test_controlled_find_cut_undo_redo_targets_the_focused_field :: proc(t: ^testing.T) {
+	app: App
+	app.find_open = true
+	buffer, buffer_ok := alicorn.text_field_buffer_init("alpha🙂omega", context.allocator)
+	testing.expect(t, buffer_ok, "controlled Find query should initialize")
+	if !buffer_ok { return }
+	app.find_query = buffer
+	clipboard := Editor_Test_Clipboard{text="", read_ok=true, write_ok=true}
+	app.services.clipboard = host.Clipboard_Service{data=rawptr(&clipboard), set_text=editor_test_clipboard_set_text}
+	init_menus(&app)
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 480, 120})
+	defer {
+		find_text_history_destroy(&app.find_query_edit_history)
+		find_text_history_destroy(&app.find_replace_edit_history)
+		alicorn.text_field_buffer_destroy(&app.find_query)
+		if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	_ = controlled_find_test_render(&app, &rt)
+	field := app.find_query_node
+	testing.expect(t, field != 0 && alicorn.focus(&rt, field), "Find query should own text focus")
+	if field == 0 { return }
+	find_sync_focused_edit_menu_states(&app, &rt)
+	cut_enabled := false
+	for item in app.edit_items {
+		if item.command == action_id_for(ACTION_EDIT_CUT) { cut_enabled = item.state.enabled }
+	}
+	testing.expect(t, cut_enabled, "Cut menu availability should not depend on a stale selection repaint")
+	_ = alicorn.set_text_selection(&rt, field, 5, 9)
+	application_menu_command(rawptr(&app), &rt, action_id_for(ACTION_EDIT_CUT))
+	retained, retained_ok := alicorn.text_field_value(&rt, field)
+	testing.expect(t, retained_ok && retained == "alphaomega" && clipboard.last_write == "🙂",
+		"Cut should remove and copy the focused Find query's complete UTF-8 selection")
+	committed := controlled_find_test_render(&app, &rt)
+	testing.expect(t, committed.changed && app.find_query.text == "alphaomega" &&
+		len(app.find_query_edit_history.undo) == 1 && app.find_query_edit_history.undo[0] == "alpha🙂omega",
+		"the next description should adopt Cut and record the prior query for Undo")
+	application_menu_command(rawptr(&app), &rt, action_id_for(ACTION_EDIT_UNDO))
+	retained, retained_ok = alicorn.text_field_value(&rt, field)
+	testing.expect(t, retained_ok && retained == "alpha🙂omega" && app.find_query.text == "alpha🙂omega",
+		"Undo after Cut should restore the focused query rather than the document editor")
+	application_menu_command(rawptr(&app), &rt, action_id_for(ACTION_EDIT_REDO))
+	retained, retained_ok = alicorn.text_field_value(&rt, field)
+	testing.expect(t, retained_ok && retained == "alphaomega" && app.find_query.text == "alphaomega",
+		"Redo after Cut should restore the edited query")
+}
 
 controlled_find_test_render :: proc(app: ^App, rt: ^alicorn.Runtime) -> alicorn.Text_Field_Response {
 	ui, build := alicorn.begin_frame(rt)
