@@ -229,7 +229,15 @@ Action_State :: struct {
 	checked:  bool     `json:"checked"`,
 }
 
+Session_UI :: struct {
+	focus: string `json:"focus"`,
+	tree_path: string `json:"tree_path"`,
+	tree_is_dir: bool `json:"tree_is_dir"`,
+	tree_scroll_y: f32 `json:"tree_scroll_y"`,
+}
+
 State_Envelope :: struct {
+	session_ui: Session_UI `json:"session_ui"`,
 	schema:          u32              `json:"schema"`,
 	revision:        u64              `json:"revision"`,
 	application_rev: u64              `json:"application_revision"`,
@@ -364,6 +372,7 @@ Backend_Stop_Session :: struct {
 	active:        string `json:"active,omitempty"`,
 	sidebar_width: f32    `json:"sidebar_width,omitempty"`,
 	documents:     []Backend_Stop_Session_Document `json:"documents,omitempty"`,
+	ui: Session_UI `json:"ui"`,
 }
 
 Backend_Stop_Request_With_Session :: struct {
@@ -454,6 +463,8 @@ state_revision_is_newer :: proc(current, candidate: u64) -> bool {
 
 state_destroy :: proc(state: ^State_Envelope, allocator: mem.Allocator) {
 	if state == nil { return }
+	delete(state.session_ui.focus, allocator)
+	delete(state.session_ui.tree_path, allocator)
 	delete(state.workspace_root, allocator)
 	delete(state.active, allocator)
 	delete(state.startup_notice, allocator)

@@ -20,7 +20,7 @@ From the repository root:
 
 The wrapper synchronizes the exact Caliber and Alicorn revisions in `dependencies.lock.json`. It requires Go 1.25.5 or newer, Odin, Rust/Cargo, and platform build tools. Windows requires 64-bit Go with cgo and 64-bit MinGW-w64 GCC, plus Odin's Windows linker/SDK prerequisites. macOS requires SDL3 (for example, `brew install sdl3`).
 
-On macOS, Scratchpad opts into Alicorn's content-titlebar host path: its ordinary retained document tabs share a row with AppKit's native traffic lights. Alicorn measures the native-control reservation and resolves the app-declared tab and blank-drag regions from retained layout; Scratchpad continues to own tab selection, close, reorder, and detach behavior. Windows keeps its integrated caption and the existing document-tab row.
+On macOS, Scratchpad's retained document tabs share the titlebar row with AppKit's native traffic lights. On Windows, the same compact tabs share the integrated band with the native application menus and caption buttons; the redundant “Scratchpad” label is omitted. Alicorn measures the native-control reservations and resolves the app-declared tab and blank-drag regions from finalized retained layout. Scratchpad owns tab selection, close, reorder, and detach behavior on both platforms.
 
 `build` creates the native artifact under `out/alicorn`. `test` runs Go/Caliber ABI checks, Odin type-checking, Alicorn bridge tests, and frontend behavior tests. `smoke` builds and launches a native window for a bounded run and checks publication, host wake, presentation, and ordered shutdown. Native IME, dialogs, clipboard, OS trash, DPI, pointer feel, and tab/workspace drag-and-drop still need hands-on verification on the target operating systems.
 
@@ -106,3 +106,14 @@ tab, or the preceding tab when detaching the last one. On Windows, document
 metadata, Save, On top, Return to tabs, and native caption controls share one
 workbench-themed title bar. Context menus and persistent operation notices
 use the selected workbench theme.
+
+## Durable UI restoration
+
+Clean sessions also retain the focused workspace-tree path and tree scroll, or
+the editor focus area. These are additive application fields in the existing
+version-1 session, written through Go's atomic session persistence. Alicorn node
+IDs and restore tokens never enter that file. Startup expands only the focused
+path's ancestors and restores through a fresh tree owner; deleted or hidden paths
+fall back to the editor (or tree owner when no document exists). A virtualized
+focus target remains logical until its row is described. Last-minute split and
+tree-scroll input is captured at shutdown even without another description.

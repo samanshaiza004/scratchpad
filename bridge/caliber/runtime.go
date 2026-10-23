@@ -127,7 +127,7 @@ func (r *Runtime) watchWorkspace(generation uint64, app *application.Application
 }
 
 func samePublishedDocuments(left, right StateEnvelope) bool {
-	if left.Active != right.Active || left.HasWorkspace != right.HasWorkspace || left.WorkspaceRoot != right.WorkspaceRoot || left.SidebarWidth != right.SidebarWidth || len(left.Documents) != len(right.Documents) || len(left.RecentWorkspaces) != len(right.RecentWorkspaces) {
+	if left.Active != right.Active || left.HasWorkspace != right.HasWorkspace || left.WorkspaceRoot != right.WorkspaceRoot || left.SidebarWidth != right.SidebarWidth || left.SessionUI != right.SessionUI || len(left.Documents) != len(right.Documents) || len(left.RecentWorkspaces) != len(right.RecentWorkspaces) {
 		return false
 	}
 	for i := range left.RecentWorkspaces {

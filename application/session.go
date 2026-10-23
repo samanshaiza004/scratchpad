@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -17,7 +18,26 @@ import (
 	"scratchpad/workspace"
 )
 
+// SessionUI contains application meanings, never runtime node IDs or tokens.
+type SessionUI struct {
+	Focus       string  `json:"focus,omitempty"`
+	TreePath    string  `json:"tree_path,omitempty"`
+	TreeIsDir   bool    `json:"tree_is_dir,omitempty"`
+	TreeScrollY float32 `json:"tree_scroll_y,omitempty"`
+}
+
+func validSessionUI(ui SessionUI) SessionUI {
+	if ui.Focus != "editor" && ui.Focus != "tree" {
+		return SessionUI{}
+	}
+	if len(ui.TreePath) > 32*1024 || ui.TreeScrollY < 0 || math.IsNaN(float64(ui.TreeScrollY)) || math.IsInf(float64(ui.TreeScrollY), 0) {
+		return SessionUI{}
+	}
+	return ui
+}
+
 type Session struct {
+	UI               SessionUI         `json:"ui,omitempty"`
 	Version          int               `json:"version"`
 	Workspace        string            `json:"workspace,omitempty"`
 	Documents        []SessionDocument `json:"documents,omitempty"`
@@ -40,6 +60,7 @@ type SessionDocument struct {
 // SessionView is the bounded frontend-owned portion of the current view that
 // must be joined with application-owned document metadata before a clean save.
 type SessionView struct {
+	UI           SessionUI             `json:"ui,omitempty"`
 	Active       DocumentID            `json:"active,omitempty"`
 	SidebarWidth float32               `json:"sidebar_width,omitempty"`
 	Documents    []SessionViewDocument `json:"documents,omitempty"`
@@ -87,7 +108,7 @@ func DefaultStateDir() (string, error) {
 }
 
 func (a *Application) Session() Session {
-	session := Session{Version: sessionVersion, Active: a.Active, Recent: a.RecentPaths(), RecentWorkspaces: a.RecentWorkspaces(), SidebarWidth: a.SidebarWidth}
+	session := Session{UI: a.SessionUI, Version: sessionVersion, Active: a.Active, Recent: a.RecentPaths(), RecentWorkspaces: a.RecentWorkspaces(), SidebarWidth: a.SidebarWidth}
 	if a.HasWorkspace {
 		session.Workspace = a.Workspace.Root
 	}
@@ -165,6 +186,7 @@ func (a *Application) RestoreSession(path string) error {
 	if err != nil {
 		return err
 	}
+	a.SessionUI = validSessionUI(session.UI)
 	a.SetRecentWorkspaces(session.RecentWorkspaces)
 	if session.SidebarWidth >= 180 && session.SidebarWidth <= 2048 {
 		a.SidebarWidth = session.SidebarWidth
@@ -211,6 +233,7 @@ func (a *Application) ApplySessionView(view SessionView) {
 	if a == nil {
 		return
 	}
+	a.SessionUI = validSessionUI(view.UI)
 	for _, saved := range view.Documents {
 		doc := a.Documents[saved.ID]
 		if doc == nil || doc.Editor == nil {

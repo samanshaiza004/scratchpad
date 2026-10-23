@@ -1,0 +1,181 @@
+package main
+
+import "core:encoding/json"
+import "core:fmt"
+import "core:strings"
+import "core:testing"
+import alicorn "alicorn:runtime"
+import bridge "./bridge"
+
+session_ui_test_build :: proc(app: ^App, rt: ^alicorn.Runtime, show_tree: bool) {
+	session_ui_prepare(app, rt)
+	alicorn.invalidate_root(rt, "session restart fixture")
+	ui, build := alicorn.begin_frame(rt)
+	if !build { return }
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("session-test-root"), style=alicorn.layout_style(.Column, grow=1, clip=true))
+	if show_tree { build_workspace_tree(app, &ui, rt) }
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	session_ui_after_frame(app, rt)
+}
+
+session_ui_test_cleanup :: proc(app: ^App) {
+	delete(app.tree_directories)
+ delete(app.session_ui.tree_path, context.allocator)
+	tree_clear_focused_path(app)
+}
+
+session_ui_test_store_tree :: proc(app: ^App, entries: []bridge.Directory_Entry) {
+	listing := bridge.Directory_Listing{relative_path="", entries=entries}
+	_ = tree_store_listing(app, listing, true)
+}
+
+session_ui_test_cleanup_owned :: proc(app: ^App) {
+	tree_clear_directories(app)
+	if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
+	delete(app.session_ui.tree_path, context.allocator)
+	delete(app.error_message, context.allocator)
+	tree_clear_focused_path(app)
+}
+
+@(test)
+test_session_ui_restores_virtual_tree_focus_after_serialization_and_runtime_restart :: proc(t: ^testing.T) {
+	entries: [500]bridge.Directory_Entry
+	for &entry, index in entries {
+		name := fmt.tprintf("record-%03d.txt", index)
+		entry = bridge.Directory_Entry{name=name, path=name}
+	}
+	directories := [1]Tree_Directory{{path="", entries=entries[:], expanded=true}}
+	first := App{}
+	first.backend.started = true
+	first.backend.state = bridge.State_Envelope{revision=1, has_workspace=true, workspace_root="fixture"}
+	append(&first.tree_directories, directories[0])
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 400, 260})
+	session_ui_test_build(&first, &rt, true)
+	_ = alicorn.scroll_region_set_offset(&rt, first.tree_scroll_owner, 350*TREE_ROW_HEIGHT)
+	tree_set_focused_row(&first, &rt, Tree_Row{path=entries[350].path}, 350)
+	session_ui_test_build(&first, &rt, true)
+	session_ui_capture(&first, &rt)
+	encoded, err := json.marshal(first.session_ui, allocator=context.temp_allocator)
+	testing.expect(t, err == nil, "the application semantic schema must serialize")
+	alicorn.destroy_runtime(&rt)
+	session_ui_test_cleanup(&first)
+	defer delete(encoded, context.temp_allocator)
+
+	saved: bridge.Session_UI
+	testing.expect(t, json.unmarshal(encoded, &saved, allocator=context.temp_allocator) == nil, "the saved schema must decode independently of runtime state")
+	defer { delete(saved.focus, context.temp_allocator); delete(saved.tree_path, context.temp_allocator) }
+	second := App{}
+	second.backend.started = true
+	second.backend.state = bridge.State_Envelope{revision=1, has_workspace=true, workspace_root="fixture", session_ui=saved}
+	append(&second.tree_directories, directories[0])
+	defer session_ui_test_cleanup(&second)
+	fresh := alicorn.new_runtime(alicorn.Rect{0, 0, 300, 180})
+	defer alicorn.destroy_runtime(&fresh)
+	session_ui_test_build(&second, &fresh, false)
+	testing.expect(t, second.session_ui_restore_pending, "startup can defer focus until the tree is described")
+	session_ui_test_build(&second, &fresh, true)
+	session_ui_test_build(&second, &fresh, true)
+	focus := alicorn.semantic_focus_state(&fresh)
+	testing.expect(t, focus.id == tree_semantic_id(entries[350].path, false) && focus.realized_node != 0,
+		"semantic focus must rebind to the application path within the restored virtual range")
+	testing.expect(t, alicorn.focused_node(&fresh) == second.tree_scroll_owner && !second.session_ui_restore_pending,
+		"keyboard focus belongs to the freshly acquired tree owner")
+	testing.expect(t, alicorn.scroll_region_state(&fresh, second.tree_scroll_owner).offset_y == 350*TREE_ROW_HEIGHT,
+		"the fresh tree restores its logical offset despite a changed viewport")
+	_, rebuild := alicorn.begin_frame(&fresh)
+	testing.expect(t, !rebuild, "completed restoration must return to idle")
+}
+
+@(test)
+test_session_ui_deleted_focus_and_shrunken_content_use_safe_fallback :: proc(t: ^testing.T) {
+	entries := [1]bridge.Directory_Entry{{name="remaining.txt", path="remaining.txt"}}
+	directories := [1]Tree_Directory{{path="", entries=entries[:], expanded=true}}
+	app := App{}
+	app.backend.started = true
+	app.backend.state = bridge.State_Envelope{revision=1, has_workspace=true, session_ui=bridge.Session_UI{focus="tree", tree_path="deleted.txt", tree_scroll_y=9000}}
+	append(&app.tree_directories, directories[0])
+	defer session_ui_test_cleanup(&app)
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 300, 180})
+	defer alicorn.destroy_runtime(&rt)
+	session_ui_test_build(&app, &rt, true)
+	session_ui_test_build(&app, &rt, true)
+	testing.expect(t, alicorn.semantic_focus_state(&rt).realized_node == 0 && !app.session_ui_restore_pending,
+		"a deleted path must not transfer logical focus to an unrelated row or keep retrying")
+	testing.expect(t, alicorn.scroll_region_state(&rt, app.tree_scroll_owner).offset_y == 0,
+		"shrinking the tree clamps its old offset at zero")
+}
+
+@(test)
+test_session_ui_delayed_focus_yields_to_user_input :: proc(t: ^testing.T) {
+	app := App{}
+	app.backend.started = true
+	app.backend.state = bridge.State_Envelope{revision=1, has_workspace=true, session_ui=bridge.Session_UI{focus="tree", tree_path="later.txt"}}
+	defer session_ui_test_cleanup(&app)
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 300, 180})
+	defer alicorn.destroy_runtime(&rt)
+	session_ui_test_build(&app, &rt, false)
+	alicorn.invalidate_root(&rt, "user opened another control while tree was unavailable")
+	ui, _ := alicorn.begin_frame(&rt)
+	alicorn.container_begin(&ui, .Root, style=alicorn.layout_style(.Column, grow=1))
+	field := alicorn.text_field(&ui, "search", style=alicorn.layout_style(height=40))
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	_ = alicorn.focus(&rt, field)
+	session_ui_prepare(&app, &rt)
+	session_ui_after_frame(&app, &rt)
+	testing.expect(t, !app.session_ui_restore_pending && alicorn.focused_node(&rt) == field,
+		"an unavailable saved focus target must yield to the user's new control")
+}
+
+@(test)
+test_workspace_switch_does_not_reuse_startup_tree_focus_or_scroll :: proc(t: ^testing.T) {
+	entries_a: [500]bridge.Directory_Entry
+	entries_b: [500]bridge.Directory_Entry
+	for &entry_a, index in entries_a {
+		path := fmt.tprintf("record-%03d.txt", index)
+		entry_a = bridge.Directory_Entry{name=fmt.tprintf("A %s", path), path=path}
+		entries_b[index] = bridge.Directory_Entry{name=fmt.tprintf("B %s", path), path=path}
+	}
+
+	app := App{}
+	app.backend.started = true
+	app.backend.state = bridge.State_Envelope{
+		revision=1,
+		has_workspace=true,
+		workspace_root="workspace-A",
+		session_ui=bridge.Session_UI{focus="tree", tree_path="record-350.txt", tree_scroll_y=350*TREE_ROW_HEIGHT},
+	}
+	app.tree_root_path, _ = strings.clone("workspace-A", context.allocator)
+	session_ui_test_store_tree(&app, entries_a[:])
+	defer session_ui_test_cleanup_owned(&app)
+
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 400, 260})
+	defer alicorn.destroy_runtime(&rt)
+	session_ui_test_build(&app, &rt, true)
+	session_ui_test_build(&app, &rt, true)
+	testing.expect(t, alicorn.semantic_focus_state(&rt).id == tree_semantic_id("record-350.txt", false),
+		"workspace A should restore its saved tree entry")
+	testing.expect(t, alicorn.scroll_region_state(&rt, app.tree_scroll_owner).offset_y == 350*TREE_ROW_HEIGHT,
+		"workspace A should restore its saved nonzero tree scroll")
+
+	app.backend.state.workspace_root = "workspace-B"
+	tree_sync_workspace(&app, &rt)
+	session_ui_test_store_tree(&app, entries_b[:])
+	session_ui_test_build(&app, &rt, true)
+	testing.expect(t, alicorn.semantic_focus_state(&rt).id == {} && app.tree_focused_path == "",
+		"workspace B must not inherit A's path identity, even when the relative path is identical")
+	testing.expect(t, alicorn.scroll_region_state(&rt, app.tree_scroll_owner).offset_y == 0,
+		"workspace B must start at the fresh-workspace tree offset, not A's retained offset")
+	testing.expect(t, app.session_ui.tree_path == "" && app.session_ui.tree_scroll_y == 0,
+		"the single startup session snapshot must not retain A's workspace-relative tree state after switching")
+
+	app.backend.state.workspace_root = "workspace-A"
+	tree_sync_workspace(&app, &rt)
+	session_ui_test_store_tree(&app, entries_a[:])
+	session_ui_test_build(&app, &rt, true)
+	testing.expect(t, alicorn.semantic_focus_state(&rt).id == {} && app.tree_focused_path == "",
+		"returning to A in the same Runtime must not replay startup-only focus without a per-workspace session policy")
+	testing.expect(t, alicorn.scroll_region_state(&rt, app.tree_scroll_owner).offset_y == 0,
+		"returning to A follows the app's fresh-workspace default rather than leaking B's retained offset")
+}

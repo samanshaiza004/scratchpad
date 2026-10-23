@@ -61,7 +61,7 @@ jobs:
         uses: libsdl-org/setup-sdl@afd98199e97f9c2aa739474be7e0886d149a5e47
         id: sdl_macos
         with:
-          version: 3.4.16
+          version: 3.4.18
           add-to-environment: true
           token: ${{ github.token }}
       - name: Headless Go, ABI, Odin, and lifecycle checks
