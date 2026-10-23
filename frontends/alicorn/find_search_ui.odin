@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 FIND_QUERY_KEY :: "scratchpad-find-query"
@@ -35,6 +36,42 @@ find_query_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) -> al
 	}
 	if response.submitted { _ = find_move_match(app, rt, 1) }
 	return response
+}
+
+// Edit-menu accelerators are dispatched before native text-field key handling.
+// Route Paste to the controlled Find field when it owns keyboard focus so the
+// editor selection cannot receive the clipboard text by mistake.
+find_query_paste_from_clipboard :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || !app.find_open || app.find_query_node == 0 ||
+	   alicorn.focused_node(rt) != app.find_query_node {
+		return false
+	}
+	field, found := rt.nodes[app.find_query_node]
+	if !found || !field.active || field.kind != .Text_Field { return false }
+	if field.composition.active {
+		set_error(app, "Finish or cancel the active text composition before using Paste.")
+		alicorn.invalidate_root(rt, "Scratchpad refused Find Paste during IME composition")
+		return true
+	}
+	text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
+	if !clipboard_ok {
+		set_error(app, "Could not read text from the system clipboard.")
+		alicorn.invalidate_root(rt, "Scratchpad Find clipboard read failed")
+		return true
+	}
+	defer delete(text, context.allocator)
+	if len(text) == 0 { return true }
+	start := min(field.selection_anchor.byte, field.selection_focus.byte)
+	end := max(field.selection_anchor.byte, field.selection_focus.byte)
+	resulting_length := len(field.text)-(end-start)+len(text)
+	if resulting_length > bridge.MAX_FIND_QUERY_BYTES {
+		set_error(app, "Pasted Find query exceeds the 4 KiB search limit.")
+		alicorn.invalidate_root(rt, "Scratchpad rejected oversized Find clipboard text")
+		return true
+	}
+	change := alicorn.process_text_input(rt, app.find_query_node, text)
+	if len(change.text) > 0 { delete(change.text, rt.persistent_allocator) }
+	return true
 }
 
 workspace_search_match_clear_all :: proc(app: ^App) {
