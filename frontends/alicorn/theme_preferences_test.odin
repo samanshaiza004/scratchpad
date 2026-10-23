@@ -88,6 +88,11 @@ test_theme_preferences_round_trip_and_fallback :: proc(t: ^testing.T) {
 	testing.expect(t, scratchpad_theme_preferences_save(directory, .Cool_Light),
 		"the preference should be replaceable repeatedly")
 
+	for optical in ([2]Scratchpad_Theme_Choice{.Flat, .Workbench_Relief}) {
+		testing.expect(t, scratchpad_theme_preferences_save(directory, optical), "optical preference should save atomically")
+		restored, restored_ok := scratchpad_theme_preferences_load(path)
+		testing.expect(t, restored_ok && restored == optical, "optical preference should survive a restart")
+	}
 	invalid_sources := [?]string{
 		`{"version":1,"theme":"removed-theme"}`,
 		`{"version":9,"theme":"cool-light"}`,
@@ -366,4 +371,25 @@ test_full_application_theme_switch_preserves_modal_tab_syntax_and_caret :: proc(
 	testing.expect(t, rt.stats.layout_nodes_visited == layout_visits_before &&
 		rt.stats.measure_requests == measurements_before && rt.stats.paint_nodes_visited > paint_visits_before,
 		"a full-app color theme change should repaint without remeasuring or relaying out")
+	for choice in ([3]Scratchpad_Theme_Choice{.Flat, .Workbench_Relief, .Warm}) {
+		layout, measures := rt.stats.layout_nodes_visited, rt.stats.measure_requests
+		before := alicorn.semantic_snapshot(&rt)
+		_ = scratchpad_theme_select(&app, &rt, choice)
+		_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
+		after := alicorn.semantic_snapshot(&rt)
+		testing.expect(t, rt.stats.layout_nodes_visited == layout && rt.stats.measure_requests == measures,
+			"changing optical appearance in the full document/modal scene must not perform layout or measurement")
+		testing.expect(t, len(before.nodes) == len(after.nodes), "relief must not create semantic decorations")
+		if len(before.nodes) == len(after.nodes) {
+			for node, i in before.nodes {
+				other := after.nodes[i]
+				testing.expect(t, node.id == other.id && node.role == other.role && node.label == other.label && node.value == other.value && node.actions == other.actions && node.bounds == other.bounds,
+					"optical themes preserve the full scene's semantics and geometry")
+			}
+		}
+		testing.expect(t, rt.nodes[row_id].bounds == row_after.bounds && rt.nodes[row_id].text_interaction_focus.byte == 5,
+			"optical themes preserve editor geometry and source-byte caret")
+		alicorn.semantic_snapshot_destroy(&before)
+		alicorn.semantic_snapshot_destroy(&after)
+	}
 }

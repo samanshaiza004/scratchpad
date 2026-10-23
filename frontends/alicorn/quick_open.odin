@@ -310,8 +310,9 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		label="scratchpad-quick-open-panel",
 		key=alicorn.key_string("scratchpad-quick-open-panel"),
 		style=alicorn.layout_style(.Column, max_width=760, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=12, gap=8, clip=true),
-		material=app.floating_surface_material,
-		physical_height=1,
+		shape=scratchpad_surface_shape(app, 7),
+		material=scratchpad_surface_material(app, app.floating_surface_material),
+		physical_height=scratchpad_surface_height(app, 1),
 	)
 	alicorn.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22))
 	app.quick_open_node = alicorn.text_field(ui, app.quick_open_query, key=alicorn.key_string("scratchpad-quick-open-query"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)

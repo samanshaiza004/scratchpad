@@ -72,6 +72,8 @@ ACTION_VIEW_EDITOR_ZOOM_OUT :: "view.editor-zoom-out"
 ACTION_VIEW_EDITOR_ZOOM_RESET :: "view.editor-zoom-reset"
 ACTION_VIEW_THEME_WARM :: "view.theme-warm"
 ACTION_VIEW_THEME_COOL_LIGHT :: "view.theme-cool-light"
+ACTION_VIEW_THEME_FLAT :: "view.theme-flat"
+ACTION_VIEW_THEME_RELIEF :: "view.theme-workbench-relief"
 
 App :: struct {
 	brand_mark: alicorn.Image_Handle,
@@ -83,6 +85,7 @@ App :: struct {
 	editor_theme:    alicorn.Style_Theme_ID,
 	warm_workbench_theme: alicorn.Style_Theme_ID,
 	warm_editor_theme: alicorn.Style_Theme_ID,
+	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
 	theme_choice: Scratchpad_Theme_Choice,
 	theme_preferences_directory: string,
@@ -120,6 +123,8 @@ App :: struct {
 	paper_surface_material: alicorn.Material_ID,
 	raised_surface_material: alicorn.Material_ID,
 	floating_surface_material: alicorn.Material_ID,
+	relief_materials: Scratchpad_Relief_Materials,
+	appearance_fixture_workbench: bool,
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	accessibility_source_lane: Accessibility_Source_Lane,
@@ -299,7 +304,7 @@ App :: struct {
 	edit_items:             [11]host.Application_Menu_Item,
 	workspace_items:        [7]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
-	view_items:             [8]host.Application_Menu_Item,
+	view_items:             [10]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -403,6 +408,12 @@ start_backend :: proc(app: ^App) {
 	app.recovery_notice_dismissed = false
 		set_error(app, "")
 		tree_sync_workspace(app)
+		if app.appearance_fixture_workbench && app.backend.state.has_workspace {
+			// Exercise the real editor, title-bar tab and status strip in captures.
+			opened := bridge.backend_command(&app.backend, "open_path", path=fmt.tprintf("%s/caliber.config.json", app.backend.state.workspace_root))
+			if !opened.ok { set_error(app, opened.message) }
+			bridge.backend_command_result_destroy(&opened, context.allocator)
+		}
 	}
 }
 
@@ -452,6 +463,11 @@ application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	app := cast(^App)state
 	app.waker = waker
 	start_backend(app)
+	if app.appearance_fixture_workbench {
+		// One fixture-only deadline lets document loading settle before the host
+		// captures at one second. It adds no periodic wake to ordinary operation.
+		_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 1_200_000_000)
+	}
 }
 
 application_services :: proc(state: rawptr, services: host.Application_Services) {
@@ -3039,6 +3055,24 @@ main :: proc() {
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
 	if smoke, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE", context.allocator); found { app.smoke = smoke == "1" || smoke == "true" }
+	// Reproducible appearance capture: select an in-memory theme and open the
+	// real Settings scene without writing a user preference.
+	if fixture, found := os.lookup_env("SCRATCHPAD_APPEARANCE_FIXTURE", context.allocator); found {
+		defer delete(fixture, context.allocator)
+		name := fixture
+		workbench := strings.has_prefix(fixture, "workbench-")
+		if workbench { name = fixture[len("workbench-"):] }
+		if name == "flat" || name == "relief" || name == "contrast" {
+			app.appearance_fixture_workbench = workbench
+			app.theme_choice = .Flat if name == "flat" else .Workbench_Relief
+			app.settings_surface_open = !app.appearance_fixture_workbench
+			app.settings_category = .Editor
+			if name == "contrast" {
+				app.accessibility_appearance_override_enabled = true
+				app.accessibility_appearance = {increased_contrast=true, reduce_transparency=true}
+			}
+		}
+	}
 	window_decorations := host.Window_Decoration_Mode.System
 	when ODIN_OS == .Windows {
 		window_decorations = .Integrated_Title_Bar
