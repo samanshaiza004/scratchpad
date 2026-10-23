@@ -239,6 +239,8 @@ App :: struct {
 	find_open:              bool,
 	find_query:             alicorn.Text_Field_Buffer,
 	find_replace_text:      string,
+	find_query_edit_history: Find_Text_Edit_History,
+	find_replace_edit_history: Find_Text_Edit_History,
 	find_match_case:        bool,
 	find_whole_word:        bool,
 	find_query_node:        alicorn.Node_ID,
@@ -2934,6 +2936,8 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	find_text_history_destroy(&app.find_query_edit_history)
+	find_text_history_destroy(&app.find_replace_edit_history)
 	image_preview_views_destroy(app)
 	if len(app.image_preview_document_id) > 0 { delete(app.image_preview_document_id, context.allocator) }
 	if len(app.image_preview_error) > 0 { delete(app.image_preview_error, context.allocator) }

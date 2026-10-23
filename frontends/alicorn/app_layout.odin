@@ -21,7 +21,10 @@ build_app :: proc(
 	session_ui_prepare(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
-	_ = find_capture_text_field(rt, app.find_replace_node, &app.find_replace_text)
+	find_text_history_initialize(&app.find_replace_edit_history, app.find_replace_text)
+	if find_capture_text_field(rt, app.find_replace_node, &app.find_replace_text) {
+		find_text_history_observe(&app.find_replace_edit_history, app.find_replace_text)
+	}
 	_ = find_capture_text_field(rt, app.workspace_search_query_node, &app.workspace_search_query)
 	app.workspace_search_results_owner = 0
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
@@ -48,6 +51,7 @@ build_app :: proc(
 	if app.backend.started {
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
+		find_sync_focused_edit_menu_states(app, rt)
 	}
 
 	root_gap := f32(8)

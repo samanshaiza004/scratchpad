@@ -29,10 +29,21 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FILE) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FILE); return }
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FOLDER) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FOLDER); return }
 	if command == action_id_for(ACTION_WORKSPACE_SETTINGS) { dispatch_action(app, rt, ACTION_WORKSPACE_SETTINGS); return }
-	if command == action_id_for(ACTION_EDIT_CUT) { editor_clipboard_command(app, rt, ACTION_EDIT_CUT); return }
-	if command == action_id_for(ACTION_EDIT_COPY) { editor_clipboard_command(app, rt, ACTION_EDIT_COPY); return }
+	if command == action_id_for(ACTION_EDIT_UNDO) && find_text_field_history_command(app, rt, false) { return }
+	if command == action_id_for(ACTION_EDIT_REDO) && find_text_field_history_command(app, rt, true) { return }
+	if command == action_id_for(ACTION_EDIT_CUT) {
+		if !find_text_field_clipboard_command(app, rt, ACTION_EDIT_CUT) { editor_clipboard_command(app, rt, ACTION_EDIT_CUT) }
+		return
+	}
+	if command == action_id_for(ACTION_EDIT_COPY) {
+		if !find_text_field_clipboard_command(app, rt, ACTION_EDIT_COPY) { editor_clipboard_command(app, rt, ACTION_EDIT_COPY) }
+		return
+	}
 	if command == action_id_for(ACTION_EDIT_PASTE) { application_clipboard_paste(app, rt); return }
-	if command == action_id_for(ACTION_EDIT_SELECT_ALL) { editor_clipboard_command(app, rt, ACTION_EDIT_SELECT_ALL); return }
+	if command == action_id_for(ACTION_EDIT_SELECT_ALL) {
+		if !find_text_field_clipboard_command(app, rt, ACTION_EDIT_SELECT_ALL) { editor_clipboard_command(app, rt, ACTION_EDIT_SELECT_ALL) }
+		return
+	}
 	for action in app.backend.state.actions {
 		if action_id_for(action.id) == command {
 			dispatch_action(app, rt, action.id)
@@ -42,7 +53,7 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 }
 
 application_clipboard_paste :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if find_query_paste_from_clipboard(app, rt) { return }
+	if find_text_field_clipboard_command(app, rt, ACTION_EDIT_PASTE) { return }
 	editor_clipboard_command(app, rt, ACTION_EDIT_PASTE)
 }
 
@@ -97,6 +108,12 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if action_id == ACTION_EDIT_PASTE {
 		application_clipboard_paste(app, rt)
 		return
+	}
+	if action_id == ACTION_EDIT_CUT || action_id == ACTION_EDIT_COPY || action_id == ACTION_EDIT_SELECT_ALL {
+		if find_text_field_clipboard_command(app, rt, action_id) { return }
+	}
+	if action_id == ACTION_EDIT_UNDO || action_id == ACTION_EDIT_REDO {
+		if find_text_field_history_command(app, rt, action_id == ACTION_EDIT_REDO) { return }
 	}
 	switch action_id {
 	case ACTION_WORKSPACE_NEW_FILE:
