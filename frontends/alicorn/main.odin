@@ -237,8 +237,10 @@ App :: struct {
 	workspace_search_selected: int,
 	workspace_search_results_owner: alicorn.Node_ID,
 	find_open:              bool,
-	find_query:             string,
+	find_query:             alicorn.Text_Field_Buffer,
 	find_replace_text:      string,
+	find_query_edit_history: Find_Text_Edit_History,
+	find_replace_edit_history: Find_Text_Edit_History,
 	find_match_case:        bool,
 	find_whole_word:        bool,
 	find_query_node:        alicorn.Node_ID,
@@ -1005,7 +1007,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return true
 	}
 	if key == .Return && app.find_open && alicorn.focused_node(rt) == app.find_query_node {
-		return find_move_match(app, rt, 1)
+		// Let the native controlled-field path own Return, including IME,
+		// modifier and repeat checks. Consume its one-shot response in build.
+		return false
 	}
 	if key == .Return && app.find_open && alicorn.focused_node(rt) == app.find_replace_node {
 		return find_replace_current(app, rt)
@@ -2607,13 +2611,19 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			alicorn.invalidate_root(rt, "Scratchpad refused to send invalid source bytes to the UTF-8 clipboard")
 			return
 		}
+		if action_id == ACTION_EDIT_CUT && editor_pending_replacement_bytes(app) > int(bridge.MAX_EDIT_BYTES) {
+			set_error(app, "Pending local edits reached the bounded 128 KiB queue limit; Cut was not performed.")
+			alicorn.invalidate_root(rt, "Scratchpad refused Cut before clipboard write because the edit queue is full")
+			return
+		}
 		if !host.ClipboardSetText(app.services.clipboard, string(bytes)) {
 			set_error(app, "Could not copy text to the system clipboard.")
 			alicorn.invalidate_root(rt, "Scratchpad clipboard write failed")
 			return
 		}
-		if action_id == ACTION_EDIT_CUT {
-			_ = editor_apply_local_replace(app, rt, start_byte, end_byte, {}, start_byte, start_byte)
+		if action_id == ACTION_EDIT_CUT && !editor_apply_local_replace(app, rt, start_byte, end_byte, {}, start_byte, start_byte) {
+			set_error(app, "The selected text was copied, but Cut could not queue the document edit. The document was not changed.")
+			alicorn.invalidate_root(rt, "Scratchpad document Cut failed after clipboard copy")
 		}
 	case ACTION_EDIT_PASTE:
 		text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
@@ -2932,6 +2942,8 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	find_text_history_destroy(&app.find_query_edit_history)
+	find_text_history_destroy(&app.find_replace_edit_history)
 	image_preview_views_destroy(app)
 	if len(app.image_preview_document_id) > 0 { delete(app.image_preview_document_id, context.allocator) }
 	if len(app.image_preview_error) > 0 { delete(app.image_preview_error, context.allocator) }
@@ -2978,7 +2990,7 @@ application_stop :: proc(state: rawptr) {
 	find_presentation_destroy(&app.find_presentation, context.allocator)
 	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
 	find_discard_saved_selection(app)
-	find_set_message(&app.find_query, "")
+	alicorn.text_field_buffer_destroy(&app.find_query)
 	find_set_message(&app.find_replace_text, "")
 	find_set_message(&app.find_replace_message, "")
 	find_set_message(&app.find_error, "")

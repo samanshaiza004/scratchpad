@@ -21,8 +21,10 @@ build_app :: proc(
 	session_ui_prepare(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
-	_ = find_capture_text_field(rt, app.find_query_node, &app.find_query)
-	_ = find_capture_text_field(rt, app.find_replace_node, &app.find_replace_text)
+	find_text_history_initialize(&app.find_replace_edit_history, app.find_replace_text)
+	if find_capture_text_field(rt, app.find_replace_node, &app.find_replace_text) {
+		find_text_history_observe(&app.find_replace_edit_history, app.find_replace_text)
+	}
 	_ = find_capture_text_field(rt, app.workspace_search_query_node, &app.workspace_search_query)
 	app.workspace_search_results_owner = 0
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
@@ -42,7 +44,6 @@ build_app :: proc(
 		if floating_window_contains(app, active.id) { editor_accessibility_retire(app, rt) }
 	}
 	app.image_scroll_owner = 0
-	if app.find_open { find_refresh_if_needed(app, rt) }
 	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
 	clear(&app.editor_row_targets)
 	app.editor_input_anchor_node = 0
@@ -50,6 +51,7 @@ build_app :: proc(
 	if app.backend.started {
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
+		find_sync_focused_edit_menu_states(app, rt)
 	}
 
 	root_gap := f32(8)
@@ -157,8 +159,7 @@ build_app :: proc(
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), color=alicorn.style_color(&ui, .Subtle_Surface))
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
 			alicorn.text(&ui, "Find")
-			find_node := alicorn.text_field(&ui, app.find_query, key=alicorn.key_string(FIND_QUERY_KEY), style=alicorn.layout_style(.Row, grow=1, height=36), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
-			app.find_query_node = find_node
+			_ = find_query_build(app, &ui, rt)
 			if alicorn.button(&ui, "Aa", key=alicorn.key_string("find-match-case"), style=alicorn.layout_style(.Row, width=38, height=28), state=alicorn.Button_State{selected=app.find_match_case}, variant=.Toolbar) {
 				app.find_match_case = !app.find_match_case
 				app.find_presentation.editor_revision = 0
@@ -172,7 +173,7 @@ build_app :: proc(
 			}
 			_ = alicorn.tooltip(&ui, "Whole word")
 			find_status := ""
-			if app.find_query == "" { find_status = "Type to find" }
+			if app.find_query.text == "" { find_status = "Type to find" }
 			else if app.find_error != "" { find_status = app.find_error }
 			else if len(app.find_presentation.matches) == 0 { find_status = "No matches" }
 			else {
@@ -188,7 +189,7 @@ build_app :: proc(
 			alicorn.text(&ui, "Replace")
 			replace_node := alicorn.text_field(&ui, app.find_replace_text, key=alicorn.key_string("scratchpad-find-replace-text"), style=alicorn.layout_style(.Row, grow=1, height=36), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 			app.find_replace_node = replace_node
-			can_replace := app.find_query != "" && len(app.find_presentation.matches) > 0 && len(app.editor_edits) == 0 && !editor_active_preedit(app)
+			can_replace := app.find_query.text != "" && len(app.find_presentation.matches) > 0 && len(app.editor_edits) == 0 && !editor_active_preedit(app)
 			if alicorn.button(&ui, "Replace", key=alicorn.key_string("find-replace-current"), style=alicorn.layout_style(.Row, width=82, height=28), state=alicorn.Button_State{disabled=!can_replace}, variant=.Toolbar) {
 				_ = find_replace_current(app, rt)
 			}

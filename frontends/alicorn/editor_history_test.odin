@@ -229,6 +229,7 @@ test_undo_waits_for_pending_optimistic_edit_and_restores_selection :: proc(t: ^t
 	testing.expect(t, app.editor_scroll_owner != 0 && document.line_count == initial_line_count && initial_line_count >= 1000,
 		fmt.tprintf("Undo regression should create a multi-page retained editor list (owner=%d lines=%d)", app.editor_scroll_owner, document.line_count))
 	if app.editor_scroll_owner == 0 { return }
+	testing.expect(t, alicorn.focus(&rt, app.editor_scroll_owner), "the editor should own focus before its Undo command is tested")
 	_ = alicorn.scroll_region_set_offset(&rt, app.editor_scroll_owner, f32(900)*EDITOR_ROW_HEIGHT, "move viewport away before Undo")
 	owner_before, owner_before_found := rt.nodes[app.editor_scroll_owner]
 	testing.expect(t, owner_before_found && owner_before.scroll_offset_y > EDITOR_ROW_HEIGHT*800,

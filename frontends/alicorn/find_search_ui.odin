@@ -4,11 +4,291 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 FIND_QUERY_KEY :: "scratchpad-find-query"
 WORKSPACE_SEARCH_QUERY_KEY :: "scratchpad-workspace-search-query"
+FIND_TEXT_HISTORY_LIMIT :: 32
 
+Find_Text_Edit_History :: struct {
+	undo: [dynamic]string,
+	redo: [dynamic]string,
+	observed_text: string,
+	observed_initialized: bool,
+}
+
+find_text_history_clear_stack :: proc(stack: ^[dynamic]string) {
+	if stack == nil { return }
+	for value in stack^ {
+		if len(value) > 0 { delete(value, context.allocator) }
+	}
+	delete(stack^)
+	stack^ = {}
+}
+
+find_text_history_trim :: proc(stack: ^[dynamic]string) {
+	if stack == nil { return }
+	for len(stack^) > FIND_TEXT_HISTORY_LIMIT {
+		oldest := stack^[0]
+		if len(oldest) > 0 { delete(oldest, context.allocator) }
+		ordered_remove(stack, 0)
+	}
+}
+
+find_text_history_set_observed :: proc(history: ^Find_Text_Edit_History, text: string) {
+	if history == nil { return }
+	copy, err := strings.clone(text, context.allocator)
+	if err != nil { return }
+	if len(history.observed_text) > 0 { delete(history.observed_text, context.allocator) }
+	history.observed_text = copy
+	history.observed_initialized = true
+}
+
+find_text_history_initialize :: proc(history: ^Find_Text_Edit_History, text: string) {
+	if history == nil || history.observed_initialized { return }
+	find_text_history_set_observed(history, text)
+}
+
+find_text_history_observe :: proc(history: ^Find_Text_Edit_History, text: string) {
+	if history == nil { return }
+	if !history.observed_initialized {
+		find_text_history_initialize(history, text)
+		return
+	}
+	if history.observed_text == text { return }
+	if previous, err := strings.clone(history.observed_text, context.allocator); err == nil {
+		append(&history.undo, previous)
+		find_text_history_trim(&history.undo)
+		find_text_history_clear_stack(&history.redo)
+	}
+	find_text_history_set_observed(history, text)
+}
+
+find_text_history_destroy :: proc(history: ^Find_Text_Edit_History) {
+	if history == nil { return }
+	find_text_history_clear_stack(&history.undo)
+	find_text_history_clear_stack(&history.redo)
+	if len(history.observed_text) > 0 { delete(history.observed_text, context.allocator) }
+	history^ = {}
+}
+
+// The Find query has one application-owned allocator for its lifetime. The
+// retained field borrows the buffer only while describing this control.
+find_query_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) -> alicorn.Text_Field_Response {
+	if !app.find_query.initialized {
+		buffer, ok := alicorn.text_field_buffer_init("", context.allocator)
+		if !ok {
+			find_set_message(&app.find_error, "Could not initialize the Find query.")
+			return {}
+		}
+		app.find_query = buffer
+	}
+	find_text_history_initialize(&app.find_query_edit_history, app.find_query.text)
+	response := alicorn.text_field_controlled(
+		ui, &app.find_query, key=alicorn.key_string(FIND_QUERY_KEY),
+		style=alicorn.layout_style(.Row, grow=1, height=36),
+		text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
+	)
+	app.find_query_node = response.node
+	// Refresh after committed input is adopted so result counts, highlights,
+	// and selection all use this description's query. Preedit stays in Alicorn.
+	find_refresh_if_needed(app, rt)
+	if response.changed {
+		find_text_history_observe(&app.find_query_edit_history, app.find_query.text)
+		find_set_message(&app.find_replace_message, "")
+		alicorn.invalidate_root(rt, "Scratchpad Find adopted committed query input")
+	}
+	if response.submitted { _ = find_move_match(app, rt, 1) }
+	return response
+}
+
+// Native Edit shortcuts run before text-field key handling. Keep clipboard
+// operations and history local to whichever Find or Replace box owns focus.
+application_focused_text_field :: proc(rt: ^alicorn.Runtime) -> (node_id: alicorn.Node_ID, state: alicorn.Text_Field_Interaction, value: string, found: bool) {
+	if rt == nil { return }
+	node_id = alicorn.focused_node(rt)
+	interaction, state_ok := alicorn.text_field_interaction(rt, node_id)
+	text_value, value_ok := alicorn.text_field_value(rt, node_id)
+	state = interaction
+	value = text_value
+	found = state_ok && value_ok && state.focused && state.can_edit
+	return
+}
+
+find_focused_text_field :: proc(app: ^App, rt: ^alicorn.Runtime) -> (node_id: alicorn.Node_ID, is_query, found: bool) {
+	if app == nil || rt == nil || !app.find_open { return }
+	focused_id, interaction, _, focused := application_focused_text_field(rt)
+	if !focused || !interaction.can_edit { return }
+	if focused_id == app.find_query_node && focused_id != 0 { return focused_id, true, true }
+	if focused_id == app.find_replace_node && focused_id != 0 { return focused_id, false, true }
+	return
+}
+
+find_text_field_history_for :: proc(app: ^App, is_query: bool) -> ^Find_Text_Edit_History {
+	if app == nil { return nil }
+	if is_query { return &app.find_query_edit_history }
+	return &app.find_replace_edit_history
+}
+
+find_text_field_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) -> bool {
+	node_id, interaction, value, focused := application_focused_text_field(rt)
+	if !focused { return false }
+	if app == nil { return true }
+	is_query := app != nil && app.find_open && node_id == app.find_query_node
+	is_replace := app != nil && app.find_open && node_id == app.find_replace_node
+	if interaction.composition_active {
+		set_error(app, "Finish or cancel the active text composition before using this edit command.")
+		alicorn.invalidate_root(rt, "Scratchpad text field edit command refused during IME composition")
+		return true
+	}
+	switch action_id {
+	case ACTION_EDIT_SELECT_ALL:
+		_ = alicorn.set_text_selection(rt, node_id, 0, len(value))
+		alicorn.invalidate_root(rt, "Scratchpad selected all text in the focused text field")
+	case ACTION_EDIT_COPY, ACTION_EDIT_CUT:
+		start, end := interaction.selection_start, interaction.selection_end
+		if !interaction.has_selection { return true }
+		selected, err := strings.clone(value[start:end], context.allocator)
+		if err != nil { set_error(app, "Could not retain the selected text."); return true }
+		defer delete(selected, context.allocator)
+		if action_id == ACTION_EDIT_CUT {
+			change := alicorn.process_text_command(rt, node_id, .Delete_Forward)
+			changed := change.changed
+			alicorn.text_change_destroy(rt, &change)
+			if !changed {
+				set_error(app, "Cut could not remove the selected text.")
+				alicorn.invalidate_root(rt, "Scratchpad text field Cut deletion failed")
+				return true
+			}
+		}
+		if app.services.clipboard.set_text == nil || !host.ClipboardSetText(app.services.clipboard, selected) {
+			set_error(app, "Could not copy selected text to the system clipboard.")
+			alicorn.invalidate_root(rt, "Scratchpad text field clipboard write failed")
+			if action_id == ACTION_EDIT_CUT {
+				_ = alicorn.set_text_selection(rt, node_id, start, start)
+				rollback := alicorn.process_text_input(rt, node_id, selected)
+				alicorn.text_change_destroy(rt, &rollback)
+			}
+			return true
+		}
+		if is_query {
+			find_text_history_observe(&app.find_query_edit_history, app.find_query.text)
+		} else if is_replace {
+			// The app-owned string is synchronized at the next description.
+		}
+	case ACTION_EDIT_PASTE:
+		if app == nil || app.services.clipboard.get_text == nil { return true }
+		text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
+		if !clipboard_ok {
+			set_error(app, "Could not read text from the system clipboard.")
+			alicorn.invalidate_root(rt, "Scratchpad text field clipboard read failed")
+			return true
+		}
+		defer delete(text, context.allocator)
+		if len(text) == 0 { return true }
+		limit := int(bridge.MAX_EDIT_BYTES)
+		if is_query { limit = int(bridge.MAX_FIND_QUERY_BYTES) }
+		if len(value)-(interaction.selection_end-interaction.selection_start)+len(text) > limit {
+			message := "Pasted text exceeds the 128 KiB per-edit limit."
+			if is_query { message = "Pasted Find query exceeds the 4 KiB search limit." }
+			set_error(app, message)
+			alicorn.invalidate_root(rt, "Scratchpad rejected oversized text-field clipboard input")
+			return true
+		}
+		change := alicorn.process_text_input(rt, node_id, text)
+		alicorn.text_change_destroy(rt, &change)
+	}
+	return true
+}
+find_text_field_replace_value :: proc(app: ^App, rt: ^alicorn.Runtime, node_id: alicorn.Node_ID, is_query: bool, value: string) -> bool {
+	focused_node, field_state, _, found := application_focused_text_field(rt)
+	if !found || focused_node != node_id || node_id == 0 || !field_state.can_edit || field_state.composition_active { return false }
+	current, value_ok := alicorn.text_field_value(rt, node_id)
+	if !value_ok { return false }
+	same_value := current == value
+	if is_query {
+		if !alicorn.text_field_buffer_set(&app.find_query, value) { return false }
+	} else {
+		copy, err := strings.clone(value, context.allocator)
+		if err != nil { return false }
+		if len(app.find_replace_text) > 0 { delete(app.find_replace_text, context.allocator) }
+		app.find_replace_text = copy
+	}
+	_ = alicorn.set_text_selection(rt, node_id, 0, len(current))
+	change := alicorn.process_text_input(rt, node_id, value)
+	changed := change.changed
+	alicorn.text_change_destroy(rt, &change)
+	return changed || same_value
+}
+
+find_text_field_history_command :: proc(app: ^App, rt: ^alicorn.Runtime, redo: bool) -> bool {
+	node_id, interaction, value, focused := application_focused_text_field(rt)
+	if !focused { return false }
+	is_find_query := app != nil && app.find_open && node_id == app.find_query_node
+	is_find_replace := app != nil && app.find_open && node_id == app.find_replace_node
+	if !is_find_query && !is_find_replace { return true }
+	is_query := is_find_query
+	history := find_text_field_history_for(app, is_query)
+	if history == nil { return true }
+	find_text_history_initialize(history, value)
+	if interaction.composition_active {
+		set_error(app, "Finish or cancel the active text composition before changing Find field history.")
+		alicorn.invalidate_root(rt, "Scratchpad Find/Replace history command refused during IME composition")
+		return true
+	}
+	source := &history.undo
+	destination := &history.redo
+	if redo { source, destination = &history.redo, &history.undo }
+	if len(source^) == 0 { return true }
+	last := len(source^)-1
+	target := source^[last]
+	current, err := strings.clone(value, context.allocator)
+	if err != nil {
+		set_error(app, "Could not retain Find field history.")
+		alicorn.invalidate_root(rt, "Scratchpad Find/Replace history allocation failed")
+		return true
+	}
+	if !find_text_field_replace_value(app, rt, node_id, is_query, target) {
+		delete(current, context.allocator)
+		set_error(app, "Could not restore the focused Find field value.")
+		alicorn.invalidate_root(rt, "Scratchpad Find/Replace history restore failed")
+		return true
+	}
+	ordered_remove(source, last)
+	append(destination, current)
+	find_text_history_trim(destination)
+	find_text_history_set_observed(history, target)
+	if len(target) > 0 { delete(target, context.allocator) }
+	if is_query {
+		find_set_message(&app.find_replace_message, "")
+		find_refresh_if_needed(app, rt)
+	}
+	alicorn.invalidate_root(rt, "Scratchpad applied focused Find/Replace history command")
+	return true
+}
+
+find_sync_focused_edit_menu_states :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil { return }
+	node_id, interaction, _, focused := application_focused_text_field(rt)
+	if !focused { return }
+	for &item in app.edit_items {
+		if item.kind != .Command { continue }
+		switch string_for_action_id(item.command) {
+		case ACTION_EDIT_UNDO, ACTION_EDIT_REDO, ACTION_EDIT_COPY, ACTION_EDIT_CUT, ACTION_EDIT_SELECT_ALL:
+			// Keep shortcuts routable when paint-only selection/caret changes
+			// do not cause an application description. Handlers inspect the
+			// current selection/history and safely consume no-op commands.
+			item.state = alicorn.Action_State{enabled=!interaction.composition_active}
+		case ACTION_EDIT_PASTE:
+			item.state = alicorn.Action_State{enabled=!interaction.composition_active && app.services.clipboard.get_text != nil}
+		}
+		_ = alicorn.action_update(rt,
+			alicorn.Action_Descriptor{id=item.command, name=string_for_action_id(item.command), label=item.label},
+			item.state,
+		)
+	}
+}
 workspace_search_match_clear_all :: proc(app: ^App) {
 	if app == nil { return }
 	for &view in app.editor_views { workspace_search_match_clear(&view) }
@@ -80,7 +360,7 @@ find_open_surface :: proc(app: ^App) {
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found &&
 		   app.find_presentation.document_id == document.id &&
 		   app.find_presentation.editor_revision == document.editor_revision &&
-		   app.find_presentation.query == app.find_query &&
+		   app.find_presentation.query == app.find_query.text &&
 		   app.find_presentation.match_case == app.find_match_case &&
 		   app.find_presentation.whole_word == app.find_whole_word {
 			if index := editor_view_find(app.editor_views[:], document.id); index >= 0 {
@@ -127,7 +407,7 @@ find_replace_current :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	document, view, _, ready := active_editor_context(app)
 	if !ready || view == nil || document.id != app.find_presentation.document_id ||
 	   document.editor_revision != app.find_presentation.editor_revision ||
-	   app.find_presentation.query != app.find_query ||
+	   app.find_presentation.query != app.find_query.text ||
 	   app.find_presentation.match_case != app.find_match_case ||
 	   app.find_presentation.whole_word != app.find_whole_word {
 		find_set_message(&app.find_replace_message, "Waiting for the current source window.")
@@ -152,7 +432,7 @@ find_replace_current :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		editor_revision=document.editor_revision,
 		start_byte=u64(match.start),
 		end_byte=u64(match.end),
-		query=app.find_query,
+		query=app.find_query.text,
 		match_case=app.find_match_case,
 		whole_word=app.find_whole_word,
 		replacement=replacement,
@@ -199,7 +479,7 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		alicorn.invalidate_root(rt, "Scratchpad Replace All refused during IME composition")
 		return true
 	}
-	if len(app.find_query) == 0 {
+	if len(app.find_query.text) == 0 {
 		find_set_message(&app.find_replace_message, "Enter a Find query first.")
 		return true
 	}
@@ -215,7 +495,7 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	}
 	document, view, _, ready := active_editor_context(app)
 	if !ready || view == nil || document.id != app.find_presentation.document_id ||
-	   document.editor_revision != app.find_presentation.editor_revision || app.find_presentation.query != app.find_query ||
+	   document.editor_revision != app.find_presentation.editor_revision || app.find_presentation.query != app.find_query.text ||
 	   app.find_presentation.match_case != app.find_match_case || app.find_presentation.whole_word != app.find_whole_word {
 		find_set_message(&app.find_replace_message, "Waiting for current Find results.")
 		alicorn.invalidate_root(rt, "Scratchpad Replace All waited for current authoritative Find results")
@@ -231,7 +511,7 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		"find_replace_all",
 		document_id=document.id,
 		editor_revision=document.editor_revision,
-		query=app.find_query,
+		query=app.find_query.text,
 		match_case=app.find_match_case,
 		whole_word=app.find_whole_word,
 		replacement=replacement,
@@ -420,13 +700,13 @@ editor_reveal_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 find_move_match :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) -> bool {
-	if app == nil || (app.workspace_search_mode && !app.find_open) || (!app.find_open && len(app.find_query) == 0) { return false }
+	if app == nil || (app.workspace_search_mode && !app.find_open) || (!app.find_open && len(app.find_query.text) == 0) { return false }
 	stale := false
 	if app.backend.started {
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found {
 			stale = app.find_presentation.document_id != document.id ||
 			        app.find_presentation.editor_revision != document.editor_revision ||
-			        app.find_presentation.query != app.find_query ||
+			        app.find_presentation.query != app.find_query.text ||
 			        app.find_presentation.match_case != app.find_match_case ||
 			        app.find_presentation.whole_word != app.find_whole_word
 		}
@@ -492,14 +772,14 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if !view_ok { return }
 	if app.find_presentation.document_id == document.id &&
 	   app.find_presentation.editor_revision == document.editor_revision &&
-	   app.find_presentation.query == app.find_query &&
+	   app.find_presentation.query == app.find_query.text &&
 	   app.find_presentation.match_case == app.find_match_case &&
 	   app.find_presentation.whole_word == app.find_whole_word { return }
 
 	view := &app.editor_views[view_index]
 	source_cursor := view.caret_byte
 	if app.find_presentation.document_id == document.id &&
-	   app.find_presentation.query == app.find_query &&
+	   app.find_presentation.query == app.find_query.text &&
 	   app.find_presentation.active_match >= 0 &&
 	   app.find_presentation.active_match < len(app.find_presentation.matches) {
 		// When an option changes, keep the user's current result if it still
@@ -508,9 +788,9 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		if active.start >= 0 { source_cursor = u64(active.start) }
 	}
 
-	if len(app.find_query) > 0 {
-		if len(app.find_query) > bridge.MAX_FIND_QUERY_BYTES {
-			if find_presentation_install(&app.find_presentation, document.id, app.find_query,
+	if len(app.find_query.text) > 0 {
+		if len(app.find_query.text) > bridge.MAX_FIND_QUERY_BYTES {
+			if find_presentation_install(&app.find_presentation, document.id, app.find_query.text,
 			   app.find_match_case, app.find_whole_word, document.editor_revision, nil, false,
 			   source_cursor) {
 				find_set_message(&app.find_error, "Find query exceeds the 4096 byte limit.")
@@ -523,7 +803,7 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			&app.backend,
 			"find_current",
 			document_id=document.id,
-			query=app.find_query,
+			query=app.find_query.text,
 			max_matches=FIND_MAX_MATCHES,
 			match_case=app.find_match_case,
 			whole_word=app.find_whole_word,
@@ -535,7 +815,7 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 				&app.find_presentation,
 				&response,
 				document.id,
-				app.find_query,
+				app.find_query.text,
 				app.find_match_case,
 				app.find_whole_word,
 				document.editor_revision,
@@ -556,7 +836,7 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if !find_presentation_install(
 		&app.find_presentation,
 		document.id,
-		app.find_query,
+		app.find_query.text,
 		app.find_match_case,
 		app.find_whole_word,
 		document.editor_revision,
