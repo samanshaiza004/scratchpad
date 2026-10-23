@@ -6,6 +6,7 @@ import host "alicorn:native/sdl_gpu"
 
 SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT :: f32(42)
 SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT :: f32(34)
+SCRATCHPAD_CONTENT_TITLEBAR_MIN_TAB_WIDTH :: f32(136)
 
 build_app :: proc(
 	state: rawptr,
@@ -560,10 +561,13 @@ scratchpad_document_tabs_build :: proc(
 	for index in tab_document_indices {
 		document := state.documents[index]
 		title := document_title(document.path)
-		if document.preview && !document.dirty { title = fmt.tprintf("%s (preview)", title) }
+		is_preview := document.preview && !document.dirty
 		append(&tab_items, alicorn.Tab_Bar_Item{
 			key=alicorn.key_string(document.id),
 			label=title,
+			label_italic=is_preview,
+			label_muted=is_preview,
+			tooltip=title,
 			selected=state.active == document.id,
 			closable=true,
 			dirty=document.dirty,
@@ -576,7 +580,7 @@ scratchpad_document_tabs_build :: proc(
 	tab_options.drag_type = SCRATCHPAD_DRAG_TABS
 	tab_style := alicorn.layout_style(.Row, grow=1, height=height, clip=true)
 	if compact {
-		tab_options.min_tab_width = 112
+		tab_options.min_tab_width = SCRATCHPAD_CONTENT_TITLEBAR_MIN_TAB_WIDTH
 		tab_options.max_tab_width = 180
 		tab_options.gap = 0
 		tab_options.presentation = .Compact
