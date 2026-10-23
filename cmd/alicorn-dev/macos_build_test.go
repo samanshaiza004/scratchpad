@@ -56,7 +56,7 @@ func TestMacFinalSignedManifest(t *testing.T) {
 		"application": map[string]any{"executable": "Contents/MacOS/Scratchpad", "sha256": exeHash,
 			"resources": []any{map[string]any{"name": "Contents/Resources/notice.txt", "sha256": noticeHash}}},
 		"dependencies": map[string]any{"bundled": []any{map[string]any{"name": "Contents/Frameworks/libfixture.dylib", "sha256": libraryHash}}},
-		"host":         map[string]any{"alicornRevision": "candidate", "sdlVersion": "3.4.16", "sdlLinkage": "shared"},
+		"host":         map[string]any{"alicornRevision": "candidate", "sdlVersion": macSDLVersion, "sdlLinkage": "shared"},
 	}
 	data, _ := json.Marshal(metadata)
 	writeNativeFixture(t, filepath.Join(appDir, "alicorn-package.json"), string(data))
