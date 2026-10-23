@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/durable-ui-restoration",
-    "revision": "791bdad77ba56af71b44f5c77d708509a4ec8f80"
+    "ref": "master",
+    "revision": "d10a4b42f0301d87e0ac5659bee9f5a8c4c6b39f"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
