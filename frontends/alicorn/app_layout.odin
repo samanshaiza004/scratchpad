@@ -97,7 +97,7 @@ build_app :: proc(
 		app.workspace_editor_split_node = workspace_split.id
 		app.workspace_sidebar_width = workspace_split.position
 		alicorn.split_first_begin(&ui, workspace_split)
-		alicorn.container_begin(&ui, .Container, label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), color=alicorn.style_color(&ui, .Surface))
+		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Recessed))
 		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=30, gap=4))
 		if alicorn.button(&ui, "Files", key=alicorn.key_string("workspace-panel-files"), style=alicorn.layout_style(.Row, grow=1, height=28), state=alicorn.Button_State{selected=!app.workspace_search_mode}, variant=.Tab) {
 			workspace_search_cancel_active(app)
@@ -144,19 +144,19 @@ build_app :: proc(
 			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
 		}
-		alicorn.container_end(&ui)
+		alicorn.surface_end(&ui)
 		alicorn.split_first_end(&ui, workspace_split)
 		alicorn.split_divider(&ui, workspace_split)
 		alicorn.split_second_begin(&ui, workspace_split)
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
 		when ODIN_OS != .Darwin && ODIN_OS != .Windows {
-			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=app.raised_surface_material, physical_height=0.65)
+			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=scratchpad_surface_material(app, app.raised_surface_material), physical_height=0.65)
 			scratchpad_document_tabs_build(app, &ui, rt, width=0, height=32, compact=false, show_empty=true)
 			alicorn.surface_end(&ui)
 		}
 		if app.find_open {
-			alicorn.container_begin(&ui, .Container, label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), color=alicorn.style_color(&ui, .Subtle_Surface))
+			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
 			alicorn.text(&ui, "Find")
 			_ = find_query_build(app, &ui, rt)
@@ -198,12 +198,12 @@ build_app :: proc(
 			}
 			if app.find_replace_message != "" { alicorn.text(&ui, app.find_replace_message) }
 			alicorn.container_end(&ui)
-			alicorn.container_end(&ui)
+			alicorn.surface_end(&ui)
 		}
 
 		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
 		paper_padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
-		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=app.paper_surface_material, physical_height=-0.75)
+		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=-0.75)
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {

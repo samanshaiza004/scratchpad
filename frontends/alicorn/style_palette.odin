@@ -16,6 +16,7 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		app.editor_theme = 0
 		app.warm_workbench_theme = 0
 		app.warm_editor_theme = 0
+		app.relief_workbench_theme, app.relief_editor_theme = 0, 0
 		app.cool_light_theme = 0
 		app.paper_surface_material = alicorn.MATERIAL_FLAT
 		app.raised_surface_material = alicorn.MATERIAL_FLAT
@@ -59,6 +60,8 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 			outer_shadow_radius=7,
 		})
 	}
+	if app.theme_choice == .Workbench_Relief && app.relief_workbench_theme == 0 { app.relief_workbench_theme = scratchpad_relief_theme(app, rt, false) }
+	if app.theme_choice == .Workbench_Relief && app.relief_editor_theme == 0 { app.relief_editor_theme = scratchpad_relief_theme(app, rt, true) }
 	scratchpad_theme_apply_registered(app)
 	return app.workbench_theme != 0 && app.editor_theme != 0 &&
 		app.paper_surface_material != alicorn.MATERIAL_FLAT &&
@@ -69,9 +72,12 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 scratchpad_theme_apply_registered :: proc(app: ^App) {
 	if app == nil { return }
 	switch app.theme_choice {
-	case .Warm:
+	case .Warm, .Flat:
 		app.workbench_theme = app.warm_workbench_theme
 		app.editor_theme = app.warm_editor_theme
+	case .Workbench_Relief:
+		app.workbench_theme = app.relief_workbench_theme
+		app.editor_theme = app.relief_editor_theme
 	case .Cool_Light:
 		app.workbench_theme = app.cool_light_theme
 		app.editor_theme = app.cool_light_theme
@@ -79,9 +85,14 @@ scratchpad_theme_apply_registered :: proc(app: ^App) {
 }
 
 scratchpad_theme_select :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratchpad_Theme_Choice) -> bool {
-	if app == nil || rt == nil || (choice != .Warm && choice != .Cool_Light) { return false }
+	if app == nil || rt == nil || (choice < .Warm || choice > .Workbench_Relief) { return false }
 	if app.theme_choice == choice { return true }
 	if !scratchpad_styles_ensure(app, rt) { return false }
+	if choice == .Workbench_Relief {
+		if app.relief_workbench_theme == 0 { app.relief_workbench_theme = scratchpad_relief_theme(app, rt, false) }
+		if app.relief_editor_theme == 0 { app.relief_editor_theme = scratchpad_relief_theme(app, rt, true) }
+		if app.relief_workbench_theme == 0 || app.relief_editor_theme == 0 { return false }
+	}
 	app.theme_choice = choice
 	if app.brand_mark != 0 { _ = scratchpad_brand_mark_replace(app, rt, choice) }
 	scratchpad_theme_apply_registered(app)

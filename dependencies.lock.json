@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "master",
-    "revision": "d7e54413b07f1a0b2218b0c3eb7a8bb5a2cc83da"
+    "ref": "codex/workbench-relief",
+    "revision": "a3b0d5a22de2b22d0775366192226abe2a31715d"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

@@ -34,6 +34,7 @@ Floating_Window_State :: struct {
 	style_theme_runtime: ^alicorn.Runtime,
 	workbench_theme, editor_theme: alicorn.Style_Theme_ID,
 	warm_workbench_theme, warm_editor_theme: alicorn.Style_Theme_ID,
+	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
 	paper_surface_material, raised_surface_material, floating_surface_material: alicorn.Material_ID,
 	always_on_top: bool,
@@ -84,6 +85,7 @@ Floating_Window_Scope :: struct {
 	style_theme_runtime: ^alicorn.Runtime,
 	workbench_theme, editor_theme: alicorn.Style_Theme_ID,
 	warm_workbench_theme, warm_editor_theme: alicorn.Style_Theme_ID,
+	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
 	paper_surface_material, raised_surface_material, floating_surface_material: alicorn.Material_ID,
 }
@@ -183,6 +185,8 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 		editor_theme=app.editor_theme,
 		warm_workbench_theme=app.warm_workbench_theme,
 		warm_editor_theme=app.warm_editor_theme,
+		relief_workbench_theme=app.relief_workbench_theme,
+		relief_editor_theme=app.relief_editor_theme,
 		cool_light_theme=app.cool_light_theme,
 		paper_surface_material=app.paper_surface_material,
 		raised_surface_material=app.raised_surface_material,
@@ -228,6 +232,8 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 	app.editor_theme = state.editor_theme
 	app.warm_workbench_theme = state.warm_workbench_theme
 	app.warm_editor_theme = state.warm_editor_theme
+	app.relief_workbench_theme = state.relief_workbench_theme
+	app.relief_editor_theme = state.relief_editor_theme
 	app.cool_light_theme = state.cool_light_theme
 	app.paper_surface_material = state.paper_surface_material
 	app.raised_surface_material = state.raised_surface_material
@@ -260,6 +266,8 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	state.editor_theme = app.editor_theme
 	state.warm_workbench_theme = app.warm_workbench_theme
 	state.warm_editor_theme = app.warm_editor_theme
+	state.relief_workbench_theme = app.relief_workbench_theme
+	state.relief_editor_theme = app.relief_editor_theme
 	state.cool_light_theme = app.cool_light_theme
 	state.paper_surface_material = app.paper_surface_material
 	state.raised_surface_material = app.raised_surface_material
@@ -320,6 +328,8 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	app.editor_theme = scope.editor_theme
 	app.warm_workbench_theme = scope.warm_workbench_theme
 	app.warm_editor_theme = scope.warm_editor_theme
+	app.relief_workbench_theme = scope.relief_workbench_theme
+	app.relief_editor_theme = scope.relief_editor_theme
 	app.cool_light_theme = scope.cool_light_theme
 	app.paper_surface_material = scope.paper_surface_material
 	app.raised_surface_material = scope.raised_surface_material
@@ -527,7 +537,7 @@ floating_window_build :: proc(
 	}
 	style_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
 	padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
-	alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("floating-document-surface"), label="floating-document-surface", style=alicorn.layout_style(.Column, grow=1, padding=padding, gap=6, align=.Start, clip=true), material=app.paper_surface_material, physical_height=-0.75)
+	alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("floating-document-surface"), label="floating-document-surface", style=alicorn.layout_style(.Column, grow=1, padding=padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=-0.75)
 	if document, found := find_document(&app.backend.state, window.document_id); found {
 		if alicorn.component_begin(&ui, alicorn.key_string(document.id)) {
 			build_document_editor(app, &ui, rt, document, show_heading=false)

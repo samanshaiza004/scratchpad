@@ -113,6 +113,8 @@ command_palette_aliases :: proc(action_id: string) -> string {
 	case "workspace.open": return "open folder project"
 	case ACTION_VIEW_THEME_WARM: return "appearance theme warm dark"
 	case ACTION_VIEW_THEME_COOL_LIGHT: return "appearance theme cool light"
+	case ACTION_VIEW_THEME_FLAT: return "appearance theme flat"
+	case ACTION_VIEW_THEME_RELIEF: return "appearance theme relief depth experimental"
 	case "file.save": return "write"
 	case "edit.select_all": return "select everything"
 	case:
@@ -263,6 +265,8 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	case action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP): return ACTION_DOCUMENT_TOGGLE_WRAP
 	case action_id_for(ACTION_VIEW_THEME_WARM): return ACTION_VIEW_THEME_WARM
 	case action_id_for(ACTION_VIEW_THEME_COOL_LIGHT): return ACTION_VIEW_THEME_COOL_LIGHT
+	case action_id_for(ACTION_VIEW_THEME_FLAT): return ACTION_VIEW_THEME_FLAT
+	case action_id_for(ACTION_VIEW_THEME_RELIEF): return ACTION_VIEW_THEME_RELIEF
 	case action_id_for(ACTION_WORKSPACE_SETTINGS): return ACTION_WORKSPACE_SETTINGS
 	case action_id_for(ACTION_EDIT_CUT): return ACTION_EDIT_CUT
 	case action_id_for(ACTION_EDIT_COPY): return ACTION_EDIT_COPY
@@ -463,7 +467,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		label="scratchpad-command-palette-panel",
 		key=alicorn.key_string("scratchpad-command-palette-panel"),
 		style=alicorn.layout_style(.Column, max_width=760, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=12, gap=8, clip=true),
-		material=app.floating_surface_material,
+		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=1,
 	)
 	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=44, gap=8, align=.Center))
