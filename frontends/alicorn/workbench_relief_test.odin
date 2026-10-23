@@ -15,26 +15,32 @@ test_relief_is_visible_on_the_workbench_controls_and_keeps_the_fill_calm :: proc
 		material, valid := alicorn.style_material_resolve(&rt, resolved.material)
 		testing.expect(t, valid && resolved.surface.a == 1 && material.kind == .Analytic_Relief,
 			"visible controls, including unselected tabs, must have an opaque mounted treatment")
-		vertices := make([dynamic]host.Native_Text_Vertex, 0, 66, allocator=context.temp_allocator)
-		host.native_solid_append_material_surface(&vertices, {10, 10, 120, 30}, {6, 6, 128, 38}, resolved.surface, material, resolved.physical_height, 1)
+		vertices := make([dynamic]host.Native_Text_Vertex, 0, 2048, allocator=context.temp_allocator)
+		host.native_solid_append_rounded_material_surface(&vertices, {10, 10, 120, 30}, {6, 6, 128, 38}, resolved.surface, material, resolved.physical_height, 1, resolved.shape)
 		if len(vertices) < 24 {
 			testing.expect(t, false, "the mounted treatment must emit optical edge geometry")
 			delete(vertices)
 			continue
 		}
-		// Ignore the first two outer-shadow quads and the solid interior quad.
 		// The old subtle treatment produced less than two 8-bit levels here.
 		contrast: f32
-		for vertex in vertices[18:] {
+		for vertex in vertices {
 			contrast = max(contrast, abs(vertex.color[0]-resolved.surface.r), abs(vertex.color[1]-resolved.surface.g), abs(vertex.color[2]-resolved.surface.b))
 		}
 		testing.expect(t, contrast >= 0.06, "relief edges need visible contrast, not just a nonzero material ID")
-		testing.expect(t, vertices[12].color == [4]f32{resolved.surface.r, resolved.surface.g, resolved.surface.b, 1},
-			"the interior remains the original theme fill rather than shading the whole text surface")
+		interior_fill_found := false
+		for vertex in vertices {
+			if vertex.position == ([3]f32{70, 25, 0}) && vertex.color == ([4]f32{resolved.surface.r, resolved.surface.g, resolved.surface.b, 1}) {
+				interior_fill_found = true
+			}
+		}
+		testing.expect(t, interior_fill_found,
+			"the interior remains the original theme fill rather than shading the whole control")
 		delete(vertices)
 	}
 	quiet := alicorn.style_button_resolve(&rt, {theme=app.workbench_theme}, .Quiet, {selected=true})
-	testing.expect(t, quiet.material == app.relief_materials.mounted, "selected file-tree rows participate in relief")
+	testing.expect(t, quiet.material == app.relief_materials.mounted && quiet.shape.corner_radius == 3,
+		"selected file-tree rows participate in relief with the compact radius")
 }
 
 @(test)
@@ -67,7 +73,9 @@ test_workbench_relief_retains_settings_semantics_geometry_and_measurements :: pr
 			}
 		}
 		paint, found := rt.nodes[done].paint[0].payload.(alicorn.Surface_Paint)
-		testing.expect(t, found && paint.material != alicorn.MATERIAL_FLAT && paint.physical_height > 0, "Workbench Relief gives operable buttons a mounted surface")
+		testing.expect(t, found && paint.material != alicorn.MATERIAL_FLAT && paint.physical_height > 0 &&
+			paint.shape == alicorn.Surface_Shape{kind=.Rounded_Rectangle, corner_radius=4},
+			"Workbench Relief gives operable buttons a mounted surface with the control radius")
 		app.accessibility_appearance_override_enabled = true
 		app.accessibility_appearance = {increased_contrast=true, reduce_transparency=true}
 		alicorn.invalidate_root(&rt, "accessible relief variant")

@@ -310,6 +310,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		label="scratchpad-quick-open-panel",
 		key=alicorn.key_string("scratchpad-quick-open-panel"),
 		style=alicorn.layout_style(.Column, max_width=760, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=12, gap=8, clip=true),
+		shape=scratchpad_surface_shape(app, 7),
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
 	)

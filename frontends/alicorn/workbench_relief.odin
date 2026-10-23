@@ -71,6 +71,9 @@ scratchpad_relief_theme :: proc(app: ^App, rt: ^alicorn.Runtime, editor: bool) -
 	for variant in ([?]alicorn.Button_Variant{.Default, .Primary, .Toolbar, .Tab, .Quiet}) {
 		recipe := &theme.button_recipes.recipes[int(variant)]
 		if !recipe.defined { recipe^ = defaults.recipes[int(variant)] }
+		radius := f32(3)
+		if variant == .Default || variant == .Primary { radius = 4 }
+		recipe.shape = alicorn.Surface_Shape{kind=.Rounded_Rectangle, corner_radius=radius}
 		// Tabs need a mounted surface even when not selected. Quiet rows retain
 		// their transparent rest state and gain relief only when filled.
 		if variant == .Tab { recipe.surface_visible = true }
@@ -85,4 +88,13 @@ scratchpad_relief_theme :: proc(app: ^App, rt: ^alicorn.Runtime, editor: bool) -
 scratchpad_structural_material :: proc(app: ^App) -> alicorn.Material_ID {
 	if app != nil && app.theme_choice == .Workbench_Relief { return app.relief_materials.recessed }
 	return alicorn.MATERIAL_FLAT
+}
+
+// Workbench Relief opts selected controls and small overlay surfaces into
+// uniform radii. Structural pane boundaries and the document canvas stay square.
+scratchpad_surface_shape :: proc(app: ^App, radius: f32) -> alicorn.Surface_Shape {
+	if app != nil && app.theme_choice == .Workbench_Relief {
+		return alicorn.Surface_Shape{kind=.Rounded_Rectangle, corner_radius=radius}
+	}
+	return alicorn.Surface_Shape{kind=.Rectangle}
 }

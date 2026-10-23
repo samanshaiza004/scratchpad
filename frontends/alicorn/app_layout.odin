@@ -139,7 +139,7 @@ build_app :: proc(
 				alicorn.virtual_list_end(&ui, search_list)
 			}
 		} else {
-			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
+			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center), shape=scratchpad_surface_shape(app, 4), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
