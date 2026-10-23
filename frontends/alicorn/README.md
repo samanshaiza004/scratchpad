@@ -117,3 +117,14 @@ path's ancestors and restores through a fresh tree owner; deleted or hidden path
 fall back to the editor (or tree owner when no document exists). A virtualized
 focus target remains logical until its row is described. Last-minute split and
 tree-scroll input is captured at shutdown even without another description.
+
+The Find query dogfoods Alicorn's `Text_Field_Buffer` and `text_field_controlled`
+API. Its allocator is retained with the application and released at shutdown;
+closing Find preserves the query. Committed input refreshes matches after adoption,
+then requests an explicit final description. IME preedit remains transient.
+Unmodified, non-repeating Enter uses the field's one-shot submit response to move
+to the next match; F3/Shift+F3 and Escape keep their existing navigation behavior.
+The frontend tests exercise this path against the actual Go backend, including
+preedit, commit, submit, programmatic replacement, reopen, source invariance,
+and allocator cleanup. Native smoke covers launch and shutdown; physical IME
+composition and mixed-DPI pointer behavior still need native use.

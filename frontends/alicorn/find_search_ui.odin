@@ -9,6 +9,34 @@ import bridge "./bridge"
 FIND_QUERY_KEY :: "scratchpad-find-query"
 WORKSPACE_SEARCH_QUERY_KEY :: "scratchpad-workspace-search-query"
 
+// The Find query has one application-owned allocator for its lifetime. The
+// retained field borrows the buffer only while describing this control.
+find_query_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) -> alicorn.Text_Field_Response {
+	if !app.find_query.initialized {
+		buffer, ok := alicorn.text_field_buffer_init("", context.allocator)
+		if !ok {
+			find_set_message(&app.find_error, "Could not initialize the Find query.")
+			return {}
+		}
+		app.find_query = buffer
+	}
+	response := alicorn.text_field_controlled(
+		ui, &app.find_query, key=alicorn.key_string(FIND_QUERY_KEY),
+		style=alicorn.layout_style(.Row, grow=1, height=36),
+		text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
+	)
+	app.find_query_node = response.node
+	// Refresh after committed input is adopted so result counts, highlights,
+	// and selection all use this description's query. Preedit stays in Alicorn.
+	find_refresh_if_needed(app, rt)
+	if response.changed {
+		find_set_message(&app.find_replace_message, "")
+		alicorn.invalidate_root(rt, "Scratchpad Find adopted committed query input")
+	}
+	if response.submitted { _ = find_move_match(app, rt, 1) }
+	return response
+}
+
 workspace_search_match_clear_all :: proc(app: ^App) {
 	if app == nil { return }
 	for &view in app.editor_views { workspace_search_match_clear(&view) }
@@ -80,7 +108,7 @@ find_open_surface :: proc(app: ^App) {
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found &&
 		   app.find_presentation.document_id == document.id &&
 		   app.find_presentation.editor_revision == document.editor_revision &&
-		   app.find_presentation.query == app.find_query &&
+		   app.find_presentation.query == app.find_query.text &&
 		   app.find_presentation.match_case == app.find_match_case &&
 		   app.find_presentation.whole_word == app.find_whole_word {
 			if index := editor_view_find(app.editor_views[:], document.id); index >= 0 {
@@ -127,7 +155,7 @@ find_replace_current :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	document, view, _, ready := active_editor_context(app)
 	if !ready || view == nil || document.id != app.find_presentation.document_id ||
 	   document.editor_revision != app.find_presentation.editor_revision ||
-	   app.find_presentation.query != app.find_query ||
+	   app.find_presentation.query != app.find_query.text ||
 	   app.find_presentation.match_case != app.find_match_case ||
 	   app.find_presentation.whole_word != app.find_whole_word {
 		find_set_message(&app.find_replace_message, "Waiting for the current source window.")
@@ -152,7 +180,7 @@ find_replace_current :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		editor_revision=document.editor_revision,
 		start_byte=u64(match.start),
 		end_byte=u64(match.end),
-		query=app.find_query,
+		query=app.find_query.text,
 		match_case=app.find_match_case,
 		whole_word=app.find_whole_word,
 		replacement=replacement,
@@ -199,7 +227,7 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		alicorn.invalidate_root(rt, "Scratchpad Replace All refused during IME composition")
 		return true
 	}
-	if len(app.find_query) == 0 {
+	if len(app.find_query.text) == 0 {
 		find_set_message(&app.find_replace_message, "Enter a Find query first.")
 		return true
 	}
@@ -215,7 +243,7 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	}
 	document, view, _, ready := active_editor_context(app)
 	if !ready || view == nil || document.id != app.find_presentation.document_id ||
-	   document.editor_revision != app.find_presentation.editor_revision || app.find_presentation.query != app.find_query ||
+	   document.editor_revision != app.find_presentation.editor_revision || app.find_presentation.query != app.find_query.text ||
 	   app.find_presentation.match_case != app.find_match_case || app.find_presentation.whole_word != app.find_whole_word {
 		find_set_message(&app.find_replace_message, "Waiting for current Find results.")
 		alicorn.invalidate_root(rt, "Scratchpad Replace All waited for current authoritative Find results")
@@ -231,7 +259,7 @@ find_replace_all :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		"find_replace_all",
 		document_id=document.id,
 		editor_revision=document.editor_revision,
-		query=app.find_query,
+		query=app.find_query.text,
 		match_case=app.find_match_case,
 		whole_word=app.find_whole_word,
 		replacement=replacement,
@@ -420,13 +448,13 @@ editor_reveal_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 find_move_match :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) -> bool {
-	if app == nil || (app.workspace_search_mode && !app.find_open) || (!app.find_open && len(app.find_query) == 0) { return false }
+	if app == nil || (app.workspace_search_mode && !app.find_open) || (!app.find_open && len(app.find_query.text) == 0) { return false }
 	stale := false
 	if app.backend.started {
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found {
 			stale = app.find_presentation.document_id != document.id ||
 			        app.find_presentation.editor_revision != document.editor_revision ||
-			        app.find_presentation.query != app.find_query ||
+			        app.find_presentation.query != app.find_query.text ||
 			        app.find_presentation.match_case != app.find_match_case ||
 			        app.find_presentation.whole_word != app.find_whole_word
 		}
@@ -492,14 +520,14 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if !view_ok { return }
 	if app.find_presentation.document_id == document.id &&
 	   app.find_presentation.editor_revision == document.editor_revision &&
-	   app.find_presentation.query == app.find_query &&
+	   app.find_presentation.query == app.find_query.text &&
 	   app.find_presentation.match_case == app.find_match_case &&
 	   app.find_presentation.whole_word == app.find_whole_word { return }
 
 	view := &app.editor_views[view_index]
 	source_cursor := view.caret_byte
 	if app.find_presentation.document_id == document.id &&
-	   app.find_presentation.query == app.find_query &&
+	   app.find_presentation.query == app.find_query.text &&
 	   app.find_presentation.active_match >= 0 &&
 	   app.find_presentation.active_match < len(app.find_presentation.matches) {
 		// When an option changes, keep the user's current result if it still
@@ -508,9 +536,9 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		if active.start >= 0 { source_cursor = u64(active.start) }
 	}
 
-	if len(app.find_query) > 0 {
-		if len(app.find_query) > bridge.MAX_FIND_QUERY_BYTES {
-			if find_presentation_install(&app.find_presentation, document.id, app.find_query,
+	if len(app.find_query.text) > 0 {
+		if len(app.find_query.text) > bridge.MAX_FIND_QUERY_BYTES {
+			if find_presentation_install(&app.find_presentation, document.id, app.find_query.text,
 			   app.find_match_case, app.find_whole_word, document.editor_revision, nil, false,
 			   source_cursor) {
 				find_set_message(&app.find_error, "Find query exceeds the 4096 byte limit.")
@@ -523,7 +551,7 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			&app.backend,
 			"find_current",
 			document_id=document.id,
-			query=app.find_query,
+			query=app.find_query.text,
 			max_matches=FIND_MAX_MATCHES,
 			match_case=app.find_match_case,
 			whole_word=app.find_whole_word,
@@ -535,7 +563,7 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 				&app.find_presentation,
 				&response,
 				document.id,
-				app.find_query,
+				app.find_query.text,
 				app.find_match_case,
 				app.find_whole_word,
 				document.editor_revision,
@@ -556,7 +584,7 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if !find_presentation_install(
 		&app.find_presentation,
 		document.id,
-		app.find_query,
+		app.find_query.text,
 		app.find_match_case,
 		app.find_whole_word,
 		document.editor_revision,

@@ -237,7 +237,7 @@ App :: struct {
 	workspace_search_selected: int,
 	workspace_search_results_owner: alicorn.Node_ID,
 	find_open:              bool,
-	find_query:             string,
+	find_query:             alicorn.Text_Field_Buffer,
 	find_replace_text:      string,
 	find_match_case:        bool,
 	find_whole_word:        bool,
@@ -1005,7 +1005,9 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return true
 	}
 	if key == .Return && app.find_open && alicorn.focused_node(rt) == app.find_query_node {
-		return find_move_match(app, rt, 1)
+		// Let the native controlled-field path own Return, including IME,
+		// modifier and repeat checks. Consume its one-shot response in build.
+		return false
 	}
 	if key == .Return && app.find_open && alicorn.focused_node(rt) == app.find_replace_node {
 		return find_replace_current(app, rt)
@@ -2978,7 +2980,7 @@ application_stop :: proc(state: rawptr) {
 	find_presentation_destroy(&app.find_presentation, context.allocator)
 	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
 	find_discard_saved_selection(app)
-	find_set_message(&app.find_query, "")
+	alicorn.text_field_buffer_destroy(&app.find_query)
 	find_set_message(&app.find_replace_text, "")
 	find_set_message(&app.find_replace_message, "")
 	find_set_message(&app.find_error, "")
