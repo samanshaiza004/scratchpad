@@ -34,6 +34,7 @@ type Document struct {
 	hasDisplayCode   bool
 	DerivedRevision  uint64
 	observedRevision uint64
+	instanceID       uint64
 	base             []byte
 }
 
@@ -492,6 +493,7 @@ func New(path string, source []byte, rootLanguage string) *Document {
 		RootLanguage:     rootLanguage,
 		SavedRevision:    0,
 		observedRevision: 0,
+		instanceID:       nextDocumentInstanceID.Add(1),
 	}
 }
 
