@@ -547,3 +547,15 @@ init_menus :: proc(app: ^App) {
 		{label="View", items=app.view_items[:]},
 	}
 }
+
+scratchpad_native_menus :: proc(menus: []host.Application_Menu) -> []host.Application_Menu {
+	when ODIN_OS == .Windows {
+		return menus
+	}
+	when ODIN_OS == .Darwin {
+		return menus
+	}
+	// Linux keeps the menu model for command-palette/state handling, but the
+	// native host currently has no platform menu adapter.
+	return nil
+}

@@ -383,10 +383,11 @@ floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 		{label="Return to tabs", command=action_id_for("floating.return"), state=alicorn.Action_State{enabled=true}},
 	}
 	title := fmt.tprintf("%s — Scratchpad", document_title(document.path))
+	native_menus := scratchpad_native_menus(state.caption_actions[:])
 	description := host.Application_Window_Description{
 		application=host.Application{
 			state=rawptr(state),
-			menus=state.caption_actions[:],
+			menus=native_menus,
 			window_chrome_appearance=floating_window_chrome_appearance,
 			window_decorations=.Integrated_Title_Bar when ODIN_OS == .Windows else .System,
 			title=title,

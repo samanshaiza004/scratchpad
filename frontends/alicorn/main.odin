@@ -3094,13 +3094,14 @@ main :: proc() {
 	when ODIN_OS == .Windows {
 		window_chrome_appearance = scratchpad_window_chrome_appearance
 	}
+	native_menus := scratchpad_native_menus(app.menus[:])
 
 	host.Run(host.Application{
 		state=rawptr(&app),
 		title="Scratchpad",
 		width=1200,
 		height=760,
-		menus=app.menus[:],
+		menus=native_menus,
 		window_decorations=window_decorations,
 		window_chrome_height=window_chrome_height,
 		window_chrome_metrics=window_chrome_metrics,
