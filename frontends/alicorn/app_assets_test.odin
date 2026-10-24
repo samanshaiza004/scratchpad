@@ -1,6 +1,5 @@
 package main
 
-import "core:os"
 import "core:testing"
 import alicorn "alicorn:runtime"
 
@@ -28,11 +27,8 @@ test_scratchpad_assets_use_public_font_and_image_apis_in_empty_editor :: proc(t:
         rt.text_engine.application_primary_font[.Monospace] &&
         rt.text_engine.application_italic_font[.Monospace],
         "Scratchpad should install its bundled UI and editor faces through Alicorn's app font API")
-    fallback_path := scratchpad_ui_fallback_path()
-    if fallback_path != "" && os.exists(fallback_path) {
-        testing.expect(t, app.ui_font_fallback_loaded && rt.text_engine.application_fallback_font[.UI],
-            "Scratchpad should register an available platform fallback through the public font API")
-    }
+	testing.expect(t, !rt.text_engine.application_fallback_font[.UI],
+		"Scratchpad should leave optional system fallback ownership to the native host")
     testing.expect(t, app.brand_mark != 0, "app initialization should decode its theme-owned PNG mark")
 
     _ = build_app(rawptr(&app), &rt, 960, 640, 1)

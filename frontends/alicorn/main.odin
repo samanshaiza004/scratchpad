@@ -78,7 +78,6 @@ ACTION_VIEW_THEME_RELIEF :: "view.theme-workbench-relief"
 App :: struct {
 	brand_mark: alicorn.Image_Handle,
 	brand_mark_choice: Scratchpad_Theme_Choice,
-	ui_font_fallback_loaded: bool,
 	retired_brand_marks: [dynamic]Scratchpad_Image_Retirement,
 	asset_build_generation: u64,
 	workbench_theme: alicorn.Style_Theme_ID,
