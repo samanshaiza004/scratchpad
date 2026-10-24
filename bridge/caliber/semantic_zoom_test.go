@@ -107,6 +107,17 @@ func TestReadSemanticZoomParserFreeReadOnlyAndValidation(t *testing.T) {
 		if depth > 0 && len(plan.Folds) == 0 {
 			t.Fatal("reduced prose returned no folds")
 		}
+		if depth == application.SemanticZoomFocus {
+			separatorFound := false
+			for _, fold := range plan.Folds {
+				if fold.StartLine == 2 && fold.EndLine == 3 && fold.Silent {
+					separatorFound = true
+				}
+			}
+			if !separatorFound {
+				t.Fatalf("bridge lost silent whitespace fold metadata: %+v", plan.Folds)
+			}
+		}
 	}
 	if runtime.presentationEnabled || !reflect.DeepEqual(before, runtime.app.Snapshot()) || string(doc.Editor.Buffer.Text()) != source || doc.CanUndo() {
 		t.Fatal("zoom changed source/application or activated parser for prose")

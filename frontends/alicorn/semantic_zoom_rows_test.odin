@@ -68,6 +68,37 @@ test_semantic_zoom_rows_boundaries_adjacent_and_single_line :: proc(t: ^testing.
 }
 
 @(test)
+test_semantic_zoom_rows_silent_whitespace_uses_no_marker_row :: proc(t: ^testing.T) {
+	folds := [?]bridge.Semantic_Zoom_Fold{
+		{start_line=0, end_line=1, silent=true},
+		{start_line=2, end_line=4},
+		{start_line=5, end_line=7, silent=true},
+	}
+	rows: Semantic_Zoom_Rows
+	if !semantic_zoom_rows_init(&rows, folds[:], 8) { testing.expect(t, false); return }
+	defer semantic_zoom_rows_destroy(&rows)
+	testing.expect(t, rows.row_count == 4, "silent folds remove every blank row; meaningful folds retain one marker")
+	expected := [?]struct { row, source, marker: int }{
+		{0, 1, -1}, {1, 2, 1}, {2, 4, -1}, {3, 7, -1},
+	}
+	for item in expected {
+		source, marker, ok := semantic_zoom_rows_source_at(&rows, item.row)
+		testing.expect(t, ok && source == item.source && marker == item.marker,
+			"silent whitespace must not become an actionable hidden-lines marker")
+	}
+	cases := [?]struct { source, row: int }{{0, 0}, {1, 0}, {2, 1}, {3, 1}, {4, 2}, {5, 3}, {6, 3}, {7, 3}}
+	for item in cases {
+		source, row := item.source, item.row
+		testing.expect(t, semantic_zoom_rows_row_for_source(&rows, source) == row)
+	}
+	testing.expect(t, semantic_zoom_rows_hidden(&rows, 0) && semantic_zoom_rows_hidden(&rows, 5) &&
+		semantic_zoom_rows_hidden(&rows, 6), "source whitespace remains in the document while its display rows disappear")
+	testing.expect(t, semantic_zoom_rows_expand(&rows, 1) && rows.row_count == 5,
+		"expanding meaningful content preserves silent whitespace elision")
+	semantic_zoom_rows_test_roundtrip(t, &rows)
+}
+
+@(test)
 test_semantic_zoom_rows_million_lines_sparse_geometry :: proc(t: ^testing.T) {
 	folds := [?]bridge.Semantic_Zoom_Fold{
 		{start_line=10, end_line=100},
@@ -101,6 +132,17 @@ semantic_zoom_rows_test_roundtrip :: proc(t: ^testing.T, rows: ^Semantic_Zoom_Ro
 		expected_fold := -1
 		next_source := source+1
 		if fold_index < len(rows.folds) && int(rows.folds[fold_index].fold.start_line) == source {
+			if rows.folds[fold_index].fold.silent {
+				next_source = int(rows.folds[fold_index].fold.end_line)
+				for hidden_source in source..<next_source {
+					testing.expect(t, semantic_zoom_rows_row_for_source(rows, hidden_source) == row &&
+						semantic_zoom_rows_hidden(rows, hidden_source),
+						"silent folds keep source identity while consuming no presentation row")
+				}
+				source = next_source
+				fold_index += 1
+				continue
+			}
 			expected_fold = fold_index
 			next_source = int(rows.folds[fold_index].fold.end_line)
 			fold_index += 1
@@ -134,7 +176,7 @@ test_semantic_zoom_rows_generated_roundtrips_and_expansions :: proc(t: ^testing.
 			if source >= line_count { break }
 			state = state*6364136223846793005+1
 			end := min(source+1+int((state >> 32)%9), line_count)
-			folds[fold_count] = {start_line=u64(source), end_line=u64(end)}
+			folds[fold_count] = {start_line=u64(source), end_line=u64(end), silent=(state & 3) == 0}
 			fold_count += 1
 			source = end
 		}

@@ -61,13 +61,14 @@ semantic_zoom_rows_recompute :: proc(rows: ^Semantic_Zoom_Rows) {
 	for &entry in rows.folds {
 		entry.row = int(entry.fold.start_line)-removed
 		entry.removed_before = removed
-		removed += int(entry.fold.end_line-entry.fold.start_line)-1
+		row_slots := 1 if !entry.fold.silent else 0
+		removed += int(entry.fold.end_line-entry.fold.start_line)-row_slots
 	}
 	rows.row_count = rows.line_count-removed
 }
 
-// A marker maps to the first hidden source line and its current fold index.
-// Ordinary rows retain their original logical line IDs and return fold_index=-1.
+// A visible marker maps to the first hidden source line and its fold index.
+// Silent whitespace folds use no row; ordinary rows retain source line IDs.
 semantic_zoom_rows_source_at :: proc(rows: ^Semantic_Zoom_Rows, row: int) -> (source_line: int, fold_index: int, ok: bool) {
 	if rows == nil || row < 0 || row >= rows.row_count { return -1, -1, false }
 	lo, hi := 0, len(rows.folds)
@@ -78,8 +79,9 @@ semantic_zoom_rows_source_at :: proc(rows: ^Semantic_Zoom_Rows, row: int) -> (so
 	if lo == 0 { return row, -1, true }
 	index := lo-1
 	entry := rows.folds[index]
-	if row == entry.row { return int(entry.fold.start_line), index, true }
-	removed := entry.removed_before+int(entry.fold.end_line-entry.fold.start_line)-1
+	if row == entry.row && !entry.fold.silent { return int(entry.fold.start_line), index, true }
+	row_slots := 1 if !entry.fold.silent else 0
+	removed := entry.removed_before+int(entry.fold.end_line-entry.fold.start_line)-row_slots
 	return row+removed, -1, true
 }
 
@@ -100,7 +102,8 @@ semantic_zoom_rows_row_for_source :: proc(rows: ^Semantic_Zoom_Rows, source_line
 	if index < 0 { return source_line }
 	entry := rows.folds[index]
 	if u64(source_line) < entry.fold.end_line { return entry.row }
-	removed := entry.removed_before+int(entry.fold.end_line-entry.fold.start_line)-1
+	row_slots := 1 if !entry.fold.silent else 0
+	removed := entry.removed_before+int(entry.fold.end_line-entry.fold.start_line)-row_slots
 	return source_line-removed
 }
 

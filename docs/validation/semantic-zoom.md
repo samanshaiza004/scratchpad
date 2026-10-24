@@ -27,7 +27,7 @@ dependency wrapper; no candidate override is needed.
 | --- | --- |
 | `go test -tags treesitter_release ./...` | Passed |
 | Bridge module tests with `treesitter_release` | Passed in the integration runner |
-| `sh tools/alicorn.sh test --odin <compiler>` | Passed: frontend type check, 13 bridge tests, 188 frontend tests, memory tracking enabled |
+| `sh tools/alicorn.sh test --odin <compiler>` | Passed: frontend type check, 13 bridge tests, 189 frontend tests, memory tracking enabled |
 | Windows AMD64 frontend `odin check` | Passed; Windows execution not performed |
 | Alicorn `tools/check.sh` | Passed: examples, foundation, 245 runtime and 35 theme tests, theme tooling |
 | Alicorn `tools/test.sh` | Passed: foundation, runtime/theme, 108 native tests, 5 new scroll-capture tests, text-input contract and restoration subprocesses |
@@ -41,6 +41,11 @@ document replacement, idle optimistic-window replacement, and releasing distant
 expansion anchors so subsequent scrolling can proceed. A poison allocator forces
 eviction across more than 64 source pages before reconciliation and verifies
 that emitted text and source hit testing remain valid.
+
+The later whitespace/status follow-up adds coverage for zero-row silent blank
+folds and verifies that the actual editor status row switches to a compact
+presentation when its allocated pane narrows, keeping visible children inside
+the resolved bar bounds.
 
 Save/Undo/Redo and detached-window document/Runtime isolation use the real staged
 backend. Gesture preference persistence includes existing preference-file

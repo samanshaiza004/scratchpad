@@ -32,6 +32,8 @@ is never cut at the previous 256-byte excerpt limit, but text after that sentenc
 on the same logical line stays visible. Source syntax and ordering are retained.
 Sentence boundaries use deterministic terminal punctuation followed by whitespace;
 this is a source-visibility heuristic rather than linguistic analysis of abbreviations.
+At reduced depths, hidden ranges containing only whitespace remove their source
+rows silently; they do not create an expandable “lines hidden” marker.
 Unsupported language adapters keep Full source available. Plain prose does not
 need a parser. No heuristic ranks code statements by importance.
 

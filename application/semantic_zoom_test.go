@@ -375,6 +375,21 @@ func TestSemanticZoomEmptyWhitespaceAndFragmentedSource(t *testing.T) {
 	}
 }
 
+func TestSemanticZoomWhitespaceFoldsDoNotClaimUsefulContext(t *testing.T) {
+	source := "First paragraph.\n\nSecond paragraph.\nSupporting detail.\n"
+	app, id := zoomTestDocument(t, source, string(language.PlainText))
+	plan := queryZoom(t, app, id, SemanticZoomFocus, 0)
+	if len(plan.Folds) != 2 {
+		t.Fatalf("focus folds=%+v, want one blank separator and one hidden detail line", plan.Folds)
+	}
+	if fold := plan.Folds[0]; fold.StartLine != 1 || fold.EndLine != 2 || !fold.Silent {
+		t.Fatalf("blank separator fold=%+v, want a silent one-line fold", fold)
+	}
+	if fold := plan.Folds[1]; fold.StartLine != 3 || fold.EndLine != 4 || fold.Silent {
+		t.Fatalf("meaningful detail fold=%+v, want an expandable marker", fold)
+	}
+}
+
 func TestSemanticZoomLargeCurrentStructureAndNestedSymbols(t *testing.T) {
 	for _, lang := range []string{string(language.Markdown), string(language.Go)} {
 		if lang == string(language.Go) && !AnalysisSupported(language.Go) {

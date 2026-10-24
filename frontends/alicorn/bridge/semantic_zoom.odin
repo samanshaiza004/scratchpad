@@ -9,6 +9,7 @@ Semantic_Zoom_Fold :: struct {
 	start_byte: u64 `json:"start_byte"`,
 	end_byte: u64 `json:"end_byte"`,
 	label: string `json:"label"`,
+	silent: bool `json:"silent"`,
 }
 
 Semantic_Zoom_Plan :: struct {

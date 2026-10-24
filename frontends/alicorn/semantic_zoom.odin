@@ -146,7 +146,9 @@ semantic_zoom_sync_geometry :: proc(view: ^Editor_View_State, window: ^Editor_Wi
 			row := semantic_zoom_rows_row_for_source(&z.rows, entry.index)
 			_ = alicorn.virtual_list_height_index_set_height(&z.index, row, entry.height)
 		}
-		for fold in z.rows.folds { _ = alicorn.virtual_list_height_index_set_height(&z.index, fold.row, 28*scale) }
+		for fold in z.rows.folds {
+			if !fold.fold.silent { _ = alicorn.virtual_list_height_index_set_height(&z.index, fold.row, 28*scale) }
+		}
 	}
 	if window != nil {
 		for line in window.lines {

@@ -36,6 +36,7 @@ type SemanticZoomFold struct {
 	StartByte int
 	EndByte   int
 	Label     string
+	Silent    bool
 }
 
 // SemanticZoomPlan is detached metadata for one document instance and revision.
@@ -121,7 +122,8 @@ func (a *Application) QuerySemanticZoom(id DocumentID, revision uint64, depth in
 	for _, lines := range hidden {
 		if start, end := source.lineStart(lines.start), source.lineStart(lines.end); end > start {
 			plan.Folds = append(plan.Folds, SemanticZoomFold{StartLine: lines.start, EndLine: lines.end,
-				StartByte: start, EndByte: end, Label: fmt.Sprintf("%d lines", lines.end-lines.start)})
+				StartByte: start, EndByte: end, Label: fmt.Sprintf("%d lines", lines.end-lines.start),
+				Silent: source.whitespaceOnly(lines)})
 		}
 	}
 	return plan, nil
@@ -175,6 +177,18 @@ func (s semanticZoomSource) contentLines() int {
 		count-- // The empty EOF caret line has no bytes to collapse.
 	}
 	return count
+}
+
+func (s semanticZoomSource) whitespaceOnly(lines semanticZoomLines) bool {
+	if lines.start < 0 || lines.end <= lines.start || lines.end > len(s.blank) {
+		return false
+	}
+	for line := lines.start; line < lines.end; line++ {
+		if !s.blank[line] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s semanticZoomSource) lines(start, end int) semanticZoomLines {

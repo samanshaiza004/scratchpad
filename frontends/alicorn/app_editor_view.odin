@@ -876,19 +876,33 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	case .Auto: wrap_label = "Auto"
 	}
 	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=40, gap=10, padding=8, align=.Center), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
-	alicorn.container_begin(ui, .Container, label="document-status-information", style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=12, align=.Center))
+	alicorn.adaptive_begin(ui, alicorn.key_string("document-status-responsive"),
+		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center),
+		label="document-status-responsive")
+	alicorn.adaptive_alternative_begin(ui, alicorn.key_string("document-status-wide"), "Wide", minimum_width=600,
+		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center))
+	alicorn.container_begin(ui, .Container, label="document-status-information", style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=188, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=12, align=.Center))
 	alicorn.text(ui, location, key=alicorn.key_string("document-status-location"), style=alicorn.layout_style(.Row, width=176, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 	alicorn.text(ui, document_info, key=alicorn.key_string("document-status-document-info"), style=alicorn.layout_style(.Row, grow=1, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 	alicorn.container_end(ui)
-	alicorn.container_begin(ui, .Container, label="document-status-actions", style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=8, align=.Center))
 	alicorn.text(ui, fmt.tprintf("Detail: %s%s", semantic_zoom_title(view.zoom.depth), " · preparing" if view.zoom.waiting else ""),
-		key=alicorn.key_string("document-semantic-detail"), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
+		key=alicorn.key_string("document-semantic-detail"), style=alicorn.layout_style(.Row, width=120, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
 	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=88, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		editor_toggle_wrap_mode(app, rt)
 	}
 	if alicorn.button(ui, "Go to Line…", key=alicorn.key_string("document-goto-line"), style=alicorn.layout_style(.Row, width=100, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		go_to_line_open_surface(app, rt)
 	}
-	alicorn.container_end(ui)
+	alicorn.adaptive_alternative_end(ui)
+
+	alicorn.adaptive_alternative_begin(ui, alicorn.key_string("document-status-compact"), "Compact",
+		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center))
+	alicorn.text(ui, location, key=alicorn.key_string("document-status-compact-location"), style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=96, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+	alicorn.text(ui, semantic_zoom_title(view.zoom.depth), key=alicorn.key_string("document-semantic-detail-compact"), style=alicorn.layout_style(.Row, width=68, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
+	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap-compact"), style=alicorn.layout_style(.Row, width=88, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
+		editor_toggle_wrap_mode(app, rt)
+	}
+	alicorn.adaptive_alternative_end(ui)
+	alicorn.adaptive_end(ui)
 	alicorn.container_end(ui)
 }

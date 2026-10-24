@@ -154,6 +154,7 @@ type SemanticZoomFold struct {
 	StartByte int    `json:"start_byte"`
 	EndByte   int    `json:"end_byte"`
 	Label     string `json:"label"`
+	Silent    bool   `json:"silent,omitempty"`
 }
 
 func semanticZoomFromApplication(plan application.SemanticZoomPlan) *SemanticZoomPlan {
@@ -163,7 +164,7 @@ func semanticZoomFromApplication(plan application.SemanticZoomPlan) *SemanticZoo
 		Folds: make([]SemanticZoomFold, len(plan.Folds))}
 	for i, fold := range plan.Folds {
 		result.Folds[i] = SemanticZoomFold{StartLine: fold.StartLine, EndLine: fold.EndLine,
-			StartByte: fold.StartByte, EndByte: fold.EndByte, Label: fold.Label}
+			StartByte: fold.StartByte, EndByte: fold.EndByte, Label: fold.Label, Silent: fold.Silent}
 	}
 	return result
 }
