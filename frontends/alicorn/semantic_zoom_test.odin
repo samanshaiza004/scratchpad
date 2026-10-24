@@ -399,6 +399,19 @@ test_semantic_zoom_keyboard_navigation_and_word_selection_stay_at_current_depth 
 	editor_pointer(rawptr(&f.app), &f.rt, alicorn.Pointer_Event{kind=.Up, button=1, x=rect.x, y=rect.y}, 0)
 
 	word_end := word+u64(len("Section0"))
+	view.selection_anchor, view.caret_byte = word, word_end
+	view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+	right_collapse := editor_text_key(rawptr(&f.app), &f.rt, f.app.editor_scroll_owner,
+		host.Application_Text_Key_Event{key=.Right})
+	testing.expect(t, right_collapse && view.selection_anchor == word_end && view.caret_byte == word_end,
+		"Right collapses a forward selection to its right edge even when the caret is already there")
+	view.selection_anchor, view.caret_byte = word_end, word
+	view.anchor_affinity, view.caret_affinity = .Trailing, .Leading
+	left_collapse := editor_text_key(rawptr(&f.app), &f.rt, f.app.editor_scroll_owner,
+		host.Application_Text_Key_Event{key=.Left})
+	testing.expect(t, left_collapse && view.selection_anchor == word && view.caret_byte == word,
+		"Left collapses a reverse selection to its left edge even when the caret is already there")
+
 	end_rect, _, end_positioned := semantic_zoom_test_position(&f, word_end)
 	testing.expect(t, end_positioned, "the word end must remain a source-aligned pointer target")
 	if end_positioned {
@@ -460,6 +473,102 @@ test_semantic_zoom_keyboard_navigation_and_word_selection_stay_at_current_depth 
 		testing.expect(t, view.zoom.depth == 3, "Up also preserves the semantic detail level")
 	} else {
 		testing.expect(t, false, "Up is handled inside the reduced source view")
+	}
+}
+
+@(test)
+test_semantic_zoom_copy_uses_distant_revision_matched_window_and_refuses_hidden_bytes :: proc(t: ^testing.T) {
+	source_bytes := make([dynamic]u8, 0, allocator=context.temp_allocator)
+	defer delete(source_bytes)
+	append(&source_bytes, "package demo\n")
+	for index in 0..<140 {
+		append(&source_bytes, fmt.tprintf("func Section%d() {\n\tprintln(\"detail %d\")\n}\n", index, index))
+	}
+	source := string(source_bytes[:])
+	f: Semantic_Zoom_Test_Editor
+	defer semantic_zoom_test_destroy(&f, t)
+	if !semantic_zoom_test_open(&f, t, "go", source) { return }
+	view := semantic_zoom_test_view(&f)
+	if view == nil { testing.expect(t, false, "semantic zoom should retain editor state"); return }
+	document, exists := find_document(&f.app.backend.state, f.document_id)
+	if !exists { testing.expect(t, false, "the source document should remain active"); return }
+	target_index := strings.index(source, "func Section130")
+	name_start := target_index+len("func ")
+	next_function := strings.index(source, "func Section131")
+	testing.expect(t, target_index >= 0 && next_function > target_index &&
+		u64(name_start) > f.app.editor_window.start_byte+u64(len(f.app.editor_window.source)),
+		"the selected function must be beyond the ordinary bounded source window")
+	if target_index < 0 || next_function <= target_index { return }
+	if !semantic_zoom_set_depth(&f.app, &f.rt, 3, u64(name_start)) { testing.expect(t, false, "semantic zoom should open at the distant function"); return }
+	semantic_zoom_test_settle(&f)
+	document, exists = find_document(&f.app.backend.state, f.document_id)
+	if !exists { testing.expect(t, false, "the source document should remain active after zoom"); return }
+	fallback_window := semantic_zoom_source_window_at_byte(&f.app, view, document, u64(name_start))
+	testing.expect(t, fallback_window != nil && fallback_window.editor_revision == document.editor_revision,
+		"a distant visible fold header should resolve to a bounded source window by byte")
+	// Pointer hit testing loads bounded source windows by logical row before it
+	// updates the selection. Derive this row from the parser's fold boundary so
+	// the fixture follows the backend's source-line mapping.
+	target_line: u64
+	target_line_found := false
+	for entry in view.zoom.rows.folds {
+		if u64(name_start) < entry.fold.start_byte {
+			target_line = entry.fold.start_line
+			if target_line > 0 { target_line -= 1 }
+			target_line_found = true
+			break
+		}
+		if u64(name_start) < entry.fold.end_byte {
+			target_line, target_line_found = entry.fold.start_line, true
+			break
+		}
+	}
+	testing.expect(t, target_line_found, "the distant selected function should map to a semantic source row")
+	if !target_line_found { return }
+	zoom_window := semantic_zoom_source_window(&f.app, view, document, target_line)
+	testing.expect(t, zoom_window != nil && zoom_window.editor_revision == document.editor_revision,
+		fmt.tprintf("semantic zoom should retain a current bounded window for the distant visible function (line=%d, document lines=%d, plan matches=%t, folds=%d)",
+			target_line, document.line_count, semantic_zoom_plan_matches(view, document), len(view.zoom.rows.folds)))
+	if zoom_window == nil { return }
+
+	clipboard := Editor_Test_Clipboard{write_ok=true}
+	f.app.services.clipboard = host.Clipboard_Service{
+		data=rawptr(&clipboard),
+		set_text=editor_test_clipboard_set_text,
+	}
+	defer {
+		if len(clipboard.last_write) > 0 { delete(clipboard.last_write, context.temp_allocator) }
+	}
+
+	name_end := name_start+len("Section130")
+	copy_window := semantic_zoom_source_window_at_byte(&f.app, view, document, u64(name_start))
+	testing.expect(t, copy_window != nil && copy_window.document_id == document.id &&
+		copy_window.editor_revision == document.editor_revision &&
+		u64(name_end) <= copy_window.start_byte+u64(len(copy_window.source)),
+		"Copy must use an exact bounded window from the selected document revision")
+	if copy_window == nil { return }
+	view.selection_anchor, view.caret_byte = u64(name_start), u64(name_end)
+	view.anchor_affinity, view.caret_affinity = .Leading, .Trailing
+	editor_clipboard_command(&f.app, &f.rt, ACTION_EDIT_COPY)
+	testing.expect(t, clipboard.writes == 1 && clipboard.last_write == "Section130" && view.zoom.depth == 3,
+		"Copy should read the distant selected function name without leaving semantic zoom")
+
+	hidden_end: u64
+	hidden_found := false
+	for entry in view.zoom.rows.folds {
+		if !entry.expanded && entry.fold.start_byte > u64(name_start) && entry.fold.end_byte <= u64(next_function) {
+			hidden_end, hidden_found = entry.fold.end_byte, true
+			break
+		}
+	}
+	testing.expect(t, hidden_found, "the target function should have a collapsed body for the hidden-source check")
+	if hidden_found {
+		view.selection_anchor, view.caret_byte = u64(name_start), hidden_end
+		writes_before := clipboard.writes
+		editor_clipboard_command(&f.app, &f.rt, ACTION_EDIT_COPY)
+		testing.expect(t, clipboard.writes == writes_before &&
+			strings.contains(f.app.error_message, "Expand collapsed content"),
+			"Copy must refuse ranges that would silently include hidden folded source")
 	}
 }
 

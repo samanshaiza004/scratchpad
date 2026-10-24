@@ -245,7 +245,9 @@ semantic_zoom_navigation_key :: proc(
 			return true
 		}
 	}
-	if next_caret == old_caret && next_affinity == old_affinity { return true }
+	selection_will_collapse := selection_exists && !event.shift &&
+		(view.selection_anchor != next_caret || view.anchor_affinity != next_affinity)
+	if next_caret == old_caret && next_affinity == old_affinity && !selection_will_collapse { return true }
 	if event.shift && semantic_zoom_navigation_crosses_hidden(view, view.selection_anchor, next_caret) { return true }
 	selection_scope: alicorn.Application_Mutation_Scope
 	when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {

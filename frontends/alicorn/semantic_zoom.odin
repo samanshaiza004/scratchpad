@@ -465,11 +465,30 @@ semantic_zoom_source_window_at_byte :: proc(app: ^App, view: ^Editor_View_State,
 	if !semantic_zoom_plan_matches(view, document) { return nil }
 	for &window in view.zoom.windows {
 		window_end := window.start_byte+u64(len(window.source))
-		if source < window.start_byte || source > window_end || window.editor_revision != document.editor_revision { continue }
+		if window.document_id != document.id || source < window.start_byte || source > window_end || window.editor_revision != document.editor_revision { continue }
 		if _, found := editor_line_for_source(&window, source); found { return &window }
 	}
+	// A reduced-view fold supplies a source-line boundary near its visible
+	// header. Read a small window from the preceding line for header text, or
+	// from the fold start for expanded body text. Passing only anchor_byte would
+	// be ambiguous because the backend also needs the corresponding start_line.
+	start_line: u64
+	line_found := false
+	for entry in view.zoom.rows.folds {
+		if source < entry.fold.start_byte {
+			start_line = entry.fold.start_line
+			if start_line > 0 { start_line -= 1 }
+			line_found = true
+			break
+		}
+		if source < entry.fold.end_byte {
+			start_line, line_found = entry.fold.start_line, true
+			break
+		}
+	}
+	if !line_found { return nil }
 	result := bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id,
-		anchor_byte=source, max_lines=8, max_bytes=16*1024, include_presentation=true, read_latest_after=false)
+		start_line=start_line, max_lines=8, max_bytes=16*1024, include_presentation=true, read_latest_after=false)
 	defer bridge.backend_command_result_destroy(&result, context.allocator)
 	if !result.ok || !result.visible_window_owned || result.visible_window.editor_revision != document.editor_revision { return nil }
 	window, ok, _ := editor_window_from_visible(&result.visible_window)
@@ -486,6 +505,22 @@ semantic_zoom_source_window_at_byte :: proc(app: ^App, view: ^Editor_View_State,
 	}
 	append(&view.zoom.windows, window)
 	return &view.zoom.windows[len(view.zoom.windows)-1]
+}
+
+semantic_zoom_selection_source_bytes :: proc(
+	app: ^App,
+	document: bridge.State_Document,
+	view: ^Editor_View_State,
+	selection_anchor, caret_byte: u64,
+) -> (bytes: []u8, available, crosses_hidden: bool) {
+	if view == nil || !semantic_zoom_active(view) || !semantic_zoom_plan_matches(view, document) { return }
+	start_byte, end_byte := min(selection_anchor, caret_byte), max(selection_anchor, caret_byte)
+	if start_byte == end_byte { return {}, true, false }
+	if semantic_zoom_selection_crosses_fold(view, start_byte, end_byte) { return {}, false, true }
+	window := semantic_zoom_source_window_at_byte(app, view, document, start_byte)
+	if window == nil || window.document_id != document.id || window.editor_revision != document.editor_revision { return }
+	bytes, available = editor_selected_source_bytes(window, selection_anchor, caret_byte)
+	return bytes, available, false
 }
 
 semantic_zoom_selection_crosses_fold :: proc(view: ^Editor_View_State, start, end: u64) -> bool {

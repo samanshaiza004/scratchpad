@@ -2676,7 +2676,8 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 		return
 	}
 	document, view, window, ready := active_editor_context(app)
-	if !ready || view == nil || window == nil {
+	semantic_copy := action_id == ACTION_EDIT_COPY && semantic_zoom_active(view)
+	if view == nil || (!ready && !semantic_copy) || (ready && window == nil) {
 		set_error(app, "The active document's bounded source window is not ready for this Edit command.")
 		alicorn.invalidate_root(rt, "Scratchpad Edit command needs a bounded source window")
 		return
@@ -2690,8 +2691,23 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 		end_byte := max(view.selection_anchor, view.caret_byte)
 		if start_byte == end_byte { return }
 		bytes, available := editor_selected_source_bytes(window, view.selection_anchor, view.caret_byte)
+		if action_id == ACTION_EDIT_COPY && semantic_zoom_active(view) {
+			crosses_hidden: bool
+			bytes, available, crosses_hidden = semantic_zoom_selection_source_bytes(
+				app, document, view, view.selection_anchor, view.caret_byte,
+			)
+			if crosses_hidden {
+				set_error(app, "Expand collapsed content before copying across it; Copy was not performed.")
+				alicorn.invalidate_root(rt, "Scratchpad refused Copy across hidden semantic source")
+				return
+			}
+		}
 		if !available {
-			set_error(app, "The full selection is outside the loaded source window; copy and cut were not performed.")
+			if action_id == ACTION_EDIT_COPY && semantic_zoom_active(view) {
+				set_error(app, "The full selection is outside a current semantic source window; Copy was not performed.")
+			} else {
+				set_error(app, "The full selection is outside the loaded source window; copy and cut were not performed.")
+			}
 			alicorn.invalidate_root(rt, "Scratchpad refused a partial bounded-window clipboard operation")
 			return
 		}
