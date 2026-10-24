@@ -142,8 +142,12 @@ editor_paste_test_viewport :: proc(t: ^testing.T, scenario: Editor_Paste_Test_Ca
 	run, run_ok := editor_navigation_text_run(&rt, &app.editor_window, line, "markdown", view.wrap_measurement_width, true)
 	if !run_ok { testing.expect(t, false, "paste caret should shape"); return }
 	geometry := alicorn.text_run_caret_geometry(&run, alicorn.Text_Position{byte=int(caret_offset), affinity=.Trailing}, context.temp_allocator)
+	owner, owner_found := alicorn.node_info(&rt, app.editor_scroll_owner)
+	if !owner_found { testing.expect(t, false, "paste viewport should expose its resolved scroll region"); alicorn.text_run_destroy(&run); return }
 	caret_y := f32(55)
-	if scenario == .Edge { caret_y = 115 }
+	if scenario == .Edge {
+		caret_y = alicorn.maxf(12, owner.scroll_viewport_bounds.h-geometry.rect.h-8)
+	}
 	_ = alicorn.scroll_region_set_offset(&rt, app.editor_scroll_owner, line_top+geometry.rect.y-caret_y, "place the paste caret inside a nonzero viewport")
 	alicorn.text_run_destroy(&run)
 	for _ in 0..<3 { editor_paste_test_frame(&app, &rt) }
@@ -153,6 +157,11 @@ editor_paste_test_viewport :: proc(t: ^testing.T, scenario: Editor_Paste_Test_Ca
 	caret_rect, viewport, caret_found := editor_paste_test_caret(&app, &rt)
 	testing.expect(t, caret_found && caret_rect.y > viewport.y+8 && caret_rect.y+caret_rect.h < viewport.y+viewport.h,
 		"paste must begin with its actual shaped caret visible away from the top edge")
+	if scenario == .Edge {
+		bottom_gap := viewport.y+viewport.h-(caret_rect.y+caret_rect.h)
+		testing.expect(t, bottom_gap >= 0 && bottom_gap < 20,
+			"the edge regression should place the caret near the resolved viewport bottom")
+	}
 	if scenario == .Wrapped {
 		testing.expect(t, alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, 32) > before.viewport_height,
 			"the wrapped regression must begin inside a logical line taller than the viewport")

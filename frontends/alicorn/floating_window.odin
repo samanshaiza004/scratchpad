@@ -576,6 +576,7 @@ floating_window_build :: proc(
 		}
 	}
 	editor_reveal_after_frame(app, rt)
+	frame_deferred_action_run(app, rt)
 	return root
 }
 

@@ -96,6 +96,9 @@ type CommandRequest struct {
 	SourceAnchorByte     uint64   `json:"source_anchor_byte,omitempty"`
 	SourceAnchorLine     uint64   `json:"source_anchor_line,omitempty"`
 	ImageRevision        uint64   `json:"image_revision,omitempty"`
+	ViewDensity          string   `json:"view_density,omitempty"`
+	ProjectionFirst      uint64   `json:"projection_first,omitempty"`
+	ProjectionLimit      uint64   `json:"projection_limit,omitempty"`
 }
 
 type Response struct {
@@ -120,7 +123,43 @@ type Response struct {
 	SourceRefreshNeeded bool                 `json:"source_refresh_needed,omitempty"`
 	WorkspaceSearchPage *WorkspaceSearchPage `json:"workspace_search_page,omitempty"`
 	SaveAsConflict      *SaveAsConflict      `json:"save_as_conflict,omitempty"`
+	SemanticViewWindow  *SemanticViewWindow  `json:"semantic_view_window,omitempty"`
 	Diagnostic          string               `json:"diagnostic,omitempty"`
+}
+
+// SemanticViewWindow is a bounded, source-mapped reduced view. It carries
+// excerpts only; the editable source remains in the document buffer.
+type SemanticViewWindow struct {
+	DocumentID string                `json:"document_id"`
+	Mode       string                `json:"mode"`
+	Revision   uint64                `json:"revision"`
+	Ready      bool                  `json:"ready"`
+	Supported  bool                  `json:"supported"`
+	Generation uint64                `json:"generation"`
+	Total      int                   `json:"total"`
+	First      int                   `json:"first"`
+	Segments   []SemanticViewSegment `json:"segments"`
+}
+
+type SemanticViewSegment struct {
+	DocumentID         string `json:"document_id"`
+	SourceRevision     uint64 `json:"source_revision"`
+	StartByte          int    `json:"start_byte"`
+	EndByte            int    `json:"end_byte"`
+	Depth              int    `json:"depth,omitempty"`
+	SourceStartLine    int    `json:"source_start_line"`
+	SourceEndLine      int    `json:"source_end_line"`
+	Label              string `json:"label"`
+	Context            string `json:"context"`
+	Generation         uint64 `json:"generation"`
+	Ordinal            int    `json:"ordinal"`
+	Status             string `json:"status"`
+	Text               string `json:"text"`
+	Truncated          bool   `json:"truncated,omitempty"`
+	OmittedBefore      bool   `json:"omitted_before,omitempty"`
+	OmittedAfter       bool   `json:"omitted_after,omitempty"`
+	OmittedBeforeLines int    `json:"omitted_before_lines,omitempty"`
+	OmittedAfterLines  int    `json:"omitted_after_lines,omitempty"`
 }
 
 // SaveAsConflict carries an opaque, one-shot confirmation token. The
@@ -279,6 +318,7 @@ type StateDocument struct {
 	PresentationRevision uint64  `json:"presentation_revision,omitempty"`
 	PresentationReady    bool    `json:"presentation_ready,omitempty"`
 	ViewKind             string  `json:"view_kind,omitempty"`
+	ViewDensity          string  `json:"view_density,omitempty"`
 	ImageFormat          string  `json:"image_format,omitempty"`
 	ImageRevision        uint64  `json:"image_revision,omitempty"`
 	ImageWidth           uint32  `json:"image_width,omitempty"`
@@ -517,6 +557,23 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.HasSourceAnchor && (request.SourceAnchorRevision == 0 || request.SourceAnchorByte > uint64(^uint(0)>>1) || request.SourceAnchorLine > uint64(^uint(0)>>1)) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_source_anchor", "source anchor revision, byte, or line is invalid", false), false
 		}
+	case "set_view_density":
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if request.ViewDensity != string(application.ViewDensityFull) && request.ViewDensity != string(application.ViewDensitySkim) && request.ViewDensity != string(application.ViewDensityOutline) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_view_density", "view_density must be full, skim, or outline", false), false
+		}
+	case "read_view_window":
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if request.ProjectionLimit == 0 || request.ProjectionLimit > application.MaxProjectionWindow {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_projection_window", fmt.Sprintf("projection_limit must be between 1 and %d", application.MaxProjectionWindow), false), false
+		}
+		if request.ProjectionFirst > uint64(^uint(0)>>1) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_projection_window", "projection_first does not fit the host word size", false), false
+		}
 	case "list_directory":
 		if err := validateOptionalPath(request.RelativePath, "relative_path"); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
@@ -727,6 +784,27 @@ func okResponse(requestID uint64, lifecycle string, revision uint64) Response {
 	}
 }
 
+func semanticViewWindowFromApplication(window application.ViewWindow) *SemanticViewWindow {
+	result := &SemanticViewWindow{
+		DocumentID: string(window.DocumentID), Mode: string(window.Mode), Revision: window.Revision,
+		Ready: window.Ready, Supported: window.Supported, Generation: window.Generation,
+		Total: window.Total, First: window.First, Segments: make([]SemanticViewSegment, len(window.Segments)),
+	}
+	for i, segment := range window.Segments {
+		result.Segments[i] = SemanticViewSegment{
+			DocumentID: string(segment.DocumentID), SourceRevision: segment.SourceRevision,
+			StartByte: segment.StartByte, EndByte: segment.EndByte, Label: segment.Label,
+			Context: segment.Context, Depth: segment.Depth, Generation: segment.PresentationKey.Generation,
+			Ordinal: segment.PresentationKey.Ordinal, Status: string(segment.Status),
+			Text: segment.Text, Truncated: segment.Truncated,
+			SourceStartLine: segment.SourceStartLine, SourceEndLine: segment.SourceEndLine,
+			OmittedBefore: segment.OmittedBefore, OmittedAfter: segment.OmittedAfter,
+			OmittedBeforeLines: segment.OmittedBeforeLines, OmittedAfterLines: segment.OmittedAfterLines,
+		}
+	}
+	return result
+}
+
 func errorResponse(requestID uint64, lifecycle, code, message string, retryable bool) Response {
 	return Response{
 		Version:   ProtocolVersion,
@@ -779,6 +857,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 			CanUndo:            document.CanUndo,
 			CanRedo:            document.CanRedo,
 			Language:           document.Language,
+			ViewDensity:        string(document.ViewDensity),
 			ViewKind:           string(document.ViewKind),
 			ImageFormat:        document.ImageFormat,
 			ImageRevision:      document.ImageRevision,

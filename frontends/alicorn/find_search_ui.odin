@@ -884,8 +884,13 @@ find_restore_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		app.find_focus_pending = false
 		app.editor_focus_pending = false
 	} else if app.editor_focus_pending {
-		if app.editor_scroll_owner != 0 { _ = alicorn.focus(rt, app.editor_scroll_owner) }
-		app.editor_focus_pending = false
+		// Some deferred actions switch presentation modes after the current
+		// frame has described its tree. Keep the request pending until the next
+		// frame emits the editor's focus target instead of consuming it while
+		// that target is temporarily absent.
+		if app.editor_scroll_owner != 0 && alicorn.focus(rt, app.editor_scroll_owner) {
+			app.editor_focus_pending = false
+		}
 	}
 }
 

@@ -158,6 +158,7 @@ State_Document :: struct {
 	can_undo:        bool   `json:"can_undo"`,
 	can_redo:        bool   `json:"can_redo"`,
 	language:        string `json:"language"`,
+	view_density:    string `json:"view_density"`,
 	presentation_revision: u64 `json:"presentation_revision"`,
 	presentation_ready: bool `json:"presentation_ready"`,
 	view_kind: string `json:"view_kind"`,
@@ -282,6 +283,40 @@ Backend_Response :: struct {
 	workspace_search_page: Workspace_Search_Page `json:"workspace_search_page"`,
 	workspace_files: Workspace_Files `json:"workspace_files"`,
 	save_as_conflict: Save_As_Conflict `json:"save_as_conflict"`,
+	semantic_view_window: Semantic_View_Window `json:"semantic_view_window"`,
+}
+
+Semantic_View_Window :: struct {
+	document_id: string `json:"document_id"`,
+	mode: string `json:"mode"`,
+	revision: u64 `json:"revision"`,
+	ready: bool `json:"ready"`,
+	supported: bool `json:"supported"`,
+	generation: u64 `json:"generation"`,
+	total: int `json:"total"`,
+	first: int `json:"first"`,
+	segments: []Semantic_View_Segment `json:"segments"`,
+}
+
+Semantic_View_Segment :: struct {
+	document_id: string `json:"document_id"`,
+	source_revision: u64 `json:"source_revision"`,
+	start_byte: int `json:"start_byte"`,
+	end_byte: int `json:"end_byte"`,
+	depth: int `json:"depth"`,
+	source_start_line: int `json:"source_start_line"`,
+	source_end_line: int `json:"source_end_line"`,
+	label: string `json:"label"`,
+	section_context: string `json:"context"`,
+	generation: u64 `json:"generation"`,
+	ordinal: int `json:"ordinal"`,
+	status: string `json:"status"`,
+	text: string `json:"text"`,
+	truncated: bool `json:"truncated"`,
+	omitted_before: bool `json:"omitted_before"`,
+	omitted_after: bool `json:"omitted_after"`,
+	omitted_before_lines: int `json:"omitted_before_lines"`,
+	omitted_after_lines: int `json:"omitted_after_lines"`,
 }
 
 Save_As_Conflict :: struct {
@@ -435,6 +470,9 @@ Backend_Command_Request :: struct {
 	source_anchor_revision: u64 `json:"source_anchor_revision,omitempty"`,
 	source_anchor_byte: u64    `json:"source_anchor_byte,omitempty"`,
 	source_anchor_line: u64    `json:"source_anchor_line,omitempty"`,	image_revision: u64 `json:"image_revision,omitempty"`,
+	view_density: string `json:"view_density,omitempty"`,
+	projection_first: u64 `json:"projection_first,omitempty"`,
+	projection_limit: u64 `json:"projection_limit,omitempty"`,
 }
 
 decode_state_envelope :: proc(data: []u8, allocator := context.allocator) -> (state: State_Envelope, ok: bool, message: string) {
@@ -475,6 +513,7 @@ state_destroy :: proc(state: ^State_Envelope, allocator: mem.Allocator) {
 		delete(document.path, allocator)
 		delete(document.status, allocator)
 		delete(document.language, allocator)
+		delete(document.view_density, allocator)
 		delete(document.view_kind, allocator)
 	delete(document.image_format, allocator)
 	delete(document.view_error, allocator)
@@ -1171,7 +1210,9 @@ Backend_Command_Result :: struct {
 	directory_listing: Directory_Listing,
 	close_decision: Close_Decision,
 	save_as_conflict: Save_As_Conflict,
-	visible_window:  Visible_Window,	image_bytes: []u8,
+	visible_window:  Visible_Window,
+	image_bytes: []u8,
+	semantic_view_window: Semantic_View_Window,
 	code_owned:     bool,
 	message_owned:  bool,
 	command_outcome_owned: bool,
@@ -1180,7 +1221,9 @@ Backend_Command_Result :: struct {
 	edit_document_id_owned: bool,
 	edit_applied_replacement_owned: bool,
 	editor_selection_document_id_owned: bool,
-	visible_window_owned: bool,	image_bytes_owned: bool,
+	visible_window_owned: bool,
+	image_bytes_owned: bool,
+	semantic_view_window_owned: bool,
 	matches_owned: bool,
 	search_page_owned: bool,
 	workspace_files_owned: bool,
@@ -1232,6 +1275,9 @@ backend_command :: proc(
 	based_on_revision: u64 = 0,
 	allow_unversioned_read := false,
 	image_revision: u64 = 0,
+	view_density := "",
+	projection_first: u64 = 0,
+	projection_limit: u64 = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
 ) -> (result: Backend_Command_Result) {
@@ -1246,7 +1292,7 @@ backend_command :: proc(
 	if len(command) == 0 { return Backend_Command_Result{code="invalid_command", message="command is empty"} }
 	backend.request_id += 1
 	request_revision := based_on_revision
-	if request_revision == 0 && !(allow_unversioned_read && (command == "read_visible_lines" || command == "read_image")) {
+	if request_revision == 0 && !(allow_unversioned_read && (command == "read_visible_lines" || command == "read_image" || command == "read_view_window")) {
 		request_revision = backend.state.application_rev
 	}
 	request := Backend_Command_Request{
@@ -1291,7 +1337,11 @@ backend_command :: proc(
 		match_case=match_case,
 		whole_word=whole_word,
 		save_as_token=save_as_token,
-		search_generation=search_generation,		image_revision=image_revision,
+		search_generation=search_generation,
+		image_revision=image_revision,
+		view_density=view_density,
+		projection_first=projection_first,
+		projection_limit=projection_limit,
 		has_target_byte=has_target_byte,
 		target_byte=target_byte,
 	}
@@ -1420,8 +1470,18 @@ backend_command :: proc(
 		result.image_bytes = image_data
 		result.image_bytes_owned = true
 	}
+	if response.ok && command == "read_view_window" {
+		window, window_ok := semantic_view_window_clone(response.semantic_view_window, allocator)
+		if !window_ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="allocation_failed", message="could not retain the bounded semantic view"}
+		}
+		result.semantic_view_window = window
+		result.semantic_view_window_owned = true
+	}
 	backend_response_destroy(&response, allocator)
-	if command == "read_visible_lines" || command == "read_image" { return result }
+	if command == "read_visible_lines" || command == "read_image" || command == "read_view_window" { return result }
 	if !read_latest_after {
 		if !result.ok && result.message == "" { result.message = result.code }
 		return result
@@ -1456,6 +1516,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.edit_applied_replacement_owned { delete(result.edit.applied_replacement, allocator) }
 	if result.editor_selection_document_id_owned { delete(result.editor_selection.document_id, allocator) }
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
+	if result.semantic_view_window_owned { semantic_view_window_destroy(&result.semantic_view_window, allocator) }
 	if result.image_bytes_owned { delete(result.image_bytes, allocator) }
 	if result.matches_owned { delete(result.matches, allocator) }
 	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
@@ -1489,6 +1550,67 @@ visible_window_destroy :: proc(window: ^Visible_Window, allocator: mem.Allocator
 	delete(window.presentation_spans, allocator)
 	delete(window.presentation_blocks, allocator)
 	window^ = {}
+}
+
+semantic_view_window_clone :: proc(source: Semantic_View_Window, allocator: mem.Allocator) -> (copy: Semantic_View_Window, ok: bool) {
+	document_id, err := strings.clone(source.document_id, allocator)
+	if err != nil { return {}, false }
+	copy.document_id = document_id
+	copy.mode, err = strings.clone(source.mode, allocator)
+	if err != nil { semantic_view_window_destroy(&copy, allocator); return {}, false }
+	copy.revision = source.revision
+	copy.ready = source.ready
+	copy.supported = source.supported
+	copy.generation = source.generation
+	copy.total = source.total
+	copy.first = source.first
+	copy.segments = make([]Semantic_View_Segment, len(source.segments), allocator=allocator)
+	for segment, index in source.segments {
+		target := &copy.segments[index]
+		target.source_revision = segment.source_revision
+		target.start_byte = segment.start_byte
+		target.end_byte = segment.end_byte
+		target.depth = segment.depth
+		target.source_start_line = segment.source_start_line
+		target.source_end_line = segment.source_end_line
+		target.generation = segment.generation
+		target.ordinal = segment.ordinal
+		target.truncated = segment.truncated
+		target.omitted_before = segment.omitted_before
+		target.omitted_after = segment.omitted_after
+		target.omitted_before_lines = segment.omitted_before_lines
+		target.omitted_after_lines = segment.omitted_after_lines
+		target.document_id, err = strings.clone(segment.document_id, allocator)
+		if err != nil { semantic_view_window_destroy(&copy, allocator); return {}, false }
+		target.label, err = strings.clone(segment.label, allocator)
+		if err != nil { semantic_view_window_destroy(&copy, allocator); return {}, false }
+		target.section_context, err = strings.clone(segment.section_context, allocator)
+		if err != nil { semantic_view_window_destroy(&copy, allocator); return {}, false }
+		target.status, err = strings.clone(segment.status, allocator)
+		if err != nil { semantic_view_window_destroy(&copy, allocator); return {}, false }
+		target.text, err = strings.clone(segment.text, allocator)
+		if err != nil { semantic_view_window_destroy(&copy, allocator); return {}, false }
+	}
+	return copy, true
+}
+
+semantic_view_window_destroy :: proc(window: ^Semantic_View_Window, allocator: mem.Allocator) {
+	if window == nil { return }
+	delete(window.document_id, allocator)
+	delete(window.mode, allocator)
+	for &segment in window.segments {
+		delete(segment.document_id, allocator)
+		delete(segment.label, allocator)
+		delete(segment.section_context, allocator)
+		delete(segment.status, allocator)
+		delete(segment.text, allocator)
+	}
+	delete(window.segments, allocator)
+	window^ = {}
+}
+
+Semantic_View_Window_Destroy :: proc(window: ^Semantic_View_Window, allocator: mem.Allocator) {
+	semantic_view_window_destroy(window, allocator)
 }
 
 Visible_Window_Request :: struct {
@@ -2314,6 +2436,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.matches, allocator)
 	workspace_search_page_destroy(&response.workspace_search_page, allocator)
 	directory_listing_destroy(&response.directory_listing, allocator)
+	semantic_view_window_destroy(&response.semantic_view_window, allocator)
 	response^ = {}
 }
 

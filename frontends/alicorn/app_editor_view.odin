@@ -236,6 +236,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		alicorn.container_end(ui)
 	}
 
+	semantic_view_controls(app, ui, rt, document, view)
+	if semantic_view_render(app, ui, document, view, semantic_view_density(document)) { return }
+
 	window, window_matches := editor_presentation_window(
 		view,
 		&app.editor_window,

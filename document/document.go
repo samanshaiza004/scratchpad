@@ -65,6 +65,7 @@ type Projections struct {
 	Valid           bool
 	Injected        []InjectedRegion
 	Headings        []Heading
+	Paragraphs      []ParagraphRange
 	Folds           []Fold
 	Tasks           []Task
 	Links           []Link
@@ -446,6 +447,14 @@ type Heading struct {
 	Text               string
 	ID                 string
 	StartByte, EndByte int
+}
+
+// ParagraphRange identifies one Markdown paragraph in authoritative source
+// coordinates. Consumers may choose a bounded opening excerpt for a reduced
+// view without retaining another copy of document text.
+type ParagraphRange struct {
+	StartByte int
+	EndByte   int
 }
 
 type Fold struct {

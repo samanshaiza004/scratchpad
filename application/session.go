@@ -243,7 +243,9 @@ func (a *Application) ApplySessionView(view SessionView) {
 		if saved.Affinity <= uint8(editor.AffinityTrailing) {
 			doc.Editor.SetAffinity(editor.Affinity(saved.Affinity))
 		}
+		previousView := a.Views[saved.ID]
 		a.Views[saved.ID] = ViewState{
+			Density: previousView.Density,
 			ScrollX: saved.ScrollX, ScrollXInitialized: true,
 			ScrollY: saved.ScrollY, ScrollInitialized: true,
 			LastRevision: doc.Revision(),
