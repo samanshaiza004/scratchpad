@@ -408,7 +408,7 @@ semantic_zoom_render_fold :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.S
 
 semantic_zoom_action :: proc(app: ^App, rt: ^alicorn.Runtime, action: string) -> bool {
 	if action != ACTION_SEMANTIC_MORE && action != ACTION_SEMANTIC_LESS && action != ACTION_SEMANTIC_FULL { return false }
-	if rt.frame_open { _ = frame_deferred_action_schedule(app, .Action, action); return true }
+	if app.ui_description_runtime == rt { _ = frame_deferred_action_schedule(app, .Action, action); return true }
 	if app.command_palette_open || app.settings_surface_open || app.quick_open_open || app.go_to_line_open || app.close_document_id != "" { return true }
 	i := editor_view_find(app.editor_views[:], app.backend.state.active)
 	if i < 0 { return true }

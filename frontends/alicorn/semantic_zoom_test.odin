@@ -286,6 +286,28 @@ semantic_zoom_test_roundtrip :: proc(t: ^testing.T, extension: string) {
 }
 
 @(test)
+test_semantic_zoom_action_defers_until_its_description_finishes :: proc(t: ^testing.T) {
+	f: Semantic_Zoom_Test_Editor
+	defer semantic_zoom_test_destroy(&f, t)
+	if !semantic_zoom_test_open(&f, t, "md", semantic_zoom_test_source("md")) { return }
+	view := semantic_zoom_test_view(&f)
+	if view == nil { testing.expect(t, false); return }
+	alicorn.invalidate_root(&f.rt, "semantic zoom action deferral regression")
+	ui, should_build := alicorn.begin_frame(&f.rt)
+	if !should_build { testing.expect(t, false, "the regression must open a real runtime frame"); return }
+	previous := f.app.ui_description_runtime
+	f.app.ui_description_runtime = &f.rt
+	dispatch_action(&f.app, &f.rt, ACTION_SEMANTIC_LESS)
+	testing.expect(t, f.app.frame_deferred_action_pending && view.zoom.depth == 0,
+		"semantic zoom invoked during description must defer its retained-tree mutation")
+	alicorn.end_frame(&ui)
+	f.app.ui_description_runtime = previous
+	frame_deferred_action_run(&f.app, &f.rt)
+	testing.expect(t, !f.app.frame_deferred_action_pending && view.zoom.depth == 1,
+		"the queued semantic zoom action must apply after the described frame closes")
+}
+
+@(test)
 test_semantic_zoom_markdown_hidden_anchor_and_selection_roundtrip :: proc(t: ^testing.T) {
 	semantic_zoom_test_roundtrip(t, "md")
 }

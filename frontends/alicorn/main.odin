@@ -113,6 +113,8 @@ App :: struct {
 	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
 	primary_runtime: ^alicorn.Runtime,
+	// Runtime currently inside one of Scratchpad's UI description callbacks.
+	ui_description_runtime: ^alicorn.Runtime,
 	window_chrome_metrics: host.Window_Chrome_Metrics,
 	window_chrome_header_node: alicorn.Node_ID,
 	window_chrome_regions: [3]host.Window_Chrome_Region,

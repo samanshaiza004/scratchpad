@@ -525,6 +525,8 @@ floating_window_build :: proc(
 	editor_accessibility_requests_drain(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
+	previous_ui_description_runtime := app.ui_description_runtime
+	app.ui_description_runtime = rt
 	root := alicorn.container_begin(
 		&ui, .Root, label="scratchpad-floating-document",
 		style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true),
@@ -565,6 +567,7 @@ floating_window_build :: proc(
 	alicorn.surface_end(&ui)
 	alicorn.style_environment_pop(&ui, workbench_scope)
 	alicorn.end_frame(&ui)
+	app.ui_description_runtime = previous_ui_description_runtime
 	editor_view_restore_after_frame(app, rt, app.editor_scroll_owner)
 	if app.editor_focus_pending && app.editor_scroll_owner != 0 {
 		if alicorn.focus(rt, app.editor_scroll_owner) { app.editor_focus_pending = false }
