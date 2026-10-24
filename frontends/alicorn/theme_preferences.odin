@@ -18,6 +18,7 @@ Scratchpad_Theme_Preferences :: struct {
 	theme:   string `json:"theme"`,
 	editor_font_family: string `json:"editor_font_family"`,
 	editor_font_size: f32 `json:"editor_font_size"`,
+	semantic_zoom_wheel: Semantic_Zoom_Wheel `json:"semantic_zoom_wheel"`,
 }
 
 scratchpad_theme_choice_name :: proc(choice: Scratchpad_Theme_Choice) -> string {
@@ -81,10 +82,11 @@ scratchpad_user_preferences_load :: proc(path: string, allocator := context.allo
 	if !(preferences.editor_font_size >= EDITOR_FONT_SIZE_MIN && preferences.editor_font_size <= EDITOR_FONT_SIZE_MAX) {
 		preferences.editor_font_size = EDITOR_FONT_SIZE_DEFAULT
 	}
+	if preferences.semantic_zoom_wheel < .Primary_Alt || preferences.semantic_zoom_wheel > .Disabled { preferences.semantic_zoom_wheel = .Primary_Alt }
 	return preferences, true
 }
 
-scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_Theme_Choice, font_family := "", font_size := EDITOR_FONT_SIZE_DEFAULT) -> bool {
+scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_Theme_Choice, font_family := "", font_size := EDITOR_FONT_SIZE_DEFAULT, semantic_zoom_wheel := Semantic_Zoom_Wheel.Primary_Alt) -> bool {
 	if directory == "" || (choice < .Warm || choice > .Workbench_Relief) { return false }
 	directory_error := os.mkdir_all(directory)
 	if directory_error != nil && !(directory_error == .Exist && os.is_directory(directory)) { return false }
@@ -97,6 +99,7 @@ scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_
 		theme=scratchpad_theme_choice_name(choice),
 		editor_font_family=font_family,
 		editor_font_size=font_size,
+		semantic_zoom_wheel=semantic_zoom_wheel,
 	}
 	encoded, encode_error := json.marshal(preferences, allocator=context.temp_allocator)
 	if encode_error != nil { return false }
@@ -119,7 +122,7 @@ scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_
 
 scratchpad_preferences_save :: proc(app: ^App) {
 	if app != nil && app.theme_preferences_directory != "" &&
-	   !scratchpad_theme_preferences_save(app.theme_preferences_directory, app.theme_choice, app.editor_font_family, scratchpad_editor_font_size(app)) {
+	   !scratchpad_theme_preferences_save(app.theme_preferences_directory, app.theme_choice, app.editor_font_family, scratchpad_editor_font_size(app), app.semantic_zoom_wheel) {
 		set_error(app, "Settings changed for this session, but Scratchpad could not save the preference.")
 	}
 }

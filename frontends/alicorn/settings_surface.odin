@@ -139,6 +139,14 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 		settings_form_text(form, "settings-theme-persistence-note", "Your theme is saved for the next time you open Scratchpad.")
 	case .Editor:
 		settings_form_text(form, "settings-page-title", "Editor", 24, alicorn.FONT_WEIGHT_SEMIBOLD)
+		settings_form_text(form, "settings-semantic-zoom-label", "Semantic zoom wheel gesture", 18, alicorn.FONT_WEIGHT_MEDIUM)
+		zoom_style := settings_form_row(form, control_height)
+		if ui != nil {
+			options := [?]alicorn.Select_Option{{key=1, label="Ctrl/Cmd + Alt/Option + wheel"}, {key=2, label="Ctrl/Cmd + Shift + wheel"}, {key=3, label="Disabled"}}
+			choice := alicorn.select_control(ui, alicorn.key_string("settings-semantic-zoom-wheel"), "Semantic zoom wheel gesture", options[:], u64(app.semantic_zoom_wheel)+1, style=zoom_style)
+			if choice.changed { app.semantic_zoom_wheel = Semantic_Zoom_Wheel(choice.selected_key-1); scratchpad_preferences_save(app); alicorn.invalidate_root(rt, "semantic zoom gesture changed") }
+		}
+		settings_form_text(form, "settings-semantic-zoom-note", "Changes source visibility through Full, Focus, Skim, and Overview. Font zoom keeps its existing shortcuts.")
 		settings_form_text(form, "settings-editor-font-note", "Choose a font for your documents. The workbench font stays the same.")
 		settings_form_text(form, "settings-editor-font-family-label", "Font family", 18, alicorn.FONT_WEIGHT_MEDIUM)
 		family := app.editor_font_family

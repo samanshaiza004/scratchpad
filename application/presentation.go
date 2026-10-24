@@ -49,8 +49,11 @@ type PresentationCommand struct {
 // PresentationDocument is the shell-visible portion of one open document.
 // Document bytes and editor mechanics are deliberately absent: the scalable
 // editor remains local to Scratchpad's existing application/editor path.
+// InstanceID is the transient identity of this open document, not a durable
+// session identity; replacing a document at the same path assigns a new value.
 type PresentationDocument struct {
 	ID                   DocumentID
+	InstanceID           uint64
 	Path                 string
 	Status               DocumentStatus
 	Dirty                bool
@@ -157,6 +160,7 @@ func (a *Application) Snapshot() PresentationState {
 		}
 		state.Documents = append(state.Documents, PresentationDocument{
 			ID:                   id,
+			InstanceID:           doc.InstanceID(),
 			Path:                 doc.Path,
 			Status:               a.Status(id),
 			Dirty:                doc.Dirty(),

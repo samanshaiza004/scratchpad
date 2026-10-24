@@ -938,6 +938,31 @@ scratchpad_test_tab_button_for_label :: proc(rt: ^alicorn.Runtime, label: string
 	return .Default, false, false
 }
 
+scratchpad_test_status_contents_fit :: proc(rt: ^alicorn.Runtime, status_id: alicorn.Node_ID) -> (bool, string) {
+	status, ok := alicorn.node_info(rt, status_id)
+	if !ok { return false, "missing status node" }
+	right := status.bounds.x+status.bounds.w
+	for id in rt.order {
+		node, found := rt.nodes[id]
+		if !found || !node.active || id == status_id || !alicorn.node_is_presentation_active(rt, id) { continue }
+		ancestor := node.parent
+		inside := false
+		for ancestor != 0 {
+			if ancestor == status_id { inside = true; break }
+			parent, parent_found := rt.nodes[ancestor]
+			if !parent_found { break }
+			ancestor = parent.parent
+		}
+		if !inside { continue }
+		bounds := node.bounds
+		if bounds.x < status.bounds.x-1 || bounds.x+bounds.w > right+1 {
+			parent, parent_found := rt.nodes[node.parent]
+			return false, fmt.tprintf("%s at %v parent=%s %v exceeds %v", node.label, bounds, parent.label if parent_found else "?", parent.bounds if parent_found else alicorn.Rect{}, status.bounds)
+		}
+	}
+	return true, ""
+}
+
 @(test)
 test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	app: App
@@ -1004,7 +1029,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
 	sidebar_id, panel_tabs_id, workspace_root_id: alicorn.Node_ID
-	status_bar_id, status_actions_id: alicorn.Node_ID
+	status_bar_id, status_responsive_id: alicorn.Node_ID
 	wrap_semantic_id, goto_semantic_id: alicorn.Semantic_ID
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
@@ -1013,9 +1038,9 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		if node.label == "workspace-panel-tabs" { panel_tabs_id = node_id }
 		if node.label == "workspace-root-row" { workspace_root_id = node_id }
 		if node.label == "document-status-bar" { status_bar_id = node_id }
-		if node.label == "document-status-actions" { status_actions_id = node_id }
-		if node.kind == .Button && node.label == "Wrap: Auto" { wrap_semantic_id = node.semantic_id }
-		if node.kind == .Button && node.label == "Go to Line…" { goto_semantic_id = node.semantic_id }
+		if node.label == "document-status-responsive" { status_responsive_id = node_id }
+		if node.kind == .Button && node.label == "Wrap: Auto" && alicorn.node_is_presentation_active(&rt, node_id) { wrap_semantic_id = node.semantic_id }
+		if node.kind == .Button && node.label == "Go to Line…" && alicorn.node_is_presentation_active(&rt, node_id) { goto_semantic_id = node.semantic_id }
 	}
 
 	testing.expect(t, files_found && files_variant == .Tab && files_selected,
@@ -1044,15 +1069,15 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 			"workspace tabs and root path should use compact aligned heights")
 	}
 	status_bar, status_bar_found := rt.nodes[status_bar_id]
-	status_actions, status_actions_found := rt.nodes[status_actions_id]
 	wrap_semantic, wrap_semantic_found := alicorn.semantic_node_lookup(&rt, wrap_semantic_id)
 	goto_semantic, goto_semantic_found := alicorn.semantic_node_lookup(&rt, goto_semantic_id)
 	testing.expect(t, status_bar_found && status_bar.style.height == alicorn.LAYOUT_SIZE_FIT_CONTENT &&
 		status_bar.style.min_height == 40 && status_bar.bounds.h >= 40,
 		"the editor status toolbar should opt into Row content-height measurement and contain its padded controls")
-	testing.expect(t, status_actions_found && status_actions.style.height == alicorn.LAYOUT_SIZE_FIT_CONTENT &&
-		status_actions.style.min_height == 24,
-		"the editor's horizontal action group should retain its content-measured height")
+	adaptive := alicorn.adaptive_selection_state(&rt, status_responsive_id)
+	wide_fits, wide_overflow := scratchpad_test_status_contents_fit(&rt, status_bar_id)
+	testing.expect(t, status_responsive_id != 0 && adaptive.valid && adaptive.selected_name == "Wide" && wide_fits,
+		fmt.tprintf("wide status should fit: owner=%d valid=%t selection=%s available=%.1f bar=%v fit=%t %s", status_responsive_id, adaptive.valid, adaptive.selected_name, adaptive.available_width, status_bar.bounds, wide_fits, wide_overflow))
 	testing.expect(t, wrap_semantic_found && wrap_semantic.role == .Button &&
 		goto_semantic_found && goto_semantic.role == .Button,
 		"the measured toolbar should keep Wrap and Go to Line available as semantic controls")
@@ -1064,4 +1089,31 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		strings.contains(inspection, "button recipe: variant=primary"),
 		"the Alicorn inspector should explain the resolved recipe provenance for dogfood controls")
 	delete(inspection, context.allocator)
+
+	// The editor pane, not the outer window, determines whether its status row
+	// can show every action. At this width the adaptive region should use its
+	// compact form and keep the Go to Line menu command available elsewhere.
+	rt.viewport = alicorn.Rect{0, 0, 820, 600}
+	app.window_chrome_metrics.header = alicorn.Rect{0, 0, 820, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT}
+	alicorn.invalidate_root(&rt, "status responsive-width regression")
+	_ = build_app(rawptr(&app), &rt, 820, 600, 1)
+	status_bar_id, status_responsive_id = 0, 0
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if !found || !node.active { continue }
+		if node.label == "document-status-bar" { status_bar_id = node_id }
+		if node.label == "document-status-responsive" { status_responsive_id = node_id }
+	}
+	adaptive = alicorn.adaptive_selection_state(&rt, status_responsive_id)
+	compact_goto_visible := false
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if found && node.kind == .Button && node.label == "Go to Line…" && alicorn.node_is_presentation_active(&rt, node_id) {
+			compact_goto_visible = true
+		}
+	}
+	compact_fits, compact_overflow := scratchpad_test_status_contents_fit(&rt, status_bar_id)
+	testing.expect(t, adaptive.valid && adaptive.selected_name == "Compact" &&
+		!compact_goto_visible && compact_fits,
+		fmt.tprintf("compact status should fit: valid=%t selection=%s available=%.1f bar=%v goto=%t fit=%t %s", adaptive.valid, adaptive.selected_name, adaptive.available_width, rt.nodes[status_bar_id].bounds, compact_goto_visible, compact_fits, compact_overflow))
 }

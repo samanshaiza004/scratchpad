@@ -42,7 +42,8 @@ Floating_Window_State :: struct {
 	return_to_tabs: bool,
 	was_primary_active: bool,
 	caption_title: string,
-	caption_actions: [3]host.Application_Menu,
+	caption_actions: [4]host.Application_Menu,
+	semantic_zoom_items: [3]host.Application_Menu_Item,
 	accessibility_source_lane: Accessibility_Source_Lane,
 	accessibility_projection: Editor_Accessibility_Projection,
 	accessibility_source_error: string,
@@ -377,10 +378,16 @@ floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 	state.document_id = owned_document_id
 	state.return_to_tabs = true
 	state.was_primary_active = app.backend.state.active == state.document_id
+	state.semantic_zoom_items = {
+		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_MORE), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}},
+		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_LESS), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary, .Alt}}},
+		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_FULL), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary, .Alt}}},
+	}
 	state.caption_actions = {
 		{label="Save", command=action_id_for(ACTION_FILE_SAVE), state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{key='s',modifiers={.Primary}}},
 		{label="On top", command=action_id_for("floating.on-top"), state=alicorn.Action_State{enabled=true}},
 		{label="Return to tabs", command=action_id_for("floating.return"), state=alicorn.Action_State{enabled=true}},
+		{label="Detail", items=state.semantic_zoom_items[:]},
 	}
 	title := fmt.tprintf("%s — Scratchpad", document_title(document.path))
 	native_menus := scratchpad_native_menus(state.caption_actions[:])
@@ -397,6 +404,7 @@ floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 				build=floating_window_build,
 				on_key=floating_window_key,
 				on_pointer=floating_window_pointer,
+				on_scroll_capture=floating_window_scroll_capture,
 				on_text_key=floating_window_text_key,
 				on_text_input=floating_window_text_input,
 				on_services=floating_window_services,
@@ -517,6 +525,8 @@ floating_window_build :: proc(
 	editor_accessibility_requests_drain(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
+	previous_ui_description_runtime := app.ui_description_runtime
+	app.ui_description_runtime = rt
 	root := alicorn.container_begin(
 		&ui, .Root, label="scratchpad-floating-document",
 		style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true),
@@ -557,6 +567,7 @@ floating_window_build :: proc(
 	alicorn.surface_end(&ui)
 	alicorn.style_environment_pop(&ui, workbench_scope)
 	alicorn.end_frame(&ui)
+	app.ui_description_runtime = previous_ui_description_runtime
 	editor_view_restore_after_frame(app, rt, app.editor_scroll_owner)
 	if app.editor_focus_pending && app.editor_scroll_owner != 0 {
 		if alicorn.focus(rt, app.editor_scroll_owner) { app.editor_focus_pending = false }
@@ -633,6 +644,7 @@ floating_window_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, comman
 	if command == action_id_for(ACTION_FILE_SAVE) { floating_window_save(app, rt, window.document_id) }
 	else if command == action_id_for("floating.on-top") { floating_window_toggle_topmost(window) }
 	else if command == action_id_for("floating.return") { floating_window_return_to_tabs(app) }
+	else { application_menu_command(rawptr(app), rt, command) }
 	alicorn.invalidate_root(rt, "floating caption command")
 }
 
@@ -668,6 +680,14 @@ floating_window_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alic
 	if app == nil { return }
 	defer floating_editor_scope_leave(window, app, &scope)
 	editor_pointer(rawptr(app), rt, event, target)
+}
+
+floating_window_scroll_capture :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Scroll_Event, target: alicorn.Node_ID) -> bool {
+	window := cast(^Floating_Window_State)state
+	app, scope := floating_editor_scope_enter(window, rt)
+	if app == nil { return false }
+	defer floating_editor_scope_leave(window, app, &scope)
+	return semantic_zoom_scroll_capture(rawptr(app), rt, event, target)
 }
 
 floating_window_text_key :: proc(state: rawptr, rt: ^alicorn.Runtime, owner: alicorn.Node_ID, event: host.Application_Text_Key_Event) -> bool {

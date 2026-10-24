@@ -21,6 +21,8 @@ build_app :: proc(
 	session_ui_prepare(app, rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
+	previous_ui_description_runtime := app.ui_description_runtime
+	app.ui_description_runtime = rt
 	find_text_history_initialize(&app.find_replace_edit_history, app.find_replace_text)
 	if find_capture_text_field(rt, app.find_replace_node, &app.find_replace_text) {
 		find_text_history_observe(&app.find_replace_edit_history, app.find_replace_text)
@@ -359,6 +361,7 @@ build_app :: proc(
 	alicorn.style_environment_pop(&ui, workbench_style_scope)
 
 	alicorn.end_frame(&ui)
+	app.ui_description_runtime = previous_ui_description_runtime
 	image_preview_after_frame(app, rt)
 	if !app.workspace_split_restore_complete &&
 	   app.workspace_split_restore_token != alicorn.RESTORE_TOKEN_NONE &&

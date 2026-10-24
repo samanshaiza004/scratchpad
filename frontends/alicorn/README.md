@@ -85,7 +85,7 @@ Scratchpad installs its bundled Atkinson UI and monospace faces through Alicorn'
 
 ## Current feature gaps
 
-Compared with the retired Shirei workbench, Alicorn does not yet provide the outline sidebar (code symbols, Markdown headings, tasks, and links), fold/collapse controls for code and Markdown, editor font-zoom commands, or expand-selection. It restores the last saved workspace, open documents, active document, editor positions, sidebar width, and recent workspace list; crash-recovery data remains a separate lifecycle. The detailed coverage and follow-up list is in [Alicorn coverage](../../docs/frontends/alicorn/PARITY.md). These remaining product gaps are distinct from native-platform verification still pending for v0.1.0.
+Compared with the retired Shirei workbench, Alicorn does not yet provide the outline sidebar (code symbols, Markdown headings, tasks, and links), independent manual fold/collapse controls for code and Markdown, editor font-zoom commands, or expand-selection. The [semantic zoom experiment](../../docs/SEMANTIC_VIEWS.md) provides four global depths and local source-range expansion. It restores the last saved workspace, open documents, active document, editor positions, sidebar width, and recent workspace list; crash-recovery data remains a separate lifecycle. The detailed coverage and follow-up list is in [Alicorn coverage](../../docs/frontends/alicorn/PARITY.md). These remaining product gaps are distinct from native-platform verification still pending for v0.1.0.
 
 The retired Shirei and GPUI source is preserved at Git ref `archive/pre-v0.1.0-frontends`; it is no longer an active build target.
 

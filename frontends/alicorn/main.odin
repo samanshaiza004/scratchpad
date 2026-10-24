@@ -113,6 +113,8 @@ App :: struct {
 	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
 	primary_runtime: ^alicorn.Runtime,
+	// Runtime currently inside one of Scratchpad's UI description callbacks.
+	ui_description_runtime: ^alicorn.Runtime,
 	window_chrome_metrics: host.Window_Chrome_Metrics,
 	window_chrome_header_node: alicorn.Node_ID,
 	window_chrome_regions: [3]host.Window_Chrome_Region,
@@ -147,6 +149,7 @@ App :: struct {
 	editor_window:          Editor_Window,
 	editor_window_ready:    bool,
 	editor_text_scale:      f32,
+	semantic_zoom_wheel: Semantic_Zoom_Wheel,
 	editor_request_generation: u64,
 	editor_scroll_owner:    alicorn.Node_ID,
 	editor_restore_scroll:  bool,
@@ -303,7 +306,7 @@ App :: struct {
 	edit_items:             [11]host.Application_Menu_Item,
 	workspace_items:        [7]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
-	view_items:             [10]host.Application_Menu_Item,
+	view_items:             [13]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -438,7 +441,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	session_ui_capture(app, app.session_ui_runtime)
 	documents := make([dynamic]bridge.Backend_Stop_Session_Document, 0, len(app.editor_views), allocator=context.temp_allocator)
 	defer delete(documents)
-	for view in app.editor_views {
+	for &view in app.editor_views {
 		if view.document_id == "" { continue }
 		append(&documents, bridge.Backend_Stop_Session_Document{
 			id=view.document_id,
@@ -446,7 +449,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 			cursor=int(view.caret_byte),
 			affinity=u8(view.caret_affinity),
 			scroll_x=view.scroll_x,
-			scroll_y=view.scroll_y,
+			scroll_y=semantic_zoom_session_scroll(&view),
 		})
 	}
 	session := bridge.Backend_Stop_Session{
@@ -488,6 +491,10 @@ editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.
 		view.viewport_anchor_skip_next_source_change = false
 		view.viewport_anchor_pending = false
 		view.viewport_anchor_resolved = false
+		return
+	}
+	if semantic_zoom_active(view) {
+		view.viewport_anchor_pending, view.viewport_anchor_resolved = false, false
 		return
 	}
 	if !view.wrap_height_index_ready { return }
@@ -1148,7 +1155,7 @@ editor_ensure_line_visible :: proc(
 ) -> bool {
 	if view != nil && view.wrap_height_index_ready {
 		return alicorn.virtual_list_variable_ensure_visible(
-			rt, &view.wrap_height_index, owner, logical_line, reason,
+			rt, editor_geometry_index(view), owner, editor_geometry_row(view, logical_line), reason,
 		)
 	}
 	return alicorn.virtual_list_ensure_visible(rt, owner, logical_line, reason)
@@ -1180,11 +1187,23 @@ editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^
 	if app == nil || rt == nil || view == nil || !view.dragging_selection || !view.drag_pointer_valid { return false }
 	document, document_found := find_document(&app.backend.state, view.document_id)
 	if !document_found || document.id != app.backend.state.active { return false }
-	window, authoritative := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
-	if !authoritative { return false }
+	window: ^Editor_Window
+	source_byte: u64
+	affinity: alicorn.Text_Affinity
+	hit := false
+	semantic := semantic_zoom_active(view)
+	if semantic {
+		source_byte, affinity, window, hit = semantic_zoom_pointer_context(app, rt, view, view.drag_pointer_x, view.drag_pointer_y, true)
+		if window == nil || window.editor_revision != document.editor_revision { hit = false }
+	} else {
+		if view.zoom.depth > 0 { return false }
+		authoritative: bool
+		window, authoritative = editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+		if !authoritative { return false }
+		source_byte, affinity, hit = editor_source_at_pointer(app, rt, view.drag_pointer_x, view.drag_pointer_y, true)
+	}
 	old_anchor, old_caret := view.selection_anchor, view.caret_byte
 	old_anchor_affinity, old_caret_affinity := view.anchor_affinity, view.caret_affinity
-	source_byte, affinity, hit := editor_source_at_pointer(app, rt, view.drag_pointer_x, view.drag_pointer_y, true)
 	selection_scope: alicorn.Application_Mutation_Scope
 	if hit {
 		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
@@ -1194,6 +1213,10 @@ editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^
 			)
 		}
 		_ = editor_extend_pointer_selection(view, window, source_byte, affinity)
+		if semantic && semantic_zoom_selection_crosses_fold(view, min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)) {
+			view.selection_anchor, view.caret_byte = old_anchor, old_caret
+			view.anchor_affinity, view.caret_affinity = old_anchor_affinity, old_caret_affinity
+		}
 	}
 	outside, dx, dy := editor_pointer_outside_viewport(rt, app.editor_scroll_owner, view.drag_pointer_x, view.drag_pointer_y)
 	scrolled := false
@@ -1297,6 +1320,53 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
+	if view.zoom.depth > 0 && !semantic_zoom_active(view) { semantic_zoom_reveal_input(app, rt, view) }
+	if semantic_zoom_active(view) {
+		if source, affinity, window, ok := semantic_zoom_pointer_context(app, rt, view, event.x, event.y); ok && window != nil {
+			old_anchor, old_caret := view.selection_anchor, view.caret_byte
+			old_anchor_affinity, old_caret_affinity := view.anchor_affinity, view.caret_affinity
+			editor_undo_group_break(view)
+			view.pending_document_edge, view.pending_document_edge_shift = .None, false
+			selection_scope: alicorn.Application_Mutation_Scope
+			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+				selection_scope = alicorn.application_mutation_begin(
+					rt, "active editor selection", .Description, app.selection_diagnostic_revision,
+					"semantic zoom pointer selection placed",
+				)
+			}
+			if editor_apply_pointer_selection(view, window, source, affinity, event.click_count, event.modifiers.shift) {
+				if event.modifiers.shift && semantic_zoom_selection_crosses_fold(view,
+					min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)) {
+					view.selection_anchor, view.caret_byte = old_anchor, old_caret
+					view.anchor_affinity, view.caret_affinity = old_anchor_affinity, old_caret_affinity
+					set_error(app, "Expand collapsed content before selecting across it.")
+					alicorn.invalidate_root(rt, "Scratchpad refused a selection spanning hidden semantic content")
+					when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+						alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+					}
+					return
+				}
+				view.zoom.anchor_byte = view.caret_byte
+				if line, found := editor_line_for_source(window, view.caret_byte); found { view.zoom.anchor_line = line.logical_line }
+				view.dragging_selection = true
+				view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
+				view.drag_pointer_valid = true
+				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+					if old_anchor != view.selection_anchor || old_caret != view.caret_byte {
+						application_selection_diagnostic_revision_advance(app)
+					}
+					alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+				}
+				_ = alicorn.focus(rt, app.editor_scroll_owner)
+				alicorn.invalidate_root(rt, "Scratchpad selected an authoritative source position in semantic zoom")
+			} else {
+				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+					alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+				}
+			}
+		}
+		return
+	}
 	if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y); ok {
 		editor_undo_group_break(view)
 		view.pending_document_edge = .None
@@ -1346,6 +1416,8 @@ editor_text_key :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
+	if semantic_zoom_navigation_key(app, rt, owner, document, view, event) { return true }
+	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches { return false }
 	if view.preedit_active {
@@ -1857,6 +1929,7 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	view := &app.editor_views[view_index]
 	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
+	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	window_end: u64 = 0
 	if window_matches { window_end = window.start_byte+u64(len(window.source)) }
@@ -2013,6 +2086,7 @@ editor_insert_newline :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return true }
 	view := &app.editor_views[view_index]
+	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches {
 		set_error(app, "The bounded source window is not ready for Enter.")
@@ -2364,6 +2438,7 @@ editor_text_input :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { set_error(app, "Could not retain the active document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
+	semantic_zoom_reveal_input(app, rt, view)
 	if event.kind == .Preedit {
 		if view.preedit_recoverable {
 			set_error(app, "A committed composition still needs recovery. Use Edit > Copy before starting another composition.")
@@ -2568,6 +2643,7 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 	if app == nil || rt == nil || !app.backend.started { return }
 	if index := editor_view_find(app.editor_views[:], app.backend.state.active); index >= 0 {
 		view := &app.editor_views[index]
+		if action_id != ACTION_EDIT_COPY { semantic_zoom_reveal_input(app, rt, view) }
 		if view.preedit_active {
 			switch action_id {
 			case ACTION_EDIT_COPY:
@@ -2602,7 +2678,8 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 		return
 	}
 	document, view, window, ready := active_editor_context(app)
-	if !ready || view == nil || window == nil {
+	semantic_copy := action_id == ACTION_EDIT_COPY && semantic_zoom_active(view)
+	if view == nil || (!ready && !semantic_copy) || (ready && window == nil) {
 		set_error(app, "The active document's bounded source window is not ready for this Edit command.")
 		alicorn.invalidate_root(rt, "Scratchpad Edit command needs a bounded source window")
 		return
@@ -2616,8 +2693,23 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 		end_byte := max(view.selection_anchor, view.caret_byte)
 		if start_byte == end_byte { return }
 		bytes, available := editor_selected_source_bytes(window, view.selection_anchor, view.caret_byte)
+		if action_id == ACTION_EDIT_COPY && semantic_zoom_active(view) {
+			crosses_hidden: bool
+			bytes, available, crosses_hidden = semantic_zoom_selection_source_bytes(
+				app, document, view, view.selection_anchor, view.caret_byte,
+			)
+			if crosses_hidden {
+				set_error(app, "Expand collapsed content before copying across it; Copy was not performed.")
+				alicorn.invalidate_root(rt, "Scratchpad refused Copy across hidden semantic source")
+				return
+			}
+		}
 		if !available {
-			set_error(app, "The full selection is outside the loaded source window; copy and cut were not performed.")
+			if action_id == ACTION_EDIT_COPY && semantic_zoom_active(view) {
+				set_error(app, "The full selection is outside a current semantic source window; Copy was not performed.")
+			} else {
+				set_error(app, "The full selection is outside the loaded source window; copy and cut were not performed.")
+			}
 			alicorn.invalidate_root(rt, "Scratchpad refused a partial bounded-window clipboard operation")
 			return
 		}
@@ -3044,6 +3136,7 @@ main :: proc() {
 			if preferences, found := scratchpad_user_preferences_load(preferences_path, context.allocator); found {
 				app.theme_choice, _ = scratchpad_theme_choice_parse(preferences.theme)
 				app.editor_text_scale = preferences.editor_font_size/EDITOR_FONT_SIZE_DEFAULT
+				app.semantic_zoom_wheel = preferences.semantic_zoom_wheel
 				app.editor_font_pending_family = preferences.editor_font_family
 				app.editor_font_pending_size = preferences.editor_font_size
 				app.editor_font_pending = preferences.editor_font_family != ""
@@ -3110,6 +3203,7 @@ main :: proc() {
 		build=build_app,
 		on_key=application_key,
 		on_pointer=application_pointer,
+		on_scroll_capture=semantic_zoom_scroll_capture,
 		on_drag=application_drag,
 		on_text_key=editor_text_key,
 		on_text_input=editor_text_input,

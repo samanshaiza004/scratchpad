@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "validation/linux-nixos-mangowc-2026-10-23",
-    "revision": "c27f09d705cd4012506e37ead38e836697453e23"
+    "ref": "codex/semantic-zoom-scroll",
+    "revision": "f796cd480cd8d95f748989d01e9c0d9eb9a793ee"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

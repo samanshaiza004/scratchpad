@@ -97,6 +97,7 @@ type CommandRequest struct {
 	SourceAnchorLine     uint64   `json:"source_anchor_line,omitempty"`
 	ImageRevision        uint64   `json:"image_revision,omitempty"`
 	ViewDensity          string   `json:"view_density,omitempty"`
+	ZoomDepth            int      `json:"zoom_depth"`
 	ProjectionFirst      uint64   `json:"projection_first,omitempty"`
 	ProjectionLimit      uint64   `json:"projection_limit,omitempty"`
 }
@@ -124,7 +125,48 @@ type Response struct {
 	WorkspaceSearchPage *WorkspaceSearchPage `json:"workspace_search_page,omitempty"`
 	SaveAsConflict      *SaveAsConflict      `json:"save_as_conflict,omitempty"`
 	SemanticViewWindow  *SemanticViewWindow  `json:"semantic_view_window,omitempty"`
+	SemanticZoom        *SemanticZoomPlan    `json:"semantic_zoom,omitempty"`
 	Diagnostic          string               `json:"diagnostic,omitempty"`
+}
+
+// SemanticZoomPlan is detached, revision/instance-tagged source-line folding
+// metadata. All coordinates are zero-based; ends are exclusive. Folds include
+// line terminators and contain no source bytes. An empty EOF caret line is never
+// folded. Unsupported/not-ready plans have no folds; reason is a stable code.
+// Frontends cache by document_id, instance_id, revision, depth and anchor_byte
+// and apply only while the source instance/revision still matches.
+type SemanticZoomPlan struct {
+	DocumentID string             `json:"document_id"`
+	Revision   uint64             `json:"revision"`
+	InstanceID uint64             `json:"instance_id"`
+	Depth      int                `json:"depth"`
+	AnchorByte int                `json:"anchor_byte"`
+	Ready      bool               `json:"ready"`
+	Supported  bool               `json:"supported"`
+	Reason     string             `json:"reason,omitempty"`
+	LineCount  int                `json:"line_count"`
+	Folds      []SemanticZoomFold `json:"folds"`
+}
+
+type SemanticZoomFold struct {
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	StartByte int    `json:"start_byte"`
+	EndByte   int    `json:"end_byte"`
+	Label     string `json:"label"`
+	Silent    bool   `json:"silent,omitempty"`
+}
+
+func semanticZoomFromApplication(plan application.SemanticZoomPlan) *SemanticZoomPlan {
+	result := &SemanticZoomPlan{DocumentID: string(plan.DocumentID), Revision: plan.Revision,
+		InstanceID: plan.InstanceID, Depth: plan.Depth, AnchorByte: plan.AnchorByte,
+		Ready: plan.Ready, Supported: plan.Supported, Reason: plan.Reason, LineCount: plan.LineCount,
+		Folds: make([]SemanticZoomFold, len(plan.Folds))}
+	for i, fold := range plan.Folds {
+		result.Folds[i] = SemanticZoomFold{StartLine: fold.StartLine, EndLine: fold.EndLine,
+			StartByte: fold.StartByte, EndByte: fold.EndByte, Label: fold.Label, Silent: fold.Silent}
+	}
+	return result
 }
 
 // SemanticViewWindow is a bounded, source-mapped reduced view. It carries
@@ -296,8 +338,12 @@ type ActionState struct {
 	Checked  bool     `json:"checked"`
 }
 
+// StateDocument publishes the current source instance as well as its byte-state
+// revision. Match instance_id with semantic_zoom.instance_id before folding;
+// replacement at the same path/revision must invalidate an old plan.
 type StateDocument struct {
 	ID                   string  `json:"id"`
+	InstanceID           uint64  `json:"instance_id"`
 	Path                 string  `json:"path"`
 	Status               string  `json:"status"`
 	Dirty                bool    `json:"dirty"`
@@ -557,6 +603,19 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.HasSourceAnchor && (request.SourceAnchorRevision == 0 || request.SourceAnchorByte > uint64(^uint(0)>>1) || request.SourceAnchorLine > uint64(^uint(0)>>1)) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_source_anchor", "source anchor revision, byte, or line is invalid", false), false
 		}
+	case "read_semantic_zoom":
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if !jsonNonNullFieldPresent(input, "editor_revision") {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_editor_revision", "editor_revision is required", false), false
+		}
+		if !jsonNonNullFieldPresent(input, "zoom_depth") || request.ZoomDepth < application.SemanticZoomFull || request.ZoomDepth > application.SemanticZoomOverview {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_zoom_depth", "zoom_depth must be between 0 and 3", false), false
+		}
+		if request.AnchorByte > uint64(^uint(0)>>1) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_zoom_anchor", "anchor_byte does not fit the host word size", false), false
+		}
 	case "set_view_density":
 		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
@@ -615,6 +674,15 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		return request, errorResponse(request.RequestID, lifecycle, "unknown_command", fmt.Sprintf("unknown command %q", request.Command), false), false
 	}
 	return request, Response{}, true
+}
+
+func jsonNonNullFieldPresent(input []byte, name string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil {
+		return false
+	}
+	value, present := fields[name]
+	return present && strings.TrimSpace(string(value)) != "null"
 }
 
 func jsonFieldPresent(input []byte, name string) bool {
@@ -840,6 +908,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 	for _, document := range snapshot.Documents {
 		stateDocument := StateDocument{
 			ID:                 string(document.ID),
+			InstanceID:         document.InstanceID,
 			Path:               document.Path,
 			Status:             documentStatusString(document.Status),
 			Dirty:              document.Dirty,

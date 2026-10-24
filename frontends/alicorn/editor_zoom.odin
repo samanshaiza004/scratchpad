@@ -40,12 +40,13 @@ editor_typography_set :: proc(app: ^App, rt: ^alicorn.Runtime, next: f32, force 
 		active_view_index = editor_view_find(app.editor_views[:], active_document.id)
 		if active_view_index >= 0 {
 			view := &app.editor_views[active_view_index]
+			if semantic_zoom_active(view) { semantic_zoom_anchor_capture(app, rt, view, view.zoom.anchor_byte) }
 			window, window_matches := editor_view_window(
 				view, &app.editor_window, app.editor_window_ready,
 				active_document.id, active_document.editor_revision,
 			)
 			scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
-			if window_matches && scroll.id != 0 && view.wrap_height_index_ready {
+			if window_matches && scroll.id != 0 && view.wrap_height_index_ready && !semantic_zoom_active(view) {
 				metrics := alicorn.virtual_list_variable_metrics(
 					&view.wrap_height_index, scroll.offset_y, scroll.viewport_height,
 				)
@@ -71,7 +72,7 @@ editor_typography_set :: proc(app: ^App, rt: ^alicorn.Runtime, next: f32, force 
 			if document, found := find_document(&app.backend.state, floating.document_id); found {
 				window, window_matches := editor_view_window(view, &floating.editor_window, floating.editor_window_ready, document.id, document.editor_revision)
 				scroll := alicorn.scroll_region_state(floating.runtime, floating.editor_scroll_owner)
-				if window_matches && scroll.id != 0 && view.wrap_height_index_ready {
+				if window_matches && scroll.id != 0 && view.wrap_height_index_ready && !semantic_zoom_active(view) {
 					metrics := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll.offset_y, scroll.viewport_height)
 					if anchor_line, present := editor_window_line(window, u64(metrics.first)); present {
 						view.viewport_anchor_byte = anchor_line.source_start
@@ -94,6 +95,7 @@ editor_typography_set :: proc(app: ^App, rt: ^alicorn.Runtime, next: f32, force 
 	app.editor_text_scale = next
 	for view_index in 0..<len(app.editor_views) {
 		view := &app.editor_views[view_index]
+		if view.zoom.depth > 0 { view.zoom.anchor_pending = true }
 		if view_index != active_view_index && view_index != detached_view_index {
 			view.scroll_y *= ratio
 			view.restore_y_pending = true

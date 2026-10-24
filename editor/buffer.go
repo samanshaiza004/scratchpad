@@ -5,6 +5,7 @@ package editor
 import (
 	"bytes"
 	"errors"
+	"io"
 	"unicode"
 	"unicode/utf8"
 
@@ -179,6 +180,24 @@ func (b *Buffer) Bytes(start, end int) ([]byte, error) {
 		return nil, errors.New("range outside buffer")
 	}
 	return b.slice(start, end), nil
+}
+
+// ReadAt implements io.ReaderAt without allocating a source slice. Callers
+// streaming an immutable app-thread view can reuse their bounded read buffer.
+// Like Bytes, it does not synchronize against concurrent document mutation.
+func (b *Buffer) ReadAt(p []byte, offset int64) (int, error) {
+	if offset < 0 {
+		return 0, errors.New("negative buffer read offset")
+	}
+	if offset > int64(b.byteLen) || offset == int64(b.byteLen) && len(p) > 0 {
+		return 0, io.EOF
+	}
+	count := min(len(p), b.byteLen-int(offset))
+	out := b.appendRange(b.root, 0, int(offset), int(offset)+count, p[:0])
+	if len(out) < len(p) {
+		return len(out), io.EOF
+	}
+	return len(out), nil
 }
 
 func (b *Buffer) Insert(at int, text []byte) error {
