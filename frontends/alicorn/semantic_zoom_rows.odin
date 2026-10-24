@@ -6,6 +6,7 @@ Semantic_Zoom_Row_Fold :: struct {
 	fold:           bridge.Semantic_Zoom_Fold,
 	row:            int,
 	removed_before: int,
+	expanded:        bool,
 }
 
 Semantic_Zoom_Rows :: struct {
@@ -61,7 +62,11 @@ semantic_zoom_rows_recompute :: proc(rows: ^Semantic_Zoom_Rows) {
 	for &entry in rows.folds {
 		entry.row = int(entry.fold.start_line)-removed
 		entry.removed_before = removed
-		row_slots := 1 if !entry.fold.silent else 0
+		row_slots := 0
+		if !entry.fold.silent {
+			row_slots = 1
+			if entry.expanded { row_slots += int(entry.fold.end_line-entry.fold.start_line) }
+		}
 		removed += int(entry.fold.end_line-entry.fold.start_line)-row_slots
 	}
 	rows.row_count = rows.line_count-removed
@@ -80,7 +85,17 @@ semantic_zoom_rows_source_at :: proc(rows: ^Semantic_Zoom_Rows, row: int) -> (so
 	index := lo-1
 	entry := rows.folds[index]
 	if row == entry.row && !entry.fold.silent { return int(entry.fold.start_line), index, true }
-	row_slots := 1 if !entry.fold.silent else 0
+	if entry.expanded && !entry.fold.silent {
+		line_count := int(entry.fold.end_line-entry.fold.start_line)
+		if row > entry.row && row <= entry.row+line_count {
+			return int(entry.fold.start_line)+row-entry.row-1, -1, true
+		}
+	}
+	row_slots := 0
+	if !entry.fold.silent {
+		row_slots = 1
+		if entry.expanded { row_slots += int(entry.fold.end_line-entry.fold.start_line) }
+	}
 	removed := entry.removed_before+int(entry.fold.end_line-entry.fold.start_line)-row_slots
 	return row+removed, -1, true
 }
@@ -101,8 +116,17 @@ semantic_zoom_rows_row_for_source :: proc(rows: ^Semantic_Zoom_Rows, source_line
 	index := semantic_zoom_rows_fold_before_source(rows, source_line)
 	if index < 0 { return source_line }
 	entry := rows.folds[index]
-	if u64(source_line) < entry.fold.end_line { return entry.row }
-	row_slots := 1 if !entry.fold.silent else 0
+	if u64(source_line) < entry.fold.end_line {
+		if entry.expanded && !entry.fold.silent {
+			return entry.row+1+source_line-int(entry.fold.start_line)
+		}
+		return entry.row
+	}
+	row_slots := 0
+	if !entry.fold.silent {
+		row_slots = 1
+		if entry.expanded { row_slots += int(entry.fold.end_line-entry.fold.start_line) }
+	}
 	removed := entry.removed_before+int(entry.fold.end_line-entry.fold.start_line)-row_slots
 	return source_line-removed
 }
@@ -110,13 +134,30 @@ semantic_zoom_rows_row_for_source :: proc(rows: ^Semantic_Zoom_Rows, source_line
 semantic_zoom_rows_hidden :: proc(rows: ^Semantic_Zoom_Rows, source_line: int) -> bool {
 	if rows == nil || source_line < 0 || source_line >= rows.line_count { return false }
 	index := semantic_zoom_rows_fold_before_source(rows, source_line)
-	return index >= 0 && u64(source_line) < rows.folds[index].fold.end_line
+	return index >= 0 && u64(source_line) < rows.folds[index].fold.end_line && !rows.folds[index].expanded
 }
 
-// Indices refer to the current folds array and can shift after expansion.
+// Entries retain the immutable plan fold and its identity while locally open.
 semantic_zoom_rows_expand :: proc(rows: ^Semantic_Zoom_Rows, fold_index: int) -> bool {
 	if rows == nil || fold_index < 0 || fold_index >= len(rows.folds) { return false }
-	ordered_remove(&rows.folds, fold_index)
+	entry := &rows.folds[fold_index]
+	if entry.fold.silent || entry.expanded { return false }
+	entry.expanded = true
 	semantic_zoom_rows_recompute(rows)
 	return true
+}
+
+semantic_zoom_rows_collapse :: proc(rows: ^Semantic_Zoom_Rows, fold_index: int) -> bool {
+	if rows == nil || fold_index < 0 || fold_index >= len(rows.folds) { return false }
+	entry := &rows.folds[fold_index]
+	if entry.fold.silent || !entry.expanded { return false }
+	entry.expanded = false
+	semantic_zoom_rows_recompute(rows)
+	return true
+}
+
+semantic_zoom_rows_toggle :: proc(rows: ^Semantic_Zoom_Rows, fold_index: int) -> bool {
+	if rows == nil || fold_index < 0 || fold_index >= len(rows.folds) || rows.folds[fold_index].fold.silent { return false }
+	if rows.folds[fold_index].expanded { return semantic_zoom_rows_collapse(rows, fold_index) }
+	return semantic_zoom_rows_expand(rows, fold_index)
 }

@@ -1185,11 +1185,23 @@ editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^
 	if app == nil || rt == nil || view == nil || !view.dragging_selection || !view.drag_pointer_valid { return false }
 	document, document_found := find_document(&app.backend.state, view.document_id)
 	if !document_found || document.id != app.backend.state.active { return false }
-	window, authoritative := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
-	if !authoritative { return false }
+	window: ^Editor_Window
+	source_byte: u64
+	affinity: alicorn.Text_Affinity
+	hit := false
+	semantic := semantic_zoom_active(view)
+	if semantic {
+		source_byte, affinity, window, hit = semantic_zoom_pointer_context(app, rt, view, view.drag_pointer_x, view.drag_pointer_y, true)
+		if window == nil || window.editor_revision != document.editor_revision { hit = false }
+	} else {
+		if view.zoom.depth > 0 { return false }
+		authoritative: bool
+		window, authoritative = editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+		if !authoritative { return false }
+		source_byte, affinity, hit = editor_source_at_pointer(app, rt, view.drag_pointer_x, view.drag_pointer_y, true)
+	}
 	old_anchor, old_caret := view.selection_anchor, view.caret_byte
 	old_anchor_affinity, old_caret_affinity := view.anchor_affinity, view.caret_affinity
-	source_byte, affinity, hit := editor_source_at_pointer(app, rt, view.drag_pointer_x, view.drag_pointer_y, true)
 	selection_scope: alicorn.Application_Mutation_Scope
 	if hit {
 		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
@@ -1199,6 +1211,10 @@ editor_update_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^
 			)
 		}
 		_ = editor_extend_pointer_selection(view, window, source_byte, affinity)
+		if semantic && semantic_zoom_selection_crosses_fold(view, min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)) {
+			view.selection_anchor, view.caret_byte = old_anchor, old_caret
+			view.anchor_affinity, view.caret_affinity = old_anchor_affinity, old_caret_affinity
+		}
 	}
 	outside, dx, dy := editor_pointer_outside_viewport(rt, app.editor_scroll_owner, view.drag_pointer_x, view.drag_pointer_y)
 	scrolled := false
@@ -1304,15 +1320,48 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	view := &app.editor_views[view_index]
 	if view.zoom.depth > 0 && !semantic_zoom_active(view) { semantic_zoom_reveal_input(app, rt, view) }
 	if semantic_zoom_active(view) {
-		if source, affinity, ok := semantic_zoom_pointer_source(app, rt, view, event.x, event.y); ok {
-			view.selection_anchor, view.caret_byte = source, source
-			view.anchor_affinity, view.caret_affinity = affinity, affinity
-			view.zoom.anchor_byte = source
-			for &page in view.zoom.windows {
-				if line, found := editor_line_for_source(&page, source); found { view.zoom.anchor_line = line.logical_line; break }
+		if source, affinity, window, ok := semantic_zoom_pointer_context(app, rt, view, event.x, event.y); ok && window != nil {
+			old_anchor, old_caret := view.selection_anchor, view.caret_byte
+			old_anchor_affinity, old_caret_affinity := view.anchor_affinity, view.caret_affinity
+			editor_undo_group_break(view)
+			view.pending_document_edge, view.pending_document_edge_shift = .None, false
+			selection_scope: alicorn.Application_Mutation_Scope
+			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+				selection_scope = alicorn.application_mutation_begin(
+					rt, "active editor selection", .Description, app.selection_diagnostic_revision,
+					"semantic zoom pointer selection placed",
+				)
 			}
-			_ = alicorn.focus(rt, app.editor_scroll_owner)
-			alicorn.invalidate_root(rt, "Scratchpad selected an authoritative source position in semantic zoom")
+			if editor_apply_pointer_selection(view, window, source, affinity, event.click_count, event.modifiers.shift) {
+				if event.modifiers.shift && semantic_zoom_selection_crosses_fold(view,
+					min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)) {
+					view.selection_anchor, view.caret_byte = old_anchor, old_caret
+					view.anchor_affinity, view.caret_affinity = old_anchor_affinity, old_caret_affinity
+					set_error(app, "Expand collapsed content before selecting across it.")
+					alicorn.invalidate_root(rt, "Scratchpad refused a selection spanning hidden semantic content")
+					when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+						alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+					}
+					return
+				}
+				view.zoom.anchor_byte = view.caret_byte
+				if line, found := editor_line_for_source(window, view.caret_byte); found { view.zoom.anchor_line = line.logical_line }
+				view.dragging_selection = true
+				view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
+				view.drag_pointer_valid = true
+				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+					if old_anchor != view.selection_anchor || old_caret != view.caret_byte {
+						application_selection_diagnostic_revision_advance(app)
+					}
+					alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+				}
+				_ = alicorn.focus(rt, app.editor_scroll_owner)
+				alicorn.invalidate_root(rt, "Scratchpad selected an authoritative source position in semantic zoom")
+			} else {
+				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
+					alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
+				}
+			}
 		}
 		return
 	}
@@ -1365,6 +1414,7 @@ editor_text_key :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
+	if semantic_zoom_navigation_key(app, rt, owner, document, view, event) { return true }
 	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches { return false }

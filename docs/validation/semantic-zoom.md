@@ -27,7 +27,7 @@ dependency wrapper; no candidate override is needed.
 | --- | --- |
 | `go test -tags treesitter_release ./...` | Passed |
 | Bridge module tests with `treesitter_release` | Passed in the integration runner |
-| `sh tools/alicorn.sh test --odin <compiler>` | Passed: frontend type check, 13 bridge tests, 189 frontend tests, memory tracking enabled |
+| `sh tools/alicorn.sh test --odin <compiler>` | Passed: frontend type check, 13 bridge tests, 191 frontend tests, memory tracking enabled |
 | Windows AMD64 frontend `odin check` | Passed; Windows execution not performed |
 | Alicorn `tools/check.sh` | Passed: examples, foundation, 245 runtime and 35 theme tests, theme tooling |
 | Alicorn `tools/test.sh` | Passed: foundation, runtime/theme, 108 native tests, 5 new scroll-capture tests, text-input contract and restoration subprocesses |
@@ -36,7 +36,9 @@ dependency wrapper; no candidate override is needed.
 
 The regressions include byte/selection and shaped viewport round trips in Go
 and wrapped Markdown, source pages separated by more than a normal window,
-local expansion, exact table-cell hits, same-pump stale input, equal-revision
+reversible local expansion, reduced-view arrow navigation, visible-word and
+drag selection, refusal to select across a collapsed range, exact table-cell
+hits, same-pump stale input, equal-revision
 document replacement, idle optimistic-window replacement, and releasing distant
 expansion anchors so subsequent scrolling can proceed. A poison allocator forces
 eviction across more than 64 source pages before reconciliation and verifies
@@ -102,7 +104,9 @@ unless explicitly recorded as performed.
 | Pointer over a marker/empty space | Uses the existing semantic anchor; does not jump to file start | Pending physical test |
 | Nonzero scroll; top/bottom of file | Source identity survives; geometric clamping only at document edges | Pending physical test |
 | Wrapped prose; narrow window; font zoom | Source rows remeasure and selection stays at the same source bytes | Pending physical test |
-| Click collapsed range | Expands that range in place, without a second document surface | Pending physical test |
+| Click collapsed range; click disclosure again | Expands and collapses that range in place without changing global depth | Pending physical test |
+| Arrow/word/page navigation in a reduced view | Follows visible rows and keeps the current detail level | Pending physical test |
+| Click, double-click, triple-click, drag, or Shift-select | Selects visible source; refuses a selection that crosses hidden bytes | Pending physical test |
 | Type/paste with hidden caret | Returns to Full, exposes the exact source selection, then edits those bytes | Pending physical test |
 | Japanese/Chinese/Korean IME | Composition starts at the revealed source caret; candidate placement and committed bytes remain correct | Pending physical test |
 | Pending edit/composition/selection drag | Zoom is refused while the input is outstanding | Pending physical test |
@@ -115,10 +119,12 @@ unless explicitly recorded as performed.
 ## Scope limits
 
 Folds cover whole logical source lines; trailing text on the opening sentence's
-line remains visible. Editing and caret-key navigation return to Full in this
-first experiment. There is no animation, pinch recognizer, automatic fisheye
-layout, or arbitrary manual fold-collapse UI. Very long chunked source lines
-return to the ordinary source lane, which already supports chunk navigation.
+line remains visible. Editing operations still return to Full in this first
+experiment; navigation and selection work in reduced views. There is no
+animation, pinch recognizer, automatic fisheye layout, or arbitrary manual
+fold-collapse UI beyond toggling the semantic disclosures. Very long chunked
+source lines return to the ordinary source lane, which already supports chunk
+navigation.
 
 Plans are built once per explicit transition and may scan all source bytes and
 structural entries. Visible rendering is bounded, but initial plan construction

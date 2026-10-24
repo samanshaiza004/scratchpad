@@ -158,9 +158,17 @@ semantic_zoom_test_source :: proc(extension: string) -> string {
 
 semantic_zoom_test_hidden :: proc(view: ^Editor_View_State, source: u64) -> bool {
 	for entry in view.zoom.rows.folds {
-		if source >= entry.fold.start_byte && source < entry.fold.end_byte { return true }
+		if source >= entry.fold.start_byte && source < entry.fold.end_byte { return !entry.expanded }
 	}
 	return false
+}
+
+semantic_zoom_test_line_at_source :: proc(view: ^Editor_View_State, source: u64) -> (text: string, logical_line: u64, ok: bool) {
+	if view == nil { return }
+	for &window in view.zoom.windows {
+		if line, found := editor_line_for_source(&window, source); found { return line.display, line.logical_line, true }
+	}
+	return
 }
 
 // Read the byte's actual shaped screen position, independently of the zoom
@@ -338,10 +346,10 @@ test_semantic_zoom_distant_source_rows_and_fold_expansion_stay_in_place :: proc(
 	}
 	testing.expect(t, marker_found, "hidden source must have a visible expansion action")
 	if !marker_found { return }
-	// semantic_zoom_expand is the production action behind the fold button.
-	semantic_zoom_expand(&f.app, &f.rt, f.document_id, revision+1, fold.start_line)
+	// semantic_zoom_toggle_fold is the production action behind the disclosure button.
+	semantic_zoom_toggle_fold(&f.app, &f.rt, f.document_id, revision+1, fold.start_line)
 	testing.expect(t, semantic_zoom_test_hidden(view, fold.start_byte), "a stale fold action must not expand a different source revision")
-	semantic_zoom_expand(&f.app, &f.rt, f.document_id, revision, fold.start_line)
+	semantic_zoom_toggle_fold(&f.app, &f.rt, f.document_id, revision, fold.start_line)
 	semantic_zoom_test_settle(&f)
 	revealed, revealed_found, body_found := f32(0), false, false
 	for target in f.app.editor_row_targets {
@@ -353,7 +361,106 @@ test_semantic_zoom_distant_source_rows_and_fold_expansion_stay_in_place :: proc(
 	}
 	testing.expect(t, view.zoom.depth == 3 && !semantic_zoom_test_hidden(view, fold.start_byte) && body_found && revealed_found && abs(revealed-marker_y) < 2,
 		"expanding a fold must reveal its original source at the marker's screen position without returning the document to Full")
+	view.caret_byte, view.selection_anchor = fold.start_byte+2, fold.start_byte
+	view.caret_affinity, view.anchor_affinity = .Leading, .Leading
+	semantic_zoom_toggle_fold(&f.app, &f.rt, f.document_id, revision, fold.start_line)
+	semantic_zoom_test_settle(&f)
+	testing.expect(t, view.zoom.depth == 3 && semantic_zoom_test_hidden(view, fold.start_byte) &&
+		view.caret_byte == fold.start_byte && view.selection_anchor == fold.start_byte,
+		"collapsing a region under the caret returns focus to its disclosure boundary without changing global detail")
+	if editor_text_key(rawptr(&f.app), &f.rt, f.app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Down}) {
+		semantic_zoom_test_settle(&f)
+		_, line_number, line_found := semantic_zoom_test_line_at_source(view, view.caret_byte)
+		testing.expect(t, line_found && view.zoom.depth == 3 && !semantic_zoom_rows_hidden(&view.zoom.rows, int(line_number)),
+			"Down from a collapsed disclosure continues through visible rows without opening Full source")
+	} else {
+		testing.expect(t, false, "Down from a collapsed disclosure is handled in reduced detail")
+	}
 	semantic_zoom_test_unchanged(&f, t, source, revision, dirty)
+}
+
+@(test)
+test_semantic_zoom_keyboard_navigation_and_word_selection_stay_at_current_depth :: proc(t: ^testing.T) {
+	source := semantic_zoom_test_source("go")
+	f: Semantic_Zoom_Test_Editor
+	defer semantic_zoom_test_destroy(&f, t)
+	if !semantic_zoom_test_open(&f, t, "go", source) { return }
+	view := semantic_zoom_test_view(&f)
+	if !semantic_zoom_set_depth(&f.app, &f.rt, 3, 0) { testing.expect(t, false); return }
+	semantic_zoom_test_settle(&f)
+	word := u64(strings.index(source, "func Section0")+len("func "))
+	rect, _, positioned := semantic_zoom_test_position(&f, word)
+	testing.expect(t, positioned, "the function name must have source-aligned geometry in Overview")
+	if !positioned { return }
+	editor_pointer(rawptr(&f.app), &f.rt, alicorn.Pointer_Event{kind=.Down, button=1, click_count=2, x=rect.x+0.1, y=rect.y+rect.h*0.5}, f.app.editor_scroll_owner)
+	start, end := min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)
+	testing.expect(t, view.zoom.depth == 3 && source[int(start):int(end)] == "Section0",
+		"double-click selects the visible source word without leaving semantic zoom")
+	editor_pointer(rawptr(&f.app), &f.rt, alicorn.Pointer_Event{kind=.Up, button=1, x=rect.x, y=rect.y}, 0)
+
+	word_end := word+u64(len("Section0"))
+	end_rect, _, end_positioned := semantic_zoom_test_position(&f, word_end)
+	testing.expect(t, end_positioned, "the word end must remain a source-aligned pointer target")
+	if end_positioned {
+		drag_down := alicorn.Pointer_Event{kind=.Down, button=1, click_count=1, x=rect.x+0.1, y=rect.y+rect.h*0.5}
+		drag_target := alicorn.process_pointer(&f.rt, drag_down)
+		editor_pointer(rawptr(&f.app), &f.rt, drag_down, drag_target)
+		drag_move := alicorn.Pointer_Event{kind=.Move, x=end_rect.x+0.1, y=end_rect.y+end_rect.h*0.5}
+		drag_move_target := alicorn.process_pointer(&f.rt, drag_move)
+		editor_pointer(rawptr(&f.app), &f.rt, drag_move, drag_move_target)
+		drag_start, drag_end := min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)
+		testing.expect(t, view.zoom.depth == 3 && drag_start == word && drag_end == word_end,
+			"drag selection tracks the exact visible source span while preserving semantic zoom")
+		drag_up := alicorn.Pointer_Event{kind=.Up, button=1, x=end_rect.x, y=end_rect.y}
+		_ = alicorn.process_pointer(&f.rt, drag_up)
+		editor_pointer(rawptr(&f.app), &f.rt, drag_up, 0)
+	}
+
+	second_word := u64(strings.index(source, "func Section1")+len("func "))
+	second_rect, _, second_positioned := semantic_zoom_test_position(&f, second_word)
+	testing.expect(t, second_positioned, "the next visible function name must have source-aligned pointer geometry")
+	if second_positioned {
+		reset := alicorn.Pointer_Event{kind=.Down, button=1, click_count=1, x=rect.x+0.1, y=rect.y+rect.h*0.5}
+		reset_target := alicorn.process_pointer(&f.rt, reset)
+		editor_pointer(rawptr(&f.app), &f.rt, reset, reset_target)
+		_ = alicorn.process_pointer(&f.rt, alicorn.Pointer_Event{kind=.Up, button=1, x=rect.x, y=rect.y})
+		before_anchor, before_caret := view.selection_anchor, view.caret_byte
+		shift_click := alicorn.Pointer_Event{kind=.Down, button=1, click_count=1,
+			x=second_rect.x+0.1, y=second_rect.y+second_rect.h*0.5, modifiers=alicorn.Input_Modifiers{shift=true}}
+		shift_target := alicorn.process_pointer(&f.rt, shift_click)
+		editor_pointer(rawptr(&f.app), &f.rt, shift_click, shift_target)
+		testing.expect(t, view.zoom.depth == 3 && view.selection_anchor == before_anchor && view.caret_byte == before_caret,
+			"Shift-click refuses to create a selection that silently crosses a collapsed fold")
+		_ = alicorn.process_pointer(&f.rt, alicorn.Pointer_Event{kind=.Up, button=1, x=second_rect.x, y=second_rect.y})
+		editor_pointer(rawptr(&f.app), &f.rt, alicorn.Pointer_Event{kind=.Up, button=1}, 0)
+	}
+
+	want_line := "func Section1()"
+	found_next := false
+	for _ in 0..<16 {
+		text, logical_line, line_found := semantic_zoom_test_line_at_source(view, view.caret_byte)
+		if line_found && strings.contains(text, want_line) {
+			found_next = true
+			break
+		}
+		handled := editor_text_key(rawptr(&f.app), &f.rt, f.app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Down})
+		if !handled { break }
+		semantic_zoom_test_settle(&f)
+		text, logical_line, line_found = semantic_zoom_test_line_at_source(view, view.caret_byte)
+		testing.expect(t, view.zoom.depth == 3 && line_found && !semantic_zoom_rows_hidden(&view.zoom.rows, int(logical_line)),
+			"each arrow destination is a visible source row at the existing detail level")
+	}
+	testing.expect(t, found_next,
+		"Down navigates across the collapsed body to the next visible function signature")
+	document, found := find_document(&f.app.backend.state, f.document_id)
+	testing.expect(t, found && semantic_zoom_plan_matches(view, document) && view.zoom.plan.depth == 3,
+		"caret navigation reuses the same revision-matched semantic plan")
+	if editor_text_key(rawptr(&f.app), &f.rt, f.app.editor_scroll_owner, host.Application_Text_Key_Event{key=.Up}) {
+		semantic_zoom_test_settle(&f)
+		testing.expect(t, view.zoom.depth == 3, "Up also preserves the semantic detail level")
+	} else {
+		testing.expect(t, false, "Up is handled inside the reduced source view")
+	}
 }
 
 @(test)

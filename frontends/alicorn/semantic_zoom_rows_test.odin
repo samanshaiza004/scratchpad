@@ -68,6 +68,39 @@ test_semantic_zoom_rows_boundaries_adjacent_and_single_line :: proc(t: ^testing.
 }
 
 @(test)
+test_semantic_zoom_rows_toggle_preserves_fold_identity_and_mapping :: proc(t: ^testing.T) {
+	folds := [?]bridge.Semantic_Zoom_Fold{
+		{start_line=1, end_line=4, start_byte=10, end_byte=40, label="first"},
+		{start_line=4, end_line=7, start_byte=40, end_byte=70, label="second"},
+		{start_line=8, end_line=10, start_byte=80, end_byte=100, label="last"},
+	}
+	rows: Semantic_Zoom_Rows
+	if !semantic_zoom_rows_init(&rows, folds[:], 11) { testing.expect(t, false); return }
+	defer semantic_zoom_rows_destroy(&rows)
+	original_count := rows.row_count
+	original_start := rows.folds[0].fold.start_line
+	original_label := rows.folds[0].fold.label
+	testing.expect(t, semantic_zoom_rows_toggle(&rows, 0) && len(rows.folds) == 3,
+		"opening a region must preserve its base fold entry and identity")
+	testing.expect(t, rows.folds[0].expanded && rows.row_count == original_count+3,
+		"expanded source lines become visible alongside a reversible disclosure row")
+	for source in 1..<4 {
+		row := semantic_zoom_rows_row_for_source(&rows, source)
+		mapped, marker, ok := semantic_zoom_rows_source_at(&rows, row)
+		testing.expect(t, ok && mapped == source && marker == -1 && !semantic_zoom_rows_hidden(&rows, source),
+			"expanded lines map to their own ordinary presentation rows")
+	}
+	_, first_marker, marker_ok := semantic_zoom_rows_source_at(&rows, rows.folds[0].row)
+	testing.expect(t, marker_ok && first_marker == 0,
+		"the same disclosure row remains available while the region is open")
+	testing.expect(t, semantic_zoom_rows_toggle(&rows, 0) && !rows.folds[0].expanded && rows.row_count == original_count,
+		"the disclosure row collapses back to the exact original row mapping")
+	testing.expect(t, rows.folds[0].fold.start_line == original_start && rows.folds[0].fold.label == original_label,
+		"collapsing restores the original fold metadata instead of rebuilding or losing it")
+	semantic_zoom_rows_test_roundtrip(t, &rows)
+}
+
+@(test)
 test_semantic_zoom_rows_silent_whitespace_uses_no_marker_row :: proc(t: ^testing.T) {
 	folds := [?]bridge.Semantic_Zoom_Fold{
 		{start_line=0, end_line=1, silent=true},
@@ -93,8 +126,8 @@ test_semantic_zoom_rows_silent_whitespace_uses_no_marker_row :: proc(t: ^testing
 	}
 	testing.expect(t, semantic_zoom_rows_hidden(&rows, 0) && semantic_zoom_rows_hidden(&rows, 5) &&
 		semantic_zoom_rows_hidden(&rows, 6), "source whitespace remains in the document while its display rows disappear")
-	testing.expect(t, semantic_zoom_rows_expand(&rows, 1) && rows.row_count == 5,
-		"expanding meaningful content preserves silent whitespace elision")
+	testing.expect(t, semantic_zoom_rows_expand(&rows, 1) && rows.row_count == 6,
+		"expanding meaningful content preserves its disclosure row and silent whitespace elision")
 	semantic_zoom_rows_test_roundtrip(t, &rows)
 }
 
@@ -125,15 +158,13 @@ test_semantic_zoom_rows_million_lines_sparse_geometry :: proc(t: ^testing.T) {
 }
 
 // A linear source walk is an independent oracle for the compact binary searches.
-// Also run it after each expansion, when all following prefixes must change.
 semantic_zoom_rows_test_roundtrip :: proc(t: ^testing.T, rows: ^Semantic_Zoom_Rows) {
 	source, row, fold_index := 0, 0, 0
 	for source < rows.line_count {
-		expected_fold := -1
-		next_source := source+1
 		if fold_index < len(rows.folds) && int(rows.folds[fold_index].fold.start_line) == source {
-			if rows.folds[fold_index].fold.silent {
-				next_source = int(rows.folds[fold_index].fold.end_line)
+			entry := rows.folds[fold_index]
+			next_source := int(entry.fold.end_line)
+			if entry.fold.silent {
 				for hidden_source in source..<next_source {
 					testing.expect(t, semantic_zoom_rows_row_for_source(rows, hidden_source) == row &&
 						semantic_zoom_rows_hidden(rows, hidden_source),
@@ -143,21 +174,36 @@ semantic_zoom_rows_test_roundtrip :: proc(t: ^testing.T, rows: ^Semantic_Zoom_Ro
 				fold_index += 1
 				continue
 			}
-			expected_fold = fold_index
-			next_source = int(rows.folds[fold_index].fold.end_line)
+			actual_source, actual_fold, ok := semantic_zoom_rows_source_at(rows, row)
+			testing.expect(t, ok && actual_source == source && actual_fold == fold_index,
+				"every non-silent fold retains its disclosure row")
+			if entry.expanded {
+				row += 1
+				for visible_source in source..<next_source {
+					actual_source, actual_fold, visible_ok := semantic_zoom_rows_source_at(rows, row)
+					testing.expect(t, visible_ok && actual_source == visible_source && actual_fold == -1 &&
+						semantic_zoom_rows_row_for_source(rows, visible_source) == row &&
+						!semantic_zoom_rows_hidden(rows, visible_source),
+						"expanded source has its own visible row after its disclosure control")
+					row += 1
+				}
+			} else {
+				for hidden_source in source..<next_source {
+					testing.expect(t, semantic_zoom_rows_row_for_source(rows, hidden_source) == row &&
+						semantic_zoom_rows_hidden(rows, hidden_source),
+						"collapsed source maps to its disclosure control")
+				}
+				row += 1
+			}
+			source = next_source
 			fold_index += 1
+			continue
 		}
 		actual_source, actual_fold, ok := semantic_zoom_rows_source_at(rows, row)
-		testing.expect(t, ok && actual_source == source && actual_fold == expected_fold,
-			"each row must map to the original source ID or the start of its hidden interval")
-		for hidden_source in source..<next_source {
-			mapped_row := semantic_zoom_rows_row_for_source(rows, hidden_source)
-			testing.expect(t, mapped_row == row)
-			testing.expect(t, semantic_zoom_rows_hidden(rows, hidden_source) == (expected_fold >= 0))
-			roundtrip_source, roundtrip_fold, roundtrip_ok := semantic_zoom_rows_source_at(rows, mapped_row)
-			testing.expect(t, roundtrip_ok && roundtrip_source == source && roundtrip_fold == expected_fold)
-		}
-		source = next_source
+		testing.expect(t, ok && actual_source == source && actual_fold == -1 &&
+			semantic_zoom_rows_row_for_source(rows, source) == row && !semantic_zoom_rows_hidden(rows, source),
+			"ordinary rows retain their original source ID")
+		source += 1
 		row += 1
 	}
 	testing.expect(t, row == rows.row_count && fold_index == len(rows.folds))
@@ -186,13 +232,16 @@ test_semantic_zoom_rows_generated_roundtrips_and_expansions :: proc(t: ^testing.
 			return
 		}
 		semantic_zoom_rows_test_roundtrip(t, &rows)
-		for len(rows.folds) > 0 {
-			state = state*6364136223846793005+1
-			index := int((state >> 32)%u64(len(rows.folds)))
+		for index in 0..<len(rows.folds) {
+			if rows.folds[index].fold.silent { continue }
 			testing.expect(t, semantic_zoom_rows_expand(&rows, index))
 			semantic_zoom_rows_test_roundtrip(t, &rows)
 		}
-		testing.expect(t, rows.row_count == line_count)
+		for index in 0..<len(rows.folds) {
+			if rows.folds[index].fold.silent { continue }
+			testing.expect(t, semantic_zoom_rows_toggle(&rows, index))
+			semantic_zoom_rows_test_roundtrip(t, &rows)
+		}
 		semantic_zoom_rows_destroy(&rows)
 	}
 }
@@ -251,14 +300,15 @@ test_semantic_zoom_rows_borrows_labels_copies_ranges_and_expands :: proc(t: ^tes
 		rows.folds[0].fold.end_byte == 40 && rows.folds[0].fold.label == "Fold",
 		"numeric values must be copied while label bytes remain borrowed")
 	testing.expect(t, semantic_zoom_rows_expand(&rows, 1))
-	testing.expect(t, len(rows.folds) == 2 && rows.row_count == 8)
-	testing.expect(t, rows.folds[1].row == 6 && rows.folds[1].removed_before == 2)
+	testing.expect(t, len(rows.folds) == 3 && rows.row_count == 9)
+	testing.expect(t, rows.folds[2].row == 7 && rows.folds[2].removed_before == 1)
 	testing.expect(t, !semantic_zoom_rows_hidden(&rows, 4) && !semantic_zoom_rows_hidden(&rows, 6))
 	semantic_zoom_rows_test_roundtrip(t, &rows)
 	testing.expect(t, semantic_zoom_rows_expand(&rows, 0))
-	testing.expect(t, rows.folds[0].row == 8 && rows.folds[0].removed_before == 0)
+	testing.expect(t, rows.row_count == 12 && rows.folds[1].row == 5 && rows.folds[1].removed_before == -1)
 	semantic_zoom_rows_test_roundtrip(t, &rows)
-	testing.expect(t, semantic_zoom_rows_expand(&rows, 0) && rows.row_count == 11)
+	testing.expect(t, semantic_zoom_rows_toggle(&rows, 0) && rows.row_count == 9)
+	testing.expect(t, semantic_zoom_rows_toggle(&rows, 1) && rows.row_count == 6)
 	semantic_zoom_rows_test_roundtrip(t, &rows)
 	semantic_zoom_rows_destroy(&rows)
 	testing.expect(t, len(rows.folds) == 0 && cap(rows.folds) == 0 && rows.line_count == 0 && rows.row_count == 0)

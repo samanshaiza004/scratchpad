@@ -17,8 +17,9 @@ The former Full / Skim / Outline button row is absent from the normal editor.
 - Existing font-size zoom commands keep their behavior.
 
 The status bar identifies **Full / Focus / Skim / Overview**. A collapsed range
-shows its original line interval and an **expand** action. Expanding it changes
-that range in place. Another global zoom transition resets local expansions.
+shows its original line interval and an **expand** action. The same disclosure
+collapses it again after expansion. Local folds retain their identity within
+the current depth; another global zoom transition resets them.
 
 | Depth | Markdown / prose | Supported code |
 | --- | --- | --- |
@@ -47,11 +48,20 @@ represents that position. Returning to Full resolves the original byte through
 the shaped source row. Geometry is clamped at document edges; scroll percentages
 are never used to translate between representations.
 
-Typing, IME input, paste, or caret-key navigation first returns to Full and loads
-the bounded source window for the original caret. The input then follows the
-existing source edit path. An edit/reload invalidates the old folding coordinates.
-The editor stays Full afterward until another explicit zoom, so parser completion
-cannot unexpectedly fold the file while someone types. Save operates on the same
+Pointer placement and selection operate on the visible source while preserving
+the current depth. Single click places the caret, double-click selects a word,
+triple-click selects a line, and drag selection stays in source-byte coordinates.
+Arrow, word, line, and page navigation follow visible presentation rows and skip
+collapsed ranges; they do not rebuild the semantic plan or switch to Full. A
+selection that would cross hidden source is refused until that range is expanded.
+The local disclosure can then be used to collapse it again without changing the
+document's global depth.
+
+Editing keys, IME input, and paste first return to Full and load the bounded
+source window for the original caret. The input then follows the existing source
+edit path. An edit/reload invalidates the old folding coordinates. The editor
+stays Full afterward until another explicit zoom, so parser completion cannot
+unexpectedly fold the file while someone types. Save operates on the same
 document at every depth; Undo/Redo use the existing document history.
 
 Zoom refuses a transition while an edit, IME composition, or selection drag is

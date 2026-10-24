@@ -207,7 +207,7 @@ test_semantic_zoom_safety_distant_expansion_finishes_anchor_and_allows_scroll ::
 	testing.expect(t, far_line >= f.app.editor_window.end_line && len(view.zoom.rows.folds) > 1,
 		"the expanded fold must be outside the base page while another section remains collapsed")
 	if far_line < f.app.editor_window.end_line { return }
-	semantic_zoom_expand(&f.app, &f.rt, f.document_id, document.editor_revision, far_line)
+	semantic_zoom_toggle_fold(&f.app, &f.rt, f.document_id, document.editor_revision, far_line)
 	semantic_zoom_test_settle(&f)
 	testing.expect(t, semantic_zoom_active(view) && !view.zoom.anchor_pending,
 		"an expanded distant source page must resolve and clear its pending anchor")

@@ -532,7 +532,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		if semantic_zoom_active(view) {
 			_, fold_index, mapped := semantic_zoom_rows_source_at(&view.zoom.rows, position)
 			if mapped && fold_index >= 0 {
-				semantic_zoom_render_fold(app, ui, document, view.zoom.rows.folds[fold_index].fold, alicorn.virtual_list_height_index_item_height(geometry_index, position))
+				semantic_zoom_render_fold(app, ui, document, view.zoom.rows.folds[fold_index], alicorn.virtual_list_height_index_item_height(geometry_index, position))
 				continue
 			}
 		}

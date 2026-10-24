@@ -17,7 +17,7 @@ Deferred_Action_Kind :: enum {
 	Save_Document,
 	Conflict_Reload,
 	Conflict_Keep_Mine,
-	Expand_Semantic_Fold,
+	Toggle_Semantic_Fold,
 }
 
 Deferred_Action :: struct {
@@ -162,8 +162,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		quick_open_open_path(app, rt, action.value)
 	case .Save_As_Path:
 		save_as_to_path(app, rt, action.value, action.path)
-	case .Expand_Semantic_Fold:
-		semantic_zoom_expand(app, rt, action.document_id, action.editor_revision, action.source_start)
+	case .Toggle_Semantic_Fold:
+		semantic_zoom_toggle_fold(app, rt, action.document_id, action.editor_revision, action.source_start)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -248,8 +248,8 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			editor_resolve_conflict_now(app, rt, action.value, false)
 		case .Conflict_Keep_Mine:
 			editor_resolve_conflict_now(app, rt, action.value, true)
-		case .Expand_Semantic_Fold:
-			semantic_zoom_expand(app, rt, action.document_id, action.editor_revision, action.source_start)
+		case .Toggle_Semantic_Fold:
+			semantic_zoom_toggle_fold(app, rt, action.document_id, action.editor_revision, action.source_start)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(

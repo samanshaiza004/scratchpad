@@ -361,32 +361,48 @@ semantic_zoom_resolve_anchor :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Edi
 	return offset, true
 }
 
-semantic_zoom_expand :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string, revision, start_line: u64) {
+semantic_zoom_toggle_fold :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string, revision, start_line: u64) {
 	if document_id != app.backend.state.active { return }
 	i := editor_view_find(app.editor_views[:], document_id)
 	if i < 0 { return }
 	view := &app.editor_views[i]
-	if !semantic_zoom_active(view) || view.zoom.plan.revision != revision { return }
+	document, document_found := find_document(&app.backend.state, document_id)
+	if !document_found || !semantic_zoom_active(view) || !semantic_zoom_plan_matches(view, document) || view.zoom.plan.revision != revision { return }
 	for fold, index in view.zoom.rows.folds {
 		if fold.fold.start_line != start_line { continue }
 		scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
 		view.zoom.anchor_line, view.zoom.anchor_byte = fold.fold.start_line, fold.fold.start_byte
 		view.zoom.anchor_offset = alicorn.virtual_list_height_index_item_top(&view.zoom.index, fold.row)-scroll.offset_y
 		view.zoom.anchor_in_line, view.zoom.anchor_pending = 0, true
-		_ = semantic_zoom_rows_expand(&view.zoom.rows, index)
+		collapsing := fold.expanded
+		if !semantic_zoom_rows_toggle(&view.zoom.rows, index) { return }
+		if collapsing {
+			selection_start := min(view.selection_anchor, view.caret_byte)
+			selection_end := max(view.selection_anchor, view.caret_byte)
+			if (view.caret_byte >= fold.fold.start_byte && view.caret_byte < fold.fold.end_byte) ||
+			   (selection_start < fold.fold.end_byte && selection_end > fold.fold.start_byte) {
+				view.selection_anchor, view.caret_byte = fold.fold.start_byte, fold.fold.start_byte
+				view.anchor_affinity, view.caret_affinity = .Leading, .Leading
+				view.preferred_x_set = false
+			}
+		}
 		if view.zoom.index_ready { alicorn.virtual_list_height_index_destroy(&view.zoom.index); view.zoom.index_ready = false }
 		view.restore_y_pending = true
 		view.restore_token = alicorn.RESTORE_TOKEN_NONE
-		alicorn.invalidate_root(rt, "Scratchpad expanded a source fold in place")
+		alicorn.invalidate_root(rt, "Scratchpad toggled a source fold in place")
 		return
 	}
 }
 
-semantic_zoom_render_fold :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_Document, fold: bridge.Semantic_Zoom_Fold, height: f32) {
+semantic_zoom_render_fold :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_Document, entry: Semantic_Zoom_Row_Fold, height: f32) {
+	fold := entry.fold
 	label := fmt.tprintf("… %d lines hidden (%d–%d) · expand", fold.end_line-fold.start_line, fold.start_line+1, fold.end_line)
+	if entry.expanded {
+		label = fmt.tprintf("Collapse %d lines (%d–%d)", fold.end_line-fold.start_line, fold.start_line+1, fold.end_line)
+	}
 	if alicorn.button(ui, label, key=alicorn.key_string(fmt.tprintf("semantic-fold-%d-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte, fold.end_byte)), style=alicorn.layout_style(.Row, width=-1, height=height), variant=.Quiet,
 		content_style=alicorn.button_content_style(.Start, .Center, padding_x=12, padding_y=0)) {
-		_ = frame_deferred_action_schedule(app, .Expand_Semantic_Fold, document_id=document.id, editor_revision=document.editor_revision, source_start=fold.start_line)
+		_ = frame_deferred_action_schedule(app, .Toggle_Semantic_Fold, document_id=document.id, editor_revision=document.editor_revision, source_start=fold.start_line)
 	}
 }
 
@@ -445,24 +461,121 @@ semantic_zoom_scroll_capture :: proc(state: rawptr, rt: ^alicorn.Runtime, event:
 	return true
 }
 
-semantic_zoom_pointer_source :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State, x, y: f32) -> (source: u64, affinity: alicorn.Text_Affinity, ok: bool) {
-	if !semantic_zoom_active(view) { return editor_source_at_pointer(app, rt, x, y) }
+semantic_zoom_source_window_at_byte :: proc(app: ^App, view: ^Editor_View_State, document: bridge.State_Document, source: u64) -> ^Editor_Window {
+	if !semantic_zoom_plan_matches(view, document) { return nil }
+	for &window in view.zoom.windows {
+		window_end := window.start_byte+u64(len(window.source))
+		if source < window.start_byte || source > window_end || window.editor_revision != document.editor_revision { continue }
+		if _, found := editor_line_for_source(&window, source); found { return &window }
+	}
+	result := bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id,
+		anchor_byte=source, max_lines=8, max_bytes=16*1024, include_presentation=true, read_latest_after=false)
+	defer bridge.backend_command_result_destroy(&result, context.allocator)
+	if !result.ok || !result.visible_window_owned || result.visible_window.editor_revision != document.editor_revision { return nil }
+	window, ok, _ := editor_window_from_visible(&result.visible_window)
+	if !ok { return nil }
+	if editor_window_is_long_line_chunk(&window) {
+		editor_window_destroy(&window)
+		_ = frame_deferred_action_schedule(app, .Action, ACTION_SEMANTIC_FULL)
+		return nil
+	}
+	if view.zoom.windows.allocator.procedure == nil { view.zoom.windows = make([dynamic]Editor_Window, 0) }
+	if len(view.zoom.windows) >= 64 {
+		editor_window_destroy(&view.zoom.windows[0])
+		ordered_remove(&view.zoom.windows, 0)
+	}
+	append(&view.zoom.windows, window)
+	return &view.zoom.windows[len(view.zoom.windows)-1]
+}
+
+semantic_zoom_selection_crosses_fold :: proc(view: ^Editor_View_State, start, end: u64) -> bool {
+	if view == nil || start >= end { return false }
+	lo, hi := 0, len(view.zoom.rows.folds)
+	for lo < hi {
+		mid := lo+(hi-lo)/2
+		if view.zoom.rows.folds[mid].fold.end_byte <= start { lo = mid+1 } else { hi = mid }
+	}
+	for index := lo; index < len(view.zoom.rows.folds) && view.zoom.rows.folds[index].fold.start_byte < end; index += 1 {
+		entry := view.zoom.rows.folds[index]
+		if entry.expanded { continue }
+		return true
+	}
+	return false
+}
+
+semantic_zoom_pointer_context :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	view: ^Editor_View_State,
+	x, y: f32,
+	clamp_to_viewport := false,
+) -> (source: u64, affinity: alicorn.Text_Affinity, window: ^Editor_Window, ok: bool) {
+	if !semantic_zoom_active(view) { return }
 	document, current := find_document(&app.backend.state, view.document_id)
 	if !current || !semantic_zoom_plan_matches(view, document) { return }
-	for row in app.editor_row_targets {
-		node, found := alicorn.node_info(rt, row.node)
-		if !found || x < node.bounds.x || x >= node.bounds.x+node.bounds.w || y < node.bounds.y || y >= node.bounds.y+node.bounds.h { continue }
-		window := semantic_zoom_find_window(view, row.logical_line)
-		if window == nil { window = semantic_zoom_source_window(app, view, document, row.logical_line) }
-		if window == nil || window.editor_revision != document.editor_revision { return }
-		line, line_found := editor_window_line(window, row.logical_line)
-		if !line_found { return }
-		position, hit := alicorn.text_node_hit_test(rt, row.node, x, y)
-		if !hit { return }
-		display_line, display_found := editor_display_line_for_target(window, line, row)
-		if !display_found { return }
-		return editor_normalize_source_position(&display_line, editor_display_to_source(&display_line, position.byte)), position.affinity, true
+	owner, owner_found := alicorn.node_info(rt, app.editor_scroll_owner)
+	if !owner_found || owner.scroll_viewport_width <= 0 || owner.scroll_viewport_height <= 0 { return }
+	hit_x, hit_y := x, y
+	left, top := owner.bounds.x, owner.bounds.y
+	right, bottom := left+owner.scroll_viewport_width, top+owner.scroll_viewport_height
+	if clamp_to_viewport {
+		hit_x = min(max(hit_x, left), right-0.5)
+		hit_y = min(max(hit_y, top), bottom-0.5)
+	} else if hit_x < left || hit_x >= right || hit_y < top || hit_y >= bottom {
+		return
 	}
+	best_distance := f32(1e30)
+	best_line: u64
+	best_y := hit_y
+	for target in app.editor_row_targets {
+		node, found := alicorn.node_info(rt, target.node)
+		if !found || node.bounds.h <= 0 { continue }
+		if hit_y >= node.bounds.y && hit_y < node.bounds.y+node.bounds.h {
+			if !clamp_to_viewport && (hit_x < node.bounds.x || hit_x >= node.bounds.x+node.bounds.w) { continue }
+			best_line, best_y, best_distance = target.logical_line, hit_y, 0
+			break
+		}
+		if !clamp_to_viewport { continue }
+		row_y := min(max(hit_y, node.bounds.y), node.bounds.y+node.bounds.h-0.5)
+		distance := abs(hit_y-row_y)
+		if distance < best_distance {
+			best_distance, best_line, best_y = distance, target.logical_line, row_y
+		}
+	}
+	if best_distance == 1e30 || (!clamp_to_viewport && best_distance > EDITOR_ROW_HEIGHT*editor_text_scale_effective(app)) { return }
+	best_target: Editor_Row_Target
+	best_x_distance := f32(1e30)
+	best_hit_x := hit_x
+	for target in app.editor_row_targets {
+		if target.logical_line != best_line { continue }
+		node, node_found := alicorn.node_info(rt, target.node)
+		if !node_found { continue }
+		distance: f32 = 0
+		if hit_x < node.bounds.x { distance = node.bounds.x-hit_x }
+		else if hit_x >= node.bounds.x+node.bounds.w { distance = hit_x-(node.bounds.x+node.bounds.w) }
+		if !clamp_to_viewport && distance != 0 { continue }
+		if distance < best_x_distance {
+			best_x_distance = distance
+			best_target = target
+			best_hit_x = min(max(hit_x, node.bounds.x), node.bounds.x+node.bounds.w-0.5)
+		}
+	}
+	if best_x_distance == 1e30 { return }
+	window = semantic_zoom_find_window(view, best_line)
+	if window == nil { window = semantic_zoom_source_window(app, view, document, best_line) }
+	if window == nil || window.editor_revision != document.editor_revision { return 0, .Leading, nil, false }
+	line, line_found := editor_window_line(window, best_line)
+	if !line_found { return 0, .Leading, nil, false }
+	position, hit := alicorn.text_node_hit_test(rt, best_target.node, best_hit_x, best_y)
+	if !hit { return 0, .Leading, nil, false }
+	display_line, display_found := editor_display_line_for_target(window, line, best_target)
+	if !display_found { return 0, .Leading, nil, false }
+	return editor_normalize_source_position(&display_line, editor_display_to_source(&display_line, position.byte)), position.affinity, window, true
+}
+
+semantic_zoom_pointer_source :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State, x, y: f32) -> (source: u64, affinity: alicorn.Text_Affinity, ok: bool) {
+	if !semantic_zoom_active(view) { return editor_source_at_pointer(app, rt, x, y) }
+	source, affinity, _, ok = semantic_zoom_pointer_context(app, rt, view, x, y)
 	return
 }
 
