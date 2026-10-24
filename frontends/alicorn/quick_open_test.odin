@@ -62,6 +62,34 @@ test_quick_open_is_a_file_menu_command_with_primary_p_shortcut :: proc(t: ^testi
 		"Quick Open should be discoverable from the File menu with its registered action identity")
 }
 
+@(test)
+test_native_menu_descriptors_remain_available_for_keyboard_accelerators :: proc(t: ^testing.T) {
+	app: App
+	init_menus(&app)
+	native_menus := scratchpad_native_menus(app.menus[:])
+	testing.expect(t, len(native_menus) == len(app.menus),
+		"semantic menu descriptors must remain available to non-native menu hosts")
+
+	save := false
+	save_as := false
+	open := false
+	command_palette := false
+	for item in app.file_items {
+		if item.kind != .Command { continue }
+		if item.command == action_id_for(ACTION_FILE_SAVE) && item.shortcut.key == 'S' && item.shortcut.modifiers == {.Primary} { save = true }
+		if item.command == action_id_for(ACTION_FILE_SAVE_AS) && item.shortcut.key == 'S' && item.shortcut.modifiers == {.Primary, .Shift} { save_as = true }
+		if item.command == action_id_for(ACTION_FILE_OPEN) && item.shortcut.key == 'O' && item.shortcut.modifiers == {.Primary} { open = true }
+	}
+	for item in app.view_items {
+		if item.kind == .Command && item.command == action_id_for(ACTION_VIEW_COMMAND_PALETTE) &&
+		   item.shortcut.key == 'P' && item.shortcut.modifiers == {.Primary, .Shift} {
+			command_palette = true
+		}
+	}
+	testing.expect(t, save && save_as && open && command_palette,
+		"Linux keyboard accelerators must retain Save, Save As, Open, and Command Palette metadata")
+}
+
 quick_open_test_render :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build {

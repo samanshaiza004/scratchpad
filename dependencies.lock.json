@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/workbench-relief",
-    "revision": "af21f3862b2d3cd959a62373bf5e147a04a2ee77"
+    "ref": "validation/linux-nixos-mangowc-2026-10-23",
+    "revision": "7954af18adabe44583e57b2d177ac4d87fd49282"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
