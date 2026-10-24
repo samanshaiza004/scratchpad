@@ -121,9 +121,7 @@ Editor_View_State :: struct {
 	extent_revision:    u64,
 	horizontal_scroll_suspended: bool,
 	wrap_mode: Editor_Wrap_Mode,
-	semantic_window: bridge.Semantic_View_Window,
-	semantic_window_owned: bool,
-	semantic_layout: Semantic_View_Layout,
+	zoom: Editor_Semantic_Zoom,
 	restore_y_pending: bool,
 	restore_x_pending: bool,
 	restore_runtime: ^alicorn.Runtime,
@@ -316,8 +314,7 @@ editor_view_remove :: proc(views: ^[dynamic]Editor_View_State, index: int, alloc
 	if views[index].wrap_height_index_ready {
 		alicorn.virtual_list_height_index_destroy(&views[index].wrap_height_index)
 	}
-	if views[index].semantic_window_owned { bridge.Semantic_View_Window_Destroy(&views[index].semantic_window, allocator) }
-	semantic_view_layout_destroy(&views[index].semantic_layout)
+	semantic_zoom_destroy(&views[index].zoom, allocator)
 	delete(views[index].document_id, allocator)
 	ordered_remove(views, index)
 }
@@ -329,8 +326,7 @@ editor_views_destroy :: proc(views: ^[dynamic]Editor_View_State, allocator := co
 		editor_reveal_request_clear(&view.reveal_request, allocator)
 		if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window, allocator) }
 		if view.wrap_height_index_ready { alicorn.virtual_list_height_index_destroy(&view.wrap_height_index) }
-		if view.semantic_window_owned { bridge.Semantic_View_Window_Destroy(&view.semantic_window, allocator) }
-		semantic_view_layout_destroy(&view.semantic_layout)
+		semantic_zoom_destroy(&view.zoom, allocator)
 		if len(view.document_id) > 0 { delete(view.document_id, allocator) }
 	}
 	delete(views^)

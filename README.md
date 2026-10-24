@@ -24,6 +24,8 @@ Run the Alicorn integration suite with `test` instead of `run`; `build` creates 
 
 Alicorn includes draggable/reorderable document tabs, file and directory drag-and-drop in the workspace, and restrained Tree-sitter syntax highlighting for Go, TypeScript, and TSX alongside live Markdown presentation.
 
+The [semantic zoom experiment](docs/SEMANTIC_VIEWS.md) folds the editable source through Full, Focus, Skim, and Overview while preserving a source anchor. Use the View menu, command palette, or Ctrl/Cmd+Alt/Option+wheel over the editor; Settings → Editor can change or disable the wheel gesture.
+
 ## Checks
 
 ```sh
@@ -34,7 +36,7 @@ The Alicorn integration suite also runs Go/Caliber boundary tests, Odin checks, 
 
 ## Frontend history and known gaps
 
-The former Shirei and GPUI implementations are preserved at the `archive/pre-v0.1.0-frontends` branch and tag. They are not supported build targets. Remaining Alicorn gaps include the outline sidebar, fold controls, editor font-zoom controls, and expand-selection. These are recorded in the [Alicorn coverage and follow-up list](docs/frontends/alicorn/PARITY.md); native Windows/macOS validation is tracked separately from missing features.
+The former Shirei and GPUI implementations are preserved at the `archive/pre-v0.1.0-frontends` branch and tag. They are not supported build targets. Remaining Alicorn gaps include the outline sidebar, independent manual fold controls, editor font-zoom controls, and expand-selection. These are recorded in the [Alicorn coverage and follow-up list](docs/frontends/alicorn/PARITY.md); native Windows/macOS validation is tracked separately from missing features.
 
 ## Project principles
 

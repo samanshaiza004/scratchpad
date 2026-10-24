@@ -141,6 +141,7 @@ Application_Wake_Proc :: #type proc (rawptr)
 
 State_Document :: struct {
 	id:              string `json:"id"`,
+	instance_id:     u64 `json:"instance_id"`,
 	path:            string `json:"path"`,
 	status:          string `json:"status"`,
 	dirty:           bool   `json:"dirty"`,
@@ -284,6 +285,7 @@ Backend_Response :: struct {
 	workspace_files: Workspace_Files `json:"workspace_files"`,
 	save_as_conflict: Save_As_Conflict `json:"save_as_conflict"`,
 	semantic_view_window: Semantic_View_Window `json:"semantic_view_window"`,
+	semantic_zoom: Semantic_Zoom_Plan `json:"semantic_zoom"`,
 }
 
 Semantic_View_Window :: struct {
@@ -473,6 +475,7 @@ Backend_Command_Request :: struct {
 	view_density: string `json:"view_density,omitempty"`,
 	projection_first: u64 `json:"projection_first,omitempty"`,
 	projection_limit: u64 `json:"projection_limit,omitempty"`,
+	zoom_depth: int `json:"zoom_depth"`,
 }
 
 decode_state_envelope :: proc(data: []u8, allocator := context.allocator) -> (state: State_Envelope, ok: bool, message: string) {
@@ -1213,6 +1216,7 @@ Backend_Command_Result :: struct {
 	visible_window:  Visible_Window,
 	image_bytes: []u8,
 	semantic_view_window: Semantic_View_Window,
+	semantic_zoom: Semantic_Zoom_Plan,
 	code_owned:     bool,
 	message_owned:  bool,
 	command_outcome_owned: bool,
@@ -1224,6 +1228,7 @@ Backend_Command_Result :: struct {
 	visible_window_owned: bool,
 	image_bytes_owned: bool,
 	semantic_view_window_owned: bool,
+	semantic_zoom_owned: bool,
 	matches_owned: bool,
 	search_page_owned: bool,
 	workspace_files_owned: bool,
@@ -1278,6 +1283,7 @@ backend_command :: proc(
 	view_density := "",
 	projection_first: u64 = 0,
 	projection_limit: u64 = 0,
+	zoom_depth: int = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
 ) -> (result: Backend_Command_Result) {
@@ -1342,6 +1348,7 @@ backend_command :: proc(
 		view_density=view_density,
 		projection_first=projection_first,
 		projection_limit=projection_limit,
+		zoom_depth=zoom_depth,
 		has_target_byte=has_target_byte,
 		target_byte=target_byte,
 	}
@@ -1480,8 +1487,17 @@ backend_command :: proc(
 		result.semantic_view_window = window
 		result.semantic_view_window_owned = true
 	}
+	if response.ok && command == "read_semantic_zoom" {
+		plan, ok := semantic_zoom_plan_clone(response.semantic_zoom, allocator)
+		if !ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="allocation_failed", message="could not retain source visibility"}
+		}
+		result.semantic_zoom, result.semantic_zoom_owned = plan, true
+	}
 	backend_response_destroy(&response, allocator)
-	if command == "read_visible_lines" || command == "read_image" || command == "read_view_window" { return result }
+	if command == "read_visible_lines" || command == "read_image" || command == "read_view_window" || command == "read_semantic_zoom" { return result }
 	if !read_latest_after {
 		if !result.ok && result.message == "" { result.message = result.code }
 		return result
@@ -1517,6 +1533,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.editor_selection_document_id_owned { delete(result.editor_selection.document_id, allocator) }
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	if result.semantic_view_window_owned { semantic_view_window_destroy(&result.semantic_view_window, allocator) }
+	if result.semantic_zoom_owned { semantic_zoom_plan_destroy(&result.semantic_zoom, allocator) }
 	if result.image_bytes_owned { delete(result.image_bytes, allocator) }
 	if result.matches_owned { delete(result.matches, allocator) }
 	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
@@ -2437,6 +2454,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	workspace_search_page_destroy(&response.workspace_search_page, allocator)
 	directory_listing_destroy(&response.directory_listing, allocator)
 	semantic_view_window_destroy(&response.semantic_view_window, allocator)
+	semantic_zoom_plan_destroy(&response.semantic_zoom, allocator)
 	response^ = {}
 }
 

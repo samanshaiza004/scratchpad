@@ -52,11 +52,13 @@ editor_render_table_cells :: proc(
 		pipe_index += 1
 	}
 	for &cell, cell_index in table.cells {
+		cell_text := cell.display
+		if semantic_zoom_active(view) { cell_text = semantic_zoom_frame_text(rt, cell_text) }
 		cell_overflow := alicorn.Text_Overflow.Wrap
 		if table.delimiter { cell_overflow = .Clip }
 		cell_node := alicorn.text(
 			ui,
-			cell.display,
+			cell_text,
 			key=alicorn.key_u64(u64(cell_index)),
 			style=alicorn.layout_style(.Row, width=table.widths[cell_index], height=row_height, align=.Start, clip=true),
 			font=.Monospace,
@@ -236,8 +238,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		alicorn.container_end(ui)
 	}
 
-	semantic_view_controls(app, ui, rt, document, view)
-	if semantic_view_render(app, ui, document, view, semantic_view_density(document)) { return }
+	semantic_zoom_prepare(app, rt, document, view)
+	if view.reveal_request.pending { semantic_zoom_reveal_input(app, rt, view) }
 
 	window, window_matches := editor_presentation_window(
 		view,
@@ -280,6 +282,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	if view.wrap_height_index_ready {
 		_ = alicorn.virtual_list_height_index_set_count(&view.wrap_height_index, line_count)
 	}
+	semantic_zoom_sync_geometry(view, window, text_scale)
 	previous_scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
 	viewport_width, viewport_height := editor_wrap_viewport_size(app, rt, view, previous_scroll)
 	wrap_width := max(viewport_width-gutter_width-16*text_scale, 80*text_scale)
@@ -324,9 +327,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		                     view.wrap_measurement_pending_edits != view.optimistic_pending_edits ||
 		                     metadata_refresh_needed || view.viewport_anchor_pending
 		if needs_measurement {
-			before := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll_y, viewport_height)
-			anchor_line := before.first
-			anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, anchor_line)
+			before := alicorn.virtual_list_variable_metrics(editor_geometry_index(view), scroll_y, viewport_height)
+			anchor_line := editor_geometry_source_line(view, before.first)
+			anchor_top := editor_geometry_line_top(view, anchor_line)
 			anchor_byte := u64(0)
 			anchor_offset := scroll_y-anchor_top
 			if anchor_source_line, anchor_line_found := editor_window_line(window, u64(anchor_line)); anchor_line_found {
@@ -340,11 +343,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				rt, view, window, document.language, wrap_width,
 				presentation_visual, text_scale,
 			)
+			semantic_zoom_sync_geometry(view, window, text_scale)
 			new_anchor_line := anchor_line
 			if mapped_line, mapped := editor_line_for_source(window, anchor_byte); mapped {
 				new_anchor_line = int(mapped_line.logical_line)
 			}
-			new_anchor_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, new_anchor_line)
+			new_anchor_top := editor_geometry_line_top(view, new_anchor_line)
 			if previous_scroll.id != 0 {
 				scroll_y = max(new_anchor_top+anchor_offset, 0)
 				if view.restore_y_pending {
@@ -366,6 +370,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.wrap_measurement_pending_edits = view.optimistic_pending_edits
 		}
 	}
+	geometry_index := editor_geometry_index(view)
+	if anchored_y, apply_anchor := semantic_zoom_resolve_anchor(app, rt, view, window, viewport_height, document.language); apply_anchor {
+		scroll_y, view.scroll_y = anchored_y, anchored_y
+		view.restore_y_pending = true
+		view.restore_token = alicorn.RESTORE_TOKEN_NONE
+	}
 	// Source-relative destinations override a tab's saved offset long enough
 	// to realize their row; exact shaped geometry resolves after this build.
 	request := view.reveal_request
@@ -374,8 +384,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	   view.wrap_height_index_ready &&
 	   request.logical_line < u64(max(line_count, 0)) {
 		target_line := int(request.logical_line)
-		target_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, target_line)
-		target_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, target_line)
+		target_top := editor_geometry_line_top(view, target_line)
+		target_height := alicorn.virtual_list_height_index_item_height(geometry_index, editor_geometry_row(view, target_line))
 		if target_height <= 0 { target_height = EDITOR_ROW_HEIGHT*text_scale }
 		// Only move far enough to realize an offscreen logical line here. A
 		// wrapped line can exceed the viewport while its requested caret is
@@ -384,7 +394,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			desired_y, _ := editor_reveal_content_offset(
 				scroll_y, viewport_height, target_top, target_height, request.alignment,
 			)
-			max_y := max(view.wrap_height_index.total_height-viewport_height, 0)
+			max_y := max(geometry_index.total_height-viewport_height, 0)
 			desired_y = min(max(desired_y, 0), max_y)
 			scroll_y = desired_y
 			view.scroll_y = desired_y
@@ -395,7 +405,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		editor_reveal_request_clear(&view.reveal_request)
 	}
 	visible_intrinsic_width: f32 = 0
-	if window_matches {
+	if semantic_zoom_active(view) {
+		visible_intrinsic_width = semantic_zoom_frontier_width(app, rt, view, document, scroll_y, viewport_height, gutter_width, wrap_width, text_scale)
+	} else if window_matches {
 		visible_intrinsic_width = editor_visible_window_content_width(
 			window,
 			&view.wrap_height_index,
@@ -414,7 +426,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	// owns horizontal extent and its scrollbar, but only individual no-wrap
 	// source lanes consume scroll_x. This leaves the gutter and clipped text
 	// lane fixed while long source lines move inside that lane.
-	alicorn.virtual_list_height_index_rebuild_prefix(&view.wrap_height_index)
+	alicorn.virtual_list_height_index_rebuild_prefix(geometry_index)
 	scroll_restore := alicorn.Scroll_Restore_Request{}
 	if view.restore_y_pending {
 		if view.restore_runtime != rt || view.restore_token == alicorn.RESTORE_TOKEN_NONE {
@@ -430,8 +442,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	editor_scroll := alicorn.scroll_region_begin(
 		ui,
 		key=alicorn.key_string("editor-scroll-region"),
-		content_height=view.wrap_height_index.total_height,
-		line_height=view.wrap_height_index.estimated_height,
+		content_height=geometry_index.total_height,
+		line_height=geometry_index.estimated_height,
 		content_width=content_width,
 		style=alicorn.layout_style(grow=1, clip=true),
 		label="scratchpad-visible-document-lines",
@@ -441,7 +453,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	)
 	editor_accessibility_build_semantics(app, ui, rt, document, editor_scroll.id, view)
 	list_metrics := alicorn.virtual_list_variable_metrics(
-		&view.wrap_height_index,
+		geometry_index,
 		editor_scroll.offset_y,
 		editor_scroll.viewport_height,
 	)
@@ -501,8 +513,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		app.editor_restore_y = restore.scroll_y
 		app.editor_restore_x = restore.scroll_x
 	}
-	visible_start := u64(max(list.first, 0))
-	visible_end := u64(max(list.last, 0))
+	visible_start := u64(max(editor_geometry_source_line(view, list.first), 0))
+	visible_end := u64(max(editor_geometry_source_line(view, max(list.last-1, 0))+1, 0))
 	window_covers_view := window_matches &&
 	                      window.start_line <= visible_start &&
 	                      window.end_line >= visible_end
@@ -512,10 +524,38 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	if window_matches && !view.preedit_active && !view.preedit_recoverable {
 		bracket_match, bracket_match_found = editor_bracket_match_in_window(window, view.caret_byte)
 	}
+	base_window := window
+	base_window_matches, base_window_covers_view := window_matches, window_covers_view
+	base_presentation_visual := presentation_visual
 	for position := list.first; position < list.last; position += 1 {
-		line_number := u64(position)
-		row_height := alicorn.virtual_list_height_index_item_height(&view.wrap_height_index, position)
+		line_number := u64(editor_geometry_source_line(view, position))
+		if semantic_zoom_active(view) {
+			_, fold_index, mapped := semantic_zoom_rows_source_at(&view.zoom.rows, position)
+			if mapped && fold_index >= 0 {
+				semantic_zoom_render_fold(app, ui, document, view.zoom.rows.folds[fold_index].fold, alicorn.virtual_list_height_index_item_height(geometry_index, position))
+				continue
+			}
+		}
+		window := base_window
+		if semantic_zoom_active(view) {
+			window = semantic_zoom_source_window(app, view, document, line_number)
+			if window != nil {
+				if editor_measure_window_wrapping(rt, view, window, document.language, wrap_width, window.presentation_ready, text_scale) {
+					semantic_zoom_sync_geometry(view, window, text_scale)
+					alicorn.invalidate_root(rt, "Scratchpad measured visible folded source rows")
+				}
+			}
+		}
+		row_height := alicorn.virtual_list_height_index_item_height(geometry_index, position)
 		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT*text_scale }
+		window_available := window != nil
+		window_matches, window_covers_view := base_window_matches, base_window_covers_view
+		presentation_visual := base_presentation_visual
+		if semantic_zoom_active(view) {
+			window_matches = window_available && window.document_id == document.id && window.editor_revision == document.editor_revision
+			window_covers_view = window_matches
+			presentation_visual = window_matches && window.presentation_ready && !window.presentation_stale
+		}
 		if line, found := editor_window_line(window, line_number); window_available && found {
 			table_row := editor_table_row_layout(window, line, wrap_width, text_scale=text_scale)
 			table_wrap_active := table_row.ok && table_row.wraps && !view.preedit_active && !view.preedit_recoverable
@@ -614,6 +654,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				anchor_display = caret_display
 			}
 			line_text_style := alicorn.layout_style(.Row, height=row_height)
+			if semantic_zoom_active(view) { display_text = semantic_zoom_frame_text(rt, display_text) }
 			text_overflow := alicorn.Text_Overflow.Clip
 			if line_wraps {
 				line_text_style.width = wrap_width
@@ -710,6 +751,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	alicorn.virtual_list_end(ui, list)
 	alicorn.style_environment_pop(ui, style_scope)
+	if semantic_zoom_active(view) { return }
 
 	request_start := visible_start
 	if request_start > 64 { request_start -= 64 } else { request_start = 0 }
@@ -839,6 +881,8 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	alicorn.text(ui, document_info, key=alicorn.key_string("document-status-document-info"), style=alicorn.layout_style(.Row, grow=1, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 	alicorn.container_end(ui)
 	alicorn.container_begin(ui, .Container, label="document-status-actions", style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=8, align=.Center))
+	alicorn.text(ui, fmt.tprintf("Detail: %s%s", semantic_zoom_title(view.zoom.depth), " · preparing" if view.zoom.waiting else ""),
+		key=alicorn.key_string("document-semantic-detail"), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
 	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=88, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		editor_toggle_wrap_mode(app, rt)
 	}

@@ -7,6 +7,10 @@ import bridge "./bridge"
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	zoom_actions := [3]string{ACTION_SEMANTIC_MORE, ACTION_SEMANTIC_LESS, ACTION_SEMANTIC_FULL}
+	for action in zoom_actions {
+		if command == action_id_for(action) { _ = semantic_zoom_action(app, rt, action); return }
+	}
 	if command == action_id_for(ACTION_WORKSPACE_RECENT) {
 		app.recent_workspaces_open = true
 		alicorn.invalidate_root(rt, "Scratchpad opened recent workspaces")
@@ -105,6 +109,7 @@ editor_resolve_conflict_now :: proc(app: ^App, rt: ^alicorn.Runtime, document_id
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || rt == nil { return }
+	if semantic_zoom_action(app, rt, action_id) { return }
 	if action_id == ACTION_VIEW_THEME_WARM { _ = scratchpad_theme_select(app, rt, .Warm); return }
 	if action_id == ACTION_VIEW_THEME_COOL_LIGHT { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
 	if action_id == ACTION_VIEW_THEME_FLAT { _ = scratchpad_theme_select(app, rt, .Flat); return }
@@ -216,6 +221,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		previous_editor_revision: u64 = 0
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found {
 			previous_editor_revision = document.editor_revision
+			if i := editor_view_find(app.editor_views[:], document.id); i >= 0 { semantic_zoom_reveal_input(app, rt, &app.editor_views[i]) }
 		}
 		response := bridge.backend_command(&app.backend, action_id, document_id=app.backend.state.active)
 		handle_command_result(app, rt, &response)
@@ -251,6 +257,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			break
 		}
 		view := &app.editor_views[view_index]
+		semantic_zoom_reveal_input(app, rt, view)
 		clipboard_text := ""
 		if action_id == ACTION_MARKDOWN_SMART_PASTE {
 			text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
@@ -527,7 +534,10 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 	}
-	app.view_items = [10]host.Application_Menu_Item{
+	app.view_items = [13]host.Application_Menu_Item{
+		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_MORE), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}},
+		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_LESS), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary, .Alt}}},
+		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_FULL), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary, .Alt}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN), label="Zoom In", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+' , {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT), label="Zoom Out", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},

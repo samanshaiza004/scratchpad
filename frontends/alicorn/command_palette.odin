@@ -261,6 +261,9 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 		}
 	}
 	switch id {
+	case action_id_for(ACTION_SEMANTIC_MORE): return ACTION_SEMANTIC_MORE
+	case action_id_for(ACTION_SEMANTIC_LESS): return ACTION_SEMANTIC_LESS
+	case action_id_for(ACTION_SEMANTIC_FULL): return ACTION_SEMANTIC_FULL
 	case action_id_for(ACTION_DOCUMENT_GO_TO_LINE): return ACTION_DOCUMENT_GO_TO_LINE
 	case action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP): return ACTION_DOCUMENT_TOGGLE_WRAP
 	case action_id_for(ACTION_VIEW_THEME_WARM): return ACTION_VIEW_THEME_WARM

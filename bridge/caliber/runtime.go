@@ -612,7 +612,7 @@ func samePresentationReadiness(left, right StateEnvelope) bool {
 	}
 	for _, doc := range right.Documents {
 		previous, ok := byID[doc.ID]
-		if !ok || previous.PresentationReady != doc.PresentationReady || previous.PresentationRevision != doc.PresentationRevision {
+		if !ok || previous.InstanceID != doc.InstanceID || previous.PresentationReady != doc.PresentationReady || previous.PresentationRevision != doc.PresentationRevision {
 			return false
 		}
 	}
@@ -1136,6 +1136,31 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if err != nil {
 			return commandError(request, "application_error", err)
 		}
+		return response
+	case "read_semantic_zoom":
+		plan, err := r.app.QuerySemanticZoom(application.DocumentID(request.DocumentID), request.EditorRevision, request.ZoomDepth, int(request.AnchorByte))
+		if err != nil {
+			code := "zoom_unavailable"
+			switch {
+			case errors.Is(err, application.ErrStaleEditorRevision):
+				code = "stale_editor_revision"
+			case errors.Is(err, application.ErrInvalidSemanticZoomAnchor):
+				code = "invalid_zoom_anchor"
+			case errors.Is(err, application.ErrInvalidSemanticZoomDepth):
+				code = "invalid_zoom_depth"
+			}
+			return commandError(request, code, err)
+		}
+		// Reuse the existing derived wake/scheduling lane. The query itself
+		// never parses or starts a second worker runtime, including for prose.
+		if !plan.Ready {
+			if err := r.enablePresentationLocked(request.DocumentID); err != nil {
+				return commandError(request, "zoom_unavailable", err)
+			}
+		}
+		response := okResponse(request.RequestID, r.lifecycle, r.revision)
+		response.BasedOnRevision = request.BasedOnRevision
+		response.SemanticZoom = semanticZoomFromApplication(plan)
 		return response
 	case "set_view_density":
 		if err := r.app.SetViewDensity(application.DocumentID(request.DocumentID), application.ViewDensity(request.ViewDensity)); err != nil {

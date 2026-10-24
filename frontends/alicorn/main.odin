@@ -147,6 +147,7 @@ App :: struct {
 	editor_window:          Editor_Window,
 	editor_window_ready:    bool,
 	editor_text_scale:      f32,
+	semantic_zoom_wheel: Semantic_Zoom_Wheel,
 	editor_request_generation: u64,
 	editor_scroll_owner:    alicorn.Node_ID,
 	editor_restore_scroll:  bool,
@@ -303,7 +304,7 @@ App :: struct {
 	edit_items:             [11]host.Application_Menu_Item,
 	workspace_items:        [7]host.Application_Menu_Item,
 	document_items:         [11]host.Application_Menu_Item,
-	view_items:             [10]host.Application_Menu_Item,
+	view_items:             [13]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -438,7 +439,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	session_ui_capture(app, app.session_ui_runtime)
 	documents := make([dynamic]bridge.Backend_Stop_Session_Document, 0, len(app.editor_views), allocator=context.temp_allocator)
 	defer delete(documents)
-	for view in app.editor_views {
+	for &view in app.editor_views {
 		if view.document_id == "" { continue }
 		append(&documents, bridge.Backend_Stop_Session_Document{
 			id=view.document_id,
@@ -446,7 +447,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 			cursor=int(view.caret_byte),
 			affinity=u8(view.caret_affinity),
 			scroll_x=view.scroll_x,
-			scroll_y=view.scroll_y,
+			scroll_y=semantic_zoom_session_scroll(&view),
 		})
 	}
 	session := bridge.Backend_Stop_Session{
@@ -488,6 +489,10 @@ editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.
 		view.viewport_anchor_skip_next_source_change = false
 		view.viewport_anchor_pending = false
 		view.viewport_anchor_resolved = false
+		return
+	}
+	if semantic_zoom_active(view) {
+		view.viewport_anchor_pending, view.viewport_anchor_resolved = false, false
 		return
 	}
 	if !view.wrap_height_index_ready { return }
@@ -1148,7 +1153,7 @@ editor_ensure_line_visible :: proc(
 ) -> bool {
 	if view != nil && view.wrap_height_index_ready {
 		return alicorn.virtual_list_variable_ensure_visible(
-			rt, &view.wrap_height_index, owner, logical_line, reason,
+			rt, editor_geometry_index(view), owner, editor_geometry_row(view, logical_line), reason,
 		)
 	}
 	return alicorn.virtual_list_ensure_visible(rt, owner, logical_line, reason)
@@ -1297,6 +1302,20 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
+	if view.zoom.depth > 0 && !semantic_zoom_active(view) { semantic_zoom_reveal_input(app, rt, view) }
+	if semantic_zoom_active(view) {
+		if source, affinity, ok := semantic_zoom_pointer_source(app, rt, view, event.x, event.y); ok {
+			view.selection_anchor, view.caret_byte = source, source
+			view.anchor_affinity, view.caret_affinity = affinity, affinity
+			view.zoom.anchor_byte = source
+			for &page in view.zoom.windows {
+				if line, found := editor_line_for_source(&page, source); found { view.zoom.anchor_line = line.logical_line; break }
+			}
+			_ = alicorn.focus(rt, app.editor_scroll_owner)
+			alicorn.invalidate_root(rt, "Scratchpad selected an authoritative source position in semantic zoom")
+		}
+		return
+	}
 	if source_byte, affinity, ok := editor_source_at_pointer(app, rt, event.x, event.y); ok {
 		editor_undo_group_break(view)
 		view.pending_document_edge = .None
@@ -1346,6 +1365,7 @@ editor_text_key :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
+	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches { return false }
 	if view.preedit_active {
@@ -1857,6 +1877,7 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	view := &app.editor_views[view_index]
 	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
+	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	window_end: u64 = 0
 	if window_matches { window_end = window.start_byte+u64(len(window.source)) }
@@ -2013,6 +2034,7 @@ editor_insert_newline :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return true }
 	view := &app.editor_views[view_index]
+	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches {
 		set_error(app, "The bounded source window is not ready for Enter.")
@@ -2364,6 +2386,7 @@ editor_text_input :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { set_error(app, "Could not retain the active document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
+	semantic_zoom_reveal_input(app, rt, view)
 	if event.kind == .Preedit {
 		if view.preedit_recoverable {
 			set_error(app, "A committed composition still needs recovery. Use Edit > Copy before starting another composition.")
@@ -2568,6 +2591,7 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 	if app == nil || rt == nil || !app.backend.started { return }
 	if index := editor_view_find(app.editor_views[:], app.backend.state.active); index >= 0 {
 		view := &app.editor_views[index]
+		if action_id != ACTION_EDIT_COPY { semantic_zoom_reveal_input(app, rt, view) }
 		if view.preedit_active {
 			switch action_id {
 			case ACTION_EDIT_COPY:
@@ -3044,6 +3068,7 @@ main :: proc() {
 			if preferences, found := scratchpad_user_preferences_load(preferences_path, context.allocator); found {
 				app.theme_choice, _ = scratchpad_theme_choice_parse(preferences.theme)
 				app.editor_text_scale = preferences.editor_font_size/EDITOR_FONT_SIZE_DEFAULT
+				app.semantic_zoom_wheel = preferences.semantic_zoom_wheel
 				app.editor_font_pending_family = preferences.editor_font_family
 				app.editor_font_pending_size = preferences.editor_font_size
 				app.editor_font_pending = preferences.editor_font_family != ""
@@ -3110,6 +3135,7 @@ main :: proc() {
 		build=build_app,
 		on_key=application_key,
 		on_pointer=application_pointer,
+		on_scroll_capture=semantic_zoom_scroll_capture,
 		on_drag=application_drag,
 		on_text_key=editor_text_key,
 		on_text_input=editor_text_input,

@@ -17,8 +17,7 @@ Deferred_Action_Kind :: enum {
 	Save_Document,
 	Conflict_Reload,
 	Conflict_Keep_Mine,
-	Set_View_Density,
-	Go_To_Projection_Source,
+	Expand_Semantic_Fold,
 }
 
 Deferred_Action :: struct {
@@ -163,10 +162,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		quick_open_open_path(app, rt, action.value)
 	case .Save_As_Path:
 		save_as_to_path(app, rt, action.value, action.path)
-	case .Set_View_Density:
-		semantic_view_set_density(app, rt, action.document_id, action.value)
-	case .Go_To_Projection_Source:
-		semantic_view_go_to_source(app, rt, action.document_id, action.editor_revision, action.source_start, action.source_end, action.source_line)
+	case .Expand_Semantic_Fold:
+		semantic_zoom_expand(app, rt, action.document_id, action.editor_revision, action.source_start)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -251,10 +248,8 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			editor_resolve_conflict_now(app, rt, action.value, false)
 		case .Conflict_Keep_Mine:
 			editor_resolve_conflict_now(app, rt, action.value, true)
-		case .Set_View_Density:
-			semantic_view_set_density(app, rt, action.document_id, action.value)
-		case .Go_To_Projection_Source:
-			semantic_view_go_to_source(app, rt, action.document_id, action.editor_revision, action.source_start, action.source_end, action.source_line)
+		case .Expand_Semantic_Fold:
+			semantic_zoom_expand(app, rt, action.document_id, action.editor_revision, action.source_start)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(
