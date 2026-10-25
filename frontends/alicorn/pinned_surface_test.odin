@@ -23,13 +23,140 @@ test_pinned_source_focus_respects_detached_owner :: proc(t: ^testing.T) {
 }
 
 pinned_surface_test_frame :: proc(f: ^Semantic_Zoom_Test_Editor) {
+	if !scratchpad_styles_ensure(&f.app,&f.rt) {return}
 	ui, build := alicorn.begin_frame(&f.rt)
 	if !build { return }
 	_ = alicorn.container_begin(&ui,.Root,label="pinned-surface-test-root",style=alicorn.layout_style(.Column,grow=1,clip=true))
+	workbench_scope:=alicorn.style_environment_push(&ui,scratchpad_workbench_style_environment(&f.app))
 	pinned_surface_build(&f.app,&ui,&f.rt)
+	alicorn.style_environment_pop(&ui,workbench_scope)
 	alicorn.container_end(&ui)
+	pinned_context_menu_build(&f.app,&ui,&f.rt)
 	alicorn.end_frame(&ui)
 	pinned_after_frame(&f.app,&f.rt)
+}
+
+pinned_surface_test_control :: proc(app: ^App, pin: bridge.Pin_ID, key: string) -> alicorn.Node_ID {
+	for control in app.pinned.controls {if control.pin==pin && control.key==key {return control.node}}
+	return 0
+}
+
+pinned_surface_test_button_semantics :: proc(rt: ^alicorn.Runtime, node: alicorn.Node_ID, label: string) -> int {
+	snapshot:=alicorn.semantic_snapshot(rt,context.temp_allocator)
+	defer alicorn.semantic_snapshot_destroy(&snapshot)
+	count:=0
+	for item in snapshot.nodes {if item.role==.Button && item.visual_node==node && item.label==label {count+=1}}
+	return count
+}
+
+pinned_surface_test_rects_overlap :: proc(a,b: alicorn.Rect) -> bool {
+	return a.x<b.x+b.w && b.x<a.x+a.w && a.y<b.y+b.h && b.y<a.y+a.h
+}
+
+@(test)
+test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
+	f: Semantic_Zoom_Test_Editor
+	source:="package demo\nfunc Alpha() { return }\n"
+	if !semantic_zoom_test_open(&f,t,"go",source) {semantic_zoom_test_destroy(&f,t);return}
+	defer {pinned_destroy(&f.app.pinned);semantic_zoom_test_destroy(&f,t)}
+	_,found:=find_document(&f.app.backend.state,f.document_id)
+	view_index:=editor_view_find(f.app.editor_views[:],f.document_id)
+	if !found || view_index<0 {testing.expect(t,false,"the fixture must retain its source document and selection");return}
+	view:=&f.app.editor_views[view_index]
+	view.selection_anchor,view.caret_byte=0,7
+	_ = alicorn.focus(&f.rt,f.app.editor_scroll_owner)
+	pinned_command(&f.app,&f.rt,"add")
+	pinned_refresh(&f.app,&f.rt)
+	if len(f.app.pinned.snapshot.ranges)!=1 {testing.expect(t,false,"one source selection should create one pin");return}
+	pin:=f.app.pinned.snapshot.ranges[0]
+	f.app.pinned.visible=true
+	f.app.pinned.selected=pin.id
+	f.app.pinned.single_pane=false
+	pinned_surface_test_frame(&f)
+	heading:=pinned_surface_test_control(&f.app,pin.id,"heading")
+	go_node:=pinned_surface_test_control(&f.app,pin.id,"go")
+	copy_node:=pinned_surface_test_control(&f.app,pin.id,"copy")
+	more:=pinned_surface_test_control(&f.app,pin.id,"more")
+	filename:=document_title(pin.path)
+	for check in ([4]struct {node: alicorn.Node_ID, label: string}{
+		{heading,filename},{go_node,"Go to source"},{copy_node,"Copy"},{more,"More actions"},
+	}) {
+		info,ok:=alicorn.node_info(&f.rt,check.node)
+		testing.expect(t,check.node!=0 && ok && info.bounds.w>0 && info.bounds.h>0,
+			fmt.tprintf("source-card control %s should have finalized visible geometry (id=%d, found=%t, bounds=%.1fx%.1f)",check.label,check.node,ok,info.bounds.w,info.bounds.h))
+		if check.node!=0 {testing.expect(t,pinned_surface_test_button_semantics(&f.rt,check.node,check.label)==1,"each control should expose exactly one accessible button label")}
+	}
+	go_info,_:=alicorn.node_info(&f.rt,go_node)
+	copy_info,_:=alicorn.node_info(&f.rt,copy_node)
+	more_info,_:=alicorn.node_info(&f.rt,more)
+	testing.expect(t,!pinned_surface_test_rects_overlap(go_info.bounds,copy_info.bounds) &&
+		!pinned_surface_test_rects_overlap(go_info.bounds,more_info.bounds) &&
+		!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
+		"Go, Copy and overflow controls must not overlap in the source-card action row")
+	testing.expect(t,pinned_surface_test_control(&f.app,0,"source")==0,
+		"Back to source should not occupy the header while the source editor is beside Pinned")
+	f.app.pinned.single_pane=true
+	pinned_surface_test_frame(&f)
+	testing.expect(t,pinned_surface_test_control(&f.app,0,"source")!=0,
+		"Back to source should be available when Pinned occupies the only pane")
+
+	text_key:=alicorn.key_pair(u64(pin.id),u64(pin.start_byte))
+	text_node,text_found:=alicorn.node_by_key(&f.rt,text_key,.Text)
+	text_info,text_valid:=alicorn.node_info(&f.rt,text_node)
+	testing.expect(t,text_found && text_valid && text_info.text_geometry_available && !f.app.pinned.measurement_refresh_pending,
+		"visible excerpts should retain their shaped text geometry for later measurement reuse")
+	when ODIN_DEBUG {
+		temporary_before:=f.app.pinned.temporary_text_measurement_builds
+		reuse_before:=f.app.pinned.retained_text_measurement_hits
+		pinned_surface_test_frame(&f)
+		testing.expect(t,f.app.pinned.retained_text_measurement_hits>reuse_before &&
+			f.app.pinned.temporary_text_measurement_builds==temporary_before,
+			"steady-state descriptions should reuse retained excerpt geometry instead of shaping the same lines again")
+	}
+	for theme in ([3]Scratchpad_Theme_Choice{.Warm,.Cool_Light,.Workbench_Relief}) {
+		f.app.theme_choice=theme
+		if theme==.Workbench_Relief {_=scratchpad_styles_ensure(&f.app,&f.rt)}
+		scratchpad_theme_apply_registered(&f.app)
+		pinned_surface_test_frame(&f)
+		go_info,go_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"go"))
+		copy_info,copy_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"copy"))
+		more_info,more_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"more"))
+		testing.expect(t,go_ok && copy_ok && more_ok &&
+			!pinned_surface_test_rects_overlap(go_info.bounds,copy_info.bounds) &&
+			!pinned_surface_test_rects_overlap(go_info.bounds,more_info.bounds) &&
+			!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
+			"source-card actions should retain nonoverlapping geometry across Workbench, Cool Light and Relief themes")
+	}
+	for device_scale in ([4]f32{1,1.25,1.5,2}) {
+		_ = alicorn.set_presentation_scale(&f.rt,device_scale,device_scale)
+		pinned_surface_test_frame(&f)
+		go_info,go_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"go"))
+		copy_info,copy_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"copy"))
+		more_info,more_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"more"))
+		testing.expect(t,go_ok && copy_ok && more_ok &&
+			!pinned_surface_test_rects_overlap(go_info.bounds,copy_info.bounds) &&
+			!pinned_surface_test_rects_overlap(go_info.bounds,more_info.bounds) &&
+			!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
+			fmt.tprintf("source-card action bounds should remain separate at %.0f%% display scale",device_scale*100))
+	}
+	more=pinned_surface_test_control(&f.app,pin.id,"more")
+	_ = alicorn.focus(&f.rt,more)
+	testing.expect(t,pinned_key(&f.app,&f.rt,.Context_Menu),
+		"the focused overflow control should expose its move and remove actions to keyboard users")
+	pinned_surface_test_frame(&f)
+	menu_snapshot:=alicorn.semantic_snapshot(&f.rt,context.temp_allocator)
+	move_up_count,move_down_count,remove_count:=0,0,0
+	for item in menu_snapshot.nodes {
+		if item.role!=.Button {continue}
+		if item.label=="Move up" {move_up_count+=1}
+		if item.label=="Move down" {move_down_count+=1}
+		if item.label=="Remove pin" {remove_count+=1}
+	}
+	alicorn.semantic_snapshot_destroy(&menu_snapshot)
+	testing.expect(t,move_up_count==1 && move_down_count==1 && remove_count==1,
+		"the keyboard-opened pin menu should expose Move up, Move down and Remove pin once")
+	alicorn.context_menu_close(&f.rt)
+	pinned_surface_test_frame(&f)
 }
 
 @(test)

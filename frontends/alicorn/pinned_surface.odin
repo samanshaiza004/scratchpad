@@ -9,23 +9,28 @@ import bridge "./bridge"
 ACTION_PIN_SELECTION :: "source.pin_selection"
 ACTION_PINNED_FOCUS :: "view.pinned_focus"
 ACTION_PINNED_TOGGLE :: "view.pinned_toggle"
+ACTION_PINNED_MOVE_UP :: "pinned.move_up"
+ACTION_PINNED_MOVE_DOWN :: "pinned.move_down"
+ACTION_PINNED_REMOVE :: "pinned.remove"
 
 Pinned_Page :: struct { window: bridge.Pinned_Window, data: []u8 }
-Pinned_Control :: struct { node: alicorn.Node_ID, pin: bridge.Pin_ID }
+Pinned_Control :: struct { node: alicorn.Node_ID, pin: bridge.Pin_ID, key: string }
 Pinned_Surface :: struct {
 	visible, narrow_source, single_pane, focus_pending, restore_pending, force_refresh: bool,
 	context_menu_open: bool,
+	action_menu_pin: bridge.Pin_ID,
 	runtime: ^alicorn.Runtime,
 	snapshot: bridge.Pinned_Snapshot,
 	pages: [dynamic]Pinned_Page,
 	controls: [dynamic]Pinned_Control,
 	selected: bridge.Pin_ID,
 	index: alicorn.Virtual_List_Height_Index,
-	index_ready: bool,
+	index_ready, measurement_refresh_pending: bool,
 	width, scale, restore_y: f32,
 	owner, focus_target: alicorn.Node_ID,
 	// Developer/test observability. No polling or dependency tracking.
 	rejected_responses, page_evictions, source_invalidations: u64,
+	temporary_text_measurement_builds, retained_text_measurement_hits: u64,
 }
 
 pinned_pages_clear :: proc(surface: ^Pinned_Surface) {
@@ -44,10 +49,11 @@ pinned_index_reset :: proc(surface: ^Pinned_Surface, scale: f32) {
 	if surface.index_ready { alicorn.virtual_list_height_index_destroy(&surface.index) }
 	surface.index_ready=alicorn.virtual_list_height_index_init(&surface.index,surface.snapshot.total_rows,24*scale)
 	for pin in surface.snapshot.ranges {
-		_ = alicorn.virtual_list_height_index_set_height(&surface.index,pin.first_row,112*scale)
+		_ = alicorn.virtual_list_height_index_set_height(&surface.index,pin.first_row,96*scale)
 		if pin.status!="current" { _=alicorn.virtual_list_height_index_set_height(&surface.index,pin.first_row+1,64*scale) }
 	}
 	surface.scale=scale
+	surface.measurement_refresh_pending=true
 }
 
 pinned_pin_at_row :: proc(snapshot: ^bridge.Pinned_Snapshot, row: int) -> (pin: bridge.Pinned_Range, found: bool) {
@@ -123,8 +129,32 @@ pinned_context_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.P
 
 pinned_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app==nil || ui==nil || rt==nil || !app.pinned.context_menu_open { return }
-	if !alicorn.context_menu_is_open(rt) { app.pinned.context_menu_open=false; return }
+	if !alicorn.context_menu_is_open(rt) { app.pinned.context_menu_open=false;app.pinned.action_menu_pin=0;return }
 	if !alicorn.context_menu_begin(ui,alicorn.key_string("scratchpad-pinned-source-context-menu")) { return }
+	if pin_id:=app.pinned.action_menu_pin;pin_id!=0 {
+		pin_index:=-1
+		for pin,i in app.pinned.snapshot.ranges {if pin.id==pin_id {pin_index=i;break}}
+		if pin_index<0 {
+			_ = alicorn.context_menu_end(ui)
+			alicorn.context_menu_close(rt)
+			app.pinned.context_menu_open=false;app.pinned.action_menu_pin=0
+			return
+		}
+		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_MOVE_UP),"Move up",pin_index>0)
+		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_MOVE_DOWN),"Move down",pin_index+1<len(app.pinned.snapshot.ranges))
+		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_REMOVE),"Remove pin")
+		action:=alicorn.context_menu_end(ui)
+		if action!=0 {
+			app.pinned.action_menu_pin=0;app.pinned.context_menu_open=false
+			switch action {
+			case action_id_for(ACTION_PINNED_MOVE_UP): pinned_command(app,rt,"move",pin_id,-1)
+			case action_id_for(ACTION_PINNED_MOVE_DOWN): pinned_command(app,rt,"move",pin_id,1)
+			case action_id_for(ACTION_PINNED_REMOVE): pinned_command(app,rt,"remove",pin_id)
+			case:
+			}
+		}
+		return
+	}
 	enabled:=false
 	if document,found:=find_document(&app.backend.state,app.backend.state.active);found && len(app.editor_edits)==0 && !editor_active_preedit(app) {
 		if index:=editor_view_find(app.editor_views[:],document.id);index>=0 {
@@ -134,6 +164,20 @@ pinned_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runti
 	}
 	alicorn.context_menu_item(ui,action_id_for(ACTION_PIN_SELECTION),"Pin Selection",enabled)
 	if alicorn.context_menu_end(ui)==action_id_for(ACTION_PIN_SELECTION) { app.pinned.context_menu_open=false;pinned_command(app,rt,"add") }
+}
+
+pinned_open_action_menu :: proc(app: ^App, rt: ^alicorn.Runtime, pin: bridge.Pin_ID) {
+	if app==nil || rt==nil || pin==0 {return}
+	for i:=len(app.pinned.controls)-1;i>=0;i-=1 {
+		control:=app.pinned.controls[i]
+		if control.pin!=pin || control.key!="more" {continue}
+		if info,found:=alicorn.node_info(rt,control.node);found && alicorn.context_menu_open(rt,info.bounds,control.node) {
+			app.pinned.context_menu_open=true
+			app.pinned.action_menu_pin=pin
+			app.pinned.selected=pin
+		}
+		return
+	}
 }
 
 pinned_sync_menu_states :: proc(app: ^App, rt: ^alicorn.Runtime) {
@@ -255,19 +299,38 @@ pinned_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -
 		index:=0;for pin,i in app.pinned.snapshot.ranges {if pin.id==app.pinned.selected {index=i;break}}
 		if key==.Up{index=max(0,index-1)}else if key==.Down{index=min(count-1,index+1)}else if key==.Home{index=0}else{index=count-1}
 		app.pinned.selected=app.pinned.snapshot.ranges[index].id;app.pinned.focus_pending=true;alicorn.invalidate_root(rt,"Pinned header keyboard navigation");return true
+	case .Context_Menu:
+		if app.pinned.selected!=0 {pinned_open_action_menu(app,rt,app.pinned.selected)}
+		return true
 	case .Return: pinned_command(app,rt,"go_to_source");return true
 	}
 	return false
 }
 
-pinned_button :: proc(app: ^App, ui: ^alicorn.UI, label,key: string, pin: bridge.Pin_ID=0, width:f32=0, disabled:=false) -> bool {
+pinned_button :: proc(app: ^App, ui: ^alicorn.UI, label,key: string, pin: bridge.Pin_ID=0, width:f32=-1, disabled:=false,
+	text_style:=alicorn.Text_Style{font_size=12,overflow=.Ellipsis},
+	content_style:=alicorn.Button_Content_Style{horizontal=.Start,vertical=.Center,padding_x=7,padding_y=3}) -> bool {
 	selected:=pin!=0 && key=="heading" && pin==app.pinned.selected
-	id,activated:=alicorn.button_begin(ui,label,key=alicorn.key_string(key),style=alicorn.layout_style(.Row,width=width,height=28,grow=1 if width==0 else 0),state=alicorn.Button_State{disabled=disabled,selected=selected},variant=.Quiet)
-	alicorn.text(ui,label,text_style=alicorn.Text_Style{font_size=12,overflow=.Ellipsis});alicorn.button_end(ui)
-	append(&app.pinned.controls,Pinned_Control{id,pin})
+	id,activated:=alicorn.button_begin(ui,label,key=alicorn.key_string(key),style=alicorn.layout_style(.Row,width=width,height=28),state=alicorn.Button_State{disabled=disabled,selected=selected},variant=.Quiet,text_style=text_style,content_style=content_style)
+	alicorn.button_end(ui)
+	append(&app.pinned.controls,Pinned_Control{id,pin,key})
 	if pin!=0 && key=="heading" && pin==app.pinned.selected {app.pinned.focus_target=id}
 	if pin==0 && key=="source" && len(app.pinned.snapshot.ranges)==0 {app.pinned.focus_target=id}
 	return activated
+}
+
+pinned_more_button :: proc(app: ^App, ui: ^alicorn.UI, pin: bridge.Pin_ID) -> bool {
+	id,clicked:=alicorn.icon_button(ui,"More actions",.Chevron_Down,key=alicorn.key_string(fmt.tprintf("pinned-more-%d",u64(pin))),style=alicorn.layout_style(.Row,width=28,height=28),variant=.Quiet)
+	append(&app.pinned.controls,Pinned_Control{id,pin,"more"})
+	if clicked {pinned_open_action_menu(app,ui.runtime,pin)}
+	return clicked
+}
+
+pinned_hide_button :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+	id,clicked:=alicorn.icon_button(ui,"Hide Pinned",.Close,key=alicorn.key_string("pinned-hide"),style=alicorn.layout_style(.Row,width=28,height=28),variant=.Quiet)
+	append(&app.pinned.controls,Pinned_Control{id,0,"hide"})
+	if clicked {app.pinned.visible=false;app.editor_focus_pending=true;alicorn.invalidate_root(rt,"Pinned hidden")}
+	if len(app.pinned.snapshot.ranges)==0 {app.pinned.focus_target=id}
 }
 
 pinned_find_row :: proc(surface: ^Pinned_Surface, row: int) -> (page: ^Pinned_Page, item: bridge.Pinned_Row, found: bool) {
@@ -291,13 +354,18 @@ pinned_load_page :: proc(app: ^App, row,limit: int, anchor:u64=0) -> bool {
 pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	s:=&app.pinned;clear(&s.controls);s.focus_target=0
 	s.runtime=rt
-	alicorn.container_begin(ui,.Container,key=alicorn.key_string("pinned-pane"),label="Pinned source references, read only",style=alicorn.layout_style(.Column,grow=1,padding=8,gap=4,clip=true))
-	alicorn.text(ui,fmt.tprintf("Pinned · %d ranges",len(s.snapshot.ranges)))
-	if gui.row(ui,height=30,gap=4) {
-		if pinned_button(app,ui,"Back to source","source") {app.editor_focus_pending=true;s.narrow_source=true;alicorn.invalidate_root(rt,"Pinned returned source focus")}
-		if pinned_button(app,ui,"Hide Pinned","hide") {s.visible=false;app.editor_focus_pending=true;alicorn.invalidate_root(rt,"Pinned hidden")}
+	alicorn.container_begin(ui,.Container,key=alicorn.key_string("pinned-pane"),label="Pinned source references, read only",style=alicorn.layout_style(.Column,grow=1,padding=8,gap=6,clip=true))
+	if gui.row(ui,label="pinned-pane-header",height=32,gap=6,align=.Center) {
+		alicorn.text(ui,"Pinned",style=alicorn.layout_style(.Row,grow=1),text_style=alicorn.Text_Style{font_size=17,font_weight=alicorn.FONT_WEIGHT_MEDIUM})
+		reference_word:="references" if len(s.snapshot.ranges)!=1 else "reference"
+		alicorn.text(ui,fmt.tprintf("%d %s",len(s.snapshot.ranges),reference_word),text_style=alicorn.Text_Style{font_size=12},color=alicorn.style_color(ui,.Muted_Text))
+		if s.single_pane && pinned_button(app,ui,"Back to source","source",width=112) {app.editor_focus_pending=true;s.narrow_source=true;alicorn.invalidate_root(rt,"Pinned returned source focus")}
+		pinned_hide_button(app,ui,rt)
 	}
-	if len(s.snapshot.ranges)==0 {alicorn.text(ui,"Select a passage in source, then choose Document → Pin Selection.",text_style=alicorn.Text_Style{overflow=.Wrap});alicorn.container_end(ui);return}
+	if len(s.snapshot.ranges)==0 {
+		alicorn.text(ui,"Select a passage in source, then choose Document → Pin Selection.",style=alicorn.layout_style(padding=8),text_style=alicorn.Text_Style{overflow=.Wrap},color=alicorn.style_color(ui,.Muted_Text))
+		alicorn.container_end(ui);return
+	}
 	scale:=editor_text_scale_effective(app)
 	if !s.index_ready || s.scale!=scale {pinned_index_reset(s,scale)}
 	list:=alicorn.virtual_list_begin_variable(ui,&s.index,key=alicorn.key_string("pinned-scroll"),label="Pinned passages, use Up and Down to traverse headers",style=alicorn.layout_style(grow=1,clip=true),focusable=true)
@@ -313,25 +381,27 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		height:=alicorn.virtual_list_height_index_item_height(&s.index,row)
 		if item.kind=="header" {
 			_ = alicorn.component_begin(ui,alicorn.key_u64(u64(pin.id)))
-			alicorn.container_begin(ui,.Container,label="Pinned source header",style=alicorn.layout_style(.Column,height=height,gap=2,padding=4,clip=true))
-			status_label:=""
-			if pin.status=="stale" {status_label=" · Source changed"} else if pin.status=="missing" {status_label=" · Source closed"}
-			display_path:=pin.relative_path if pin.relative_path!="" else document_title(pin.path)
-			label:=fmt.tprintf("%s · Lines %d–%d%s",display_path,pin.first_line+1,pin.first_line+pin.line_count,status_label)
-			if pinned_button(app,ui,label,"heading",pin.id) {s.selected=pin.id;pinned_command(app,rt,"go_to_source",pin.id)}
+			alicorn.surface_begin(ui,alicorn.surface_core_color_role(.Subtle_Surface),label="Pinned source card header",style=alicorn.layout_style(.Column,height=height,gap=1,padding=6,clip=true),shape=scratchpad_surface_shape(app,4),material=scratchpad_surface_material(app,app.raised_surface_material),physical_height=scratchpad_surface_height(app,0.25))
+			display_name:=document_title(pin.path)
+			if display_name=="" {display_name=pin.relative_path}
+			status_suffix:=""
+			if pin.status=="stale" {status_suffix=" · Source changed"} else if pin.status=="missing" {status_suffix=" · Source closed"}
+			status_label:=fmt.tprintf("Lines %d–%d%s",pin.first_line+1,pin.first_line+pin.line_count,status_suffix)
+			if pinned_button(app,ui,display_name,"heading",pin.id,text_style=alicorn.Text_Style{font_size=14,font_weight=alicorn.FONT_WEIGHT_MEDIUM,overflow=.Ellipsis},content_style=alicorn.button_content_style(.Start,padding_x=4,padding_y=2)) {s.selected=pin.id;pinned_command(app,rt,"go_to_source",pin.id)}
+			_ = alicorn.semantic_description(ui,.Button,display_name,description=status_label)
 			_ = alicorn.tooltip(ui,pin.path)
-			if gui.row(ui,height=28,gap=2) {
-				if pinned_button(app,ui,"Go to source","go",pin.id,disabled=pin.status!="current") {pinned_command(app,rt,"go_to_source",pin.id)}
+			alicorn.text(ui,status_label,style=alicorn.layout_style(.Row,height=16,padding=4),text_style=alicorn.Text_Style{font_size=11},color=alicorn.style_color(ui,.Muted_Text))
+			action_inner_width:=max(width-12,0)
+			go_width:=min(108,max(70,action_inner_width-94))
+			copy_width:=min(58,max(38,action_inner_width-go_width-34))
+			if gui.row(ui,height=28,gap=3) {
+				if pinned_button(app,ui,"Go to source","go",pin.id,width=go_width,disabled=pin.status!="current",text_style=alicorn.Text_Style{font_size=11,overflow=.Ellipsis},content_style=alicorn.button_content_style(.Start,padding_x=5,padding_y=2)) {pinned_command(app,rt,"go_to_source",pin.id)}
 				copy_too_large:=pin.end_byte-pin.start_byte>64*1024
-				if pinned_button(app,ui,"Copy excerpt","copy",pin.id,disabled=pin.status!="current"||copy_too_large) {pinned_command(app,rt,"copy",pin.id)}
+				if pinned_button(app,ui,"Copy","copy",pin.id,width=copy_width,disabled=pin.status!="current"||copy_too_large,text_style=alicorn.Text_Style{font_size=11,overflow=.Ellipsis},content_style=alicorn.button_content_style(.Start,padding_x=5,padding_y=2)) {pinned_command(app,rt,"copy",pin.id)}
 				if copy_too_large { _=alicorn.tooltip(ui,"Copy requires the complete range and is limited to 64 KiB; nothing will be copied for a larger pin.") }
+				if pinned_more_button(app,ui,pin.id) {s.selected=pin.id}
 			}
-			if gui.row(ui,height=28,gap=2) {
-				if pinned_button(app,ui,"Move up","up",pin.id,disabled=pin.first_row==0) {pinned_command(app,rt,"move",pin.id,-1)}
-				if pinned_button(app,ui,"Move down","down",pin.id,disabled=pin.id==s.snapshot.ranges[len(s.snapshot.ranges)-1].id) {pinned_command(app,rt,"move",pin.id,1)}
-				if pinned_button(app,ui,"Remove pin","remove",pin.id) {pinned_command(app,rt,"remove",pin.id)}
-			}
-			alicorn.container_end(ui);alicorn.component_end(ui)
+			alicorn.surface_end(ui);alicorn.component_end(ui)
 		} else if item.kind=="status" {
 			message:="Source changed. Select the current passage in source and pin it again."
 			if pin.status=="missing" {message="Source closed. Open it and pin the current passage again."}
@@ -340,23 +410,40 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			bytes:=page.data[item.offset:item.offset+item.length]
 			line,ok:=editor_project_line(bytes,u64(item.start_byte),u64(item.source_line),context.temp_allocator)
 			if !ok {continue}
-		defer delete(line.display,context.temp_allocator)
-		defer delete(line.display_bytes,context.temp_allocator)
-			run,built:=alicorn.runtime_text_run_build(rt,line.display,size=16*scale,max_width=width,font=.Monospace,overflow=.Wrap,allocator=context.temp_allocator,scratch_allocator=alicorn.runtime_scratch_allocator(rt))
 			text_height:=24*scale
-			if built {text_height=max(text_height,run.height+4);alicorn.text_run_destroy(&run)}
+			text_key:=alicorn.key_pair(u64(pin.id),u64(item.start_byte))
+			content_width:=max(width-16,1)
+			used_retained_measurement:=false
+			if !s.measurement_refresh_pending {
+				if text_node,found:=alicorn.node_by_key(rt,text_key,.Text);found {
+					if info,valid:=alicorn.node_info(rt,text_node);valid && info.text_geometry_available && abs(info.bounds.w-content_width)<0.5 {
+						text_height=max(text_height,info.text_content_height+4)
+						used_retained_measurement=true
+						when ODIN_DEBUG {s.retained_text_measurement_hits+=1}
+					}
+				}
+			}
+			if !used_retained_measurement {
+				when ODIN_DEBUG {s.temporary_text_measurement_builds+=1}
+				run,built:=alicorn.runtime_text_run_build(rt,line.display,size=16*scale,max_width=content_width,font=.Monospace,overflow=.Wrap,allocator=context.temp_allocator,scratch_allocator=alicorn.runtime_scratch_allocator(rt))
+				if built {text_height=max(text_height,run.height+4);alicorn.text_run_destroy(&run)}
+			}
+			defer delete(line.display,context.temp_allocator)
+			defer delete(line.display_bytes,context.temp_allocator)
 			new_height:=text_height
 			if item.has_more || item.has_before {new_height+=30}
 			if alicorn.virtual_list_height_index_set_height(&s.index,row,new_height) {alicorn.invalidate_root(rt,"Pinned visible source measured")}
-			alicorn.container_begin(ui,.Container,key=alicorn.key_pair(u64(pin.id),u64(item.source_line+1)),style=alicorn.layout_style(.Column,height=new_height,gap=0,clip=true))
-			alicorn.text(ui,line.display,style=alicorn.layout_style(height=text_height,width=-1,clip=true),font=.Monospace,text_style=alicorn.Text_Style{font_size=16*scale,overflow=.Wrap})
+			editor_theme_scope:=alicorn.style_environment_push(ui,alicorn.Style_Environment{theme=app.editor_theme})
+			alicorn.surface_begin(ui,alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()),label="Pinned source excerpt",style=alicorn.layout_style(.Column,height=new_height,gap=0,padding=8,clip=true),material=scratchpad_surface_material(app,app.paper_surface_material),physical_height=scratchpad_surface_height(app,-0.75))
+			alicorn.text(ui,line.display,key=text_key,style=alicorn.layout_style(height=text_height,width=-1,clip=true),font=.Monospace,text_style=alicorn.Text_Style{font_size=16*scale,overflow=.Wrap})
 			if item.has_more || item.has_before {
 				if gui.row(ui,height=30,gap=4) {
 					if item.has_before && pinned_button(app,ui,"Line start","line-start",pin.id) {_=pinned_load_page(app,row,1);alicorn.invalidate_root(rt,"Pinned long line returned to start")}
 					if item.has_more && pinned_button(app,ui,"Continue long line…","line-next",pin.id) {_=pinned_load_page(app,row,1,u64(item.end_byte));alicorn.invalidate_root(rt,"Pinned long line continued")}
 				}
 			}
-			alicorn.container_end(ui)
+			alicorn.surface_end(ui)
+			alicorn.style_environment_pop(ui,editor_theme_scope)
 		}
 	}
 	alicorn.virtual_list_end(ui,list)
@@ -365,6 +452,7 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 
 pinned_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	s:=&app.pinned;if !s.visible{return}
+	s.measurement_refresh_pending=false
 	if s.restore_pending && s.owner!=0 {_=alicorn.scroll_region_set_offset(rt,s.owner,s.restore_y,"Pinned source anchor restored");s.restore_pending=false}
 	if s.focus_pending {
 		if s.focus_target!=0 {if alicorn.focus(rt,s.focus_target){s.focus_pending=false}} else {
