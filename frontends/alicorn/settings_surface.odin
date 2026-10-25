@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 
 Settings_Category :: enum { Appearance, Editor, Workspace, Accessibility }
@@ -42,7 +43,7 @@ settings_form_text :: proc(form: ^Settings_Form, key, value: string, size: f32 =
 	height := settings_text_height(form.rt, value, form.width, size*form.scale, weight=weight)
 	style := settings_form_row(form, height)
 	if form.ui != nil {
-		alicorn.text(form.ui, value, key=alicorn.key_string(key), style=style, text_style=alicorn.Text_Style{font_size=size, font_weight=weight, overflow=.Wrap})
+		gui.text(form.ui, value, key=key, style=style, text_style=alicorn.Text_Style{font_size=size, font_weight=weight, overflow=.Wrap})
 	}
 }
 
@@ -82,39 +83,39 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-settings-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("scratchpad-settings"), label="scratchpad-settings", style=alicorn.layout_style(.Column, width=panel_width, height=panel_height, padding=padding, gap=gap, clip=true), shape=scratchpad_surface_shape(app, 6), material=scratchpad_surface_material(app, app.floating_surface_material), physical_height=scratchpad_surface_height(app, 1))
-	alicorn.container_begin(ui, .Container, label="scratchpad-settings-header", style=alicorn.layout_style(.Row, height=max(48, 30*scale), align=.Center))
-	alicorn.text(ui, "Settings", key=alicorn.key_string("settings-heading"), style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{font_size=24, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD, overflow=.Ellipsis})
-	alicorn.container_end(ui)
-	alicorn.container_begin(ui, .Container, label="scratchpad-settings-body", style=alicorn.layout_style(wide ? .Row : .Column, grow=1, gap=gap, clip=true))
-	if wide {
-		alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("settings-navigation"), label="settings-navigation", style=alicorn.layout_style(.Column, width=navigation_width, padding=8, gap=6), shape=scratchpad_surface_shape(app, 4), material=scratchpad_surface_material(app, app.raised_surface_material), physical_height=scratchpad_surface_height(app, 0.25))
-		for category in Settings_Category {
-			if alicorn.button(ui, names[category], key=alicorn.key_string(fmt.tprintf("settings-category-%d", category)), style=alicorn.layout_style(.Row, width=-1, height=control_height), state=alicorn.Button_State{selected=app.settings_category == category}, content_style=alicorn.button_content_style(.Start, padding_x=12), variant=.Quiet) {
-				settings_category_select(app, rt, category)
-			}
-		}
-		alicorn.surface_end(ui)
-	} else {
-		options: [4]alicorn.Select_Option
-		for category in Settings_Category { options[int(category)] = alicorn.Select_Option{key=u64(category)+1, label=names[category]} }
-		choice := alicorn.select_control(ui, alicorn.key_string("settings-category-select"), "Settings category", options[:], u64(app.settings_category)+1, style=alicorn.layout_style(.Row, width=-1, height=control_height))
-		if choice.changed { settings_category_select(app, rt, Settings_Category(choice.selected_key-1)) }
+	if gui.row(ui, label="scratchpad-settings-header", height=max(48, 30*scale), align=.Center) {
+		gui.text(ui, "Settings", key="settings-heading", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{font_size=24, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD, overflow=.Ellipsis})
 	}
-	form := Settings_Form{rt=rt, width=form_width, scale=scale, gap=max(16, 12*scale)}
-	settings_page_build(app, &form)
-	content_height := form.height
-	region := alicorn.scroll_region_begin(ui, key=alicorn.key_string("scratchpad-settings-scroll"), content_height=content_height, line_height=32, style=alicorn.layout_style(.Column, grow=1, padding=16, clip=true), label="scratchpad-settings-scroll", axes=.Vertical, scrollbars=.Always, focusable=true)
-	alicorn.container_begin(ui, .Virtual_List, key=alicorn.key_string("settings-form"), label="settings-form", style=alicorn.layout_style(.Column, width=form_width, height=content_height, gap=form.gap), scroll_offset_y=region.offset_y)
-	form.ui = ui
-	form.height, form.rows = 0, 0
-	settings_page_build(app, &form)
-	alicorn.container_end(ui)
-	alicorn.scroll_region_end(ui)
-	alicorn.container_end(ui)
-	alicorn.container_begin(ui, .Container, label="scratchpad-settings-footer", style=alicorn.layout_style(.Row, height=control_height, gap=12, align=.Center))
-	alicorn.text(ui, "Changes apply immediately", key=alicorn.key_string("settings-save-note"), style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	if alicorn.button(ui, "Done", key=alicorn.key_string("settings-done"), style=alicorn.layout_style(.Row, width=max(96, 80*scale), height=control_height)) { settings_surface_close(app, rt) }
-	alicorn.container_end(ui)
+	if gui.layout(ui, label="scratchpad-settings-body", style=alicorn.layout_style(wide ? .Row : .Column, grow=1, gap=gap, clip=true)) {
+		if wide {
+			alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("settings-navigation"), label="settings-navigation", style=alicorn.layout_style(.Column, width=navigation_width, padding=8, gap=6), shape=scratchpad_surface_shape(app, 4), material=scratchpad_surface_material(app, app.raised_surface_material), physical_height=scratchpad_surface_height(app, 0.25))
+			for category in Settings_Category {
+				if gui.button(ui, names[category], key=fmt.tprintf("settings-category-%d", category), height=control_height, state=alicorn.Button_State{selected=app.settings_category == category}, content_style=alicorn.button_content_style(.Start, padding_x=12), variant=.Quiet) {
+					settings_category_select(app, rt, category)
+				}
+			}
+			alicorn.surface_end(ui)
+		} else {
+			options: [4]alicorn.Select_Option
+			for category in Settings_Category { options[int(category)] = alicorn.Select_Option{key=u64(category)+1, label=names[category]} }
+			choice := alicorn.select_control(ui, alicorn.key_string("settings-category-select"), "Settings category", options[:], u64(app.settings_category)+1, style=alicorn.layout_style(.Row, width=-1, height=control_height))
+			if choice.changed { settings_category_select(app, rt, Settings_Category(choice.selected_key-1)) }
+		}
+		form := Settings_Form{rt=rt, width=form_width, scale=scale, gap=max(16, 12*scale)}
+		settings_page_build(app, &form)
+		content_height := form.height
+		region := alicorn.scroll_region_begin(ui, key=alicorn.key_string("scratchpad-settings-scroll"), content_height=content_height, line_height=32, style=alicorn.layout_style(.Column, grow=1, padding=16, clip=true), label="scratchpad-settings-scroll", axes=.Vertical, scrollbars=.Always, focusable=true)
+		alicorn.container_begin(ui, .Virtual_List, key=alicorn.key_string("settings-form"), label="settings-form", style=alicorn.layout_style(.Column, width=form_width, height=content_height, gap=form.gap), scroll_offset_y=region.offset_y)
+		form.ui = ui
+		form.height, form.rows = 0, 0
+		settings_page_build(app, &form)
+		alicorn.container_end(ui)
+		alicorn.scroll_region_end(ui)
+	}
+	if gui.row(ui, label="scratchpad-settings-footer", height=control_height, gap=12, align=.Center) {
+		gui.text(ui, "Changes apply immediately", key="settings-save-note", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+		if gui.button(ui, "Done", key="settings-done", width=max(96, 80*scale), height=control_height) { settings_surface_close(app, rt) }
+	}
 	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }
@@ -157,7 +158,7 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 			button, clicked := alicorn.button_begin(ui, "", key=alicorn.key_string("settings-editor-font-family"), style=style, variant=.Default)
 			if button != 0 {
 				_ = alicorn.semantic_description(ui, .Button, fmt.tprintf("Choose editor font family: %s", family), actions=alicorn.semantic_actions_add({}, .Press))
-				alicorn.text(ui, family, key=alicorn.key_string("settings-editor-font-family-value"), style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{font_size=18, overflow=.Ellipsis})
+				gui.text(ui, family, key="settings-editor-font-family-value", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{font_size=18, overflow=.Ellipsis})
 				_ = alicorn.icon(ui, .Chevron_Down, key=alicorn.key_string("settings-editor-font-family-chevron"), size=18)
 				alicorn.button_end(ui)
 			}
@@ -169,13 +170,13 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 		size := scratchpad_editor_font_size(app)
 		if ui != nil {
 			style.gap, style.align = 8, .Center
-			alicorn.container_begin(ui, .Container, label="settings-editor-font-size-controls", style=style)
-			if alicorn.button(ui, "−", key=alicorn.key_string("settings-editor-font-size-down"), style=alicorn.layout_style(.Row, width=control_height, height=control_height), state=alicorn.Button_State{disabled=size <= EDITOR_FONT_SIZE_MIN}) { _ = scratchpad_editor_font_request(app, rt, app.editor_font_family, max(EDITOR_FONT_SIZE_MIN, size-1)) }
-			alicorn.container_begin(ui, .Container, label="settings-editor-font-size-display", style=alicorn.layout_style(.Row, grow=1, height=size_control_height, padding=10, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
-			alicorn.text(ui, fmt.tprintf("%.1f px", size), key=alicorn.key_string("settings-editor-font-size-value"), style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-			alicorn.container_end(ui)
-			if alicorn.button(ui, "+", key=alicorn.key_string("settings-editor-font-size-up"), style=alicorn.layout_style(.Row, width=control_height, height=control_height), state=alicorn.Button_State{disabled=size >= EDITOR_FONT_SIZE_MAX}) { _ = scratchpad_editor_font_request(app, rt, app.editor_font_family, min(EDITOR_FONT_SIZE_MAX, size+1)) }
-			alicorn.container_end(ui)
+			if gui.layout(ui, label="settings-editor-font-size-controls", style=style) {
+				if gui.button(ui, "−", key="settings-editor-font-size-down", width=control_height, height=control_height, state=alicorn.Button_State{disabled=size <= EDITOR_FONT_SIZE_MIN}) { _ = scratchpad_editor_font_request(app, rt, app.editor_font_family, max(EDITOR_FONT_SIZE_MIN, size-1)) }
+				alicorn.container_begin(ui, .Container, label="settings-editor-font-size-display", style=alicorn.layout_style(.Row, grow=1, height=size_control_height, padding=10, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
+				gui.text(ui, fmt.tprintf("%.1f px", size), key="settings-editor-font-size-value", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+				alicorn.container_end(ui)
+				if gui.button(ui, "+", key="settings-editor-font-size-up", width=control_height, height=control_height, state=alicorn.Button_State{disabled=size >= EDITOR_FONT_SIZE_MAX}) { _ = scratchpad_editor_font_request(app, rt, app.editor_font_family, min(EDITOR_FONT_SIZE_MAX, size+1)) }
+			}
 		}
 		preview_label_height := settings_text_height(rt, "Preview", form.width-32, 16*form.scale)
 		preview_height := settings_text_height(rt, SETTINGS_EDITOR_PREVIEW, form.width-32, size*form.scale, .Monospace)
@@ -183,14 +184,14 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 		if ui != nil {
 			style.direction, style.padding, style.gap = .Column, 16, 12
 			alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("settings-editor-font-preview-surface"), label="settings-editor-font-preview-surface", style=style, shape=scratchpad_surface_shape(app, 4), material=scratchpad_surface_material(app, app.raised_surface_material), physical_height=scratchpad_surface_height(app, 0.25))
-			alicorn.text(ui, "Preview", key=alicorn.key_string("settings-editor-font-preview-label"), style=alicorn.layout_style(.Row, width=-1, height=preview_label_height))
-			alicorn.text(ui, SETTINGS_EDITOR_PREVIEW, key=alicorn.key_string("settings-editor-font-preview"), style=alicorn.layout_style(.Row, width=-1, height=preview_height), font=.Monospace, text_style=alicorn.Text_Style{font_size=size, overflow=.Wrap})
+			gui.text(ui, "Preview", key="settings-editor-font-preview-label", style=alicorn.layout_style(.Row, width=-1, height=preview_label_height))
+			gui.text(ui, SETTINGS_EDITOR_PREVIEW, key="settings-editor-font-preview", style=alicorn.layout_style(.Row, width=-1, height=preview_height), font=.Monospace, text_style=alicorn.Text_Style{font_size=size, overflow=.Wrap})
 			alicorn.surface_end(ui)
 		}
 		style = settings_form_row(form, control_height)
 		if ui != nil {
 			style.width = min(form.width, max(180, 150*form.scale))
-			if alicorn.button(ui, "Reset to default", key=alicorn.key_string("settings-editor-font-reset"), style=style) { _ = scratchpad_editor_font_request(app, rt, "", EDITOR_FONT_SIZE_DEFAULT) }
+			if gui.button(ui, "Reset to default", key="settings-editor-font-reset", style=style) { _ = scratchpad_editor_font_request(app, rt, "", EDITOR_FONT_SIZE_DEFAULT) }
 		}
 	case .Workspace:
 		settings_form_text(form, "settings-page-title", "Workspace", 24, alicorn.FONT_WEIGHT_SEMIBOLD)

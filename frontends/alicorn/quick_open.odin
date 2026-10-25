@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
@@ -314,14 +315,14 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
 	)
-	alicorn.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22))
+	gui.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22))
 	app.quick_open_node = alicorn.text_field(ui, app.quick_open_query, key=alicorn.key_string("scratchpad-quick-open-query"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	if app.quick_open_error != "" {
-		alicorn.text(ui, app.quick_open_error, style=alicorn.layout_style(.Row, height=22))
+		gui.text(ui, app.quick_open_error, style=alicorn.layout_style(.Row, height=22))
 	} else if app.quick_open_loading && !app.quick_open_ready {
-		alicorn.text(ui, "Indexing workspace paths…", style=alicorn.layout_style(.Row, height=22))
+		gui.text(ui, "Indexing workspace paths…", style=alicorn.layout_style(.Row, height=22))
 	} else if len(results) == 0 {
-		alicorn.text(ui, "No matching files", style=alicorn.layout_style(.Row, height=22))
+		gui.text(ui, "No matching files", style=alicorn.layout_style(.Row, height=22))
 	} else {
 		list := alicorn.virtual_list_begin(
 			ui,
@@ -334,7 +335,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		app.quick_open_results_scroll_node = list.scroll.id
 		for index := list.first; index < list.last; index += 1 {
 			result := results[index]
-			if alicorn.button(ui, result.path, key=alicorn.key_string(result.path), style=alicorn.layout_style(.Row, height=QUICK_OPEN_ROW_HEIGHT), state=alicorn.Button_State{selected=index == app.quick_open_selected_index}, variant=.Quiet, text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
+			if gui.button(ui, result.path, key=result.path, height=QUICK_OPEN_ROW_HEIGHT, state=alicorn.Button_State{selected=index == app.quick_open_selected_index}, variant=.Quiet, text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
 				app.quick_open_selected_index = index
 				_ = quick_open_execute(app, rt, result.path, true)
 			}
@@ -343,7 +344,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	}
 	footer := fmt.tprintf("%d files  ·  ↑/↓ navigate  ·  Enter open  ·  Esc close", len(results))
 	if app.quick_open_truncated { footer = fmt.tprintf("%s  ·  index capped at 5,000 files", footer) }
-	alicorn.text(ui, footer, style=alicorn.layout_style(.Row, height=20))
+	gui.text(ui, footer, style=alicorn.layout_style(.Row, height=20))
 	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }

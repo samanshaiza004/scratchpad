@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 
 SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT :: f32(42)
@@ -100,32 +101,32 @@ build_app :: proc(
 		app.workspace_sidebar_width = workspace_split.position
 		alicorn.split_first_begin(&ui, workspace_split)
 		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Recessed))
-		alicorn.container_begin(&ui, .Container, label="workspace-panel-tabs", style=alicorn.layout_style(.Row, height=30, gap=4))
-		if alicorn.button(&ui, "Files", key=alicorn.key_string("workspace-panel-files"), style=alicorn.layout_style(.Row, grow=1, height=28), state=alicorn.Button_State{selected=!app.workspace_search_mode}, variant=.Tab) {
-			workspace_search_cancel_active(app)
-			workspace_search_match_clear_all(app)
-			app.workspace_search_mode = false
-			app.workspace_search_query_node = 0
-			app.editor_focus_pending = true
+		if gui.row(&ui, label="workspace-panel-tabs", height=30, gap=4) {
+			if gui.button(&ui, "Files", key="workspace-panel-files", grow=1, height=28, state=alicorn.Button_State{selected=!app.workspace_search_mode}, variant=.Tab) {
+				workspace_search_cancel_active(app)
+				workspace_search_match_clear_all(app)
+				app.workspace_search_mode = false
+				app.workspace_search_query_node = 0
+				app.editor_focus_pending = true
+			}
+			if gui.button(&ui, "Search", key="workspace-panel-search", grow=1, height=28, state=alicorn.Button_State{selected=app.workspace_search_mode}, variant=.Tab) {
+				app.workspace_search_mode = true
+				app.workspace_search_focus_pending = true
+			}
 		}
-		if alicorn.button(&ui, "Search", key=alicorn.key_string("workspace-panel-search"), style=alicorn.layout_style(.Row, grow=1, height=28), state=alicorn.Button_State{selected=app.workspace_search_mode}, variant=.Tab) {
-			app.workspace_search_mode = true
-			app.workspace_search_focus_pending = true
-		}
-		alicorn.container_end(&ui)
 		if app.workspace_search_mode {
 			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=32))
 			app.workspace_search_query_node = query_node
-			if app.workspace_search_error != "" { alicorn.text(&ui, app.workspace_search_error) }
-			else if !state.has_workspace { alicorn.text(&ui, "Open a workspace to search.") }
-			else if app.workspace_search_query == "" { alicorn.text(&ui, "Type to search workspace files.") }
-			else if app.workspace_search_view.done && app.workspace_search_view.count == 0 { alicorn.text(&ui, "No matches") }
+			if app.workspace_search_error != "" { gui.text(&ui, app.workspace_search_error) }
+			else if !state.has_workspace { gui.text(&ui, "Open a workspace to search.") }
+			else if app.workspace_search_query == "" { gui.text(&ui, "Type to search workspace files.") }
+			else if app.workspace_search_view.done && app.workspace_search_view.count == 0 { gui.text(&ui, "No matches") }
 			else if app.workspace_search_view.done {
 				count_text := fmt.tprintf("%d matches", app.workspace_search_view.count)
 				if app.workspace_search_view.truncated { count_text = fmt.tprintf("%s · result limit reached", count_text) }
-				alicorn.text(&ui, count_text)
+				gui.text(&ui, count_text)
 			} else {
-				alicorn.text(&ui, fmt.tprintf("Searching… %d matches", app.workspace_search_view.count))
+				gui.text(&ui, fmt.tprintf("Searching… %d matches", app.workspace_search_view.count))
 			}
 			if len(app.workspace_search_view.results) > 0 {
 				search_list := alicorn.virtual_list_begin(&ui, len(app.workspace_search_view.results), 72, key=alicorn.key_string("scratchpad-workspace-search-results"), style=alicorn.layout_style(grow=1, clip=true), label="scratchpad-workspace-search-results", focusable=true)
@@ -133,7 +134,7 @@ build_app :: proc(
 				for position := search_list.first; position < search_list.last; position += 1 {
 					result := app.workspace_search_view.results[position]
 					label := workspace_search_result_label(result)
-					if alicorn.button(&ui, label, key=alicorn.key_pair(app.workspace_search_view.generation, u64(position)), style=alicorn.layout_style(.Row, height=68), state=alicorn.Button_State{selected=app.workspace_search_selected == position}, text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Wrap}, content_style=alicorn.button_content_style(.Start, padding_x=7, padding_y=5), variant=.Quiet) {
+					if gui.button(&ui, label, key=alicorn.key_pair(app.workspace_search_view.generation, u64(position)), height=68, state=alicorn.Button_State{selected=app.workspace_search_selected == position}, text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Wrap}, content_style=alicorn.button_content_style(.Start, padding_x=7, padding_y=5), variant=.Quiet) {
 						app.workspace_search_selected = position
 						_ = workspace_search_activate_result(app, rt, position)
 					}
@@ -142,7 +143,7 @@ build_app :: proc(
 			}
 		} else {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center), shape=scratchpad_surface_shape(app, 4), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
-			alicorn.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+			gui.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
 		}
@@ -159,47 +160,47 @@ build_app :: proc(
 		}
 		if app.find_open {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
-			alicorn.container_begin(&ui, .Container, label="scratchpad-find-bar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-			alicorn.text(&ui, "Find")
-			_ = find_query_build(app, &ui, rt)
-			if alicorn.button(&ui, "Aa", key=alicorn.key_string("find-match-case"), style=alicorn.layout_style(.Row, width=38, height=28), state=alicorn.Button_State{selected=app.find_match_case}, variant=.Toolbar) {
-				app.find_match_case = !app.find_match_case
-				app.find_presentation.editor_revision = 0
-				find_refresh_if_needed(app, rt)
+			if gui.row(&ui, label="scratchpad-find-bar", height=38, gap=8, align=.Center) {
+				gui.text(&ui, "Find")
+				_ = find_query_build(app, &ui, rt)
+				if gui.button(&ui, "Aa", key="find-match-case", width=38, height=28, state=alicorn.Button_State{selected=app.find_match_case}, variant=.Toolbar) {
+					app.find_match_case = !app.find_match_case
+					app.find_presentation.editor_revision = 0
+					find_refresh_if_needed(app, rt)
+				}
+				_ = alicorn.tooltip(&ui, "Match case")
+				if gui.button(&ui, "W", key="find-whole-word", width=34, height=28, state=alicorn.Button_State{selected=app.find_whole_word}, variant=.Toolbar) {
+					app.find_whole_word = !app.find_whole_word
+					app.find_presentation.editor_revision = 0
+					find_refresh_if_needed(app, rt)
+				}
+				_ = alicorn.tooltip(&ui, "Whole word")
+				find_status := ""
+				if app.find_query.text == "" { find_status = "Type to find" }
+				else if app.find_error != "" { find_status = app.find_error }
+				else if len(app.find_presentation.matches) == 0 { find_status = "No matches" }
+				else {
+					find_status = fmt.tprintf("%d of %d", app.find_presentation.active_match+1, len(app.find_presentation.matches))
+					if app.find_presentation.truncated { find_status = fmt.tprintf("%s+", find_status) }
+				}
+				gui.text(&ui, find_status)
+				if gui.button(&ui, "↑", key="find-previous", width=34, height=28, variant=.Toolbar) { _ = find_move_match(app, rt, -1) }
+				if gui.button(&ui, "↓", key="find-next", width=34, height=28, variant=.Toolbar) { _ = find_move_match(app, rt, 1) }
+				if gui.button(&ui, "×", key="find-close", width=30, height=28, variant=.Toolbar) { find_close_surface(app) }
 			}
-			_ = alicorn.tooltip(&ui, "Match case")
-			if alicorn.button(&ui, "W", key=alicorn.key_string("find-whole-word"), style=alicorn.layout_style(.Row, width=34, height=28), state=alicorn.Button_State{selected=app.find_whole_word}, variant=.Toolbar) {
-				app.find_whole_word = !app.find_whole_word
-				app.find_presentation.editor_revision = 0
-				find_refresh_if_needed(app, rt)
+			if gui.row(&ui, label="scratchpad-replace-bar", height=38, gap=8, align=.Center) {
+				gui.text(&ui, "Replace")
+				replace_node := alicorn.text_field(&ui, app.find_replace_text, key=alicorn.key_string("scratchpad-find-replace-text"), style=alicorn.layout_style(.Row, grow=1, height=36), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
+				app.find_replace_node = replace_node
+				can_replace := app.find_query.text != "" && len(app.find_presentation.matches) > 0 && len(app.editor_edits) == 0 && !editor_active_preedit(app)
+				if gui.button(&ui, "Replace", key="find-replace-current", width=82, height=28, state=alicorn.Button_State{disabled=!can_replace}, variant=.Toolbar) {
+					_ = find_replace_current(app, rt)
+				}
+				if gui.button(&ui, "All", key="find-replace-all", width=58, height=28, state=alicorn.Button_State{disabled=!can_replace}, variant=.Toolbar) {
+					_ = find_replace_all(app, rt)
+				}
+				if app.find_replace_message != "" { gui.text(&ui, app.find_replace_message) }
 			}
-			_ = alicorn.tooltip(&ui, "Whole word")
-			find_status := ""
-			if app.find_query.text == "" { find_status = "Type to find" }
-			else if app.find_error != "" { find_status = app.find_error }
-			else if len(app.find_presentation.matches) == 0 { find_status = "No matches" }
-			else {
-				find_status = fmt.tprintf("%d of %d", app.find_presentation.active_match+1, len(app.find_presentation.matches))
-				if app.find_presentation.truncated { find_status = fmt.tprintf("%s+", find_status) }
-			}
-			alicorn.text(&ui, find_status)
-			if alicorn.button(&ui, "↑", key=alicorn.key_string("find-previous"), style=alicorn.layout_style(.Row, width=34, height=28), variant=.Toolbar) { _ = find_move_match(app, rt, -1) }
-			if alicorn.button(&ui, "↓", key=alicorn.key_string("find-next"), style=alicorn.layout_style(.Row, width=34, height=28), variant=.Toolbar) { _ = find_move_match(app, rt, 1) }
-			if alicorn.button(&ui, "×", key=alicorn.key_string("find-close"), style=alicorn.layout_style(.Row, width=30, height=28), variant=.Toolbar) { find_close_surface(app) }
-			alicorn.container_end(&ui)
-			alicorn.container_begin(&ui, .Container, label="scratchpad-replace-bar", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-			alicorn.text(&ui, "Replace")
-			replace_node := alicorn.text_field(&ui, app.find_replace_text, key=alicorn.key_string("scratchpad-find-replace-text"), style=alicorn.layout_style(.Row, grow=1, height=36), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
-			app.find_replace_node = replace_node
-			can_replace := app.find_query.text != "" && len(app.find_presentation.matches) > 0 && len(app.editor_edits) == 0 && !editor_active_preedit(app)
-			if alicorn.button(&ui, "Replace", key=alicorn.key_string("find-replace-current"), style=alicorn.layout_style(.Row, width=82, height=28), state=alicorn.Button_State{disabled=!can_replace}, variant=.Toolbar) {
-				_ = find_replace_current(app, rt)
-			}
-			if alicorn.button(&ui, "All", key=alicorn.key_string("find-replace-all"), style=alicorn.layout_style(.Row, width=58, height=28), state=alicorn.Button_State{disabled=!can_replace}, variant=.Toolbar) {
-				_ = find_replace_all(app, rt)
-			}
-			if app.find_replace_message != "" { alicorn.text(&ui, app.find_replace_message) }
-			alicorn.container_end(&ui)
 			alicorn.surface_end(&ui)
 		}
 
@@ -210,12 +211,12 @@ build_app :: proc(
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
 				if floating_window_contains(app, active.id) {
-					alicorn.container_begin(&ui, .Container, label="floating-document-placeholder", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=10))
-					alicorn.text(&ui, "No document open in this window.")
-					if alicorn.button(&ui, "Return to tabs", key=alicorn.key_string("floating-document-return-main"), style=alicorn.layout_style(.Row, width=140, height=32), variant=.Toolbar) {
-						floating_window_return_to_tabs(app)
+					if gui.column(&ui, label="floating-document-placeholder", height=-1, grow=1, align=.Center, justify=.Center, gap=10) {
+						gui.text(&ui, "No document open in this window.")
+						if gui.button(&ui, "Return to tabs", key="floating-document-return-main", width=140, height=32, variant=.Toolbar) {
+							floating_window_return_to_tabs(app)
+						}
 					}
-					alicorn.container_end(&ui)
 				} else {
 					switch active.view_kind {
 				case "image":
@@ -232,15 +233,15 @@ build_app :: proc(
 			}
 		} else {
 			editor_accessibility_retire(app, rt)
-			alicorn.container_begin(&ui, .Container, label="workspace-empty-editor-welcome", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=12))
-			if app.brand_mark != 0 { _ = alicorn.image(&ui, app.brand_mark, alt_text="Scratchpad mark", key=alicorn.key_string("scratchpad-brand-mark"), style=alicorn.layout_style(.Row, width=40, height=40)) }
-			alicorn.text(&ui, "No document open")
-			alicorn.text(&ui, "Open a file from this workspace to begin editing.")
-			if alicorn.button(&ui, "Quick Open…", key=alicorn.key_string("empty-editor-quick-open"), style=alicorn.layout_style(.Row, width=210, height=42), variant=.Primary) {
-				quick_open_open_surface(app, rt)
+			if gui.column(&ui, label="workspace-empty-editor-welcome", height=-1, grow=1, align=.Center, justify=.Center, gap=12) {
+				if app.brand_mark != 0 { _ = alicorn.image(&ui, app.brand_mark, alt_text="Scratchpad mark", key=alicorn.key_string("scratchpad-brand-mark"), style=alicorn.layout_style(.Row, width=40, height=40)) }
+				gui.text(&ui, "No document open")
+				gui.text(&ui, "Open a file from this workspace to begin editing.")
+				if gui.button(&ui, "Quick Open…", key="empty-editor-quick-open", width=210, height=42, variant=.Primary) {
+					quick_open_open_surface(app, rt)
+				}
+				gui.text(&ui, "Ctrl+P opens Quick Open")
 			}
-			alicorn.text(&ui, "Ctrl+P opens Quick Open")
-			alicorn.container_end(&ui)
 		}
 		alicorn.style_environment_pop(&ui, editor_theme_scope)
 		alicorn.surface_end(&ui)
@@ -252,7 +253,7 @@ build_app :: proc(
 		alicorn.split_end(&ui, workspace_split)
 	} else {
 		alicorn.container_begin(&ui, .Container, label="backend-starting-card", style=alicorn.layout_style(.Column, grow=1, padding=24, gap=12), color=alicorn.style_color(&ui, .Surface))
-		alicorn.text(&ui, "Starting Scratchpad…")
+		gui.text(&ui, "Starting Scratchpad…")
 		alicorn.container_end(&ui)
 	}
 	alicorn.container_end(&ui)
@@ -268,70 +269,70 @@ build_app :: proc(
 		alicorn.container_begin(&ui, .Container, label="dirty-close-dialog", style=alicorn.layout_style(.Column, width=440, height=190, padding=22, gap=14, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
 		recovery_pending := editor_document_has_recoverable_preedit(app, app.close_document_id)
 		if recovery_pending {
-			alicorn.text(&ui, "A committed text composition is waiting for recovery.")
-			alicorn.text(&ui, "Copy it or explicitly discard it before closing this document.")
+			gui.text(&ui, "A committed text composition is waiting for recovery.")
+			gui.text(&ui, "Copy it or explicitly discard it before closing this document.")
 		} else {
-			alicorn.text(&ui, "Save changes before closing?")
+			gui.text(&ui, "Save changes before closing?")
 		}
 		if document, found := find_document(&app.backend.state, app.close_document_id); found {
-			alicorn.text(&ui, document_title(document.path))
+			gui.text(&ui, document_title(document.path))
 		}
-		alicorn.container_begin(&ui, .Container, label="dirty-close-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-		if recovery_pending {
-			if alicorn.button(&ui, "Copy Recovery", key=alicorn.key_string("recovery-close-copy"), style=alicorn.layout_style(.Row, width=130, height=34)) {
-				if editor_copy_recoverable_preedit(app, rt, app.close_document_id) {
-					if frame_deferred_action_schedule(app, .Close_Document, app.close_document_id) {
-						clear_close_prompt(app)
-					} else {
-						set_error(app, "Could not queue document close until the current frame is complete.")
+		if gui.row(&ui, label="dirty-close-actions", height=38, gap=8, align=.Center) {
+			if recovery_pending {
+				if gui.button(&ui, "Copy Recovery", key="recovery-close-copy", width=130, height=34) {
+					if editor_copy_recoverable_preedit(app, rt, app.close_document_id) {
+						if frame_deferred_action_schedule(app, .Close_Document, app.close_document_id) {
+							clear_close_prompt(app)
+						} else {
+							set_error(app, "Could not queue document close until the current frame is complete.")
+						}
+					}
+				}
+				if gui.button(&ui, "Discard Recovery", key="recovery-close-discard", width=140, height=34) {
+					if editor_discard_recoverable_preedit(app, rt, app.close_document_id) {
+						if frame_deferred_action_schedule(app, .Close_Document, app.close_document_id) {
+							clear_close_prompt(app)
+						} else {
+							set_error(app, "Could not queue document close until the current frame is complete.")
+						}
+					}
+				}
+			} else {
+				if gui.button(&ui, "Save & Close", key="dirty-close-save", width=130, height=34, variant=.Primary) {
+					if !frame_deferred_action_schedule(app, .Close_After_Save) {
+						set_error(app, "Could not queue save-and-close until the current frame is complete.")
+						alicorn.invalidate_root(rt, "Scratchpad could not defer save-and-close")
+					}
+				}
+				if gui.button(&ui, "Discard", key="dirty-close-discard", width=100, height=34) {
+					if !frame_deferred_action_schedule(app, .Close_With_Discard) {
+						set_error(app, "Could not queue discard-and-close until the current frame is complete.")
+						alicorn.invalidate_root(rt, "Scratchpad could not defer discard-and-close")
 					}
 				}
 			}
-			if alicorn.button(&ui, "Discard Recovery", key=alicorn.key_string("recovery-close-discard"), style=alicorn.layout_style(.Row, width=140, height=34)) {
-				if editor_discard_recoverable_preedit(app, rt, app.close_document_id) {
-					if frame_deferred_action_schedule(app, .Close_Document, app.close_document_id) {
-						clear_close_prompt(app)
-					} else {
-						set_error(app, "Could not queue document close until the current frame is complete.")
-					}
-				}
-			}
-		} else {
-			if alicorn.button(&ui, "Save & Close", key=alicorn.key_string("dirty-close-save"), style=alicorn.layout_style(.Row, width=130, height=34), variant=.Primary) {
-				if !frame_deferred_action_schedule(app, .Close_After_Save) {
-					set_error(app, "Could not queue save-and-close until the current frame is complete.")
-					alicorn.invalidate_root(rt, "Scratchpad could not defer save-and-close")
-				}
-			}
-			if alicorn.button(&ui, "Discard", key=alicorn.key_string("dirty-close-discard"), style=alicorn.layout_style(.Row, width=100, height=34)) {
-				if !frame_deferred_action_schedule(app, .Close_With_Discard) {
-					set_error(app, "Could not queue discard-and-close until the current frame is complete.")
-					alicorn.invalidate_root(rt, "Scratchpad could not defer discard-and-close")
+			if gui.button(&ui, "Cancel", key="dirty-close-cancel", width=90, height=34, variant=.Quiet) {
+				if !frame_deferred_action_schedule(app, .Cancel_Close_Prompt) {
+					set_error(app, "Could not queue close cancellation until the current frame is complete.")
+					alicorn.invalidate_root(rt, "Scratchpad could not defer close cancellation")
 				}
 			}
 		}
-		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("dirty-close-cancel"), style=alicorn.layout_style(.Row, width=90, height=34), variant=.Quiet) {
-			if !frame_deferred_action_schedule(app, .Cancel_Close_Prompt) {
-				set_error(app, "Could not queue close cancellation until the current frame is complete.")
-				alicorn.invalidate_root(rt, "Scratchpad could not defer close cancellation")
-			}
-		}
-		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
 		alicorn.modal_overlay_end(&ui)
 	} else if app.save_as_confirmation_open {
 		alicorn.modal_overlay_begin(&ui, alicorn.key_string("save-as-confirmation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-dialog", style=alicorn.layout_style(.Column, width=480, height=176, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
-		alicorn.text(&ui, "Replace the existing file?")
-		alicorn.text(&ui, app.save_as_confirmation_path, style=alicorn.layout_style(.Row, height=52), text_style=alicorn.Text_Style{overflow=.Wrap})
-		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-		if alicorn.button(&ui, "Replace", key=alicorn.key_string("save-as-confirmation-replace"), style=alicorn.layout_style(.Row, width=104, height=34), variant=.Primary) {
-			save_as_confirm_overwrite(app, rt)
+		gui.text(&ui, "Replace the existing file?")
+		gui.text(&ui, app.save_as_confirmation_path, style=alicorn.layout_style(.Row, height=52), text_style=alicorn.Text_Style{overflow=.Wrap})
+		if gui.row(&ui, label="save-as-confirmation-actions", height=38, gap=8, align=.Center) {
+			if gui.button(&ui, "Replace", key="save-as-confirmation-replace", width=104, height=34, variant=.Primary) {
+				save_as_confirm_overwrite(app, rt)
+			}
+			if gui.button(&ui, "Cancel", key="save-as-confirmation-cancel", width=90, height=34, variant=.Quiet) {
+				save_as_cancel_overwrite(app, rt)
+			}
 		}
-		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("save-as-confirmation-cancel"), style=alicorn.layout_style(.Row, width=90, height=34), variant=.Quiet) {
-			save_as_cancel_overwrite(app, rt)
-		}
-		alicorn.container_end(&ui)
 		alicorn.container_end(&ui)
 		alicorn.modal_overlay_end(&ui)
 	} else if app.workspace_mutation_kind != .None {
@@ -339,13 +340,13 @@ build_app :: proc(
 	} else if app.go_to_line_open {
 		alicorn.modal_overlay_begin(&ui, alicorn.key_string("go-to-line-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 		alicorn.container_begin(&ui, .Container, label="go-to-line-dialog", style=alicorn.layout_style(.Column, width=420, height=150, padding=20, gap=10, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
-		alicorn.text(&ui, "Go to Line")
+		gui.text(&ui, "Go to Line")
 		app.go_to_line_query_node = alicorn.text_field(&ui, app.go_to_line_query, key=alicorn.key_string("go-to-line-query"), style=alicorn.layout_style(.Row, height=34))
-		if app.go_to_line_error != "" { alicorn.text(&ui, app.go_to_line_error) }
-		alicorn.container_begin(&ui, .Container, label="go-to-line-actions", style=alicorn.layout_style(.Row, height=36, gap=8, align=.Center))
-		if alicorn.button(&ui, "Go", key=alicorn.key_string("go-to-line-submit"), style=alicorn.layout_style(.Row, width=80, height=32), variant=.Primary) { _ = go_to_line_submit(app, rt) }
-		if alicorn.button(&ui, "Cancel", key=alicorn.key_string("go-to-line-cancel"), style=alicorn.layout_style(.Row, width=88, height=32), variant=.Quiet) { go_to_line_close(app, rt, true) }
-		alicorn.container_end(&ui)
+		if app.go_to_line_error != "" { gui.text(&ui, app.go_to_line_error) }
+		if gui.row(&ui, label="go-to-line-actions", height=36, gap=8, align=.Center) {
+			if gui.button(&ui, "Go", key="go-to-line-submit", width=80, height=32, variant=.Primary) { _ = go_to_line_submit(app, rt) }
+			if gui.button(&ui, "Cancel", key="go-to-line-cancel", width=88, height=32, variant=.Quiet) { go_to_line_close(app, rt, true) }
+		}
 		alicorn.container_end(&ui)
 		alicorn.modal_overlay_end(&ui)
 	} else if app.recent_workspaces_open {
@@ -428,8 +429,8 @@ build_app :: proc(
 build_startup_notice :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || app.recovery_notice_dismissed || app.backend.state.startup_notice == "" { return }
 	alicorn.container_begin(ui, .Container, label="scratchpad-startup-notice", style=alicorn.layout_style(.Column, height=72, padding=6, gap=4), color=alicorn.style_color(ui, .Subtle_Surface))
-	alicorn.text(ui, app.backend.state.startup_notice, style=alicorn.layout_style(.Row, height=42), text_style=alicorn.Text_Style{overflow=.Wrap})
-	if alicorn.button(ui, "Dismiss", key=alicorn.key_string("scratchpad-startup-notice-dismiss"), style=alicorn.layout_style(.Row, width=82, height=24)) {
+	gui.text(ui, app.backend.state.startup_notice, style=alicorn.layout_style(.Row, height=42), text_style=alicorn.Text_Style{overflow=.Wrap})
+	if gui.button(ui, "Dismiss", key="scratchpad-startup-notice-dismiss", width=82, height=24) {
 		app.recovery_notice_dismissed = true
 		alicorn.invalidate_root(rt, "Scratchpad recovery notice dismissed")
 	}
@@ -468,9 +469,8 @@ scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alico
 	metrics := app.window_chrome_metrics
 	if metrics.header.h <= 0 { return }
 	if metrics.header.y > 0 {
-		alicorn.container_begin(ui, .Container, label="scratchpad-titlebar-safe-area",
-			style=alicorn.layout_style(.Row, height=metrics.header.y))
-		alicorn.container_end(ui)
+		if gui.row(ui, label="scratchpad-titlebar-safe-area", height=metrics.header.y) {
+		}
 	}
 	window_width := f32(max(logical_width, 0))
 	leading_width := clamp(metrics.content_start_x, 0, window_width)
@@ -556,7 +556,7 @@ scratchpad_document_tabs_build :: proc(
 	if len(tab_document_indices) == 0 {
 		if show_empty {
 			empty_label := "No documents open" if len(state.documents) == 0 else "No documents in this window"
-			alicorn.text(ui, empty_label, style=alicorn.layout_style(.Row, grow=1, height=height))
+			gui.text(ui, empty_label, style=alicorn.layout_style(.Row, grow=1, height=height))
 		}
 		return
 	}

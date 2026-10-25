@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
@@ -155,38 +156,38 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 	if app.workspace_mutation_kind == .Trash {
 		alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-trash-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 		alicorn.container_begin(ui, .Container, label="workspace-trash-dialog", style=alicorn.layout_style(.Column, width=500, height=220, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
-		alicorn.text(ui, "Move this workspace item to the operating system Trash?")
-		alicorn.text(ui, app.workspace_mutation_source)
+		gui.text(ui, "Move this workspace item to the operating system Trash?")
+		gui.text(ui, app.workspace_mutation_source)
 		if app.workspace_mutation_queued {
-			alicorn.text(ui, "Waiting for pending editor changes to finish…")
-			if alicorn.button(ui, "Cancel", key=alicorn.key_string("workspace-trash-cancel"), style=alicorn.layout_style(.Row, width=88, height=34), variant=.Quiet) {
+			gui.text(ui, "Waiting for pending editor changes to finish…")
+			if gui.button(ui, "Cancel", key="workspace-trash-cancel", width=88, height=34, variant=.Quiet) {
 				workspace_mutation_cancel(app, rt)
 			}
 		} else if app.workspace_mutation_dirty {
 			count := workspace_mutation_dirty_document_count(app)
-			alicorn.text(ui, fmt.tprintf("%d open document(s) have unsaved changes.", count))
-			if app.workspace_mutation_error != "" { alicorn.text(ui, app.workspace_mutation_error) }
-			alicorn.container_begin(ui, .Container, label="workspace-trash-dirty-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-			if alicorn.button(ui, "Save & Trash", key=alicorn.key_string("workspace-trash-save"), style=alicorn.layout_style(.Row, width=128, height=34)) {
-				workspace_mutation_save_and_trash(app, rt)
+			gui.text(ui, fmt.tprintf("%d open document(s) have unsaved changes.", count))
+			if app.workspace_mutation_error != "" { gui.text(ui, app.workspace_mutation_error) }
+			if gui.row(ui, label="workspace-trash-dirty-actions", height=38, gap=8, align=.Center) {
+				if gui.button(ui, "Save & Trash", key="workspace-trash-save", width=128, height=34) {
+					workspace_mutation_save_and_trash(app, rt)
+				}
+				if gui.button(ui, "Discard & Trash", key="workspace-trash-discard", width=138, height=34) {
+					workspace_mutation_submit(app, rt, true)
+				}
+				if gui.button(ui, "Cancel", key="workspace-trash-cancel", width=88, height=34, variant=.Quiet) {
+					workspace_mutation_cancel(app, rt)
+				}
 			}
-			if alicorn.button(ui, "Discard & Trash", key=alicorn.key_string("workspace-trash-discard"), style=alicorn.layout_style(.Row, width=138, height=34)) {
-				workspace_mutation_submit(app, rt, true)
-			}
-			if alicorn.button(ui, "Cancel", key=alicorn.key_string("workspace-trash-cancel"), style=alicorn.layout_style(.Row, width=88, height=34), variant=.Quiet) {
-				workspace_mutation_cancel(app, rt)
-			}
-			alicorn.container_end(ui)
 		} else {
-			if app.workspace_mutation_error != "" { alicorn.text(ui, app.workspace_mutation_error) }
-			alicorn.container_begin(ui, .Container, label="workspace-trash-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-			if alicorn.button(ui, "Move to Trash", key=alicorn.key_string("workspace-trash-confirm"), style=alicorn.layout_style(.Row, width=132, height=34)) {
-				workspace_mutation_submit(app, rt, false)
+			if app.workspace_mutation_error != "" { gui.text(ui, app.workspace_mutation_error) }
+			if gui.row(ui, label="workspace-trash-actions", height=38, gap=8, align=.Center) {
+				if gui.button(ui, "Move to Trash", key="workspace-trash-confirm", width=132, height=34) {
+					workspace_mutation_submit(app, rt, false)
+				}
+				if gui.button(ui, "Cancel", key="workspace-trash-cancel", width=88, height=34, variant=.Quiet) {
+					workspace_mutation_cancel(app, rt)
+				}
 			}
-			if alicorn.button(ui, "Cancel", key=alicorn.key_string("workspace-trash-cancel"), style=alicorn.layout_style(.Row, width=88, height=34), variant=.Quiet) {
-				workspace_mutation_cancel(app, rt)
-			}
-			alicorn.container_end(ui)
 		}
 		alicorn.container_end(ui)
 		alicorn.modal_overlay_end(ui)
@@ -195,25 +196,25 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-mutation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 	alicorn.container_begin(ui, .Container, label="workspace-mutation-dialog", style=alicorn.layout_style(.Column, width=500, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=320, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
-	alicorn.text(ui, label)
+	gui.text(ui, label)
 	if app.workspace_mutation_queued {
-		alicorn.text(ui, "Waiting for pending editor changes to finish…")
+		gui.text(ui, "Waiting for pending editor changes to finish…")
 	} else if app.workspace_mutation_kind == .Move {
-		alicorn.text(ui, fmt.tprintf("Move %s to a workspace-relative destination path.", app.workspace_mutation_source))
+		gui.text(ui, fmt.tprintf("Move %s to a workspace-relative destination path.", app.workspace_mutation_source))
 		app.workspace_mutation_name_node = alicorn.text_field(ui, app.workspace_mutation_name, key=alicorn.key_string("workspace-mutation-destination"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	} else {
-		if app.workspace_mutation_kind == .Rename { alicorn.text(ui, app.workspace_mutation_source) }
+		if app.workspace_mutation_kind == .Rename { gui.text(ui, app.workspace_mutation_source) }
 		app.workspace_mutation_name_node = alicorn.text_field(ui, app.workspace_mutation_name, key=alicorn.key_string("workspace-mutation-name"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	}
-	if app.workspace_mutation_error != "" { alicorn.text(ui, app.workspace_mutation_error) }
-	alicorn.container_begin(ui, .Container, label="workspace-mutation-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-	if alicorn.button(ui, "Cancel", key=alicorn.key_string("workspace-mutation-cancel"), style=alicorn.layout_style(.Row, width=88, height=34), variant=.Quiet) {
-		workspace_mutation_cancel(app, rt)
+	if app.workspace_mutation_error != "" { gui.text(ui, app.workspace_mutation_error) }
+	if gui.row(ui, label="workspace-mutation-actions", height=38, gap=8, align=.Center) {
+		if gui.button(ui, "Cancel", key="workspace-mutation-cancel", width=88, height=34, variant=.Quiet) {
+			workspace_mutation_cancel(app, rt)
+		}
+		if !app.workspace_mutation_queued && gui.button(ui, label if app.workspace_mutation_kind == .Rename || app.workspace_mutation_kind == .Move else "Create", key="workspace-mutation-confirm", width=118, height=34, variant=.Primary) {
+			workspace_mutation_submit(app, rt, false)
+		}
 	}
-	if !app.workspace_mutation_queued && alicorn.button(ui, label if app.workspace_mutation_kind == .Rename || app.workspace_mutation_kind == .Move else "Create", key=alicorn.key_string("workspace-mutation-confirm"), style=alicorn.layout_style(.Row, width=118, height=34), variant=.Primary) {
-		workspace_mutation_submit(app, rt, false)
-	}
-	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 	alicorn.modal_overlay_end(ui)
 }

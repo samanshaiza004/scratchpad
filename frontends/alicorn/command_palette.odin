@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:mem"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 
 COMMAND_PALETTE_MAX_VISIBLE_ROWS :: 8
@@ -474,18 +475,18 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
 	)
-	alicorn.container_begin(ui, .Container, label="scratchpad-command-palette-query-row", style=alicorn.layout_style(.Row, height=44, gap=8, align=.Center))
-	alicorn.text(ui, ">", style=alicorn.layout_style(.Row, width=18, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
-	app.command_palette_node = alicorn.text_field(
-		ui,
-		app.command_palette_query,
-		key=alicorn.key_string("scratchpad-command-palette-query"),
-		style=alicorn.layout_style(.Row, grow=1, height=40),
-		text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
-	)
-	alicorn.container_end(ui)
+	if gui.row(ui, label="scratchpad-command-palette-query-row", height=44, gap=8, align=.Center) {
+		gui.text(ui, ">", style=alicorn.layout_style(.Row, width=18, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
+		app.command_palette_node = alicorn.text_field(
+			ui,
+			app.command_palette_query,
+			key=alicorn.key_string("scratchpad-command-palette-query"),
+			style=alicorn.layout_style(.Row, grow=1, height=40),
+			text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
+		)
+	}
 	if len(filtered) == 0 {
-		alicorn.text(ui, "No matching commands", style=alicorn.layout_style(.Row, height=COMMAND_PALETTE_ROW_HEIGHT, padding=8))
+		gui.text(ui, "No matching commands", style=alicorn.layout_style(.Row, height=COMMAND_PALETTE_ROW_HEIGHT, padding=8))
 	} else {
 		list := alicorn.virtual_list_begin(
 			ui,
@@ -502,12 +503,12 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 			if result.category != "" { label = fmt.tprintf("%s  ·  %s", label, result.category) }
 			if result.shortcut != "" { label = fmt.tprintf("%s     %s", label, command_palette_binding_label(result.shortcut)) }
 			if !result.enabled { label = fmt.tprintf("%s  ·  Unavailable here", label) }
-			if alicorn.button(
+			if gui.button(
 				ui,
 				label,
-				key=alicorn.key_string(result.action_id),
+				key=result.action_id,
 				state=alicorn.Button_State{selected=index == app.command_palette_selected_index, disabled=!result.enabled},
-				style=alicorn.layout_style(.Row, height=COMMAND_PALETTE_ROW_HEIGHT),
+				height=COMMAND_PALETTE_ROW_HEIGHT,
 				text_style=alicorn.Text_Style{overflow=.Ellipsis},
 				content_style=alicorn.button_content_style(horizontal=.Start, vertical=.Center, padding_x=10, padding_y=5),
 				variant=.Quiet,
@@ -517,7 +518,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		}
 		alicorn.virtual_list_end(ui, list)
 	}
-	alicorn.text(ui, fmt.tprintf("%d commands  ·  ↑/↓ navigate  ·  Enter run  ·  Esc close", len(filtered)), style=alicorn.layout_style(.Row, height=20))
+	gui.text(ui, fmt.tprintf("%d commands  ·  ↑/↓ navigate  ·  Enter run  ·  Esc close", len(filtered)), style=alicorn.layout_style(.Row, height=20))
 	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }

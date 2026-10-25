@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
@@ -118,56 +119,56 @@ build_shutdown_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 	if app == nil || ui == nil { return }
 	alicorn.modal_overlay_begin(ui, alicorn.key_string("shutdown-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 	alicorn.container_begin(ui, .Container, label="shutdown-dialog", style=alicorn.layout_style(.Column, width=540, height=320, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
-	alicorn.text(ui, "Save changes before closing Scratchpad?")
+	gui.text(ui, "Save changes before closing Scratchpad?")
 	if len(app.editor_edits) > 0 {
-		alicorn.text(ui, fmt.tprintf("Waiting for %d pending editor change(s) to finish.", len(app.editor_edits)))
+		gui.text(ui, fmt.tprintf("Waiting for %d pending editor change(s) to finish.", len(app.editor_edits)))
 	} else {
 		dirty_count := shutdown_dirty_document_count(app)
 		if dirty_count > 0 {
-			alicorn.text(ui, fmt.tprintf("%d modified document(s) have unsaved changes.", dirty_count))
+			gui.text(ui, fmt.tprintf("%d modified document(s) have unsaved changes.", dirty_count))
 		}
 		if app.shutdown_edit_failed {
-			alicorn.text(ui, "An editor change could not be saved. Review the error above or explicitly discard it.")
+			gui.text(ui, "An editor change could not be saved. Review the error above or explicitly discard it.")
 		}
 		recoverable_id := shutdown_recoverable_document(app)
 		if recoverable_id != "" {
 			if document, found := find_document(&app.backend.state, recoverable_id); found {
-				alicorn.text(ui, fmt.tprintf("Committed input in %s is waiting to be copied or discarded.", document_title(document.path)))
+				gui.text(ui, fmt.tprintf("Committed input in %s is waiting to be copied or discarded.", document_title(document.path)))
 			} else {
-				alicorn.text(ui, "Committed input is waiting to be copied or discarded.")
+				gui.text(ui, "Committed input is waiting to be copied or discarded.")
 			}
-			alicorn.container_begin(ui, .Container, label="shutdown-recovery-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-			if alicorn.button(ui, "Copy Recovery", key=alicorn.key_string("shutdown-copy-recovery"), style=alicorn.layout_style(.Row, width=135, height=34)) {
-				_ = editor_copy_recoverable_preedit(app, rt, recoverable_id)
-				shutdown_advance(app, rt)
+			if gui.row(ui, label="shutdown-recovery-actions", height=38, gap=8, align=.Center) {
+				if gui.button(ui, "Copy Recovery", key="shutdown-copy-recovery", width=135, height=34) {
+					_ = editor_copy_recoverable_preedit(app, rt, recoverable_id)
+					shutdown_advance(app, rt)
+				}
+				if gui.button(ui, "Discard Recovery", key="shutdown-discard-recovery", width=145, height=34) {
+					_ = editor_discard_recoverable_preedit(app, rt, recoverable_id)
+					shutdown_advance(app, rt)
+				}
 			}
-			if alicorn.button(ui, "Discard Recovery", key=alicorn.key_string("shutdown-discard-recovery"), style=alicorn.layout_style(.Row, width=145, height=34)) {
-				_ = editor_discard_recoverable_preedit(app, rt, recoverable_id)
-				shutdown_advance(app, rt)
-			}
-			alicorn.container_end(ui)
 		}
 		if dirty_count > 0 {
-			alicorn.container_begin(ui, .Container, label="shutdown-document-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.Center))
-			if alicorn.button(ui, "Save All", key=alicorn.key_string("shutdown-save-all"), style=alicorn.layout_style(.Row, width=115, height=34), variant=.Primary) {
-				shutdown_save_all(app, rt)
+			if gui.row(ui, label="shutdown-document-actions", height=38, gap=8, align=.Center) {
+				if gui.button(ui, "Save All", key="shutdown-save-all", width=115, height=34, variant=.Primary) {
+					shutdown_save_all(app, rt)
+				}
+				if gui.button(ui, "Discard All", key="shutdown-discard-all", width=115, height=34) {
+					shutdown_discard_all(app, rt)
+				}
 			}
-			if alicorn.button(ui, "Discard All", key=alicorn.key_string("shutdown-discard-all"), style=alicorn.layout_style(.Row, width=115, height=34)) {
-				shutdown_discard_all(app, rt)
-			}
-			alicorn.container_end(ui)
 		}
 		if app.shutdown_edit_failed && dirty_count == 0 {
-			if alicorn.button(ui, "Close Anyway", key=alicorn.key_string("shutdown-edit-failure-discard"), style=alicorn.layout_style(.Row, width=135, height=34)) {
+			if gui.button(ui, "Close Anyway", key="shutdown-edit-failure-discard", width=135, height=34) {
 				shutdown_discard_all(app, rt)
 			}
 		}
 	}
-	alicorn.container_begin(ui, .Container, label="shutdown-cancel-actions", style=alicorn.layout_style(.Row, height=38, gap=8, align=.End))
-	if alicorn.button(ui, "Cancel", key=alicorn.key_string("shutdown-cancel"), style=alicorn.layout_style(.Row, width=90, height=34), variant=.Quiet) {
-		shutdown_cancel(app, rt)
+	if gui.row(ui, label="shutdown-cancel-actions", height=38, gap=8, align=.End) {
+		if gui.button(ui, "Cancel", key="shutdown-cancel", width=90, height=34, variant=.Quiet) {
+			shutdown_cancel(app, rt)
+		}
 	}
-	alicorn.container_end(ui)
 	alicorn.container_end(ui)
 	alicorn.modal_overlay_end(ui)
 }

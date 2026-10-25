@@ -5,6 +5,7 @@ import "core:mem"
 import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
@@ -33,14 +34,14 @@ Tree_Row :: struct {
 build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if !app.backend.state.has_workspace {
 		alicorn.container_begin(ui, .Container, label="workspace-tree-empty", style=alicorn.layout_style(grow=1, padding=12), color=alicorn.style_color(ui, .Subtle_Surface))
-		alicorn.text(ui, "Open a folder to browse files.")
+		gui.text(ui, "Open a folder to browse files.")
 		alicorn.container_end(ui)
 		return
 	}
 	root_index := tree_directory_index(app, "")
 	if root_index < 0 {
 		alicorn.container_begin(ui, .Container, label="workspace-tree-loading", style=alicorn.layout_style(grow=1, padding=12), color=alicorn.style_color(ui, .Subtle_Surface))
-		alicorn.text(ui, "Loading workspace…")
+		gui.text(ui, "Loading workspace…")
 		alicorn.container_end(ui)
 		return
 	}
@@ -107,10 +108,10 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 				if row.expanded { file_icon = .Folder_Open }
 			}
 			_ = alicorn.icon(ui, file_icon, key=alicorn.key_string("tree-row-type-icon"), size=TREE_TYPE_ICON_SIZE)
-			_ = alicorn.text(
+			_ = gui.text(
 				ui,
 				row.name,
-				key=alicorn.key_string("tree-row-name"),
+				key="tree-row-name",
 				style=alicorn.layout_style(.Row, grow=1),
 				text_style=alicorn.Text_Style{overflow=.Ellipsis},
 			)
@@ -120,13 +121,12 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	}
 	alicorn.virtual_list_end(ui, list)
 	if tree_any_truncated(app) {
-		alicorn.text(ui, "Some folders show only the first 200 entries.")
+		gui.text(ui, "Some folders show only the first 200 entries.")
 	}
 }
 
 tree_row_indent :: proc(ui: ^alicorn.UI, width: f32) {
-	alicorn.container_begin(ui, .Container, key=alicorn.key_string("tree-row-indent"), style=alicorn.layout_style(width=width, height=1))
-	alicorn.container_end(ui)
+	if gui.column(ui, key="tree-row-indent", label="", width=width, height=1) {}
 }
 
 tree_sync_workspace :: proc(app: ^App, rt: ^alicorn.Runtime = nil) {

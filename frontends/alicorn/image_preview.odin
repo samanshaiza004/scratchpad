@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import "./bridge"
 import host "alicorn:native/sdl_gpu"
 
@@ -212,7 +213,10 @@ image_preview_take_completion :: proc(app: ^App, rt: ^alicorn.Runtime) {
 build_image_preview :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document, dpi_scale: f32) {
 	if app == nil || ui == nil || rt == nil { return }
 	view := image_preview_view_ensure(app, document.id)
-	if view == nil { alicorn.text(ui, "Could not retain the image view."); return }
+	if view == nil {
+		gui.text(ui, "Could not retain the image view.")
+		return
+	}
 	// Use the retained viewport assigned by layout, including the actual split,
 	// status bar, toolbar, padding and any recovery notice. A grow-based region
 	// requests a follow-up description when its first layout/resize resolves.
@@ -228,27 +232,35 @@ build_image_preview :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, do
 	zoom := view.zoom
 	if view.fit { zoom = min(max(outer.w-2*IMAGE_PREVIEW_PADDING, 1)/base_width, max(outer.h-2*IMAGE_PREVIEW_PADDING, 1)/base_height, 1) }
 	view.effective_zoom = zoom
-	alicorn.container_begin(ui, .Container, label="image-preview-toolbar", style=alicorn.layout_style(.Row, height=IMAGE_PREVIEW_TOOLBAR_HEIGHT, gap=8, align=.Center))
-	alicorn.text(ui, fmt.tprintf("%s · %d × %d · %s · Read-only", document_title(document.path), app.image_preview_width, app.image_preview_height, document.image_format), style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	alicorn.container_begin(ui,.Container,label="image-preview-zoom-controls",style=alicorn.layout_style(.Row,width=244,height=28,gap=4,align=.Center))
-	if alicorn.button(ui,"−",key=alicorn.key_string("image-preview-zoom-out"),style=alicorn.layout_style(.Row,width=32,height=28),variant=.Toolbar) { _ = image_preview_zoom_step(view,rt,-1) }
-	_ = alicorn.tooltip(ui,"Zoom out")
-	alicorn.text(ui,fmt.tprintf("%d%%",int(zoom*100+0.5)),style=alicorn.layout_style(.Row,width=48),text_style=alicorn.Text_Style{overflow=.Clip})
-	if alicorn.button(ui,"+",key=alicorn.key_string("image-preview-zoom-in"),style=alicorn.layout_style(.Row,width=32,height=28),variant=.Toolbar) { _ = image_preview_zoom_step(view,rt,1) }
-	_ = alicorn.tooltip(ui,"Zoom in")
-	if alicorn.button(ui,"Fit",key=alicorn.key_string("image-preview-fit"),style=alicorn.layout_style(.Row,width=48,height=28),state=alicorn.Button_State{selected=view.fit},variant=.Toolbar) { _ = image_preview_set_mode(view,rt,true) }
-	if alicorn.button(ui,"100%",key=alicorn.key_string("image-preview-zoom-100"),style=alicorn.layout_style(.Row,width=58,height=28),state=alicorn.Button_State{selected=!view.fit && view.zoom == 1},variant=.Toolbar) { _ = image_preview_set_mode(view,rt,false) }
-	alicorn.container_end(ui)
-	alicorn.container_end(ui)
-	if app.image_preview_error != "" || app.image_preview_handle == 0 {
-		alicorn.container_begin(ui, .Container, label="image-preview-error-card", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center, gap=8, padding=18))
-		alicorn.text(ui, "Loading image preview…" if app.image_preview_loading else "Preview unavailable")
-		if app.image_preview_error != "" { alicorn.text(ui, app.image_preview_error, text_style=alicorn.Text_Style{overflow=.Wrap}) }
-		if !app.image_preview_loading && alicorn.button(ui, "Retry", key=alicorn.key_string("image-preview-retry"), style=alicorn.layout_style(.Row, width=82, height=28)) {
-			app.image_preview_revision = 0
-			alicorn.invalidate_root(rt, "retry image preview")
+	if gui.row(ui, label="image-preview-toolbar", height=IMAGE_PREVIEW_TOOLBAR_HEIGHT, gap=8, align=.Center) {
+		gui.text(ui, fmt.tprintf("%s · %d × %d · %s · Read-only", document_title(document.path), app.image_preview_width, app.image_preview_height, document.image_format), style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+		if gui.row(ui, label="image-preview-zoom-controls", width=244, height=28, gap=4, align=.Center) {
+			if gui.button(ui, "−", key="image-preview-zoom-out", width=32, height=28, variant=.Toolbar) {
+				_ = image_preview_zoom_step(view, rt, -1)
+			}
+			_ = alicorn.tooltip(ui, "Zoom out")
+			gui.text(ui, fmt.tprintf("%d%%", int(zoom*100+0.5)), style=alicorn.layout_style(.Row, width=48), text_style=alicorn.Text_Style{overflow=.Clip})
+			if gui.button(ui, "+", key="image-preview-zoom-in", width=32, height=28, variant=.Toolbar) {
+				_ = image_preview_zoom_step(view, rt, 1)
+			}
+			_ = alicorn.tooltip(ui, "Zoom in")
+			if gui.button(ui, "Fit", key="image-preview-fit", width=48, height=28, state=alicorn.Button_State{selected=view.fit}, variant=.Toolbar) {
+				_ = image_preview_set_mode(view, rt, true)
+			}
+			if gui.button(ui, "100%", key="image-preview-zoom-100", width=58, height=28, state=alicorn.Button_State{selected=!view.fit && view.zoom == 1}, variant=.Toolbar) {
+				_ = image_preview_set_mode(view, rt, false)
+			}
 		}
-		alicorn.container_end(ui)
+	}
+	if app.image_preview_error != "" || app.image_preview_handle == 0 {
+		if gui.column(ui, label="image-preview-error-card", height=-1, grow=1, align=.Center, justify=.Center, gap=8, padding=18) {
+			gui.text(ui, "Loading image preview…" if app.image_preview_loading else "Preview unavailable")
+			if app.image_preview_error != "" { gui.text(ui, app.image_preview_error, text_style=alicorn.Text_Style{overflow=.Wrap}) }
+			if !app.image_preview_loading && gui.button(ui, "Retry", key="image-preview-retry", width=82, height=28) {
+				app.image_preview_revision = 0
+				alicorn.invalidate_root(rt, "retry image preview")
+			}
+		}
 		return
 	}
 	// Toolbar activations change the view during description. Apply the new
@@ -290,12 +302,12 @@ image_preview_canvas_color :: proc(ui: ^alicorn.UI) -> alicorn.Color {
 build_unsupported_file_view :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_Document) {
 	if app == nil || ui == nil { return }
 	reason := document.view_error if document.view_error != "" else "This file format isn't supported for preview."
-	alicorn.container_begin(ui, .Container, label="unsupported-file-view", style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center))
-	alicorn.container_begin(ui, .Container, label="unsupported-file-message", style=alicorn.layout_style(.Column, max_width=560, padding=18, gap=8), color=alicorn.style_color(ui, .Subtle_Surface))
-	alicorn.text(ui, "Preview unavailable")
-	alicorn.text(ui, reason, text_style=alicorn.Text_Style{overflow=.Wrap})
-	alicorn.container_end(ui)
-	alicorn.container_end(ui)
+	if gui.column(ui, label="unsupported-file-view", height=-1, grow=1, align=.Center, justify=.Center) {
+		alicorn.container_begin(ui, .Container, label="unsupported-file-message", style=alicorn.layout_style(.Column, max_width=560, padding=18, gap=8), color=alicorn.style_color(ui, .Subtle_Surface))
+		gui.text(ui, "Preview unavailable")
+		gui.text(ui, reason, text_style=alicorn.Text_Style{overflow=.Wrap})
+		alicorn.container_end(ui)
+	}
 }
 
 scratchpad_error_notice_fingerprint :: proc(message: string, style_environment: alicorn.Style_Environment) -> u64 {
