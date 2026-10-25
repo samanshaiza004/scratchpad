@@ -1606,7 +1606,12 @@ func TestWorkspaceRefreshReturnsFreshListingAndReconcilesStaleDocument(t *testin
 	id := application.DocumentID(state.Active)
 
 	writeFile(t, path, "after\n")
+	// The workspace watcher mutates Application under runtime.mu. Inject this
+	// advisory event through the same serialized boundary so the test cannot
+	// race the watcher while it updates the Stale map.
+	runtime.mu.Lock()
 	runtime.app.HandleWatchEvent(workspace.WatchEvent{Name: path})
+	runtime.mu.Unlock()
 	newPath := filepath.Join(root, "new.txt")
 	writeFile(t, newPath, "new\n")
 
@@ -1623,7 +1628,10 @@ func TestWorkspaceRefreshReturnsFreshListingAndReconcilesStaleDocument(t *testin
 	if refreshed.DirectoryListing.RelativePath != "" || len(refreshed.DirectoryListing.Entries) != 2 {
 		t.Fatalf("refresh listing = %+v", refreshed.DirectoryListing)
 	}
-	if got := string(runtime.app.Documents[id].Editor.Buffer.Text()); got != "after\n" {
+	runtime.mu.Lock()
+	got := string(runtime.app.Documents[id].Editor.Buffer.Text())
+	runtime.mu.Unlock()
+	if got != "after\n" {
 		t.Fatalf("refresh did not reconcile stale document: %q", got)
 	}
 }

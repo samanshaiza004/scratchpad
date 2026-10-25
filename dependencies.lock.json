@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/ui-dogfood-compatibility",
-    "revision": "ec5abb0232205aae0c5f34901a2decede27b058f"
+    "ref": "master",
+    "revision": "13cb0f050bf8ca71c37ea6effbd0462434f8ee91"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
