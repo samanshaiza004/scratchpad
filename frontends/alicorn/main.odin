@@ -76,6 +76,7 @@ ACTION_VIEW_THEME_FLAT :: "view.theme-flat"
 ACTION_VIEW_THEME_RELIEF :: "view.theme-workbench-relief"
 
 App :: struct {
+	pinned: Pinned_Surface,
 	brand_mark: alicorn.Image_Handle,
 	brand_mark_choice: Scratchpad_Theme_Choice,
 	retired_brand_marks: [dynamic]Scratchpad_Image_Retirement,
@@ -305,8 +306,8 @@ App :: struct {
 	file_items:             [7]host.Application_Menu_Item,
 	edit_items:             [11]host.Application_Menu_Item,
 	workspace_items:        [7]host.Application_Menu_Item,
-	document_items:         [11]host.Application_Menu_Item,
-	view_items:             [13]host.Application_Menu_Item,
+	document_items:         [12]host.Application_Menu_Item,
+	view_items:             [15]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,
@@ -957,6 +958,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	if app.settings_surface_open {
 		return settings_surface_handle_key(app, rt, key)
 	}
+	if pinned_key(app,rt,key) { return true }
 	if key == .Tab_Next {
 		navigate_tab(app, rt, 1)
 		return true
@@ -3049,6 +3051,7 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	pinned_destroy(&app.pinned)
 	find_text_history_destroy(&app.find_query_edit_history)
 	find_text_history_destroy(&app.find_replace_edit_history)
 	image_preview_views_destroy(app)

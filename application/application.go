@@ -126,6 +126,7 @@ type Application struct {
 	presentationRevision  uint64
 	projectionGeneration  uint64
 	semanticViews         map[DocumentID]semanticViewCache
+	pinned                pinnedSurface
 }
 
 func New(store workspace.FileStore) *Application {
@@ -143,6 +144,7 @@ func New(store workspace.FileStore) *Application {
 		Conflicts:            make(map[DocumentID]Conflict),
 		recoveryDone:         make(chan error, 1),
 		presentationRevision: 1,
+		pinned:               pinnedSurface{epoch: 1, revision: 1},
 	}
 }
 
@@ -274,6 +276,11 @@ func (a *Application) OpenWorkspace(path string) error {
 	ws, err := workspace.Open(path)
 	if err != nil {
 		return err
+	}
+	if !a.HasWorkspace || !workspacePathsEqual(a.Workspace.Root, ws.Root) {
+		if err := a.ClearPinnedRanges(); err != nil {
+			return err
+		}
 	}
 	a.Workspace = ws
 	a.HasWorkspace = true

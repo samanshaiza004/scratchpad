@@ -109,8 +109,18 @@ func (a *Application) NewProjection(id, kind string, segments []ProjectionSegmen
 		}
 		copied[i] = projectionSegment{source: segment, instanceID: doc.InstanceID()}
 	}
+	return a.newCapturedProjection(id, kind, copied)
+}
+
+// newCapturedProjection only accepts application-owned captures. In particular,
+// reordering an existing capture never binds its bytes to a replacement source.
+// NewProjection remains the validating boundary for every newly supplied range.
+func (a *Application) newCapturedProjection(id, kind string, captured []projectionSegment) (*Projection, error) {
+	if a.projectionGeneration == ^uint64(0) {
+		return nil, errors.New("projection generation exhausted")
+	}
 	a.projectionGeneration++
-	return &Projection{id: id, kind: kind, generation: a.projectionGeneration, segments: copied}, nil
+	return &Projection{id: id, kind: kind, generation: a.projectionGeneration, segments: append([]projectionSegment(nil), captured...)}, nil
 }
 
 // QueryProjection returns at most limit copied occurrences in presentation

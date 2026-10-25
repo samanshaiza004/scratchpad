@@ -239,6 +239,8 @@ Session_UI :: struct {
 }
 
 State_Envelope :: struct {
+	pinned_epoch, pinned_revision, pinned_source_invalidations: u64,
+	pinned_count: int,
 	session_ui: Session_UI `json:"session_ui"`,
 	schema:          u32              `json:"schema"`,
 	revision:        u64              `json:"revision"`,
@@ -265,6 +267,8 @@ Backend_Outcome :: struct {
 }
 
 Backend_Response :: struct {
+	pinned: Pinned_Snapshot,
+	pinned_window: Pinned_Window,
 	version:          u32               `json:"version"`,
 	request_id:       u64               `json:"request_id"`,
 	lifecycle:        string            `json:"lifecycle"`,
@@ -428,6 +432,8 @@ Backend_Stop_Session_Document :: struct {
 }
 
 Backend_Command_Request :: struct {
+	pin_id, pin_epoch, pin_revision, source_instance: u64,
+	pin_delta: int,
 	version:          u32    `json:"version"`,
 	request_id:       u64    `json:"request_id"`,
 	based_on_revision: u64    `json:"based_on_revision"`,
@@ -459,8 +465,8 @@ Backend_Command_Request :: struct {
 	editor_revision:  u64    `json:"editor_revision"`,
 	editor_anchor_byte: u64 `json:"editor_anchor_byte,omitempty"`,
 	editor_cursor_byte: u64 `json:"editor_cursor_byte,omitempty"`,
-	start_byte:         u64    `json:"start_byte,omitempty"`,
-	end_byte:           u64    `json:"end_byte,omitempty"`,
+	start_byte:         u64    `json:"start_byte"`,
+	end_byte:           u64    `json:"end_byte"`,
 	replacement:        []int  `json:"replacement,omitempty"`,
 	has_selection_state: bool   `json:"has_selection_state,omitempty"`,
 	before_anchor_byte: u64    `json:"before_anchor_byte,omitempty"`,
@@ -473,7 +479,7 @@ Backend_Command_Request :: struct {
 	source_anchor_byte: u64    `json:"source_anchor_byte,omitempty"`,
 	source_anchor_line: u64    `json:"source_anchor_line,omitempty"`,	image_revision: u64 `json:"image_revision,omitempty"`,
 	view_density: string `json:"view_density,omitempty"`,
-	projection_first: u64 `json:"projection_first,omitempty"`,
+	projection_first: u64 `json:"projection_first"`,
 	projection_limit: u64 `json:"projection_limit,omitempty"`,
 	zoom_depth: int `json:"zoom_depth"`,
 }
@@ -1196,6 +1202,10 @@ backend_consume_wake :: proc(backend: ^Backend, allocator := context.allocator) 
 }
 
 Backend_Command_Result :: struct {
+	pinned: Pinned_Snapshot,
+	pinned_window: Pinned_Window,
+	pinned_data: []u8,
+	pinned_owned, pinned_window_owned: bool,
 	ok:             bool,
 	state_changed:  bool,
 	revision:       u64,
@@ -1284,6 +1294,11 @@ backend_command :: proc(
 	projection_first: u64 = 0,
 	projection_limit: u64 = 0,
 	zoom_depth: int = 0,
+	pin_id: u64 = 0,
+	pin_epoch: u64 = 0,
+	pin_revision: u64 = 0,
+	source_instance: u64 = 0,
+	pin_delta: int = 0,
 	read_latest_after := true,
 	allocator := context.allocator,
 ) -> (result: Backend_Command_Result) {
@@ -1349,6 +1364,7 @@ backend_command :: proc(
 		projection_first=projection_first,
 		projection_limit=projection_limit,
 		zoom_depth=zoom_depth,
+		pin_id=pin_id, pin_epoch=pin_epoch, pin_revision=pin_revision, source_instance=source_instance, pin_delta=pin_delta,
 		has_target_byte=has_target_byte,
 		target_byte=target_byte,
 	}
@@ -1401,7 +1417,7 @@ backend_command :: proc(
 			result.edit_applied_replacement_owned = true
 		}
 	}
-	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command" || command == "open_path" || command == "find_replace_all" || command == "paste_document") && response.editor_selection.document_id != "" {
+	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command" || command == "open_path" || command == "find_replace_all" || command == "paste_document" || command == "pinned_go_to_source") && response.editor_selection.document_id != "" {
 		result.editor_selection = response.editor_selection
 		result.editor_selection.document_id, _ = strings.clone(response.editor_selection.document_id, allocator)
 		result.editor_selection_document_id_owned = len(result.editor_selection.document_id) > 0
@@ -1487,6 +1503,16 @@ backend_command :: proc(
 		result.semantic_view_window = window
 		result.semantic_view_window_owned = true
 	}
+	if response.ok && response.pinned.epoch!=0 {
+		result.pinned,result.pinned_owned=pinned_snapshot_clone(response.pinned,allocator)
+	}
+	if response.ok && (command=="pinned_window" || command=="pinned_copy") {
+		result.pinned_window,result.pinned_window_owned=pinned_window_clone(response.pinned_window,allocator)
+		data,valid:=backend_copy_pinned_resource(backend,response.resource,allocator)
+		result.pinned_data=data
+		for row in result.pinned_window.rows { if row.offset<0 || row.length<0 || row.offset>len(data) || row.length>len(data)-row.offset { valid=false } }
+		if !valid || !result.pinned_window_owned { result.ok=false; result.message="Invalid bounded pinned source resource" }
+	}
 	if response.ok && command == "read_semantic_zoom" {
 		plan, ok := semantic_zoom_plan_clone(response.semantic_zoom, allocator)
 		if !ok {
@@ -1534,6 +1560,9 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	if result.semantic_view_window_owned { semantic_view_window_destroy(&result.semantic_view_window, allocator) }
 	if result.semantic_zoom_owned { semantic_zoom_plan_destroy(&result.semantic_zoom, allocator) }
+	if result.pinned_owned { pinned_snapshot_destroy(&result.pinned,allocator) }
+	if result.pinned_window_owned { pinned_window_destroy(&result.pinned_window,allocator) }
+	delete(result.pinned_data,allocator)
 	if result.image_bytes_owned { delete(result.image_bytes, allocator) }
 	if result.matches_owned { delete(result.matches, allocator) }
 	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
@@ -2455,6 +2484,8 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	directory_listing_destroy(&response.directory_listing, allocator)
 	semantic_view_window_destroy(&response.semantic_view_window, allocator)
 	semantic_zoom_plan_destroy(&response.semantic_zoom, allocator)
+	pinned_snapshot_destroy(&response.pinned,allocator)
+	pinned_window_destroy(&response.pinned_window,allocator)
 	response^ = {}
 }
 

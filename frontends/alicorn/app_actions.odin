@@ -7,6 +7,13 @@ import bridge "./bridge"
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if command == action_id_for(ACTION_PIN_SELECTION) { pinned_command(app, rt, "add"); return }
+	if command == action_id_for(ACTION_PINNED_FOCUS) { pinned_focus_request(app, rt); return }
+	if command == action_id_for(ACTION_PINNED_TOGGLE) {
+		if app.pinned.visible { app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
+		else { pinned_focus_request(app,rt) }
+		return
+	}
 	zoom_actions := [3]string{ACTION_SEMANTIC_MORE, ACTION_SEMANTIC_LESS, ACTION_SEMANTIC_FULL}
 	for action in zoom_actions {
 		if command == action_id_for(action) { _ = semantic_zoom_action(app, rt, action); return }
@@ -35,6 +42,7 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FILE) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FILE); return }
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FOLDER) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FOLDER); return }
 	if command == action_id_for(ACTION_WORKSPACE_SETTINGS) { dispatch_action(app, rt, ACTION_WORKSPACE_SETTINGS); return }
+	if pinned_edit_command(app,rt,command) { return }
 	if command == action_id_for(ACTION_EDIT_UNDO) && find_text_field_history_command(app, rt, false) { return }
 	if command == action_id_for(ACTION_EDIT_REDO) && find_text_field_history_command(app, rt, true) { return }
 	if command == action_id_for(ACTION_EDIT_CUT) {
@@ -59,6 +67,7 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 }
 
 application_clipboard_paste :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if pinned_edit_command(app,rt,action_id_for(ACTION_EDIT_PASTE)) { return }
 	if find_text_field_clipboard_command(app, rt, ACTION_EDIT_PASTE) { return }
 	if editor_command_focus_owned(app, rt) { editor_clipboard_command(app, rt, ACTION_EDIT_PASTE) }
 }
@@ -109,6 +118,14 @@ editor_resolve_conflict_now :: proc(app: ^App, rt: ^alicorn.Runtime, document_id
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || rt == nil { return }
+	if action_id == ACTION_PIN_SELECTION { pinned_command(app,rt,"add"); return }
+	if action_id == ACTION_PINNED_FOCUS { pinned_focus_request(app,rt); return }
+	if action_id == ACTION_PINNED_TOGGLE {
+		if app.pinned.visible { app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
+		else { pinned_focus_request(app,rt) }
+		return
+	}
+	if pinned_edit_command(app,rt,action_id_for(action_id)) { return }
 	if semantic_zoom_action(app, rt, action_id) { return }
 	if action_id == ACTION_VIEW_THEME_WARM { _ = scratchpad_theme_select(app, rt, .Warm); return }
 	if action_id == ACTION_VIEW_THEME_COOL_LIGHT { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
@@ -521,20 +538,21 @@ init_menus :: proc(app: ^App) {
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SETTINGS), label="Settings…"},
 	}
-	app.document_items = [11]host.Application_Menu_Item{
+	app.document_items = [12]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_TAB_NEXT), label="Next Document"},
 		{kind=.Command, command=action_id_for(ACTION_TAB_PREVIOUS), label="Previous Document"},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_FORMAT), label="Format Table"},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_GO_TO_LINE), label="Go to Line…", shortcut=host.Application_Menu_Shortcut{'G', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP), label="Cycle Word Wrap"},
+		{kind=.Command, command=action_id_for(ACTION_PIN_SELECTION), label="Pin Selection", shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Alt}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_STRONG), label="Strong", shortcut=host.Application_Menu_Shortcut{'B', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_EMPHASIS), label="Emphasis", shortcut=host.Application_Menu_Shortcut{'I', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 	}
-	app.view_items = [13]host.Application_Menu_Item{
+	app.view_items = [15]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_MORE), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}},
 		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_LESS), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary, .Alt}}},
 		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_FULL), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary, .Alt}}},
@@ -543,6 +561,8 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_COMMAND_PALETTE), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}},
+		{kind=.Command, command=action_id_for(ACTION_PINNED_FOCUS), label="Focus Pinned References", state=alicorn.Action_State{enabled=true}},
+		{kind=.Command, command=action_id_for(ACTION_PINNED_TOGGLE), label="Toggle Pinned References", state=alicorn.Action_State{enabled=true}},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_WARM), label="Use Warm Theme", state=alicorn.Action_State{enabled=true}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_COOL_LIGHT), label="Use Cool Light Theme", state=alicorn.Action_State{enabled=true}},

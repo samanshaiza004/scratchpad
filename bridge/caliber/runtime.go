@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -638,6 +639,9 @@ func (r *Runtime) CaliberContextPointer() unsafe.Pointer {
 }
 
 func (r *Runtime) applyCommand(request CommandRequest) Response {
+	if strings.HasPrefix(request.Command, "pinned_") {
+		return r.applyPinnedCommand(request)
+	}
 	var listing *DirectoryListing
 	var workspaceFiles *WorkspaceFiles
 	var edit *EditAck
