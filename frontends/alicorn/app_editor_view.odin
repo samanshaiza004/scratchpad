@@ -3,11 +3,12 @@ package main
 import "core:fmt"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import bridge "./bridge"
 
 editor_render_table_pipe :: proc(ui: ^alicorn.UI, pipe_index: int, row_height, text_scale: f32, color: alicorn.Color) {
 	if ui == nil { return }
-	pipe := alicorn.text(
+	pipe := gui.text(
 		ui,
 		"|",
 		key=alicorn.key_u64(u64(pipe_index)),
@@ -39,92 +40,91 @@ editor_render_table_cells :: proc(
 ) {
 	if ui == nil || app == nil || rt == nil || view == nil || window == nil || line == nil || !table.ok || !table.wraps { return }
 	text_scale := editor_text_scale_effective(app)
-	alicorn.container_begin(
+	if gui.row(
 		ui,
-		.Container,
 		label="scratchpad-table-visual-row",
 		key=alicorn.key_u64(line.logical_line),
-		style=alicorn.layout_style(.Row, width=wrap_width, height=row_height, gap=0, align=.Start, clip=true),
-	)
-	pipe_index := 0
-	if table.leading_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
-		pipe_index += 1
-	}
-	for &cell, cell_index in table.cells {
-		cell_text := cell.display
-		if semantic_zoom_active(view) { cell_text = semantic_zoom_frame_text(rt, cell_text) }
-		cell_overflow := alicorn.Text_Overflow.Wrap
-		if table.delimiter { cell_overflow = .Clip }
-		cell_node := alicorn.text(
-			ui,
-			cell_text,
-			key=alicorn.key_u64(u64(cell_index)),
-			style=alicorn.layout_style(.Row, width=table.widths[cell_index], height=row_height, align=.Start, clip=true),
-			font=.Monospace,
-			text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=cell_overflow},
-		)
-		anchor_source := min(max(view.selection_anchor, cell.source_start), cell.source_end)
-		caret_source := min(max(view.caret_byte, cell.source_start), cell.source_end)
-		anchor_display := editor_source_to_display(&cell, anchor_source)
-		caret_display := editor_source_to_display(&cell, caret_source)
-		show_caret := window_matches && alicorn.focused_node(rt) == scroll_owner && view.caret_byte >= cell.source_start && view.caret_byte <= cell.source_end
-		paint_spans: []alicorn.Text_Paint_Span
-		text_style_spans: []alicorn.Text_Style_Span
-		if paint_current {
-			paint_spans = editor_presentation_spans_for_line(window, &cell, markdown_palette, alicorn.runtime_scratch_allocator(rt))
-			text_style_spans = editor_presentation_text_styles_for_line(window, &cell, alicorn.runtime_scratch_allocator(rt))
-		}
-		if show_caret && !view.preedit_active && !view.preedit_recoverable {
-			if row_start, row_end, row_ok := editor_visual_row_display_range(
-				rt, &cell, caret_display, view.caret_affinity, table.widths[cell_index], true, text_style_spans, text_scale,
-			); row_ok {
-				caret_row := [?]alicorn.Text_Paint_Span{{
-					start=row_start,
-					end=row_end,
-					background=markdown_palette.active_line,
-					background_set=true,
-				}}
-				paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], alicorn.runtime_scratch_allocator(rt))
-			}
-		}
-		search_spans := workspace_search_match_paint_spans_for_line(window, &cell, view, markdown_palette, alicorn.runtime_scratch_allocator(rt))
-		paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, alicorn.runtime_scratch_allocator(rt))
-		if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, markdown_palette, alicorn.runtime_scratch_allocator(rt)) }
-		_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
-		_ = alicorn.text_style_spans(ui, cell_node, text_style_spans)
-		if !window_matches { anchor_display = caret_display }
-		_ = alicorn.text_interaction(
-			ui,
-			cell_node,
-			alicorn.Text_Position{byte=anchor_display, affinity=view.anchor_affinity},
-			alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
-			show_caret,
-		)
-		append(&app.editor_row_targets, Editor_Row_Target{
-			node=cell_node,
-			logical_line=line.logical_line,
-			cell_start=cell.source_start,
-			cell_end=cell.source_end,
-			cell_index=cell_index,
-			cell_width=table.widths[cell_index],
-			cell_origin_x=table.origins[cell_index],
-			is_cell=true,
-		})
-		if window_matches && alicorn.focused_node(rt) == scroll_owner && show_caret {
-			app.editor_input_anchor_node = cell_node
-			app.editor_input_anchor_byte = caret_display
-			app.editor_input_anchor_affinity = view.caret_affinity
-		}
-		if cell_index+1 < len(table.cells) && pipe_index < len(table.pipes) {
+		width=wrap_width, height=row_height, gap=0, align=.Start, clip=true,
+	) {
+		pipe_index := 0
+		if table.leading_pipe && pipe_index < len(table.pipes) {
 			editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
 			pipe_index += 1
 		}
+		for &cell, cell_index in table.cells {
+			cell_text := cell.display
+			if semantic_zoom_active(view) { cell_text = semantic_zoom_frame_text(rt, cell_text) }
+			cell_overflow := alicorn.Text_Overflow.Wrap
+			if table.delimiter { cell_overflow = .Clip }
+			cell_node := gui.text(
+				ui,
+				cell_text,
+				key=alicorn.key_u64(u64(cell_index)),
+				style=alicorn.layout_style(.Row, width=table.widths[cell_index], height=row_height, align=.Start, clip=true),
+				font=.Monospace,
+				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=cell_overflow},
+			)
+			anchor_source := min(max(view.selection_anchor, cell.source_start), cell.source_end)
+			caret_source := min(max(view.caret_byte, cell.source_start), cell.source_end)
+			anchor_display := editor_source_to_display(&cell, anchor_source)
+			caret_display := editor_source_to_display(&cell, caret_source)
+			show_caret := window_matches && alicorn.focused_node(rt) == scroll_owner && view.caret_byte >= cell.source_start && view.caret_byte <= cell.source_end
+			paint_spans: []alicorn.Text_Paint_Span
+			text_style_spans: []alicorn.Text_Style_Span
+			if paint_current {
+				paint_spans = editor_presentation_spans_for_line(window, &cell, markdown_palette, alicorn.runtime_scratch_allocator(rt))
+				text_style_spans = editor_presentation_text_styles_for_line(window, &cell, alicorn.runtime_scratch_allocator(rt))
+			}
+			if show_caret && !view.preedit_active && !view.preedit_recoverable {
+				if row_start, row_end, row_ok := editor_visual_row_display_range(
+					rt, &cell, caret_display, view.caret_affinity, table.widths[cell_index], true, text_style_spans, text_scale,
+				); row_ok {
+					caret_row := [?]alicorn.Text_Paint_Span{{
+						start=row_start,
+						end=row_end,
+						background=markdown_palette.active_line,
+						background_set=true,
+					}}
+					paint_spans = editor_merge_text_paint_spans(paint_spans, caret_row[:], alicorn.runtime_scratch_allocator(rt))
+				}
+			}
+			search_spans := workspace_search_match_paint_spans_for_line(window, &cell, view, markdown_palette, alicorn.runtime_scratch_allocator(rt))
+			paint_spans = editor_merge_text_paint_spans(paint_spans, search_spans, alicorn.runtime_scratch_allocator(rt))
+			if app.find_open { paint_spans = find_merge_paint_spans(window, &cell, &app.find_presentation, paint_spans, markdown_palette, alicorn.runtime_scratch_allocator(rt)) }
+			_ = alicorn.text_paint_spans(ui, cell_node, paint_spans)
+			_ = alicorn.text_style_spans(ui, cell_node, text_style_spans)
+			if !window_matches { anchor_display = caret_display }
+			_ = alicorn.text_interaction(
+				ui,
+				cell_node,
+				alicorn.Text_Position{byte=anchor_display, affinity=view.anchor_affinity},
+				alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
+				show_caret,
+			)
+			append(&app.editor_row_targets, Editor_Row_Target{
+				node=cell_node,
+				logical_line=line.logical_line,
+				cell_start=cell.source_start,
+				cell_end=cell.source_end,
+				cell_index=cell_index,
+				cell_width=table.widths[cell_index],
+				cell_origin_x=table.origins[cell_index],
+				is_cell=true,
+			})
+			if window_matches && alicorn.focused_node(rt) == scroll_owner && show_caret {
+				app.editor_input_anchor_node = cell_node
+				app.editor_input_anchor_byte = caret_display
+				app.editor_input_anchor_affinity = view.caret_affinity
+			}
+			if cell_index+1 < len(table.cells) && pipe_index < len(table.pipes) {
+				editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
+				pipe_index += 1
+			}
+		}
+		if table.trailing_pipe && pipe_index < len(table.pipes) {
+			editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
+		}
 	}
-	if table.trailing_pipe && pipe_index < len(table.pipes) {
-		editor_render_table_pipe(ui, pipe_index, row_height, text_scale, markdown_palette.muted_text)
-	}
-	alicorn.container_end(ui)
 }
 
 editor_wrap_viewport_size :: proc(
@@ -174,7 +174,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	view_ok := true
 	if view_created { view_index, view_ok = editor_view_ensure(&app.editor_views, document.id) }
 	if !view_ok {
-		alicorn.text(ui, "Could not retain this document's view state.")
+		gui.text(ui, "Could not retain this document's view state.")
 		return
 	}
 	view := &app.editor_views[view_index]
@@ -198,7 +198,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		}
 		presented_id, clone_error := strings.clone(document.id, context.allocator)
 		if clone_error != nil {
-			alicorn.text(ui, "Could not retain the active document identity.")
+			gui.text(ui, "Could not retain the active document identity.")
 			return
 		}
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
@@ -215,26 +215,26 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		}
 	}
 	if show_heading {
-		alicorn.container_begin(ui, .Container, label="document-view-heading", style=alicorn.layout_style(.Row, height=30, gap=12, align=.Center))
-	heading := fmt.tprintf("%s  ·  %s  ·  %d lines", document_title(document.path), document.language, display_line_count)
-	alicorn.text(ui, heading)
-	if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
-	alicorn.container_end(ui)
-	} else if app.editor_window_error != "" { alicorn.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
+		if gui.row(ui, label="document-view-heading", height=30, gap=12, align=.Center) {
+			heading := fmt.tprintf("%s  ·  %s  ·  %d lines", document_title(document.path), document.language, display_line_count)
+			gui.text(ui, heading)
+			if app.editor_window_error != "" { gui.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
+		}
+	} else if app.editor_window_error != "" { gui.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	if document.status == "conflict" {
 		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string("document-conflict-actions"), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=alicorn.style_color(ui, .Subtle_Surface))
-		alicorn.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
-		alicorn.container_begin(ui, .Container, label="document-conflict-buttons", style=alicorn.layout_style(.Row, height=30, gap=8, align=.Center))
-		if alicorn.button(ui, "Reload from Disk", key=alicorn.key_string("conflict-reload"), style=alicorn.layout_style(.Row, width=140, height=28)) {
-			editor_resolve_conflict(app, rt, document.id, false)
+		gui.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
+		if gui.row(ui, label="document-conflict-buttons", height=30, gap=8, align=.Center) {
+			if gui.button(ui, "Reload from Disk", key="conflict-reload", width=140, height=28) {
+				editor_resolve_conflict(app, rt, document.id, false)
+			}
+			if gui.button(ui, "Keep Mine", key="conflict-keep", width=104, height=28) {
+				editor_resolve_conflict(app, rt, document.id, true)
+			}
+			if gui.button(ui, "Save As…", key="conflict-save-as", width=100, height=28) {
+				request_file_dialog(app, rt, .Save_File, "Save As")
+			}
 		}
-		if alicorn.button(ui, "Keep Mine", key=alicorn.key_string("conflict-keep"), style=alicorn.layout_style(.Row, width=104, height=28)) {
-			editor_resolve_conflict(app, rt, document.id, true)
-		}
-		if alicorn.button(ui, "Save As…", key=alicorn.key_string("conflict-save-as"), style=alicorn.layout_style(.Row, width=100, height=28)) {
-			request_file_dialog(app, rt, .Save_File, "Save As")
-		}
-		alicorn.container_end(ui)
 		alicorn.container_end(ui)
 	}
 
@@ -584,10 +584,10 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center, clip=true),
 				color=alicorn.style_color(ui, .Subtle_Surface),
 			)
-			alicorn.container_begin(ui, .Container, label="scratchpad-editor-line-number-spacer", style=alicorn.layout_style(.Row, grow=1))
-			alicorn.container_end(ui)
+			if gui.row(ui, label="scratchpad-editor-line-number-spacer", height=-1, grow=1) {
+			}
 			line_number_text := editor_line_number_text(line.logical_line+1)
-			line_number_node := alicorn.text(
+			line_number_node := gui.text(
 				ui,
 				line_number_text,
 				key=alicorn.key_u64(line.logical_line),
@@ -660,7 +660,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				line_text_style.width = wrap_width
 				text_overflow = .Wrap
 			}
-			line_node := alicorn.text(
+			line_node := gui.text(
 				ui,
 				display_text,
 				key=alicorn.key_u64(line.logical_line),
@@ -731,7 +731,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			alicorn.container_end(ui)
 		} else if window_matches || !window_available {
 			label := fmt.tprintf("Loading line %d…", line_number+1)
-			alicorn.text(
+			gui.text(
 				ui,
 				label,
 				key=alicorn.key_u64(line_number),
@@ -741,7 +741,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			// A newer document snapshot may have added rows that do not exist in
 			// the last-good bounded window. Preserve the current topology without
 			// claiming those bytes are loading; the matching refresh will fill it.
-			alicorn.text(
+			gui.text(
 				ui,
 				"",
 				key=alicorn.key_u64(line_number),
@@ -836,7 +836,7 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			label = fmt.tprintf("%d x %d pixels  |  %s  |  Read-only", document.image_width, document.image_height, document.image_format)
 		} else if document.view_kind == "image" { label = "Image preview unavailable | Read-only" }
 		alicorn.container_begin(ui, .Container, label="image-document-status-bar", style=alicorn.layout_style(.Row, height=32, padding=8, align=.Center), color=alicorn.style_color(ui, .Subtle_Surface))
-		alicorn.text(ui, label, style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+		gui.text(ui, label, style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 		alicorn.container_end(ui)
 		return
 	}
@@ -881,25 +881,25 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		label="document-status-responsive")
 	alicorn.adaptive_alternative_begin(ui, alicorn.key_string("document-status-wide"), "Wide", minimum_width=600,
 		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center))
-	alicorn.container_begin(ui, .Container, label="document-status-information", style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=188, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=12, align=.Center))
-	alicorn.text(ui, location, key=alicorn.key_string("document-status-location"), style=alicorn.layout_style(.Row, width=176, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	alicorn.text(ui, document_info, key=alicorn.key_string("document-status-document-info"), style=alicorn.layout_style(.Row, grow=1, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	alicorn.container_end(ui)
-	alicorn.text(ui, fmt.tprintf("Detail: %s%s", semantic_zoom_title(view.zoom.depth), " · preparing" if view.zoom.waiting else ""),
-		key=alicorn.key_string("document-semantic-detail"), style=alicorn.layout_style(.Row, width=120, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
-	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap"), style=alicorn.layout_style(.Row, width=88, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
+	if gui.layout(ui, style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=188, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=12, align=.Center), label="document-status-information") {
+		gui.text(ui, location, key="document-status-location", style=alicorn.layout_style(.Row, width=176, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+		gui.text(ui, document_info, key="document-status-document-info", style=alicorn.layout_style(.Row, grow=1, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+	}
+	gui.text(ui, fmt.tprintf("Detail: %s%s", semantic_zoom_title(view.zoom.depth), " · preparing" if view.zoom.waiting else ""),
+		key="document-semantic-detail", style=alicorn.layout_style(.Row, width=120, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
+	if gui.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key="document-wrap", width=88, height=24, content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		editor_toggle_wrap_mode(app, rt)
 	}
-	if alicorn.button(ui, "Go to Line…", key=alicorn.key_string("document-goto-line"), style=alicorn.layout_style(.Row, width=100, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
+	if gui.button(ui, "Go to Line…", key="document-goto-line", width=100, height=24, content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		go_to_line_open_surface(app, rt)
 	}
 	alicorn.adaptive_alternative_end(ui)
 
 	alicorn.adaptive_alternative_begin(ui, alicorn.key_string("document-status-compact"), "Compact",
 		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center))
-	alicorn.text(ui, location, key=alicorn.key_string("document-status-compact-location"), style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=96, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	alicorn.text(ui, semantic_zoom_title(view.zoom.depth), key=alicorn.key_string("document-semantic-detail-compact"), style=alicorn.layout_style(.Row, width=68, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
-	if alicorn.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key=alicorn.key_string("document-wrap-compact"), style=alicorn.layout_style(.Row, width=88, height=24), content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
+	gui.text(ui, location, key="document-status-compact-location", style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=96, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+	gui.text(ui, semantic_zoom_title(view.zoom.depth), key="document-semantic-detail-compact", style=alicorn.layout_style(.Row, width=68, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
+	if gui.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key="document-wrap-compact", width=88, height=24, content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
 		editor_toggle_wrap_mode(app, rt)
 	}
 	alicorn.adaptive_alternative_end(ui)

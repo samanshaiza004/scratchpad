@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/semantic-zoom-scroll",
-    "revision": "f796cd480cd8d95f748989d01e9c0d9eb9a793ee"
+    "ref": "codex/ui-dogfood-compatibility",
+    "revision": "ec5abb0232205aae0c5f34901a2decede27b058f"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

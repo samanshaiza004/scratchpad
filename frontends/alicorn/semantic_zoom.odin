@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:strings"
 import "core:time"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import bridge "./bridge"
 
 ACTION_SEMANTIC_MORE :: "view.semantic-more-detail"
@@ -400,7 +401,7 @@ semantic_zoom_render_fold :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.S
 	if entry.expanded {
 		label = fmt.tprintf("Collapse %d lines (%d–%d)", fold.end_line-fold.start_line, fold.start_line+1, fold.end_line)
 	}
-	if alicorn.button(ui, label, key=alicorn.key_string(fmt.tprintf("semantic-fold-%d-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte, fold.end_byte)), style=alicorn.layout_style(.Row, width=-1, height=height), variant=.Quiet,
+	if gui.button(ui, label, key=fmt.tprintf("semantic-fold-%d-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte, fold.end_byte), height=height, variant=.Quiet,
 		content_style=alicorn.button_content_style(.Start, .Center, padding_x=12, padding_y=0)) {
 		_ = frame_deferred_action_schedule(app, .Toggle_Semantic_Fold, document_id=document.id, editor_revision=document.editor_revision, source_start=fold.start_line)
 	}

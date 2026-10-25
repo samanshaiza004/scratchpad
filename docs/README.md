@@ -9,6 +9,7 @@
 ## Supporting material
 
 - [Design contracts](design/EDITOR-CORE-CONTRACT.md) and [overflow lane specification](design/OVERFLOW-LANE-SPEC.md).
+- [Alicorn UI API dogfood](frontends/alicorn/UI-API-DOGFOOD.md) — measured Scratchpad migration and retained-output comparison.
 - [Alicorn setup and status](../frontends/alicorn/README.md), [editing ownership](frontends/alicorn/EDITING.md), [bounded Markdown design](frontends/alicorn/MARKDOWN.md), and [Alicorn coverage and follow-up gaps](frontends/alicorn/PARITY.md).
 - Research: [Tree-sitter options](research/TREE-SITTER-OPTIONS.md). Shirei and GPUI implementation reports are preserved as historical records under [engineering history](history/README.md).
 - [Baselines](baselines/README.md) — retained benchmark and parser measurements.

@@ -1,0 +1,534 @@
+{
+  "baseline_revision": "b32cdcd3bdad5a7b2cc69e0c6d74aebf3d7cf5f6",
+  "alicorn_pin": "ec5abb0232205aae0c5f34901a2decede27b058f",
+  "definitions": {
+    "scope": "Top-level production frontend Odin files; tests, generated themes, and the Caliber bridge excluded.",
+    "code_lines": "Nonblank physical lines after masking comments and string contents; not a semantic complexity score.",
+    "changed_files": "Files whose measured source counts changed. Includes imports and lexical scope braces.",
+    "runtime": "Runtime measurements are collected separately by ui_dogfood_test.odin."
+  },
+  "all_frontend": {
+    "before": {
+      "lines": 18881,
+      "code_lines": 17528,
+      "bytes": 838900,
+      "layout_style_expressions": 221,
+      "explicit_container_ends": 63,
+      "explicit_scope_ends": 120,
+      "runtime_text_button_calls": 166,
+      "ui_calls": 0,
+      "key_string_calls": 148,
+      "lines_over_160_columns": 228
+    },
+    "after": {
+      "lines": 18902,
+      "code_lines": 17549,
+      "bytes": 832625,
+      "layout_style_expressions": 125,
+      "explicit_container_ends": 30,
+      "explicit_scope_ends": 87,
+      "runtime_text_button_calls": 0,
+      "ui_calls": 199,
+      "key_string_calls": 68,
+      "lines_over_160_columns": 192
+    }
+  },
+  "migrated_files": {
+    "before": {
+      "lines": 6330,
+      "code_lines": 5924,
+      "bytes": 311348,
+      "layout_style_expressions": 219,
+      "explicit_container_ends": 63,
+      "explicit_scope_ends": 107,
+      "runtime_text_button_calls": 166,
+      "ui_calls": 0,
+      "key_string_calls": 146,
+      "lines_over_160_columns": 185
+    },
+    "after": {
+      "lines": 6351,
+      "code_lines": 5945,
+      "bytes": 305073,
+      "layout_style_expressions": 123,
+      "explicit_container_ends": 30,
+      "explicit_scope_ends": 74,
+      "runtime_text_button_calls": 0,
+      "ui_calls": 199,
+      "key_string_calls": 66,
+      "lines_over_160_columns": 149
+    }
+  },
+  "scenes": {
+    "settings_surface_build": {
+      "before": {
+        "lines": 56,
+        "code_lines": 53,
+        "bytes": 4853,
+        "layout_style_expressions": 13,
+        "explicit_container_ends": 4,
+        "explicit_scope_ends": 8,
+        "runtime_text_button_calls": 4,
+        "ui_calls": 0,
+        "key_string_calls": 10,
+        "lines_over_160_columns": 10
+      },
+      "after": {
+        "lines": 56,
+        "code_lines": 53,
+        "bytes": 4500,
+        "layout_style_expressions": 9,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 5,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 7,
+        "key_string_calls": 6,
+        "lines_over_160_columns": 9
+      }
+    },
+    "settings_page_build": {
+      "before": {
+        "lines": 99,
+        "code_lines": 99,
+        "bytes": 9447,
+        "layout_style_expressions": 7,
+        "explicit_container_ends": 2,
+        "explicit_scope_ends": 4,
+        "runtime_text_button_calls": 7,
+        "ui_calls": 0,
+        "key_string_calls": 12,
+        "lines_over_160_columns": 22
+      },
+      "after": {
+        "lines": 99,
+        "code_lines": 99,
+        "bytes": 9172,
+        "layout_style_expressions": 5,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 8,
+        "key_string_calls": 5,
+        "lines_over_160_columns": 21
+      }
+    },
+    "build_document_status": {
+      "before": {
+        "lines": 78,
+        "code_lines": 77,
+        "bytes": 5953,
+        "layout_style_expressions": 15,
+        "explicit_container_ends": 3,
+        "explicit_scope_ends": 6,
+        "runtime_text_button_calls": 9,
+        "ui_calls": 0,
+        "key_string_calls": 12,
+        "lines_over_160_columns": 11
+      },
+      "after": {
+        "lines": 78,
+        "code_lines": 77,
+        "bytes": 5613,
+        "layout_style_expressions": 12,
+        "explicit_container_ends": 2,
+        "explicit_scope_ends": 5,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 10,
+        "key_string_calls": 4,
+        "lines_over_160_columns": 10
+      }
+    },
+    "build_start_screen": {
+      "before": {
+        "lines": 42,
+        "code_lines": 42,
+        "bytes": 2590,
+        "layout_style_expressions": 8,
+        "explicit_container_ends": 3,
+        "explicit_scope_ends": 4,
+        "runtime_text_button_calls": 7,
+        "ui_calls": 0,
+        "key_string_calls": 5,
+        "lines_over_160_columns": 4
+      },
+      "after": {
+        "lines": 42,
+        "code_lines": 42,
+        "bytes": 2234,
+        "layout_style_expressions": 2,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 2,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 9,
+        "key_string_calls": 1,
+        "lines_over_160_columns": 1
+      }
+    },
+    "build_app": {
+      "before": {
+        "lines": 416,
+        "code_lines": 409,
+        "bytes": 25392,
+        "layout_style_expressions": 51,
+        "explicit_container_ends": 15,
+        "explicit_scope_ends": 27,
+        "runtime_text_button_calls": 45,
+        "ui_calls": 0,
+        "key_string_calls": 32,
+        "lines_over_160_columns": 40
+      },
+      "after": {
+        "lines": 416,
+        "code_lines": 409,
+        "bytes": 23570,
+        "layout_style_expressions": 22,
+        "explicit_container_ends": 7,
+        "explicit_scope_ends": 19,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 53,
+        "key_string_calls": 12,
+        "lines_over_160_columns": 26
+      }
+    }
+  },
+  "files": {
+    "frontends/alicorn/app_dialogs.odin": {
+      "before": {
+        "lines": 441,
+        "code_lines": 416,
+        "bytes": 18537,
+        "layout_style_expressions": 11,
+        "explicit_container_ends": 4,
+        "explicit_scope_ends": 6,
+        "runtime_text_button_calls": 12,
+        "ui_calls": 0,
+        "key_string_calls": 7,
+        "lines_over_160_columns": 5
+      },
+      "after": {
+        "lines": 442,
+        "code_lines": 417,
+        "bytes": 17963,
+        "layout_style_expressions": 2,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 15,
+        "key_string_calls": 1,
+        "lines_over_160_columns": 2
+      }
+    },
+    "frontends/alicorn/app_editor_view.odin": {
+      "before": {
+        "lines": 908,
+        "code_lines": 853,
+        "bytes": 45080,
+        "layout_style_expressions": 33,
+        "explicit_container_ends": 11,
+        "explicit_scope_ends": 15,
+        "runtime_text_button_calls": 24,
+        "ui_calls": 0,
+        "key_string_calls": 19,
+        "lines_over_160_columns": 18
+      },
+      "after": {
+        "lines": 908,
+        "code_lines": 853,
+        "bytes": 44321,
+        "layout_style_expressions": 23,
+        "explicit_container_ends": 6,
+        "explicit_scope_ends": 10,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 29,
+        "key_string_calls": 8,
+        "lines_over_160_columns": 18
+      }
+    },
+    "frontends/alicorn/app_layout.odin": {
+      "before": {
+        "lines": 608,
+        "code_lines": 589,
+        "bytes": 32822,
+        "layout_style_expressions": 63,
+        "explicit_container_ends": 22,
+        "explicit_scope_ends": 34,
+        "runtime_text_button_calls": 48,
+        "ui_calls": 0,
+        "key_string_calls": 35,
+        "lines_over_160_columns": 41
+      },
+      "after": {
+        "lines": 608,
+        "code_lines": 589,
+        "bytes": 30874,
+        "layout_style_expressions": 32,
+        "explicit_container_ends": 13,
+        "explicit_scope_ends": 25,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 57,
+        "key_string_calls": 14,
+        "lines_over_160_columns": 27
+      }
+    },
+    "frontends/alicorn/command_palette.odin": {
+      "before": {
+        "lines": 535,
+        "code_lines": 497,
+        "bytes": 22371,
+        "layout_style_expressions": 9,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 4,
+        "runtime_text_button_calls": 4,
+        "ui_calls": 0,
+        "key_string_calls": 5,
+        "lines_over_160_columns": 3
+      },
+      "after": {
+        "lines": 536,
+        "code_lines": 498,
+        "bytes": 22252,
+        "layout_style_expressions": 7,
+        "explicit_container_ends": 0,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 5,
+        "key_string_calls": 4,
+        "lines_over_160_columns": 3
+      }
+    },
+    "frontends/alicorn/editor_font_picker.odin": {
+      "before": {
+        "lines": 253,
+        "code_lines": 232,
+        "bytes": 13922,
+        "layout_style_expressions": 11,
+        "explicit_container_ends": 0,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 7,
+        "ui_calls": 0,
+        "key_string_calls": 8,
+        "lines_over_160_columns": 11
+      },
+      "after": {
+        "lines": 254,
+        "code_lines": 233,
+        "bytes": 13810,
+        "layout_style_expressions": 9,
+        "explicit_container_ends": 0,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 7,
+        "key_string_calls": 6,
+        "lines_over_160_columns": 11
+      }
+    },
+    "frontends/alicorn/floating_window.odin": {
+      "before": {
+        "lines": 767,
+        "code_lines": 724,
+        "bytes": 40864,
+        "layout_style_expressions": 7,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 5,
+        "ui_calls": 0,
+        "key_string_calls": 5,
+        "lines_over_160_columns": 19
+      },
+      "after": {
+        "lines": 768,
+        "code_lines": 725,
+        "bytes": 40706,
+        "layout_style_expressions": 4,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 5,
+        "key_string_calls": 2,
+        "lines_over_160_columns": 17
+      }
+    },
+    "frontends/alicorn/image_preview.odin": {
+      "before": {
+        "lines": 353,
+        "code_lines": 322,
+        "bytes": 19428,
+        "layout_style_expressions": 15,
+        "explicit_container_ends": 6,
+        "explicit_scope_ends": 7,
+        "runtime_text_button_calls": 12,
+        "ui_calls": 0,
+        "key_string_calls": 7,
+        "lines_over_160_columns": 14
+      },
+      "after": {
+        "lines": 365,
+        "code_lines": 334,
+        "bytes": 18939,
+        "layout_style_expressions": 6,
+        "explicit_container_ends": 2,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 16,
+        "key_string_calls": 2,
+        "lines_over_160_columns": 8
+      }
+    },
+    "frontends/alicorn/quick_open.odin": {
+      "before": {
+        "lines": 385,
+        "code_lines": 358,
+        "bytes": 16071,
+        "layout_style_expressions": 10,
+        "explicit_container_ends": 0,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 6,
+        "ui_calls": 0,
+        "key_string_calls": 5,
+        "lines_over_160_columns": 5
+      },
+      "after": {
+        "lines": 386,
+        "code_lines": 359,
+        "bytes": 16017,
+        "layout_style_expressions": 9,
+        "explicit_container_ends": 0,
+        "explicit_scope_ends": 3,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 6,
+        "key_string_calls": 4,
+        "lines_over_160_columns": 5
+      }
+    },
+    "frontends/alicorn/semantic_zoom.odin": {
+      "before": {
+        "lines": 620,
+        "code_lines": 575,
+        "bytes": 30867,
+        "layout_style_expressions": 1,
+        "explicit_container_ends": 0,
+        "explicit_scope_ends": 0,
+        "runtime_text_button_calls": 1,
+        "ui_calls": 0,
+        "key_string_calls": 1,
+        "lines_over_160_columns": 11
+      },
+      "after": {
+        "lines": 621,
+        "code_lines": 576,
+        "bytes": 30823,
+        "layout_style_expressions": 0,
+        "explicit_container_ends": 0,
+        "explicit_scope_ends": 0,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 1,
+        "key_string_calls": 0,
+        "lines_over_160_columns": 11
+      }
+    },
+    "frontends/alicorn/settings_surface.odin": {
+      "before": {
+        "lines": 232,
+        "code_lines": 213,
+        "bytes": 17610,
+        "layout_style_expressions": 21,
+        "explicit_container_ends": 6,
+        "explicit_scope_ends": 12,
+        "runtime_text_button_calls": 12,
+        "ui_calls": 0,
+        "key_string_calls": 25,
+        "lines_over_160_columns": 34
+      },
+      "after": {
+        "lines": 233,
+        "code_lines": 214,
+        "bytes": 16982,
+        "layout_style_expressions": 15,
+        "explicit_container_ends": 2,
+        "explicit_scope_ends": 8,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 16,
+        "key_string_calls": 13,
+        "lines_over_160_columns": 31
+      }
+    },
+    "frontends/alicorn/workbench_surface.odin": {
+      "before": {
+        "lines": 104,
+        "code_lines": 99,
+        "bytes": 6219,
+        "layout_style_expressions": 15,
+        "explicit_container_ends": 4,
+        "explicit_scope_ends": 8,
+        "runtime_text_button_calls": 12,
+        "ui_calls": 0,
+        "key_string_calls": 11,
+        "lines_over_160_columns": 8
+      },
+      "after": {
+        "lines": 105,
+        "code_lines": 100,
+        "bytes": 5631,
+        "layout_style_expressions": 5,
+        "explicit_container_ends": 1,
+        "explicit_scope_ends": 5,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 15,
+        "key_string_calls": 4,
+        "lines_over_160_columns": 5
+      }
+    },
+    "frontends/alicorn/workspace_mutation.odin": {
+      "before": {
+        "lines": 712,
+        "code_lines": 665,
+        "bytes": 31253,
+        "layout_style_expressions": 17,
+        "explicit_container_ends": 5,
+        "explicit_scope_ends": 7,
+        "runtime_text_button_calls": 19,
+        "ui_calls": 0,
+        "key_string_calls": 13,
+        "lines_over_160_columns": 14
+      },
+      "after": {
+        "lines": 713,
+        "code_lines": 666,
+        "bytes": 30547,
+        "layout_style_expressions": 6,
+        "explicit_container_ends": 2,
+        "explicit_scope_ends": 4,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 22,
+        "key_string_calls": 5,
+        "lines_over_160_columns": 9
+      }
+    },
+    "frontends/alicorn/workspace_tree.odin": {
+      "before": {
+        "lines": 412,
+        "code_lines": 381,
+        "bytes": 16304,
+        "layout_style_expressions": 6,
+        "explicit_container_ends": 3,
+        "explicit_scope_ends": 5,
+        "runtime_text_button_calls": 4,
+        "ui_calls": 0,
+        "key_string_calls": 5,
+        "lines_over_160_columns": 2
+      },
+      "after": {
+        "lines": 412,
+        "code_lines": 381,
+        "bytes": 16208,
+        "layout_style_expressions": 5,
+        "explicit_container_ends": 2,
+        "explicit_scope_ends": 4,
+        "runtime_text_button_calls": 0,
+        "ui_calls": 5,
+        "key_string_calls": 3,
+        "lines_over_160_columns": 2
+      }
+    }
+  }
+}

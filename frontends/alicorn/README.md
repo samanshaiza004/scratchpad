@@ -2,6 +2,8 @@
 
 Alicorn is Scratchpad's supported native frontend for v0.1.0. The Odin/Runa frontend owns transient interaction and presentation; the Go application remains authoritative for document bytes, commands, workspace operations, saving, conflict handling, and crash recovery. The two run in one native process through the Caliber C ABI.
 
+Ordinary production text, buttons, and simple layout scopes use Alicorn's public `alicorn:ui` helpers; advanced retained controls continue to use the runtime API where they need exact identity, scrolling, text-input, or native behavior. See the [UI API dogfood report](../../docs/frontends/alicorn/UI-API-DOGFOOD.md) for the migration scope, before/after source counts, retained-output comparison, and validation results.
+
 ## Run
 
 From the repository root:
