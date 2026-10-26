@@ -62,7 +62,7 @@ func validWindowsStaticLinkRecipe(t *testing.T) (windowsStaticLinkRecipe, string
 		}{Executable: odin, CompilerArguments: []string{"-extra-linker-flags:/LIBPATH:\"C:/path with spaces\" SDL3.lib"}},
 	}
 	recipe.Environment.ODINRoot = odinRoot
-	recipe.Artifacts.SDL.Version = "3.4.16"
+	recipe.Artifacts.SDL.Version = "3.4.18"
 	recipe.Artifacts.SDL.Library = sdlLibrary
 	recipe.Artifacts.SDL.SHA256, _ = fileSHA256(sdlLibrary)
 	recipe.Artifacts.SDL.License = sdlLicense

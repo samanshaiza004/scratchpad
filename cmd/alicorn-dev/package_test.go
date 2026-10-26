@@ -95,7 +95,7 @@ func TestGoToolchainLicensePath(t *testing.T) {
 
 func TestReadSDLPackageMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alicorn-package.json")
-	manifest := `{"host":{"sdlVersion":"3.4.16","sdlLinkage":"shared"}}`
+	manifest := `{"host":{"sdlVersion":"3.4.18","sdlLinkage":"shared"}}`
 	if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestReadSDLPackageMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metadata != (releaseSDL{Version: "3.4.16", Linkage: "shared"}) {
+	if metadata != (releaseSDL{Version: "3.4.18", Linkage: "shared"}) {
 		t.Fatalf("readSDLPackageMetadata = %#v", metadata)
 	}
 	if err := os.WriteFile(path, []byte(`{"host":{}}`), 0o644); err != nil {
