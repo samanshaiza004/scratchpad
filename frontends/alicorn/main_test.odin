@@ -147,13 +147,13 @@ test_macos_content_titlebar_uses_retained_tab_and_drag_regions :: proc(t: ^testi
 	testing.expect(t, header_found && header.bounds == alicorn.Rect{0, 0, 900, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
 		"the measured titlebar header should match the retained top-row bounds")
 	testing.expect(t, len(layout.regions) == 3 &&
-		layout.regions[0].kind == .Window_Drag &&
-		layout.regions[1].kind == .Interactive &&
+		layout.regions[0].kind == .Interactive &&
+		layout.regions[1].kind == .Window_Drag &&
 		layout.regions[2].kind == .Window_Drag,
 		"native-light reservation and trailing blank space should remain draggable around the ordinary tab strip")
 	if len(layout.regions) == 3 {
-		leading, leading_found := alicorn.node_info(&rt, layout.regions[0].node)
-		tabs, tabs_found := alicorn.node_info(&rt, layout.regions[1].node)
+		leading, leading_found := alicorn.node_info(&rt, layout.regions[1].node)
+		tabs, tabs_found := alicorn.node_info(&rt, layout.regions[0].node)
 		trailing, trailing_found := alicorn.node_info(&rt, layout.regions[2].node)
 		testing.expect(t, leading_found && tabs_found && trailing_found &&
 			leading.bounds == alicorn.Rect{0, 0, 80, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT} &&

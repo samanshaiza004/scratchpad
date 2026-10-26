@@ -6,8 +6,9 @@ import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 
 SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT :: f32(42)
-SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT :: f32(34)
+SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT :: SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT
 SCRATCHPAD_CONTENT_TITLEBAR_MIN_TAB_WIDTH :: f32(136)
+SCRATCHPAD_CONTENT_TITLEBAR_DRAG_WIDTH :: f32(48)
 
 build_app :: proc(
 	state: rawptr,
@@ -69,14 +70,36 @@ build_app :: proc(
 		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background),
 	)
 	workbench_style_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
+	app.window_chrome_header_node = 0
+	app.window_chrome_region_count = 0
+	app.document_connected_tab_node = 0
 	when ODIN_OS == .Darwin || ODIN_OS == .Windows {
-		scratchpad_content_titlebar_build(app, &ui, rt, logical_width)
+		// The workspace split owns both header and body columns. Its second pane
+		// therefore places tabs and paper at the same X during retained drags.
+		app.window_chrome_header_node = root
+		if app.window_chrome_metrics.header.y > 0 {
+			alicorn.container_begin(&ui, .Container, label="scratchpad-titlebar-safe-area",
+				style=alicorn.layout_style(.Row, height=app.window_chrome_metrics.header.y))
+			alicorn.container_end(&ui)
+		}
+		if !app.backend.started || (!app.backend.state.has_workspace && len(app.backend.state.documents) == 0) {
+			scratchpad_content_titlebar_build(app, &ui, rt, logical_width)
+		}
 	}
 
 	if app.backend.started && !app.backend.state.has_workspace && len(app.backend.state.documents) == 0 {
 		build_start_screen(app, &ui, rt)
 	} else if app.backend.started {
 		state := &app.backend.state
+		sidebar_min_width := f32(180)
+		editor_min_width := f32(480)
+		when ODIN_OS == .Darwin || ODIN_OS == .Windows {
+			// Native controls may reserve more than the ordinary sidebar minimum.
+			// Keep the editor header inside the physical window even below the
+			// usual combined pane minima; the tab scroller handles that width.
+			sidebar_min_width = max(sidebar_min_width, app.window_chrome_metrics.content_start_x)
+			editor_min_width = min(editor_min_width, max(f32(logical_width)-sidebar_min_width-2, 0))
+		}
 		split_initial := state.sidebar_width
 		if split_initial < 180 || split_initial > 2048 { split_initial = 250 }
 		if app.workspace_split_restore_runtime != rt {
@@ -93,8 +116,8 @@ build_app :: proc(
 			key=alicorn.key_string("scratchpad-workspace-editor-split"),
 			axis=.Horizontal,
 			initial=split_initial,
-			min_first=180,
-			min_second=480,
+			min_first=sidebar_min_width,
+			min_second=editor_min_width,
 			style=alicorn.layout_style(.Row, grow=1, gap=2, clip=true),
 			label="scratchpad-workspace-editor-split",
 			restore=split_restore,
@@ -102,6 +125,9 @@ build_app :: proc(
 		app.workspace_editor_split_node = workspace_split.id
 		app.workspace_sidebar_width = workspace_split.position
 		alicorn.split_first_begin(&ui, workspace_split)
+		when ODIN_OS == .Darwin || ODIN_OS == .Windows {
+			scratchpad_sidebar_titlebar_build(app, &ui)
+		}
 		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Recessed))
 		if gui.row(&ui, label="workspace-panel-tabs", height=30, gap=4) {
 			if gui.button(&ui, "Files", key="workspace-panel-files", grow=1, height=28, state=alicorn.Button_State{selected=!app.workspace_search_mode}, variant=.Tab) {
@@ -151,8 +177,16 @@ build_app :: proc(
 		}
 		alicorn.surface_end(&ui)
 		alicorn.split_first_end(&ui, workspace_split)
-		alicorn.split_divider(&ui, workspace_split)
+		divider := alicorn.split_divider(&ui, workspace_split)
+		when ODIN_OS == .Darwin || ODIN_OS == .Windows {
+			// Native titlebar routing must leave the divider's full grab target
+			// available to its ordinary retained Split interaction.
+			scratchpad_content_titlebar_region_add(app, divider, .Interactive)
+		}
 		alicorn.split_second_begin(&ui, workspace_split)
+		when ODIN_OS == .Darwin || ODIN_OS == .Windows {
+			scratchpad_document_titlebar_build(app, &ui, rt, logical_width)
+		}
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
 		when ODIN_OS != .Darwin && ODIN_OS != .Windows {
@@ -227,7 +261,7 @@ build_app :: proc(
 		if show_source {
 		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
 		paper_padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
-		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75))
+		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75), open_top_edge=app.document_connected_tab_node)
 		build_startup_notice(app, &ui, rt)
 		if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
@@ -492,8 +526,68 @@ scratchpad_content_titlebar_region_add :: proc(
 	kind: host.Window_Chrome_Region_Kind,
 ) {
 	if app == nil || node == 0 || app.window_chrome_region_count >= len(app.window_chrome_regions) { return }
-	app.window_chrome_regions[app.window_chrome_region_count] = host.Window_Chrome_Region{node=node, kind=kind}
+	// Interactive targets win where their enlarged grab bounds meet blank
+	// titlebar space (notably the workspace divider).
+	insert := app.window_chrome_region_count
+	if kind == .Interactive {
+		for region, index in app.window_chrome_regions[:app.window_chrome_region_count] {
+			if region.kind == .Window_Drag { insert = index; break }
+		}
+	}
+	for index := app.window_chrome_region_count; index > insert; index -= 1 {
+		app.window_chrome_regions[index] = app.window_chrome_regions[index-1]
+	}
+	app.window_chrome_regions[insert] = host.Window_Chrome_Region{node=node, kind=kind}
 	app.window_chrome_region_count += 1
+}
+
+scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
+	if app == nil || ui == nil || app.window_chrome_metrics.header.h <= 0 { return }
+	header := alicorn.container_begin(ui, .Container,
+		label="scratchpad-titlebar-sidebar-band",
+		style=alicorn.layout_style(.Row, height=app.window_chrome_metrics.header.h, padding=8, align=.Center, clip=true),
+		color=alicorn.style_color(ui, .Subtle_Surface))
+	when ODIN_OS == .Windows {
+		alicorn.text(ui, "Workspace" if app.backend.state.has_workspace else "Scratchpad",
+			text_style=alicorn.Text_Style{overflow=.Ellipsis})
+	}
+	alicorn.container_end(ui)
+	scratchpad_content_titlebar_region_add(app, header, .Window_Drag)
+}
+
+// This header is the first child of the same Split pane as document-surface.
+// A retained splitter drag therefore moves both at once, without re-description
+// or a previous-frame geometry snapshot in the application.
+scratchpad_document_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, logical_width: int) {
+	if app == nil || ui == nil || rt == nil || app.window_chrome_metrics.header.h <= 0 { return }
+	metrics := app.window_chrome_metrics
+	header := alicorn.container_begin(ui, .Container,
+		label="scratchpad-content-titlebar",
+		style=alicorn.layout_style(.Row, height=metrics.header.h, gap=0, align=.Center, clip=true),
+		color=alicorn.style_color(ui, .Subtle_Surface))
+	visible_tabs := 0
+	for document in app.backend.state.documents {
+		if app.floating_window != nil && document.id == app.floating_window.document_id { continue }
+		visible_tabs += 1
+	}
+	if visible_tabs > 0 {
+		tabs := alicorn.container_begin(ui, .Container,
+			label="scratchpad-titlebar-tabs-region",
+			style=alicorn.layout_style(.Row, grow=1, max_width=f32(visible_tabs)*180,
+				height=metrics.header.h, align=.Center, clip=true))
+		scratchpad_content_titlebar_region_add(app, tabs, .Interactive)
+		scratchpad_document_tabs_build(app, ui, rt, width=0, height=metrics.header.h, compact=true, show_empty=false)
+		alicorn.container_end(ui)
+	}
+	// The native controls retain their host-owned rectangles. Reserving their
+	// measured width here also leaves a usable blank drag target beside tabs.
+	right_reserve := f32(0)
+	if metrics.content_end_x > 0 { right_reserve = max(f32(logical_width)-metrics.content_end_x, 0) }
+	alicorn.container_begin(ui, .Container, label="scratchpad-titlebar-trailing-reservation",
+		style=alicorn.layout_style(.Row, width=SCRATCHPAD_CONTENT_TITLEBAR_DRAG_WIDTH+right_reserve, height=metrics.header.h))
+	alicorn.container_end(ui)
+	alicorn.container_end(ui)
+	scratchpad_content_titlebar_region_add(app, header, .Window_Drag)
 }
 
 scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, logical_width: int) {
@@ -502,10 +596,6 @@ scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alico
 	app.window_chrome_region_count = 0
 	metrics := app.window_chrome_metrics
 	if metrics.header.h <= 0 { return }
-	if metrics.header.y > 0 {
-		if gui.row(ui, label="scratchpad-titlebar-safe-area", height=metrics.header.y) {
-		}
-	}
 	window_width := f32(max(logical_width, 0))
 	leading_width := clamp(metrics.content_start_x, 0, window_width)
 	content_end_x := metrics.content_end_x
@@ -554,7 +644,7 @@ scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alico
 		scratchpad_document_tabs_build(
 			app, ui, rt,
 			width=tab_width,
-			height=min(SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT, metrics.header.h),
+			height=metrics.header.h,
 			compact=true,
 			show_empty=false,
 		)
@@ -622,7 +712,15 @@ scratchpad_document_tabs_build :: proc(
 		tab_options.max_tab_width = 180
 		tab_options.gap = 0
 		tab_options.presentation = .Compact
-		tab_style = alicorn.layout_style(.Row, width=width, height=height, clip=true)
+		if width > 0 { tab_style = alicorn.layout_style(.Row, width=width, height=height, clip=true) }
+		if !app.find_open {
+			if paper, found := alicorn.style_extension_color(rt, app.editor_theme, scratchpad_editor_paper_surface_role()); found {
+				tab_options.appearance = .Connected
+				tab_options.selected_fill = paper
+				tab_options.selected_text = alicorn.style_theme_color(rt, app.editor_theme, .Text)
+				tab_options.selected_fill_set = true
+			}
+		}
 	}
 	tab_result := alicorn.tab_bar(
 		ui,
@@ -631,6 +729,7 @@ scratchpad_document_tabs_build :: proc(
 		tab_options,
 		tab_style,
 	)
+	if compact && !app.find_open { app.document_connected_tab_node = tab_result.selected_tab }
 	if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(tab_document_indices) {
 		document_id := state.documents[tab_document_indices[tab_result.item_index]].id
 		action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
