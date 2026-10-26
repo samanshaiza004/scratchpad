@@ -51,6 +51,11 @@ type StopRequest struct {
 }
 
 type CommandRequest struct {
+	PinID                uint64   `json:"pin_id"`
+	PinEpoch             uint64   `json:"pin_epoch"`
+	PinRevision          uint64   `json:"pin_revision"`
+	SourceInstance       uint64   `json:"source_instance"`
+	PinDelta             int      `json:"pin_delta"`
 	Version              uint32   `json:"version"`
 	RequestID            uint64   `json:"request_id"`
 	BasedOnRevision      uint64   `json:"based_on_revision"`
@@ -74,8 +79,8 @@ type CommandRequest struct {
 	EditorRevision       uint64   `json:"editor_revision"`
 	EditorAnchorByte     uint64   `json:"editor_anchor_byte,omitempty"`
 	EditorCursorByte     uint64   `json:"editor_cursor_byte,omitempty"`
-	StartByte            uint64   `json:"start_byte,omitempty"`
-	EndByte              uint64   `json:"end_byte,omitempty"`
+	StartByte            uint64   `json:"start_byte"`
+	EndByte              uint64   `json:"end_byte"`
 	Replacement          []int    `json:"replacement,omitempty"`
 	HasSelectionState    bool     `json:"has_selection_state,omitempty"`
 	BeforeAnchorByte     uint64   `json:"before_anchor_byte,omitempty"`
@@ -98,35 +103,37 @@ type CommandRequest struct {
 	ImageRevision        uint64   `json:"image_revision,omitempty"`
 	ViewDensity          string   `json:"view_density,omitempty"`
 	ZoomDepth            int      `json:"zoom_depth"`
-	ProjectionFirst      uint64   `json:"projection_first,omitempty"`
+	ProjectionFirst      uint64   `json:"projection_first"`
 	ProjectionLimit      uint64   `json:"projection_limit,omitempty"`
 }
 
 type Response struct {
-	Version             uint32               `json:"version"`
-	RequestID           uint64               `json:"request_id,omitempty"`
-	Lifecycle           string               `json:"lifecycle"`
-	OK                  bool                 `json:"ok"`
-	Outcome             Outcome              `json:"outcome"`
-	Revision            uint64               `json:"revision,omitempty"`
-	BasedOnRevision     uint64               `json:"based_on_revision,omitempty"`
-	State               *StateEnvelope       `json:"state,omitempty"`
-	DirectoryListing    *DirectoryListing    `json:"directory_listing,omitempty"`
-	WorkspaceFiles      *WorkspaceFiles      `json:"workspace_files,omitempty"`
-	Resource            *ResourceDescriptor  `json:"resource,omitempty"`
-	Edit                *EditAck             `json:"edit,omitempty"`
-	EditorSelection     *EditorSelection     `json:"editor_selection,omitempty"`
-	CommandOutcome      string               `json:"command_outcome,omitempty"`
-	CloseDecision       *CloseDecision       `json:"close_decision,omitempty"`
-	Matches             []CurrentMatch       `json:"matches,omitempty"`
-	MatchesTruncated    bool                 `json:"matches_truncated,omitempty"`
-	MatchesReplaced     int                  `json:"matches_replaced,omitempty"`
-	SourceRefreshNeeded bool                 `json:"source_refresh_needed,omitempty"`
-	WorkspaceSearchPage *WorkspaceSearchPage `json:"workspace_search_page,omitempty"`
-	SaveAsConflict      *SaveAsConflict      `json:"save_as_conflict,omitempty"`
-	SemanticViewWindow  *SemanticViewWindow  `json:"semantic_view_window,omitempty"`
-	SemanticZoom        *SemanticZoomPlan    `json:"semantic_zoom,omitempty"`
-	Diagnostic          string               `json:"diagnostic,omitempty"`
+	Pinned              *application.PinnedSnapshot `json:"pinned,omitempty"`
+	PinnedWindow        *application.PinnedWindow   `json:"pinned_window,omitempty"`
+	Version             uint32                      `json:"version"`
+	RequestID           uint64                      `json:"request_id,omitempty"`
+	Lifecycle           string                      `json:"lifecycle"`
+	OK                  bool                        `json:"ok"`
+	Outcome             Outcome                     `json:"outcome"`
+	Revision            uint64                      `json:"revision,omitempty"`
+	BasedOnRevision     uint64                      `json:"based_on_revision,omitempty"`
+	State               *StateEnvelope              `json:"state,omitempty"`
+	DirectoryListing    *DirectoryListing           `json:"directory_listing,omitempty"`
+	WorkspaceFiles      *WorkspaceFiles             `json:"workspace_files,omitempty"`
+	Resource            *ResourceDescriptor         `json:"resource,omitempty"`
+	Edit                *EditAck                    `json:"edit,omitempty"`
+	EditorSelection     *EditorSelection            `json:"editor_selection,omitempty"`
+	CommandOutcome      string                      `json:"command_outcome,omitempty"`
+	CloseDecision       *CloseDecision              `json:"close_decision,omitempty"`
+	Matches             []CurrentMatch              `json:"matches,omitempty"`
+	MatchesTruncated    bool                        `json:"matches_truncated,omitempty"`
+	MatchesReplaced     int                         `json:"matches_replaced,omitempty"`
+	SourceRefreshNeeded bool                        `json:"source_refresh_needed,omitempty"`
+	WorkspaceSearchPage *WorkspaceSearchPage        `json:"workspace_search_page,omitempty"`
+	SaveAsConflict      *SaveAsConflict             `json:"save_as_conflict,omitempty"`
+	SemanticViewWindow  *SemanticViewWindow         `json:"semantic_view_window,omitempty"`
+	SemanticZoom        *SemanticZoomPlan           `json:"semantic_zoom,omitempty"`
+	Diagnostic          string                      `json:"diagnostic,omitempty"`
 }
 
 // SemanticZoomPlan is detached, revision/instance-tagged source-line folding
@@ -305,6 +312,10 @@ type Outcome struct {
 }
 
 type StateEnvelope struct {
+	PinnedEpoch                  uint64                `json:"pinned_epoch"`
+	PinnedRevision               uint64                `json:"pinned_revision"`
+	PinnedCount                  int                   `json:"pinned_count"`
+	PinnedSourceInvalidations    uint64                `json:"pinned_source_invalidations"`
 	SessionUI                    application.SessionUI `json:"session_ui,omitempty"`
 	Schema                       uint32                `json:"schema"`
 	Revision                     uint64                `json:"revision"`
@@ -603,6 +614,10 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.HasSourceAnchor && (request.SourceAnchorRevision == 0 || request.SourceAnchorByte > uint64(^uint(0)>>1) || request.SourceAnchorLine > uint64(^uint(0)>>1)) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_source_anchor", "source anchor revision, byte, or line is invalid", false), false
 		}
+	case "pinned_add", "pinned_read", "pinned_move", "pinned_remove", "pinned_window", "pinned_copy", "pinned_go_to_source":
+		if err := validatePinnedRequest(input, request); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_pinned_request", err.Error(), false), false
+		}
 	case "read_semantic_zoom":
 		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
@@ -893,6 +908,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		DocumentCount:  len(snapshot.Documents),
 	}
 	state := StateEnvelope{
+		PinnedEpoch: snapshot.PinnedEpoch, PinnedRevision: snapshot.PinnedRevision, PinnedCount: snapshot.PinnedCount, PinnedSourceInvalidations: snapshot.PinnedSourceInvalidations,
 		Schema:           StateSchemaV1,
 		Revision:         revision,
 		ApplicationRev:   snapshot.Revision,

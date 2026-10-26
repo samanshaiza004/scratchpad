@@ -13,6 +13,10 @@ select_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
 	}
 	response := bridge.backend_command(&app.backend, "select_document", document_id=document_id)
 	handle_command_result(app, rt, &response)
+	if response.ok && app.pinned.visible && app.pinned.single_pane {
+		app.pinned.narrow_source=true
+		app.editor_focus_pending=true
+	}
 	bridge.backend_command_result_destroy(&response, context.allocator)
 }
 

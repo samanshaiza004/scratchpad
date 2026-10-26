@@ -131,6 +131,7 @@ workspace_context_menu_open_focused :: proc(app: ^App, rt: ^alicorn.Runtime) -> 
 
 workspace_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
+	if app.pinned.context_menu_open { return }
 	if !alicorn.context_menu_is_open(rt) {
 		workspace_context_menu_clear(app)
 		return
@@ -189,6 +190,7 @@ application_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.
 		_ = command_palette_pointer(app, rt, event, target)
 		return
 	}
+	if pinned_context_pointer(app,rt,event) { return }
 	if workspace_context_menu_pointer(app, rt, event, target) { return }
 	editor_pointer(state, rt, event, target)
 }

@@ -18,6 +18,7 @@ Deferred_Action_Kind :: enum {
 	Conflict_Reload,
 	Conflict_Keep_Mine,
 	Toggle_Semantic_Fold,
+	Pinned_Action,
 }
 
 Deferred_Action :: struct {
@@ -164,6 +165,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		save_as_to_path(app, rt, action.value, action.path)
 	case .Toggle_Semantic_Fold:
 		semantic_zoom_toggle_fold(app, rt, action.document_id, action.editor_revision, action.source_start)
+	case .Pinned_Action:
+		pinned_apply_deferred(app, rt, action)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -250,6 +253,8 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			editor_resolve_conflict_now(app, rt, action.value, true)
 		case .Toggle_Semantic_Fold:
 			semantic_zoom_toggle_fold(app, rt, action.document_id, action.editor_revision, action.source_start)
+		case .Pinned_Action:
+			pinned_apply_deferred(app, rt, action)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(

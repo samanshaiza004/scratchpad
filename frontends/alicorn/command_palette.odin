@@ -267,6 +267,9 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	case action_id_for(ACTION_SEMANTIC_FULL): return ACTION_SEMANTIC_FULL
 	case action_id_for(ACTION_DOCUMENT_GO_TO_LINE): return ACTION_DOCUMENT_GO_TO_LINE
 	case action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP): return ACTION_DOCUMENT_TOGGLE_WRAP
+	case action_id_for(ACTION_PIN_SELECTION): return ACTION_PIN_SELECTION
+	case action_id_for(ACTION_PINNED_FOCUS): return ACTION_PINNED_FOCUS
+	case action_id_for(ACTION_PINNED_TOGGLE): return ACTION_PINNED_TOGGLE
 	case action_id_for(ACTION_VIEW_THEME_WARM): return ACTION_VIEW_THEME_WARM
 	case action_id_for(ACTION_VIEW_THEME_COOL_LIGHT): return ACTION_VIEW_THEME_COOL_LIGHT
 	case action_id_for(ACTION_VIEW_THEME_FLAT): return ACTION_VIEW_THEME_FLAT

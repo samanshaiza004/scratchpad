@@ -20,6 +20,7 @@ build_app :: proc(
 	scratchpad_application_assets_release_retired(app, rt)
 	scratchpad_image_preview_sync(app, rt)
 	session_ui_prepare(app, rt)
+	pinned_refresh(app,rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	previous_ui_description_runtime := app.ui_description_runtime
@@ -55,6 +56,7 @@ build_app :: proc(
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
 		find_sync_focused_edit_menu_states(app, rt)
+		pinned_sync_menu_states(app,rt)
 	}
 
 	root_gap := f32(8)
@@ -158,7 +160,10 @@ build_app :: proc(
 			scratchpad_document_tabs_build(app, &ui, rt, width=0, height=32, compact=false, show_empty=true)
 			alicorn.surface_end(&ui)
 		}
-		if app.find_open {
+		pinned_side_open := app.pinned.visible && !app.pinned.narrow_source && f32(logical_width)-app.workspace_sidebar_width >= 760
+		show_source := !app.pinned.visible || pinned_side_open || app.pinned.narrow_source
+		app.pinned.single_pane=app.pinned.visible && !pinned_side_open && !app.pinned.narrow_source
+		if app.find_open && show_source {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			if gui.row(&ui, label="scratchpad-find-bar", height=38, gap=8, align=.Center) {
 				gui.text(&ui, "Find")
@@ -204,6 +209,22 @@ build_app :: proc(
 			alicorn.surface_end(&ui)
 		}
 
+		if !show_source { app.editor_scroll_owner=0; app.editor_input_anchor_node=0 }
+		pinned_split: alicorn.Split_Handle
+		if pinned_side_open {
+			available := f32(logical_width)-app.workspace_sidebar_width
+			pinned_split=alicorn.split_begin(&ui,key=alicorn.key_string("scratchpad-document-pinned-split"),axis=.Horizontal,
+				initial=max(320,available-360),min_first=320,min_second=280,
+				style=alicorn.layout_style(.Row,grow=1,gap=2,clip=true),label="document-source-and-pinned-references")
+			alicorn.split_first_begin(&ui,pinned_split)
+		}
+		if show_source && app.pinned.visible && app.pinned.narrow_source {
+			if gui.row(&ui,label="pinned-return-banner",height=30,gap=6,align=.Center) {
+				gui.text(&ui,fmt.tprintf("Pinned · %d ranges",len(app.pinned.snapshot.ranges)),style=alicorn.layout_style(.Row,grow=1))
+				if gui.button(&ui,"Show Pinned",key="pinned-show-from-source",width=112,height=26,variant=.Toolbar) { app.pinned.narrow_source=false;app.pinned.focus_pending=true;alicorn.invalidate_root(rt,"Opened Pinned beside source") }
+			}
+		}
+		if show_source {
 		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
 		paper_padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
 		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75))
@@ -248,6 +269,17 @@ build_app :: proc(
 		if active, found := find_document(state, state.active); found && !floating_window_contains(app, active.id) {
 			build_document_status(app, &ui, rt, active)
 		}
+		}
+		if pinned_side_open {
+			alicorn.split_first_end(&ui,pinned_split)
+			alicorn.split_divider(&ui,pinned_split)
+			alicorn.split_second_begin(&ui,pinned_split)
+			pinned_surface_build(app,&ui,rt)
+			alicorn.split_second_end(&ui,pinned_split)
+			alicorn.split_end(&ui,pinned_split)
+		} else if app.pinned.visible && !show_source {
+			pinned_surface_build(app,&ui,rt)
+		}
 		alicorn.container_end(&ui)
 		alicorn.split_second_end(&ui, workspace_split)
 		alicorn.split_end(&ui, workspace_split)
@@ -259,6 +291,7 @@ build_app :: proc(
 	alicorn.container_end(&ui)
 
 	if app.shutdown_intent == .None && app.close_document_id == "" && !app.save_as_confirmation_open && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.recent_workspaces_open && !app.command_palette_open && !app.quick_open_open {
+		pinned_context_menu_build(app,&ui,rt)
 		workspace_context_menu_build(app, &ui, rt)
 	}
 
@@ -420,6 +453,7 @@ build_app :: proc(
 		}
 	}
 	editor_reveal_after_frame(app, rt)
+	pinned_after_frame(app,rt)
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	session_ui_after_frame(app, rt)
 	scratchpad_application_assets_build_completed(app)

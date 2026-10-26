@@ -86,15 +86,18 @@ type PresentationDocument struct {
 // revision covers lifecycle/registry changes; EditorRevision identifies
 // content changes without asking a frontend to serialize the buffer.
 type PresentationState struct {
-	Revision         uint64
-	HasWorkspace     bool
-	HasTrasher       bool
-	WorkspaceRoot    string
-	RecentWorkspaces []string
-	SidebarWidth     float32
-	SessionUI        SessionUI
-	Active           DocumentID
-	Documents        []PresentationDocument
+	PinnedEpoch, PinnedRevision uint64
+	PinnedCount                 int
+	PinnedSourceInvalidations   uint64
+	Revision                    uint64
+	HasWorkspace                bool
+	HasTrasher                  bool
+	WorkspaceRoot               string
+	RecentWorkspaces            []string
+	SidebarWidth                float32
+	SessionUI                   SessionUI
+	Active                      DocumentID
+	Documents                   []PresentationDocument
 }
 
 // PresentationClient is the only interface a future shell needs for this
@@ -120,7 +123,9 @@ func (a *Application) Snapshot() PresentationState {
 	if a == nil {
 		return PresentationState{}
 	}
+	pinned := a.PinnedSnapshot()
 	state := PresentationState{
+		PinnedEpoch: pinned.Epoch, PinnedRevision: pinned.Revision, PinnedCount: len(pinned.Ranges), PinnedSourceInvalidations: pinned.SourceInvalidations,
 		Revision:         a.presentationRevision,
 		HasWorkspace:     a.HasWorkspace,
 		HasTrasher:       a.Trasher != nil,
