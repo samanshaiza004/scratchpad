@@ -118,8 +118,9 @@ App :: struct {
 	ui_description_runtime: ^alicorn.Runtime,
 	window_chrome_metrics: host.Window_Chrome_Metrics,
 	window_chrome_header_node: alicorn.Node_ID,
-	window_chrome_regions: [3]host.Window_Chrome_Region,
+	window_chrome_regions: [4]host.Window_Chrome_Region,
 	window_chrome_region_count: int,
+	document_connected_tab_node: alicorn.Node_ID,
 	floating_window: ^Floating_Window_State,
 	editor_visible_window_lane_override: ^bridge.Visible_Window_Lane,
 	paper_surface_material: alicorn.Material_ID,
@@ -3186,8 +3187,10 @@ main :: proc() {
 		window_chrome_layout = scratchpad_content_titlebar_layout
 	}
 	window_chrome_appearance: host.Application_Chrome_Appearance_Proc
+	menu_presentation := host.Application_Menu_Presentation.Labels
 	when ODIN_OS == .Windows {
 		window_chrome_appearance = scratchpad_window_chrome_appearance
+		menu_presentation = .Hidden
 	}
 	native_menus := scratchpad_native_menus(app.menus[:])
 
@@ -3197,6 +3200,7 @@ main :: proc() {
 		width=1200,
 		height=760,
 		menus=native_menus,
+		menu_presentation=menu_presentation,
 		window_decorations=window_decorations,
 		window_chrome_height=window_chrome_height,
 		window_chrome_metrics=window_chrome_metrics,
