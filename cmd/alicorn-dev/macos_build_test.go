@@ -107,7 +107,7 @@ func TestMacFrontendLinksSelectedSDL(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "pinned SDL")
 	library := filepath.Join(prefix, "lib", "libSDL3.dylib")
-	writeNativeFixture(t, filepath.Join(root, "sdl.c"), "int SDL_GetVersion(void) { return 3004016; }\n")
+	writeNativeFixture(t, filepath.Join(root, "sdl.c"), "int SDL_GetVersion(void) { return 3004018; }\n")
 	if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestMacFrontendLinksSelectedSDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probe: %v: %s", err, output)
 	}
-	if strings.TrimSpace(string(output)) != "3004016" {
+	if strings.TrimSpace(string(output)) != "3004018" {
 		t.Fatalf("linked SDL symbol returned %s", output)
 	}
 }
