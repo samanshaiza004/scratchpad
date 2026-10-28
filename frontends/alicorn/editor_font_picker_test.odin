@@ -82,16 +82,25 @@ test_editor_font_picker_virtualization_caps_visible_rows :: proc(t: ^testing.T) 
 	testing.expect(t, found && list.scroll_viewport_height <= f32(EDITOR_FONT_PICKER_MAX_VISIBLE_ROWS)*EDITOR_FONT_PICKER_ROW_HEIGHT+0.1,
 		"the searchable font picker should keep its visible result window near ten rows")
 	first_panel_id := panel_id
-	rt.viewport = alicorn.Rect{0, 0, 900, 700}
+	rt.viewport = alicorn.Rect{0, 0, 1200, 800}
 	app.theme_choice = .Workbench_Relief
 	alicorn.invalidate_root(&rt, "font-picker viewport and theme changed")
+	if !editor_font_picker_test_build_frame(t, &app, &rt) { return }
+	capped_panel_id, capped_panel_found := alicorn.node_by_key(&rt, alicorn.key_string("scratchpad-editor-font-picker-panel"), .Container)
+	capped_panel, capped_info_found := alicorn.node_info(&rt, capped_panel_id)
+	testing.expect(t, capped_panel_found && capped_info_found && capped_panel_id == first_panel_id &&
+		capped_panel.bounds.w == 900 && capped_panel.bounds.x >= 0 &&
+		capped_panel.bounds.x+capped_panel.bounds.w <= rt.viewport.w,
+		"the panel should preserve identity and stop growing at its 900-unit maximum")
+	rt.viewport = alicorn.Rect{0, 0, 900, 700}
+	alicorn.invalidate_root(&rt, "font-picker viewport shrunk below max width")
 	if !editor_font_picker_test_build_frame(t, &app, &rt) { return }
 	resized_panel_id, resized_panel_found := alicorn.node_by_key(&rt, alicorn.key_string("scratchpad-editor-font-picker-panel"), .Container)
 	resized_panel, resized_info_found := alicorn.node_info(&rt, resized_panel_id)
 	testing.expect(t, resized_panel_found && resized_info_found && resized_panel_id == first_panel_id &&
 		resized_panel.bounds.w == 852 && resized_panel.bounds.x >= 0 &&
 		resized_panel.bounds.x+resized_panel.bounds.w <= rt.viewport.w,
-		"viewport resizing and the relief theme should preserve panel identity while its percentage width follows the overlay")
+		"shrinking below the maximum should release the cap while preserving panel identity")
 	focused_result, focused_result_found := alicorn.node_by_key(&rt, alicorn.key_string("Family 000"), .Button)
 	testing.expect(t, focused_result_found && alicorn.focus(&rt, focused_result),
 		"a visible font result should be focusable through normal Tab traversal")

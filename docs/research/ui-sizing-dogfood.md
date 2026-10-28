@@ -23,7 +23,7 @@ The declarations increase by one because the minimum width remains explicit to p
 
 ## Behavior verified
 
-The headless retained-runtime regression builds the picker in a 360×280 viewport. The modal overlay has 24 units of padding on each horizontal edge, so percent(1) resolves to 312 units. The test then resizes to 900×700 and switches from the Warm theme to Workbench Relief. The panel resolves to 852 units, remains within the viewport, and retains the same Node_ID.
+The headless retained-runtime regression builds the picker in a 360×280 viewport. The modal overlay has 24 units of padding on each horizontal edge, so percent(1) resolves to 312 units. The test switches from the Warm theme to Workbench Relief at 1200×800, where the panel reaches but does not exceed its 900-unit maximum. Shrinking to 900×700 releases the cap and resolves to 852 units. Both transitions remain within the viewport and preserve the same Node_ID.
 
 The test also keeps the existing virtual-font-list assertions: the extent represents the full catalog while the realized result window remains bounded. No Scratchpad panel-node field or extra retained wrapper was added.
 
@@ -44,4 +44,4 @@ Alicorn's guide now includes a concrete example: a 400-unit row with two childre
 
 ## Remaining evaluation
 
-Keep #109 open. This dogfood shows a real Scratchpad section that is clearer on one axis and behaves consistently under the tested resize and theme change. It does not establish a general percentage-sizing vocabulary, broad helper defaults, native DPI behavior, or a performance benefit. The next decision should follow another genuine use case or evidence that remaining viewport arithmetic materially harms authoring.
+Keep #109 open. The original experiment gate still requires a second materially improved dogfood layout, plus allocation, p95, invalidation, and incremental-versus-fresh replay evidence. This Scratchpad conversion establishes the first example’s width clarity and retained identity, but not those broader adoption criteria. It also does not establish native DPI behavior or a performance benefit. The next decision should follow another genuine use case or evidence that remaining viewport arithmetic materially harms authoring.
