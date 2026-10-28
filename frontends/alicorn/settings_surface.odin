@@ -47,11 +47,11 @@ settings_form_text :: proc(form: ^Settings_Form, key, value: string, size: f32 =
 	}
 }
 
-settings_form_checkbox :: proc(form: ^Settings_Form, key, label: string, value: bool, disabled := false) -> alicorn.Control_Change_Bool {
+settings_form_checkbox :: proc(form: ^Settings_Form, key, label: string, value: ^bool, disabled := false) -> bool {
 	height := max(44, settings_text_height(form.rt, label, form.width-36, 16*form.scale)+12)
 	style := settings_form_row(form, height)
-	if form.ui == nil { return alicorn.Control_Change_Bool{value=value} }
-	return alicorn.checkbox(form.ui, label, value, key=alicorn.key_string(key), style=style, disabled=disabled)
+	if form.ui == nil || value == nil { return false }
+	return gui.checkbox(form.ui, label, value, key=alicorn.key_string(key), style=style, disabled=disabled)
 }
 
 settings_category_select :: proc(app: ^App, rt: ^alicorn.Runtime, category: Settings_Category) {
@@ -196,24 +196,33 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 	case .Workspace:
 		settings_form_text(form, "settings-page-title", "Workspace", 24, alicorn.FONT_WEIGHT_SEMIBOLD)
 		settings_form_text(form, "settings-workspace-note", "Control which files are visible in the file tree.")
-		change := settings_form_checkbox(form, "settings-show-ignored-files", "Show ignored files", app.show_ignored_files, !app.backend.started || !app.backend.state.has_workspace)
-		if change.changed { tree_set_show_ignored_files(app, rt, change.value) }
+		show_ignored_files := app.show_ignored_files
+		if settings_form_checkbox(form, "settings-show-ignored-files", "Show ignored files", &show_ignored_files, !app.backend.started || !app.backend.state.has_workspace) {
+			tree_set_show_ignored_files(app, rt, show_ignored_files)
+		}
 		settings_form_text(form, "settings-workspace-search-note", "Workspace search continues to honor ignore rules.")
 	case .Accessibility:
 		settings_form_text(form, "settings-page-title", "Accessibility", 24, alicorn.FONT_WEIGHT_SEMIBOLD)
 		settings_form_text(form, "settings-accessibility-override-note", "Follow your system appearance preferences, or adjust them for Scratchpad.")
-		change := settings_form_checkbox(form, "settings-accessibility-use-system", "Use system accessibility preferences", !app.accessibility_appearance_override_enabled)
-		if change.changed { app.accessibility_appearance_override_enabled = !change.value; alicorn.invalidate_root(rt, "Scratchpad accessibility appearance source changed") }
+		use_system_preferences := !app.accessibility_appearance_override_enabled
+		if settings_form_checkbox(form, "settings-accessibility-use-system", "Use system accessibility preferences", &use_system_preferences) {
+			app.accessibility_appearance_override_enabled = !use_system_preferences
+			alicorn.invalidate_root(rt, "Scratchpad accessibility appearance source changed")
+		}
 		observation := alicorn.style_root_accessibility_observation_get(rt)
 		preferences := app.accessibility_appearance
 		if !app.accessibility_appearance_override_enabled { preferences = observation.preferences }
 		disabled := !app.accessibility_appearance_override_enabled
-		contrast := settings_form_checkbox(form, "settings-accessibility-increased-contrast", "Increase contrast", preferences.increased_contrast, disabled)
-		motion := settings_form_checkbox(form, "settings-accessibility-reduce-motion", "Reduce motion", preferences.reduce_motion, disabled)
-		transparency := settings_form_checkbox(form, "settings-accessibility-reduce-transparency", "Reduce transparency", preferences.reduce_transparency, disabled)
-		differentiate := settings_form_checkbox(form, "settings-accessibility-differentiate-without-color", "Differentiate without color", preferences.differentiate_without_color, disabled)
-		if contrast.changed || motion.changed || transparency.changed || differentiate.changed {
-			app.accessibility_appearance = alicorn.Accessibility_Appearance_Preferences{increased_contrast=contrast.value, reduce_motion=motion.value, reduce_transparency=transparency.value, differentiate_without_color=differentiate.value}
+		increased_contrast := preferences.increased_contrast
+		reduce_motion := preferences.reduce_motion
+		reduce_transparency := preferences.reduce_transparency
+		differentiate_without_color := preferences.differentiate_without_color
+		contrast_changed := settings_form_checkbox(form, "settings-accessibility-increased-contrast", "Increase contrast", &increased_contrast, disabled)
+		motion_changed := settings_form_checkbox(form, "settings-accessibility-reduce-motion", "Reduce motion", &reduce_motion, disabled)
+		transparency_changed := settings_form_checkbox(form, "settings-accessibility-reduce-transparency", "Reduce transparency", &reduce_transparency, disabled)
+		differentiate_changed := settings_form_checkbox(form, "settings-accessibility-differentiate-without-color", "Differentiate without color", &differentiate_without_color, disabled)
+		if contrast_changed || motion_changed || transparency_changed || differentiate_changed {
+			app.accessibility_appearance = alicorn.Accessibility_Appearance_Preferences{increased_contrast=increased_contrast, reduce_motion=reduce_motion, reduce_transparency=reduce_transparency, differentiate_without_color=differentiate_without_color}
 			alicorn.invalidate_root(rt, "Scratchpad accessibility preferences changed")
 		}
 		settings_form_text(form, "settings-accessibility-scope-note", "These controls affect Scratchpad only. Your operating system settings are unchanged.")

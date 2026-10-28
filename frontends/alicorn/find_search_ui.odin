@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
@@ -85,8 +86,8 @@ find_query_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) -> al
 		app.find_query = buffer
 	}
 	find_text_history_initialize(&app.find_query_edit_history, app.find_query.text)
-	response := alicorn.text_field_controlled(
-		ui, &app.find_query, key=alicorn.key_string(FIND_QUERY_KEY),
+	response := gui.text_field(
+		ui, "Find", &app.find_query, key=alicorn.key_string(FIND_QUERY_KEY),
 		style=alicorn.layout_style(.Row, grow=1, height=36),
 		text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
 	)

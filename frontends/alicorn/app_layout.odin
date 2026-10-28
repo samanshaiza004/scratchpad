@@ -200,7 +200,6 @@ build_app :: proc(
 		if app.find_open && show_source {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			if gui.row(&ui, label="scratchpad-find-bar", height=38, gap=8, align=.Center) {
-				gui.text(&ui, "Find")
 				_ = find_query_build(app, &ui, rt)
 				if gui.button(&ui, "Aa", key="find-match-case", width=38, height=28, state=alicorn.Button_State{selected=app.find_match_case}, variant=.Toolbar) {
 					app.find_match_case = !app.find_match_case
@@ -548,7 +547,7 @@ scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
 		style=alicorn.layout_style(.Row, height=app.window_chrome_metrics.header.h, padding=8, align=.Center, clip=true),
 		color=alicorn.style_color(ui, .Subtle_Surface))
 	when ODIN_OS == .Windows {
-		alicorn.text(ui, "Workspace" if app.backend.state.has_workspace else "Scratchpad",
+		gui.text(ui, "Workspace" if app.backend.state.has_workspace else "Scratchpad",
 			text_style=alicorn.Text_Style{overflow=.Ellipsis})
 	}
 	alicorn.container_end(ui)
