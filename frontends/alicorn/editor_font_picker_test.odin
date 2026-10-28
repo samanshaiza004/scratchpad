@@ -33,6 +33,27 @@ test_editor_font_picker_filter_handles_large_catalog_and_terms :: proc(t: ^testi
 		"a query without a family match should produce the empty state")
 }
 
+editor_font_picker_test_build_frame :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if !scratchpad_styles_ensure(app, rt) {
+		testing.expect(t, false, "font-picker test themes should register")
+		return false
+	}
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build {
+		testing.expect(t, false, "font-picker test frame should build")
+		return false
+	}
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("font-picker-test-root"),
+		style=alicorn.layout_style(grow=1),
+		color=alicorn.style_theme_color(rt, app.workbench_theme, .Window_Background))
+	alicorn.container_end(&ui)
+	theme_scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
+	scratchpad_editor_font_picker_build(app, &ui, rt)
+	alicorn.style_environment_pop(&ui, theme_scope)
+	alicorn.end_frame(&ui)
+	return true
+}
+
 @(test)
 test_editor_font_picker_virtualization_caps_visible_rows :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 360, 280})
@@ -49,23 +70,28 @@ test_editor_font_picker_virtualization_caps_visible_rows :: proc(t: ^testing.T) 
 	}
 	app.editor_font_catalog_ready = true
 	app.editor_font_picker_open = true
-	ui, should_build := alicorn.begin_frame(&rt)
-	if !should_build {
-		testing.expect(t, false, "font picker fixture should begin a frame")
-		return
-	}
-	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("font-picker-test-root"), style=alicorn.layout_style(grow=1))
-	alicorn.container_end(&ui)
-	scratchpad_editor_font_picker_build(&app, &ui, &rt)
-	alicorn.end_frame(&ui)
+	if !editor_font_picker_test_build_frame(t, &app, &rt) { return }
 	list, found := alicorn.node_info(&rt, app.editor_font_picker_results_owner)
-	panel, panel_found := alicorn.node_info(&rt, app.editor_font_picker_panel_node)
-	testing.expect(t, panel_found && panel.bounds.x >= 0 && panel.bounds.y >= 0 && panel.bounds.x+panel.bounds.w <= 360 && panel.bounds.y+panel.bounds.h <= 280,
+	panel_id, panel_key_found := alicorn.node_by_key(&rt, alicorn.key_string("scratchpad-editor-font-picker-panel"), .Container)
+	panel, panel_found := alicorn.node_info(&rt, panel_id)
+	panel_found = panel_found && panel_key_found
+	testing.expect(t, panel_found && panel.bounds.x >= 0 && panel.bounds.y >= 0 && panel.bounds.x+panel.bounds.w <= 360 && panel.bounds.y+panel.bounds.h <= 280 && panel.bounds.w == 312,
 		"the picker panel should remain within a narrow viewport")
 	testing.expect(t, found && list.scroll_content_height == 144*EDITOR_FONT_PICKER_ROW_HEIGHT,
 		"font results should use a virtual list whose extent represents every catalog entry")
 	testing.expect(t, found && list.scroll_viewport_height <= f32(EDITOR_FONT_PICKER_MAX_VISIBLE_ROWS)*EDITOR_FONT_PICKER_ROW_HEIGHT+0.1,
 		"the searchable font picker should keep its visible result window near ten rows")
+	first_panel_id := panel_id
+	rt.viewport = alicorn.Rect{0, 0, 900, 700}
+	app.theme_choice = .Workbench_Relief
+	alicorn.invalidate_root(&rt, "font-picker viewport and theme changed")
+	if !editor_font_picker_test_build_frame(t, &app, &rt) { return }
+	resized_panel_id, resized_panel_found := alicorn.node_by_key(&rt, alicorn.key_string("scratchpad-editor-font-picker-panel"), .Container)
+	resized_panel, resized_info_found := alicorn.node_info(&rt, resized_panel_id)
+	testing.expect(t, resized_panel_found && resized_info_found && resized_panel_id == first_panel_id &&
+		resized_panel.bounds.w == 852 && resized_panel.bounds.x >= 0 &&
+		resized_panel.bounds.x+resized_panel.bounds.w <= rt.viewport.w,
+		"viewport resizing and the relief theme should preserve panel identity while its percentage width follows the overlay")
 	focused_result, focused_result_found := alicorn.node_by_key(&rt, alicorn.key_string("Family 000"), .Button)
 	testing.expect(t, focused_result_found && alicorn.focus(&rt, focused_result),
 		"a visible font result should be focusable through normal Tab traversal")

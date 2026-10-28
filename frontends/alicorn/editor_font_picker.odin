@@ -62,7 +62,6 @@ scratchpad_editor_font_picker_open :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	app.editor_font_picker_focus_pending = true
 	app.editor_font_picker_restore_pending = false
 	app.editor_font_picker_overlay_node = 0
-	app.editor_font_picker_panel_node = 0
 	app.editor_font_picker_query_node = 0
 	app.editor_font_picker_results_owner = 0
 	app.editor_font_picker_selected = 0
@@ -178,52 +177,71 @@ scratchpad_editor_font_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^ali
 	}
 	app.editor_font_picker_overlay_node = alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-editor-font-picker-overlay"), style=alicorn.layout_style(.Column, grow=1, padding=24, align=.Center, justify=.Center, clip=true), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
 	viewport := alicorn.viewport_bounds(rt)
-	app.editor_font_picker_panel_node = alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), label="scratchpad-editor-font-picker-panel", key=alicorn.key_string("scratchpad-editor-font-picker-panel"), style=alicorn.layout_style(.Column, max_width=min(900, max(viewport.w-48, 1)), height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=min(700, max(viewport.h-48, 1)), padding=16, gap=8, clip=true), shape=scratchpad_surface_shape(app, 7), material=scratchpad_surface_material(app, app.floating_surface_material), physical_height=scratchpad_surface_height(app, 1))
-	gui.text(ui, "Choose editor font", style=alicorn.layout_style(.Row, height=28), text_style=alicorn.Text_Style{font_size=20, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
-	app.editor_font_picker_query_node = alicorn.text_field(ui, app.editor_font_picker_query, key=alicorn.key_string("scratchpad-editor-font-picker-query"), style=alicorn.layout_style(.Row, height=44), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
-	monospaced_count := 0
-	for catalog_index in results {
-		if app.editor_font_catalog[catalog_index].monospaced { monospaced_count += 1 }
-	}
-	proportional_count := len(results)-monospaced_count
-	default_label := "Atkinson Hyperlegible Mono · Monospaced · bundled default"
-	if app.editor_font_family == "" { default_label = fmt.tprintf("✓  %s", default_label) }
-	if gui.button(ui, default_label, key="scratchpad-editor-font-picker-default", height=EDITOR_FONT_PICKER_ROW_HEIGHT, state=alicorn.Button_State{selected=app.editor_font_family == ""}, variant=.Quiet, text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
-		_ = scratchpad_editor_font_picker_choose_default(app, rt)
-	}
-	if !app.editor_font_catalog_ready {
-		if app.editor_font_catalog_error != "" { gui.text(ui, app.editor_font_catalog_error, style=alicorn.layout_style(.Row, height=42), text_style=alicorn.Text_Style{overflow=.Wrap})
-		} else { gui.text(ui, "Loading system fonts…", style=alicorn.layout_style(.Row, height=24)) }
-	} else if len(results) == 0 {
-		gui.text(ui, "No matching fonts", style=alicorn.layout_style(.Row, height=24))
-	} else {
-	list := alicorn.virtual_list_begin(ui, len(results), EDITOR_FONT_PICKER_ROW_HEIGHT, key=alicorn.key_string("scratchpad-editor-font-picker-results"), style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=f32(EDITOR_FONT_PICKER_MAX_VISIBLE_ROWS-1)*EDITOR_FONT_PICKER_ROW_HEIGHT, grow=1, clip=true), label="scratchpad-editor-font-picker-results")
-		app.editor_font_picker_results_owner = list.scroll.id
-		for index in list.first..<list.last {
-			catalog_index := results[index]
-			family := app.editor_font_catalog[catalog_index]
-			category := "Proportional"
-			if family.monospaced { category = "Monospaced" }
-			label := fmt.tprintf("%s  ·  %s", family.family, category)
-			if family.unsupported_reason != "" { label = fmt.tprintf("%s\nUnavailable: %s", label, family.unsupported_reason) }
-			is_current := family.family == app.editor_font_family && app.editor_font_family != ""
-			if is_current { label = fmt.tprintf("✓  %s", label) }
-			if gui.button(ui, label, key=family.family, height=EDITOR_FONT_PICKER_ROW_HEIGHT, state=alicorn.Button_State{selected=index == app.editor_font_picker_selected, disabled=family.unsupported_reason != ""}, variant=.Quiet, text_style=alicorn.Text_Style{overflow=.Wrap}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
-				app.editor_font_picker_selected = index
-				_ = scratchpad_editor_font_picker_choose(app, rt, catalog_index)
-			}
+	panel_sizing := gui.sizing(
+		width=gui.percent(1),
+		min_width=gui.logical(1),
+		max_width=gui.logical(900),
+		max_height=gui.logical(min(700, max(viewport.h-48, 1))),
+	)
+	if gui.panel(
+		ui,
+		key=alicorn.key_string("scratchpad-editor-font-picker-panel"),
+		padding=16,
+		gap=8,
+		clip=true,
+		sizing=panel_sizing,
+		shape=scratchpad_surface_shape(app, 7),
+		material=scratchpad_surface_material(app, app.floating_surface_material),
+		physical_height=scratchpad_surface_height(app, 1),
+		label="scratchpad-editor-font-picker-panel",
+	) {
+		gui.text(ui, "Choose editor font", style=alicorn.layout_style(.Row, height=28), text_style=alicorn.Text_Style{font_size=20, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
+		app.editor_font_picker_query_node = alicorn.text_field(ui, app.editor_font_picker_query, key=alicorn.key_string("scratchpad-editor-font-picker-query"), style=alicorn.layout_style(.Row, height=44), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
+		monospaced_count := 0
+		for catalog_index in results {
+			if app.editor_font_catalog[catalog_index].monospaced { monospaced_count += 1 }
 		}
-		alicorn.virtual_list_end(ui, list)
+		proportional_count := len(results)-monospaced_count
+		default_label := "Atkinson Hyperlegible Mono · Monospaced · bundled default"
+		if app.editor_font_family == "" { default_label = fmt.tprintf("✓  %s", default_label) }
+		if gui.button(ui, default_label, key="scratchpad-editor-font-picker-default", height=EDITOR_FONT_PICKER_ROW_HEIGHT, state=alicorn.Button_State{selected=app.editor_font_family == ""}, variant=.Quiet, text_style=alicorn.Text_Style{overflow=.Ellipsis}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
+			_ = scratchpad_editor_font_picker_choose_default(app, rt)
+		}
+		if !app.editor_font_catalog_ready {
+			if app.editor_font_catalog_error != "" { gui.text(ui, app.editor_font_catalog_error, style=alicorn.layout_style(.Row, height=42), text_style=alicorn.Text_Style{overflow=.Wrap})
+			} else { gui.text(ui, "Loading system fonts…", style=alicorn.layout_style(.Row, height=24)) }
+		} else if len(results) == 0 {
+			gui.text(ui, "No matching fonts", style=alicorn.layout_style(.Row, height=24))
+		} else {
+			list := alicorn.virtual_list_begin(ui, len(results), EDITOR_FONT_PICKER_ROW_HEIGHT, key=alicorn.key_string("scratchpad-editor-font-picker-results"), style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=f32(EDITOR_FONT_PICKER_MAX_VISIBLE_ROWS-1)*EDITOR_FONT_PICKER_ROW_HEIGHT, grow=1, clip=true), label="scratchpad-editor-font-picker-results")
+			app.editor_font_picker_results_owner = list.scroll.id
+			for index in list.first..<list.last {
+				catalog_index := results[index]
+				family := app.editor_font_catalog[catalog_index]
+				category := "Proportional"
+				if family.monospaced { category = "Monospaced" }
+				label := fmt.tprintf("%s  ·  %s", family.family, category)
+				if family.unsupported_reason != "" { label = fmt.tprintf("%s\nUnavailable: %s", label, family.unsupported_reason) }
+				is_current := family.family == app.editor_font_family && app.editor_font_family != ""
+				if is_current { label = fmt.tprintf("✓  %s", label) }
+				if gui.button(ui, label, key=family.family, height=EDITOR_FONT_PICKER_ROW_HEIGHT, state=alicorn.Button_State{selected=index == app.editor_font_picker_selected, disabled=family.unsupported_reason != ""}, variant=.Quiet, text_style=alicorn.Text_Style{overflow=.Wrap}, content_style=alicorn.button_content_style(.Start, padding_x=9, padding_y=4)) {
+					app.editor_font_picker_selected = index
+					_ = scratchpad_editor_font_picker_choose(app, rt, catalog_index)
+				}
+			}
+			alicorn.virtual_list_end(ui, list)
+		}
+		gui.text(ui, fmt.tprintf("%d monospaced · %d proportional  ·  ↑/↓ navigate  ·  Enter select  ·  Esc close", monospaced_count, proportional_count), style=alicorn.layout_style(.Row, height=20), text_style=alicorn.Text_Style{overflow=.Ellipsis})
 	}
-	gui.text(ui, fmt.tprintf("%d monospaced · %d proportional  ·  ↑/↓ navigate  ·  Enter select  ·  Esc close", monospaced_count, proportional_count), style=alicorn.layout_style(.Row, height=20), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }
 
 scratchpad_editor_font_picker_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) -> bool {
 	if app == nil || rt == nil || !app.editor_font_picker_open { return false }
 	if event.kind == .Down && event.button == alicorn.POINTER_BUTTON_PRIMARY && target == app.editor_font_picker_overlay_node {
-		panel, found := alicorn.node_info(rt, app.editor_font_picker_panel_node)
+		panel_id, panel_key_found := alicorn.node_by_key(rt, alicorn.key_string("scratchpad-editor-font-picker-panel"), .Container)
+		panel, found := alicorn.node_info(rt, panel_id)
+		found = found && panel_key_found
 		inside := found && event.x >= panel.bounds.x && event.x < panel.bounds.x+panel.bounds.w && event.y >= panel.bounds.y && event.y < panel.bounds.y+panel.bounds.h
 		if !inside { scratchpad_editor_font_picker_close(app, rt, true) }
 		return true

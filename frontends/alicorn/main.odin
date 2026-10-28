@@ -109,7 +109,6 @@ App :: struct {
 	editor_font_picker_previous_focus: alicorn.Node_ID,
 	editor_font_picker_restore_pending: bool,
 	editor_font_picker_overlay_node: alicorn.Node_ID,
-	editor_font_picker_panel_node: alicorn.Node_ID,
 	accessibility_appearance: alicorn.Accessibility_Appearance_Preferences,
 	accessibility_appearance_override_enabled: bool,
 	style_theme_runtime: ^alicorn.Runtime,
