@@ -98,6 +98,11 @@ build_app :: proc(
 			// Keep the editor header inside the physical window even below the
 			// usual combined pane minima; the tab scroller handles that width.
 			sidebar_min_width = max(sidebar_min_width, app.window_chrome_metrics.content_start_x)
+			when ODIN_OS == .Darwin {
+				// Keep both workspace switches readable after reserving the native
+				// traffic-light safe area in the sidebar titlebar.
+				sidebar_min_width = max(sidebar_min_width, app.window_chrome_metrics.content_start_x+124)
+			}
 			editor_min_width = min(editor_min_width, max(f32(logical_width)-sidebar_min_width-2, 0))
 		}
 		split_initial := state.sidebar_width
@@ -129,18 +134,11 @@ build_app :: proc(
 			scratchpad_sidebar_titlebar_build(app, &ui)
 		}
 		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Recessed))
-		if gui.row(&ui, label="workspace-panel-tabs", height=30, gap=4) {
-			if gui.button(&ui, "Files", key="workspace-panel-files", grow=1, height=28, state=alicorn.Button_State{selected=!app.workspace_search_mode}, variant=.Tab) {
-				workspace_search_cancel_active(app)
-				workspace_search_match_clear_all(app)
-				app.workspace_search_mode = false
-				app.workspace_search_query_node = 0
-				app.editor_focus_pending = true
-			}
-			if gui.button(&ui, "Search", key="workspace-panel-search", grow=1, height=28, state=alicorn.Button_State{selected=app.workspace_search_mode}, variant=.Tab) {
-				app.workspace_search_mode = true
-				app.workspace_search_focus_pending = true
-			}
+		when ODIN_OS != .Darwin && ODIN_OS != .Windows {
+			_ = scratchpad_workspace_panel_tabs_build(app, &ui,
+				style=alicorn.layout_style(.Row, height=30, gap=4),
+				button_height=28,
+			)
 		}
 		if app.workspace_search_mode {
 			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=32))
@@ -540,18 +538,120 @@ scratchpad_content_titlebar_region_add :: proc(
 	app.window_chrome_region_count += 1
 }
 
-scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
-	if app == nil || ui == nil || app.window_chrome_metrics.header.h <= 0 { return }
-	header := alicorn.container_begin(ui, .Container,
-		label="scratchpad-titlebar-sidebar-band",
-		style=alicorn.layout_style(.Row, height=app.window_chrome_metrics.header.h, padding=8, align=.Center, clip=true),
-		color=alicorn.style_color(ui, .Subtle_Surface))
-	when ODIN_OS == .Windows {
-		gui.text(ui, "Workspace" if app.backend.state.has_workspace else "Scratchpad",
-			text_style=alicorn.Text_Style{overflow=.Ellipsis})
+Workspace_Panel_Tabs_Nodes :: struct {
+	row:    alicorn.Node_ID,
+	files:  alicorn.Node_ID,
+	search: alicorn.Node_ID,
+}
+
+scratchpad_workspace_panel_tabs_build :: proc(
+	app: ^App,
+	ui: ^alicorn.UI,
+	style: alicorn.Layout_Style,
+	button_height: f32,
+	compact := false,
+	register_chrome_regions := false,
+) -> Workspace_Panel_Tabs_Nodes {
+	result := Workspace_Panel_Tabs_Nodes{}
+	if app == nil || ui == nil { return result }
+	result.row = alicorn.container_begin(
+		ui, .Container,
+		label="workspace-panel-tabs",
+		key=alicorn.key_string("workspace-panel-tabs"),
+		style=style,
+	)
+	if result.row == 0 { return result }
+	button_text := alicorn.DEFAULT_BUTTON_TEXT_STYLE
+	button_content := alicorn.DEFAULT_BUTTON_CONTENT_STYLE
+	if compact {
+		button_text.font_size = 12
+		button_content = alicorn.button_content_style(.Center, padding_x=3, padding_y=2)
+	}
+	button_style := alicorn.layout_style(.Row, grow=1, height=button_height)
+	files_id, files_clicked := alicorn.button_begin(
+		ui, "Files",
+		key=alicorn.key_string("workspace-panel-files"),
+		style=button_style,
+		state=alicorn.Button_State{selected=!app.workspace_search_mode},
+		text_style=button_text,
+		content_style=button_content,
+		variant=.Toolbar,
+	)
+	result.files = files_id
+	if files_id != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, files_id, .Interactive) }
+		alicorn.button_end(ui)
+	}
+	if files_clicked {
+		workspace_search_cancel_active(app)
+		workspace_search_match_clear_all(app)
+		app.workspace_search_mode = false
+		app.workspace_search_query_node = 0
+		app.editor_focus_pending = true
+	}
+	search_id, search_clicked := alicorn.button_begin(
+		ui, "Search",
+		key=alicorn.key_string("workspace-panel-search"),
+		style=button_style,
+		state=alicorn.Button_State{selected=app.workspace_search_mode},
+		text_style=button_text,
+		content_style=button_content,
+		variant=.Toolbar,
+	)
+	result.search = search_id
+	if search_id != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, search_id, .Interactive) }
+		alicorn.button_end(ui)
+	}
+	if search_clicked {
+		app.workspace_search_mode = true
+		app.workspace_search_focus_pending = true
 	}
 	alicorn.container_end(ui)
-	scratchpad_content_titlebar_region_add(app, header, .Window_Drag)
+	return result
+}
+
+scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
+	if app == nil || ui == nil || app.window_chrome_metrics.header.h <= 0 { return }
+	metrics := app.window_chrome_metrics
+	header_width := max(app.workspace_sidebar_width, f32(180))
+	header := alicorn.container_begin(ui, .Container,
+		label="scratchpad-titlebar-sidebar-band",
+		style=alicorn.layout_style(.Row, width=header_width, height=metrics.header.h, gap=0, align=.Center, clip=true),
+		color=alicorn.style_color(ui, .Subtle_Surface))
+	if header == 0 { return }
+	leading_width := f32(8)
+	when ODIN_OS == .Darwin {
+		// AppKit owns the traffic-light rectangles; content_start_x already
+		// includes their right edge and a small native safe-area gap.
+		leading_width = max(metrics.content_start_x, f32(8))
+	}
+	leading := alicorn.container_begin(ui, .Container,
+		label="scratchpad-titlebar-sidebar-leading-reserve",
+		style=alicorn.layout_style(.Row, width=leading_width, height=metrics.header.h))
+	when ODIN_OS == .Windows {
+		// The small left inset is ordinary titlebar background and remains a
+		// useful native drag target beside the workspace controls.
+		scratchpad_content_titlebar_region_add(app, leading, .Window_Drag)
+	}
+	alicorn.container_end(ui)
+	available_width := max(header_width-leading_width, 0)
+	switcher_width := min(f32(160), max(available_width-f32(16), 0))
+	tabs := scratchpad_workspace_panel_tabs_build(
+		app,
+		ui,
+		style=alicorn.layout_style(.Row, width=switcher_width, height=32, gap=2, align=.Center, clip=true),
+		button_height=30,
+		compact=true,
+		register_chrome_regions=true,
+	)
+	_ = tabs
+	drag_space := alicorn.container_begin(ui, .Container,
+		label="scratchpad-titlebar-sidebar-drag-space",
+		style=alicorn.layout_style(.Row, grow=1, height=metrics.header.h))
+	scratchpad_content_titlebar_region_add(app, drag_space, .Window_Drag)
+	alicorn.container_end(ui)
+	alicorn.container_end(ui)
 }
 
 // This header is the first child of the same Split pane as document-surface.

@@ -963,6 +963,85 @@ scratchpad_test_status_contents_fit :: proc(rt: ^alicorn.Runtime, status_id: ali
 	return true, ""
 }
 
+scratchpad_test_sidebar_titlebar_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil { return }
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build { return }
+	root := alicorn.container_begin(&ui, .Root, label="sidebar-titlebar-focus-fixture-root",
+		key=alicorn.key_string("sidebar-titlebar-focus-fixture-root"),
+		style=alicorn.layout_style(.Column, grow=1))
+	scratchpad_sidebar_titlebar_build(app, &ui)
+	alicorn.container_end(&ui)
+	_ = root
+	alicorn.end_frame(&ui)
+}
+
+@(test)
+test_workspace_titlebar_switcher_keeps_focus_and_fits_safe_area :: proc(t: ^testing.T) {
+	app: App
+	app.window_chrome_metrics = host.Window_Chrome_Metrics{
+		header={0, 0, 900, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
+		content_start_x=80,
+		display_scale=1,
+	}
+	app.workspace_sidebar_width = 180
+	when ODIN_OS == .Darwin {
+		app.workspace_sidebar_width = app.window_chrome_metrics.content_start_x+124
+	}
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 120})
+	defer alicorn.destroy_runtime(&rt)
+	if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) {
+		testing.expect(t, false, "workspace titlebar controls should use the bundled application font")
+		return
+	}
+	app.window_chrome_region_count = 0
+	scratchpad_test_sidebar_titlebar_frame(&app, &rt)
+	files_variant, files_selected, files_found := scratchpad_test_recipe_button(&rt, "Files")
+	search_variant, search_selected, search_found := scratchpad_test_recipe_button(&rt, "Search")
+	files_id, search_id, switcher_id, drag_id: alicorn.Node_ID
+	for node_id in rt.order {
+		node, found := rt.nodes[node_id]
+		if !found || !node.active { continue }
+		if node.kind == .Button && node.label == "Files" { files_id = node_id }
+		if node.kind == .Button && node.label == "Search" { search_id = node_id }
+		if node.label == "workspace-panel-tabs" { switcher_id = node_id }
+		if node.label == "scratchpad-titlebar-sidebar-drag-space" { drag_id = node_id }
+	}
+	files, files_node_found := rt.nodes[files_id]
+	search, search_node_found := rt.nodes[search_id]
+	switcher, switcher_found := rt.nodes[switcher_id]
+	drag, drag_found := rt.nodes[drag_id]
+	interactive_files, interactive_search, draggable_tail := false, false, false
+	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
+		if region.node == files_id && region.kind == .Interactive { interactive_files = true }
+		if region.node == search_id && region.kind == .Interactive { interactive_search = true }
+		if region.node == drag_id && region.kind == .Window_Drag { draggable_tail = true }
+	}
+	expected_x := f32(8)
+	when ODIN_OS == .Darwin { expected_x = app.window_chrome_metrics.content_start_x }
+	testing.expect(t, files_found && search_found && files_variant == .Toolbar && search_variant == .Toolbar &&
+		files_selected && !search_selected && files_node_found && search_node_found && switcher_found && drag_found &&
+		abs(files.bounds.x-expected_x) < 1 && files.bounds.w >= 48 && search.bounds.w >= 48 &&
+		files.bounds.x+files.bounds.w <= search.bounds.x+1 && search.bounds.x+search.bounds.w <= drag.bounds.x+1 &&
+		drag.bounds.w >= 16 && switcher.bounds.h == 32 && interactive_files && interactive_search && draggable_tail,
+		"narrow sidebar titlebar controls should fit beside the macOS traffic-light safe area and keep distinct interactive and draggable hit regions")
+	testing.expect(t, alicorn.focus(&rt, search_id), "Search should remain keyboard-focusable in the titlebar")
+	app.workspace_search_mode = true
+	app.window_chrome_region_count = 0
+	alicorn.invalidate_root(&rt, "toggle titlebar workspace switcher selection")
+	scratchpad_test_sidebar_titlebar_frame(&app, &rt)
+	search, search_node_found = rt.nodes[search_id]
+	testing.expect(t, search_node_found && search.selected && rt.focused == search_id,
+		"switching to Search should preserve titlebar focus while updating selected state")
+	app.workspace_search_mode = false
+	app.window_chrome_region_count = 0
+	alicorn.invalidate_root(&rt, "restore titlebar workspace switcher selection")
+	scratchpad_test_sidebar_titlebar_frame(&app, &rt)
+	search, search_node_found = rt.nodes[search_id]
+	testing.expect(t, search_node_found && !search.selected && rt.focused == search_id,
+		"switching back to Files should preserve titlebar focus while restoring selected state")
+}
+
 @(test)
 test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	app: App
@@ -1013,7 +1092,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 
 	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
 	files_variant, files_selected, files_found := scratchpad_test_recipe_button(&rt, "Files")
-	search_variant, _, search_found := scratchpad_test_recipe_button(&rt, "Search")
+	search_variant, search_selected, search_found := scratchpad_test_recipe_button(&rt, "Search")
 	tab_variant, tab_selected, tab_found := scratchpad_test_tab_button_for_label(&rt, "notes.md", document_tab_semantic_id("recipe-doc"))
 	tab_bar_found := false
 	tab_bar_fills_viewport := false
@@ -1029,6 +1108,8 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
 	sidebar_id, panel_tabs_id, workspace_root_id: alicorn.Node_ID
+	sidebar_titlebar_id, files_switch_id, search_switch_id: alicorn.Node_ID
+	workspace_title_label_found := false
 	status_bar_id, status_responsive_id: alicorn.Node_ID
 	wrap_semantic_id, goto_semantic_id: alicorn.Semantic_ID
 	for node_id in rt.order {
@@ -1037,16 +1118,20 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		if node.label == "files-sidebar" { sidebar_id = node_id }
 		if node.label == "workspace-panel-tabs" { panel_tabs_id = node_id }
 		if node.label == "workspace-root-row" { workspace_root_id = node_id }
+		if node.label == "scratchpad-titlebar-sidebar-band" { sidebar_titlebar_id = node_id }
+		if node.kind == .Button && node.label == "Files" { files_switch_id = node_id }
+		if node.kind == .Button && node.label == "Search" { search_switch_id = node_id }
+		if node.kind == .Text && node.text == "Workspace" { workspace_title_label_found = true }
 		if node.label == "document-status-bar" { status_bar_id = node_id }
 		if node.label == "document-status-responsive" { status_responsive_id = node_id }
 		if node.kind == .Button && node.label == "Wrap: Auto" && alicorn.node_is_presentation_active(&rt, node_id) { wrap_semantic_id = node.semantic_id }
 		if node.kind == .Button && node.label == "Go to Line…" && alicorn.node_is_presentation_active(&rt, node_id) { goto_semantic_id = node.semantic_id }
 	}
 
-	testing.expect(t, files_found && files_variant == .Tab && files_selected,
-		"the active Files workspace tab should retain Tab recipe intent and selected state")
-	testing.expect(t, search_found && search_variant == .Tab,
-		"the Search workspace tab should retain Tab recipe intent")
+	testing.expect(t, files_found && files_variant == .Toolbar && files_selected,
+		"the active Files workspace switch should use the quiet Toolbar recipe and selected state")
+	testing.expect(t, search_found && search_variant == .Toolbar && !search_selected,
+		"the Search workspace switch should use the quiet Toolbar recipe and remain unselected")
 	testing.expect(t, tab_found && tab_variant == .Tab && tab_selected,
 		"the active document should be represented by a selected semantic Tab control")
 	testing.expect(t, tab_bar_found && tab_bar_fills_viewport,
@@ -1058,15 +1143,59 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	testing.expect(t, primary_found && primary_variant == .Primary,
 		"the workspace mutation confirmation should retain Primary recipe intent")
 	testing.expect(t, sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0,
-		"the compact workspace sidebar should retain its tabs and root row")
+		"the compact workspace sidebar should retain its view switches and root row")
 	if sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0 {
 		sidebar_style := rt.nodes[sidebar_id].style
 		tabs_style := rt.nodes[panel_tabs_id].style
 		root_style := rt.nodes[workspace_root_id].style
 		testing.expect(t, sidebar_style.padding == 8 && sidebar_style.gap == 6,
 			"the workspace sidebar should use compact outer padding and section spacing")
-		testing.expect(t, tabs_style.height == 30 && tabs_style.gap == 4 && root_style.height == 26,
-			"workspace tabs and root path should use compact aligned heights")
+			when ODIN_OS == .Darwin || ODIN_OS == .Windows {
+				testing.expect(t, tabs_style.height == 32 && tabs_style.gap == 2 && root_style.height == 26,
+					"titlebar workspace switches and root path should use compact aligned heights")
+			} else {
+				testing.expect(t, tabs_style.height == 30 && tabs_style.gap == 4 && root_style.height == 26,
+					"Linux should retain its existing sidebar switcher row and compact root path")
+			}
+	}
+	when ODIN_OS == .Darwin || ODIN_OS == .Windows {
+		titlebar, titlebar_found := rt.nodes[sidebar_titlebar_id]
+		tabs, tabs_found := rt.nodes[panel_tabs_id]
+		files, files_node_found := rt.nodes[files_switch_id]
+		search, search_node_found := rt.nodes[search_switch_id]
+		drag_id: alicorn.Node_ID
+		for node_id in rt.order {
+			node, found := rt.nodes[node_id]
+			if found && node.active && node.label == "scratchpad-titlebar-sidebar-drag-space" { drag_id = node_id; break }
+		}
+		drag, drag_found := rt.nodes[drag_id]
+		chrome := scratchpad_content_titlebar_layout(rawptr(&app), &rt)
+		files_interactive, search_interactive, trailing_drag := false, false, false
+		for region in chrome.regions {
+			if region.node == files_switch_id && region.kind == .Interactive { files_interactive = true }
+			if region.node == search_switch_id && region.kind == .Interactive { search_interactive = true }
+			if region.node == drag_id && region.kind == .Window_Drag { trailing_drag = true }
+		}
+		minimum_sidebar_width := f32(180)
+		expected_switcher_x := f32(8)
+		when ODIN_OS == .Darwin {
+			minimum_sidebar_width = app.window_chrome_metrics.content_start_x+124
+			expected_switcher_x = max(app.window_chrome_metrics.content_start_x, f32(8))
+		}
+		testing.expect(t, titlebar_found && tabs_found && tabs.parent == sidebar_titlebar_id &&
+			files_node_found && search_node_found && files.parent == panel_tabs_id && search.parent == panel_tabs_id &&
+			abs(files.bounds.x-expected_switcher_x) < 1 &&
+			files.bounds.w > 0 && search.bounds.w > 0 && files.bounds.x+files.bounds.w <= search.bounds.x+1 &&
+			drag_found && search.bounds.x+search.bounds.w <= drag.bounds.x+1 && drag.bounds.w >= 16 &&
+			titlebar.bounds.h == SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT &&
+			app.workspace_sidebar_width >= minimum_sidebar_width &&
+			files_interactive && search_interactive && trailing_drag && !workspace_title_label_found,
+			"Files/Search should sit in the sidebar titlebar after the macOS safe area, with separate interactive and draggable regions and no redundant Workspace label")
+	} else {
+		tabs, tabs_found := rt.nodes[panel_tabs_id]
+		sidebar, sidebar_found := rt.nodes[sidebar_id]
+		testing.expect(t, tabs_found && sidebar_found && tabs.parent == sidebar_id,
+			"Linux should keep the Files/Search switcher in the sidebar body")
 	}
 	status_bar, status_bar_found := rt.nodes[status_bar_id]
 	wrap_semantic, wrap_semantic_found := alicorn.semantic_node_lookup(&rt, wrap_semantic_id)

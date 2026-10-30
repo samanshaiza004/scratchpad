@@ -117,7 +117,7 @@ App :: struct {
 	ui_description_runtime: ^alicorn.Runtime,
 	window_chrome_metrics: host.Window_Chrome_Metrics,
 	window_chrome_header_node: alicorn.Node_ID,
-	window_chrome_regions: [4]host.Window_Chrome_Region,
+	window_chrome_regions: [host.WINDOW_CHROME_REGION_CAPACITY]host.Window_Chrome_Region,
 	window_chrome_region_count: int,
 	document_connected_tab_node: alicorn.Node_ID,
 	floating_window: ^Floating_Window_State,
