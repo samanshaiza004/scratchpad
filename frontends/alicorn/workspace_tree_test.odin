@@ -236,6 +236,39 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	testing.expect(t, rt.nodes[cff2_id].selected && cff2_active && strings.contains(cff2_document.path, "cff2.odin"),
 		"cff2 should be both the semantic focus and active document after its click")
 
+	// Tree focus and editor selection can diverge when a user changes documents
+	// through tabs. Keep the focused row highlight, and independently accent the
+	// row for the active document.
+	_ = alicorn.style_root_accessibility_set(&rt, alicorn.Accessibility_Appearance_Preferences{differentiate_without_color=true})
+	avar_id, _ = test_workspace_tree_row(&rt, "Runa/parse/avar.odin")
+	_ = alicorn.semantic_focus_set(&rt, rt.nodes[avar_id].semantic_id, app.tree_scroll_owner)
+	alicorn.invalidate_root(&rt, "test tree focus moved away from active document")
+	testing.expect(t, test_render_workspace_tree(t, &app, &rt), "tree focus should update while the active document remains unchanged")
+	cff2_id, _ = test_workspace_tree_row(&rt, "Runa/parse/cff2.odin")
+	avar_id, _ = test_workspace_tree_row(&rt, "Runa/parse/avar.odin")
+	cff2_name_id := tree_test_row_text_node(&rt, cff2_id)
+	avar_name_id := tree_test_row_text_node(&rt, avar_id)
+	testing.expect(t, tree_path_is_workspace_entry(app.tree_root_path, rt.nodes[cff2_id].key, cff2_document.path) &&
+		!tree_path_is_workspace_entry(app.tree_root_path, rt.nodes[avar_id].key, cff2_document.path),
+		"the active document path should identify only its matching workspace-tree entry")
+	testing.expect(t, !rt.nodes[cff2_id].selected && rt.nodes[avar_id].selected,
+		"the tree keyboard highlight should follow the focused row, not the active document")
+	test_ui := alicorn.UI{runtime=&rt}
+	active_filename_ink := alicorn.style_contrast_fallback(
+		alicorn.style_color(&test_ui, .Accent),
+		alicorn.style_color(&test_ui, .Subtle_Surface),
+		4.5,
+	)
+	testing.expect(t, cff2_name_id != 0 && avar_name_id != 0 && rt.nodes[cff2_name_id].color == active_filename_ink,
+		"the active document filename should use the theme accent or its readable contrast fallback")
+	testing.expect(t, cff2_name_id != 0 && len(rt.nodes[cff2_name_id].text_paint_spans) == 1 &&
+		rt.nodes[cff2_name_id].text_paint_spans[0].underline,
+		fmt.tprintf("differentiate-without-color should underline the active document filename (cff2=%v spans=%d)",
+			cff2_name_id, len(rt.nodes[cff2_name_id].text_paint_spans)))
+	_ = alicorn.semantic_focus_set(&rt, rt.nodes[cff2_id].semantic_id, app.tree_scroll_owner)
+	alicorn.invalidate_root(&rt, "restore test tree focus before active document change")
+	testing.expect(t, test_render_workspace_tree(t, &app, &rt), "tree focus should restore before selecting another document")
+
 	testing.expect(t, test_click_workspace_tree_row(t, &app, &rt, "Runa/parse/avar.odin"), "avar file should accept a click")
 	testing.expect(t, rt.invalidated, "changing the active file during description should retain its follow-up invalidation")
 	avar_id, _ = test_workspace_tree_row(&rt, "Runa/parse/avar.odin")

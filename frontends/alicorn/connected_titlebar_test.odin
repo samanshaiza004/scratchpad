@@ -109,7 +109,7 @@ test_connected_titlebar_resolves_editor_theme_and_disconnects_for_find :: proc(t
 	defer connected_titlebar_test_destroy(&app)
 	testing.expect(t, loaded, "the connected theme fixture should load its bundled font roles")
 	if !loaded { return }
-	for choice in ([2]Scratchpad_Theme_Choice{.Warm, .Cool_Light}) {
+	for choice in ([3]Scratchpad_Theme_Choice{.Warm, .Cool_Light, .Workbench_Relief}) {
 		app.theme_choice = choice
 		if app.style_theme_runtime == &rt { scratchpad_theme_apply_registered(&app) }
 		alicorn.invalidate_root(&rt, "connected tab theme fixture")

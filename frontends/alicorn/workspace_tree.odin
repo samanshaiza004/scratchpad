@@ -64,10 +64,13 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	session_ui_restore_tree_focus(app, rt, rows[:])
 	_ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, tree_semantic_id("", true), .On)
 	focus_state := alicorn.semantic_focus_state(rt)
+	active_document, has_active_document := find_document(&app.backend.state, app.backend.state.active)
 	for position := list.first; position < list.last; position += 1 {
 		row := rows[position]
 		semantic_id := tree_semantic_id(row.path, row.is_dir)
 		selected := focus_state.id == semantic_id
+		active_document_row := has_active_document && !row.is_dir &&
+			tree_path_is_workspace_entry(app.tree_root_path, row.path, active_document.path)
 		row_button, clicked := alicorn.button_begin(
 			ui,
 			"",
@@ -108,13 +111,33 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 				if row.expanded { file_icon = .Folder_Open }
 			}
 			_ = alicorn.icon(ui, file_icon, key=alicorn.key_string("tree-row-type-icon"), size=TREE_TYPE_ICON_SIZE)
-			_ = gui.text(
+			name_color := alicorn.style_color(ui, .Text)
+			if active_document_row {
+				name_color = alicorn.style_contrast_fallback(
+					alicorn.style_color(ui, .Accent),
+					alicorn.style_color(ui, .Subtle_Surface),
+					4.5,
+				)
+			}
+			name_id := gui.text(
 				ui,
 				row.name,
 				key="tree-row-name",
 				style=alicorn.layout_style(.Row, grow=1),
 				text_style=alicorn.Text_Style{overflow=.Ellipsis},
+				color=name_color,
 			)
+			// Keep the tree's keyboard row highlight independent from the active
+			// document. A theme accent on the active filename lets both states be
+			// understood when the editor tab and tree focus point at different files.
+			if active_document_row {
+				accessibility := alicorn.style_root_accessibility_observation_get(rt).preferences
+				if accessibility.differentiate_without_color {
+					active_document_spans := make([]alicorn.Text_Paint_Span, 1, allocator=alicorn.runtime_scratch_allocator(rt))
+					active_document_spans[0] = alicorn.Text_Paint_Span{start=0, end=len(row.name), underline=true}
+					_ = alicorn.text_paint_spans(ui, name_id, active_document_spans[:])
+				}
+			}
 			alicorn.button_end(ui)
 		}
 		if clicked { tree_activate_row(app, rt, row) }
@@ -122,6 +145,50 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	alicorn.virtual_list_end(ui, list)
 	if tree_any_truncated(app) {
 		gui.text(ui, "Some folders show only the first 200 entries.")
+	}
+}
+
+// tree_path_is_workspace_entry compares an absolute document path with a
+// workspace-relative tree path without allocating a joined or relative path.
+tree_path_is_workspace_entry :: proc(root, relative, absolute: string) -> bool {
+	root_index, relative_index, absolute_index := 0, 0, 0
+	for {
+		root_start, root_end, root_next, root_found := tree_path_next_segment(root, root_index)
+		if !root_found { break }
+		absolute_start, absolute_end, absolute_next, absolute_found := tree_path_next_segment(absolute, absolute_index)
+		if !absolute_found || !tree_path_segments_equal(root[root_start:root_end], absolute[absolute_start:absolute_end]) {
+			return false
+		}
+		root_index, absolute_index = root_next, absolute_next
+	}
+	for {
+		relative_start, relative_end, relative_next, relative_found := tree_path_next_segment(relative, relative_index)
+		if !relative_found { break }
+		absolute_start, absolute_end, absolute_next, absolute_found := tree_path_next_segment(absolute, absolute_index)
+		if !absolute_found || !tree_path_segments_equal(relative[relative_start:relative_end], absolute[absolute_start:absolute_end]) {
+			return false
+		}
+		relative_index, absolute_index = relative_next, absolute_next
+	}
+	_, _, _, absolute_has_more := tree_path_next_segment(absolute, absolute_index)
+	return !absolute_has_more
+}
+
+tree_path_next_segment :: proc(path: string, index: int) -> (start, end, next: int, found: bool) {
+	next = index
+	for next < len(path) && (path[next] == '/' || path[next] == '\\') { next += 1 }
+	if next >= len(path) { return }
+	start = next
+	for next < len(path) && path[next] != '/' && path[next] != '\\' { next += 1 }
+	end = next
+	return start, end, next, true
+}
+
+tree_path_segments_equal :: proc(a, b: string) -> bool {
+	when ODIN_OS == .Windows {
+		return strings.equal_fold(a, b)
+	} else {
+		return a == b
 	}
 }
 
