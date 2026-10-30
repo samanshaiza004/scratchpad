@@ -970,9 +970,14 @@ scratchpad_test_sidebar_titlebar_frame :: proc(app: ^App, rt: ^alicorn.Runtime) 
 	root := alicorn.container_begin(&ui, .Root, label="sidebar-titlebar-focus-fixture-root",
 		key=alicorn.key_string("sidebar-titlebar-focus-fixture-root"),
 		style=alicorn.layout_style(.Column, grow=1))
+	pane := alicorn.container_begin(&ui, .Container, label="sidebar-titlebar-focus-fixture-pane",
+		key=alicorn.key_string("sidebar-titlebar-focus-fixture-pane"),
+		style=alicorn.layout_style(.Column, width=app.workspace_sidebar_width, grow=1))
 	scratchpad_sidebar_titlebar_build(app, &ui)
 	alicorn.container_end(&ui)
+	alicorn.container_end(&ui)
 	_ = root
+	_ = pane
 	alicorn.end_frame(&ui)
 }
 
@@ -985,9 +990,6 @@ test_workspace_titlebar_switcher_keeps_focus_and_fits_safe_area :: proc(t: ^test
 		display_scale=1,
 	}
 	app.workspace_sidebar_width = 180
-	when ODIN_OS == .Darwin {
-		app.workspace_sidebar_width = app.window_chrome_metrics.content_start_x+124
-	}
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 120})
 	defer alicorn.destroy_runtime(&rt)
 	if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) {
@@ -1007,10 +1009,15 @@ test_workspace_titlebar_switcher_keeps_focus_and_fits_safe_area :: proc(t: ^test
 		if node.label == "workspace-panel-tabs" { switcher_id = node_id }
 		if node.label == "scratchpad-titlebar-sidebar-drag-space" { drag_id = node_id }
 	}
+	band_id: alicorn.Node_ID
+	for node_id in rt.order {
+		if node, found := rt.nodes[node_id]; found && node.active && node.label == "scratchpad-titlebar-sidebar-band" { band_id = node_id; break }
+	}
 	files, files_node_found := rt.nodes[files_id]
 	search, search_node_found := rt.nodes[search_id]
 	switcher, switcher_found := rt.nodes[switcher_id]
 	drag, drag_found := rt.nodes[drag_id]
+	band, band_found := rt.nodes[band_id]
 	interactive_files, interactive_search, draggable_tail := false, false, false
 	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
 		if region.node == files_id && region.kind == .Interactive { interactive_files = true }
@@ -1021,10 +1028,13 @@ test_workspace_titlebar_switcher_keeps_focus_and_fits_safe_area :: proc(t: ^test
 	when ODIN_OS == .Darwin { expected_x = app.window_chrome_metrics.content_start_x }
 	testing.expect(t, files_found && search_found && files_variant == .Toolbar && search_variant == .Toolbar &&
 		files_selected && !search_selected && files_node_found && search_node_found && switcher_found && drag_found &&
-		abs(files.bounds.x-expected_x) < 1 && files.bounds.w >= 48 && search.bounds.w >= 48 &&
-		files.bounds.x+files.bounds.w <= search.bounds.x+1 && search.bounds.x+search.bounds.w <= drag.bounds.x+1 &&
-		drag.bounds.w >= 16 && switcher.bounds.h == 32 && interactive_files && interactive_search && draggable_tail,
-		"narrow sidebar titlebar controls should fit beside the macOS traffic-light safe area and keep distinct interactive and draggable hit regions")
+		abs(files.bounds.x-expected_x) < 1 && files.bounds.w > 0 && search.bounds.w > 0 &&
+		files.bounds.x+files.bounds.w <= search.bounds.x+1 && abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
+		abs(switcher.bounds.x-files.bounds.x) < 1 && abs(search.bounds.x+search.bounds.w-(switcher.bounds.x+switcher.bounds.w)) < 1 &&
+		band_found && abs(drag.bounds.x+drag.bounds.w-(band.bounds.x+band.bounds.w)) < 1 &&
+			drag.bounds.w == 8 && switcher.bounds.h == 32 && switcher.bounds.w > 0 && interactive_files && interactive_search && draggable_tail,
+		fmt.tprintf("narrow sidebar titlebar controls should fit beside native reservations with distinct hit regions: files=%v search=%v switcher=%v drag=%v expected_x=%.1f found=%v/%v/%v/%v interactive=%v/%v drag_region=%v",
+			files.bounds, search.bounds, switcher.bounds, drag.bounds, expected_x, files_node_found, search_node_found, switcher_found, drag_found, interactive_files, interactive_search, draggable_tail))
 	testing.expect(t, alicorn.focus(&rt, search_id), "Search should remain keyboard-focusable in the titlebar")
 	app.workspace_search_mode = true
 	app.window_chrome_region_count = 0
@@ -1176,19 +1186,18 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 			if region.node == search_switch_id && region.kind == .Interactive { search_interactive = true }
 			if region.node == drag_id && region.kind == .Window_Drag { trailing_drag = true }
 		}
-		minimum_sidebar_width := f32(180)
 		expected_switcher_x := f32(8)
 		when ODIN_OS == .Darwin {
-			minimum_sidebar_width = app.window_chrome_metrics.content_start_x+124
 			expected_switcher_x = max(app.window_chrome_metrics.content_start_x, f32(8))
 		}
+		pane, pane_found := rt.nodes[titlebar.parent]
 		testing.expect(t, titlebar_found && tabs_found && tabs.parent == sidebar_titlebar_id &&
 			files_node_found && search_node_found && files.parent == panel_tabs_id && search.parent == panel_tabs_id &&
 			abs(files.bounds.x-expected_switcher_x) < 1 &&
 			files.bounds.w > 0 && search.bounds.w > 0 && files.bounds.x+files.bounds.w <= search.bounds.x+1 &&
-			drag_found && search.bounds.x+search.bounds.w <= drag.bounds.x+1 && drag.bounds.w >= 16 &&
+			drag_found && search.bounds.x+search.bounds.w <= drag.bounds.x+1 && drag.bounds.w == 8 &&
 			titlebar.bounds.h == SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT &&
-			app.workspace_sidebar_width >= minimum_sidebar_width &&
+			pane_found && abs(titlebar.bounds.w-pane.bounds.w) < 1 && abs(tabs.bounds.w-(titlebar.bounds.w-(expected_switcher_x-titlebar.bounds.x)-drag.bounds.w)) < 1 &&
 			files_interactive && search_interactive && trailing_drag && !workspace_title_label_found,
 			"Files/Search should sit in the sidebar titlebar after the macOS safe area, with separate interactive and draggable regions and no redundant Workspace label")
 	} else {

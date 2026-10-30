@@ -98,11 +98,6 @@ build_app :: proc(
 			// Keep the editor header inside the physical window even below the
 			// usual combined pane minima; the tab scroller handles that width.
 			sidebar_min_width = max(sidebar_min_width, app.window_chrome_metrics.content_start_x)
-			when ODIN_OS == .Darwin {
-				// Keep both workspace switches readable after reserving the native
-				// traffic-light safe area in the sidebar titlebar.
-				sidebar_min_width = max(sidebar_min_width, app.window_chrome_metrics.content_start_x+124)
-			}
 			editor_min_width = min(editor_min_width, max(f32(logical_width)-sidebar_min_width-2, 0))
 		}
 		split_initial := state.sidebar_width
@@ -614,10 +609,12 @@ scratchpad_workspace_panel_tabs_build :: proc(
 scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
 	if app == nil || ui == nil || app.window_chrome_metrics.header.h <= 0 { return }
 	metrics := app.window_chrome_metrics
-	header_width := max(app.workspace_sidebar_width, f32(180))
 	header := alicorn.container_begin(ui, .Container,
 		label="scratchpad-titlebar-sidebar-band",
-		style=alicorn.layout_style(.Row, width=header_width, height=metrics.header.h, gap=0, align=.Center, clip=true),
+		// This is in the first Split pane. Let cross-axis stretch use the
+		// resolved pane width so retained splitter drags resize the switcher
+		// without an application description or stale sidebar-width snapshot.
+		style=alicorn.layout_style(.Row, height=metrics.header.h, gap=0, align=.Center, clip=true),
 		color=alicorn.style_color(ui, .Subtle_Surface))
 	if header == 0 { return }
 	leading_width := f32(8)
@@ -635,12 +632,10 @@ scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
 		scratchpad_content_titlebar_region_add(app, leading, .Window_Drag)
 	}
 	alicorn.container_end(ui)
-	available_width := max(header_width-leading_width, 0)
-	switcher_width := min(f32(160), max(available_width-f32(16), 0))
 	tabs := scratchpad_workspace_panel_tabs_build(
 		app,
 		ui,
-		style=alicorn.layout_style(.Row, width=switcher_width, height=32, gap=2, align=.Center, clip=true),
+		style=alicorn.layout_style(.Row, grow=1, height=32, gap=2, align=.Center, clip=true),
 		button_height=30,
 		compact=true,
 		register_chrome_regions=true,
@@ -648,7 +643,7 @@ scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
 	_ = tabs
 	drag_space := alicorn.container_begin(ui, .Container,
 		label="scratchpad-titlebar-sidebar-drag-space",
-		style=alicorn.layout_style(.Row, grow=1, height=metrics.header.h))
+		style=alicorn.layout_style(.Row, width=8, height=metrics.header.h))
 	scratchpad_content_titlebar_region_add(app, drag_space, .Window_Drag)
 	alicorn.container_end(ui)
 	alicorn.container_end(ui)

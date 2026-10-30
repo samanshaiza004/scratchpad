@@ -13,6 +13,13 @@ connected_titlebar_test_node :: proc(rt: ^alicorn.Runtime, label: string) -> ali
 	return 0
 }
 
+connected_titlebar_test_key :: proc(rt: ^alicorn.Runtime, key: string) -> alicorn.Node_ID {
+	for id in rt.order {
+		if node, found := rt.nodes[id]; found && node.active && node.key == key { return id }
+	}
+	return 0
+}
+
 connected_titlebar_test_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, documents: []bridge.State_Document, width, scale: f32) -> bool {
 	app.backend.started = true
 	app.backend.state.has_workspace = true
@@ -48,6 +55,11 @@ connected_titlebar_test_destroy :: proc(app: ^App) {
 connected_titlebar_test_expect_join :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) {
 	tabs_id := connected_titlebar_test_node(rt, "scratchpad-titlebar-tabs-region")
 	paper_id := connected_titlebar_test_node(rt, "document-surface")
+	sidebar_header_id := connected_titlebar_test_node(rt, "scratchpad-titlebar-sidebar-band")
+	switcher_id := connected_titlebar_test_node(rt, "workspace-panel-tabs")
+	files_id := connected_titlebar_test_key(rt, "workspace-panel-files")
+	search_id := connected_titlebar_test_key(rt, "workspace-panel-search")
+	drag_id := connected_titlebar_test_node(rt, "scratchpad-titlebar-sidebar-drag-space")
 	tabs, tabs_ok := alicorn.node_info(rt, tabs_id)
 	paper, paper_ok := alicorn.node_info(rt, paper_id)
 	selected, selected_ok := alicorn.node_info(rt, app.document_connected_tab_node)
@@ -61,6 +73,24 @@ connected_titlebar_test_expect_join :: proc(t: ^testing.T, app: ^App, rt: ^alico
 		"target geometry must align before physical-pixel finalization")
 	testing.expect(t, tabs.bounds.x+tabs.bounds.w <= app.window_chrome_metrics.content_end_x-SCRATCHPAD_CONTENT_TITLEBAR_DRAG_WIDTH+1,
 		"tabs must leave the measured caption reservation and a usable drag target")
+	sidebar_header, sidebar_header_ok := alicorn.node_info(rt, sidebar_header_id)
+	switcher, switcher_ok := alicorn.node_info(rt, switcher_id)
+	files, files_ok := alicorn.node_info(rt, files_id)
+	search, search_ok := alicorn.node_info(rt, search_id)
+	drag, drag_ok := alicorn.node_info(rt, drag_id)
+	parent_id: alicorn.Node_ID
+	if sidebar_node, found := rt.nodes[sidebar_header_id]; found { parent_id = sidebar_node.parent }
+	parent, parent_ok := alicorn.node_info(rt, parent_id)
+	if sidebar_header_ok && parent_ok {
+		testing.expect(t, switcher_ok && files_ok && search_ok && drag_ok && abs(sidebar_header.bounds.w-parent.bounds.w) < 1 &&
+			abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
+			abs(drag.bounds.x+drag.bounds.w-(sidebar_header.bounds.x+sidebar_header.bounds.w)) < 1 &&
+			abs((search.bounds.x+search.bounds.w)-(switcher.bounds.x+switcher.bounds.w)) < 1 && drag.bounds.w == 8,
+			fmt.tprintf("sidebar titlebar should fill the resolved Split pane and reserve the trailing drag inset: header=%v parent=%v switcher=%v files=%v search=%v drag=%v found=%v/%v/%v",
+				sidebar_header.bounds, parent.bounds, switcher.bounds, files.bounds, search.bounds, drag.bounds, files_ok, search_ok, drag_ok))
+	} else {
+		testing.expect(t, false, "the sidebar titlebar should remain a child of the retained Split pane")
+	}
 }
 
 @(test)
@@ -81,6 +111,8 @@ test_connected_titlebar_tracks_shared_split_in_retained_layout :: proc(t: ^testi
 		testing.expect(t, divider_ok, "the workspace divider should remain a retained header interaction target")
 		if divider_ok {
 			frames_built := rt.stats.frames_built
+			files_before, files_before_ok := alicorn.node_info(&rt, connected_titlebar_test_key(&rt, "workspace-panel-files"))
+			search_before, search_before_ok := alicorn.node_info(&rt, connected_titlebar_test_key(&rt, "workspace-panel-search"))
 			x, y := divider.bounds.x+divider.bounds.w*0.5, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT*0.5
 			target := alicorn.process_pointer(&rt, {kind=.Down, x=x, y=y, button=alicorn.POINTER_BUTTON_PRIMARY})
 			testing.expect(t, target == divider_id, "the full-height divider should be operable inside the native titlebar band")
@@ -91,6 +123,11 @@ test_connected_titlebar_tracks_shared_split_in_retained_layout :: proc(t: ^testi
 			connected_titlebar_test_expect_join(t, &app, &rt)
 			testing.expect(t, rt.stats.frames_built == frames_built,
 				"header and editor alignment must update in the same retained presentation pass")
+			files_after, files_after_ok := alicorn.node_info(&rt, connected_titlebar_test_key(&rt, "workspace-panel-files"))
+			search_after, search_after_ok := alicorn.node_info(&rt, connected_titlebar_test_key(&rt, "workspace-panel-search"))
+			testing.expect(t, files_before_ok && search_before_ok && files_after_ok && search_after_ok &&
+				abs((files_after.bounds.w+search_after.bounds.w)-(files_before.bounds.w+search_before.bounds.w)) > 50,
+				"the titlebar switcher should resize with a retained sidebar drag without rebuilding the app description")
 			_ = alicorn.process_pointer(&rt, {kind=.Up, x=x+137.25, y=y, button=alicorn.POINTER_BUTTON_PRIMARY})
 		}
 		connected_titlebar_test_destroy(&app)
