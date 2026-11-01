@@ -30,17 +30,42 @@ application_drag :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Dra
 		if !workspace_drag_capture_source(app, event) {
 			set_error(app, "The dragged item is no longer available.")
 			alicorn.invalidate_root(rt, "Scratchpad could not resolve the stable drag source")
+		} else if app.workspace_drag_kind == .Tabs {
+			workspace_drag_target_set(app, event.target, event.position)
+			alicorn.invalidate_root(rt, "Scratchpad tab drag started")
 		}
 	case .Dropped:
 		workspace_drag_apply_drop(app, rt, event)
-		workspace_drag_clear(app)
+		workspace_drag_clear(app, reset_motion=true, snap_motion=true)
+		alicorn.invalidate_root(rt, "Scratchpad tab drag completed")
 	case .Cancelled:
 		if app.workspace_drag_kind == .Tabs && floating_window_drag_outside(rt, event) {
 			_ = floating_window_open(app, rt, app.workspace_drag_source_document_id)
 		}
-		workspace_drag_clear(app)
+		workspace_drag_clear(app, reset_motion=true)
+		alicorn.invalidate_root(rt, "Scratchpad drag canceled")
 	case .Target_Changed:
+		if app.workspace_drag_kind == .Tabs && event.drag_type == SCRATCHPAD_DRAG_TABS {
+			previous_target := app.workspace_drag_target
+			previous_position := app.workspace_drag_position
+			workspace_drag_target_set(app, event.target, event.position)
+			if previous_target != app.workspace_drag_target || previous_position != app.workspace_drag_position {
+				alicorn.invalidate_root(rt, "Scratchpad tab insertion slot changed")
+			}
+		}
 	}
+}
+
+workspace_drag_target_set :: proc(app: ^App, target: alicorn.Semantic_ID, position: alicorn.Drop_Position) {
+	if app == nil { return }
+	if target.namespace != TAB_SEMANTIC_NAMESPACE ||
+		(position != .Before && position != .After) {
+		app.workspace_drag_target = {}
+		app.workspace_drag_position = .None
+		return
+	}
+	app.workspace_drag_target = target
+	app.workspace_drag_position = position
 }
 
 workspace_drag_capture_source :: proc(app: ^App, event: alicorn.Drag_Event) -> bool {
@@ -131,7 +156,7 @@ workspace_drag_apply_drop :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicor
 	}
 }
 
-workspace_drag_clear :: proc(app: ^App) {
+workspace_drag_clear :: proc(app: ^App, reset_motion := false, snap_motion := false) {
 	if app == nil { return }
 	if len(app.workspace_drag_source_document_id) > 0 { delete(app.workspace_drag_source_document_id, context.allocator) }
 	if len(app.workspace_drag_source_path) > 0 { delete(app.workspace_drag_source_path, context.allocator) }
@@ -139,6 +164,13 @@ workspace_drag_clear :: proc(app: ^App) {
 	app.workspace_drag_source_path = ""
 	app.workspace_drag_source_is_dir = false
 	app.workspace_drag_kind = .None
+	app.workspace_drag_target = {}
+	app.workspace_drag_position = .None
+	app.document_tab_reorder_motion_signature = 0
+	if reset_motion && app.document_tab_reorder_motion_active {
+		app.workspace_drag_motion_reset_pending = true
+		app.workspace_drag_motion_reset_snap = snap_motion
+	}
 }
 
 workspace_drag_target_path :: proc(app: ^App, target: alicorn.Semantic_ID) -> (path: string, found: bool) {
@@ -211,6 +243,13 @@ workspace_tab_order_after_drop :: proc(
 	return
 }
 
+workspace_tab_reorder_translation :: proc(order: []string, document_id: string, current_index: int, stride: f32) -> f32 {
+	for id, destination in order {
+		if id == document_id { return f32(destination-current_index)*stride }
+	}
+	return 0
+}
+
 @(test)
 test_workspace_drag_destination_quietly_ignores_self_parent_and_descendant :: proc(t: ^testing.T) {
 	destination, move := workspace_drag_move_destination("src/nested", "src/nested", true, '/')
@@ -241,4 +280,37 @@ test_tab_drop_order_uses_before_after_and_preserves_unmoved_documents :: proc(t:
 	no_change, moved := workspace_tab_order_after_drop(documents[:], "b", "c", .Before, context.temp_allocator)
 	defer delete(no_change)
 	testing.expect(t, !moved, "dropping a tab into its current insertion position should be a quiet no-op")
+}
+
+@(test)
+test_tab_reorder_motion_tracks_slot_changes_without_mutating_authoritative_order :: proc(t: ^testing.T) {
+	documents := [?]bridge.State_Document{{id="a"}, {id="b"}, {id="c"}}
+	initial_order := [?]string{"a", "b", "c"}
+
+	first, first_changed := workspace_tab_order_after_drop(documents[:], "c", "a", .Before, context.temp_allocator)
+	defer delete(first)
+	testing.expect(t, first_changed && len(first) == 3 && first[0] == "c" && first[1] == "a" && first[2] == "b",
+		"dragging C before A should preview C,A,B while authoritative document order remains A,B,C")
+	testing.expect(t, workspace_tab_reorder_translation(first[:], "a", 0, 100) == 100 &&
+		workspace_tab_reorder_translation(first[:], "b", 1, 100) == 100,
+		"neighbor tabs should shift one stable slot toward the proposed insertion")
+
+	reversed, reversed_changed := workspace_tab_order_after_drop(documents[:], "c", "b", .Before, context.temp_allocator)
+	defer delete(reversed)
+	testing.expect(t, reversed_changed && len(reversed) == 3 &&
+		reversed[0] == "a" && reversed[1] == "c" && reversed[2] == "b",
+		"rapidly reversing the insertion target should retarget the preview order")
+	testing.expect(t, workspace_tab_reorder_translation(reversed[:], "a", 0, 100) == 0 &&
+		workspace_tab_reorder_translation(reversed[:], "b", 1, 100) == 100,
+		"reversing the target should move only the neighbor whose slot changed")
+
+	noop, noop_changed := workspace_tab_order_after_drop(documents[:], "c", "b", .After, context.temp_allocator)
+	defer delete(noop)
+	testing.expect(t, !noop_changed && len(noop) == 3 &&
+		workspace_tab_reorder_translation(noop[:], "a", 0, 100) == 0 &&
+		workspace_tab_reorder_translation(noop[:], "b", 1, 100) == 0,
+		"moving back to the current insertion slot should be a zero-translation no-op")
+	testing.expect(t, documents[0].id == initial_order[0] && documents[1].id == initial_order[1] &&
+		documents[2].id == initial_order[2],
+		"proposed display order must not mutate authoritative document order before drop")
 }

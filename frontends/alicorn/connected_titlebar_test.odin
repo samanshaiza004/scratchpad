@@ -202,6 +202,32 @@ connected_titlebar_test_semantic_selection_matches :: proc(
 	}
 	return selected_count == 1
 }
+
+connected_titlebar_test_tab_semantics_unchanged :: proc(
+	before, after: alicorn.Semantic_Snapshot,
+	ids: []alicorn.Semantic_ID,
+) -> bool {
+	for id in ids {
+		old_node: alicorn.Semantic_Node
+		new_node: alicorn.Semantic_Node
+		old_found, new_found := false, false
+		for node in before.nodes {
+			if node.id == id { old_node, old_found = node, true; break }
+		}
+		for node in after.nodes {
+			if node.id == id { new_node, new_found = node, true; break }
+		}
+		if !old_found || !new_found { return false }
+		if old_node.role != new_node.role || old_node.label != new_node.label ||
+		   old_node.states != new_node.states || old_node.actions != new_node.actions ||
+		   old_node.parent != new_node.parent || old_node.bounds != new_node.bounds ||
+		   old_node.has_bounds != new_node.has_bounds || old_node.tree_order != new_node.tree_order ||
+		   old_node.position_in_set != new_node.position_in_set || old_node.size_of_set != new_node.size_of_set {
+			return false
+		}
+	}
+	return true
+}
 connected_titlebar_test_chrome_regions_match :: proc(
 	app: ^App,
 	rt: ^alicorn.Runtime,
@@ -228,6 +254,17 @@ connected_titlebar_test_button_in_tab_tree :: proc(rt: ^alicorn.Runtime, id: ali
 		current = node.parent
 	}
 	return false
+}
+
+connected_titlebar_test_tab_node :: proc(rt: ^alicorn.Runtime, semantic_id: alicorn.Semantic_ID) -> alicorn.Node_ID {
+	if rt == nil { return 0 }
+	for id in rt.order {
+		node, found := rt.nodes[id]
+		if found && node.active && node.kind == .Button && node.button_variant == .Tab && node.semantic_id == semantic_id {
+			return id
+		}
+	}
+	return 0
 }
 
 connected_titlebar_test_motion_case :: proc(t: ^testing.T, reduce_motion: bool) {
@@ -351,6 +388,176 @@ connected_titlebar_test_motion_case :: proc(t: ^testing.T, reduce_motion: bool) 
 	delete(button_bounds)
 	delete(chrome_regions_before)
 	delete(chrome_bounds_before)
+}
+
+connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion: bool) {
+	when ODIN_OS != .Windows && ODIN_OS != .Darwin { return }
+	rt := alicorn.new_runtime({0, 0, 1200, 760})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	documents := [?]bridge.State_Document{
+		{id="reorder-tab-a", path="alpha.txt", language="plain-text", line_count=1, preview=true},
+		{id="reorder-tab-b", path="beta.txt", language="plain-text", line_count=1, preview=true},
+		{id="reorder-tab-c", path="gamma.txt", language="plain-text", line_count=1, preview=true},
+	}
+	loaded := connected_titlebar_test_prepare(&app, &rt, documents[:], 1200, 1)
+	defer connected_titlebar_test_destroy(&app)
+	testing.expect(t, loaded, "the tab reorder fixture should load its font roles")
+	if !loaded { return }
+	app.accessibility_appearance_override_enabled = true
+	app.accessibility_appearance.reduce_motion = reduce_motion
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	for _ in 0..<3 {
+		alicorn.invalidate_root(&rt, "settle connected titlebar reorder fixture layout")
+		_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	}
+	ids := [?]alicorn.Semantic_ID{
+		document_tab_semantic_id("reorder-tab-a"),
+		document_tab_semantic_id("reorder-tab-b"),
+		document_tab_semantic_id("reorder-tab-c"),
+	}
+	tab_nodes := [?]alicorn.Node_ID{
+		connected_titlebar_test_tab_node(&rt, ids[0]),
+		connected_titlebar_test_tab_node(&rt, ids[1]),
+		connected_titlebar_test_tab_node(&rt, ids[2]),
+	}
+	for id in tab_nodes { testing.expect(t, id != 0, "all three document tabs should have retained roots") }
+	if tab_nodes[0] == 0 || tab_nodes[1] == 0 || tab_nodes[2] == 0 { return }
+	chrome_regions_before := make([dynamic]host.Window_Chrome_Region, 0, app.window_chrome_region_count, allocator=context.temp_allocator)
+	chrome_bounds_before := make(map[alicorn.Node_ID]alicorn.Rect, allocator=context.temp_allocator)
+	button_bounds_before := make(map[alicorn.Node_ID]alicorn.Rect, allocator=context.temp_allocator)
+	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
+		append(&chrome_regions_before, region)
+		if node, found := alicorn.node_info(&rt, region.node); found { chrome_bounds_before[region.node] = node.bounds }
+	}
+	for id in rt.order {
+		node, found := rt.nodes[id]
+		if !found || !node.active || node.kind != .Button || !connected_titlebar_test_button_in_tab_tree(&rt, id, ids[:]) { continue }
+		if info, found := alicorn.node_info(&rt, id); found { button_bounds_before[id] = info.hit_bounds }
+	}
+	semantics_before := alicorn.semantic_snapshot(&rt, context.temp_allocator)
+	defer alicorn.semantic_snapshot_destroy(&semantics_before)
+	focus_before, semantic_focus_before := rt.focused, rt.semantic_keyboard_focus
+	authoritative_before := [3]string{app.backend.state.documents[0].id, app.backend.state.documents[1].id, app.backend.state.documents[2].id}
+
+	// Describe the proposal C→before A without touching the application-owned
+	// document array, matching the state delivered by a live drag target change.
+	app.workspace_drag_kind = .Tabs
+	app.workspace_drag_source_document_id = "reorder-tab-c"
+	app.workspace_drag_target = ids[0]
+	app.workspace_drag_position = .Before
+	alicorn.invalidate_root(&rt, "preview tab reorder C before A")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(10_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	first_stats := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, app.document_tab_reorder_motion_active,
+		"moving C before A should retarget neighboring tab translations")
+	if reduce_motion {
+		testing.expect(t, alicorn.motion_activity(&rt).active_owners == 0,
+			"reduced motion should apply the proposed tab slot positions immediately")
+	} else {
+		testing.expect(t, alicorn.motion_activity(&rt).active_owners > 0,
+			"normal motion should animate neighboring tabs into the proposed slots")
+	}
+	selection_stable := connected_titlebar_test_semantic_selection_matches(&rt, ids[:], ids[0])
+	testing.expect(t, selection_stable,
+		"live drag displacement must leave the selected tab's semantic state immediately correct")
+	semantics_after := alicorn.semantic_snapshot(&rt, context.temp_allocator)
+	defer alicorn.semantic_snapshot_destroy(&semantics_after)
+	testing.expect(t, connected_titlebar_test_tab_semantics_unchanged(semantics_before, semantics_after, ids[:]),
+		"paint-only drag displacement must leave each tab's role, label, selection, order, actions, and bounds unchanged")
+	testing.expect(t, connected_titlebar_test_chrome_regions_match(&app, &rt, chrome_regions_before[:], chrome_bounds_before) &&
+		rt.focused == focus_before && rt.semantic_keyboard_focus == semantic_focus_before,
+		"tab displacement must preserve native caption regions and both focus states")
+	for id, bounds in button_bounds_before {
+		info, found := alicorn.node_info(&rt, id)
+		testing.expect(t, found && info.active && info.hit_bounds == bounds,
+			"paint-only slot movement must preserve tab and close-action hit targets")
+	}
+	for index in 0..<3 {
+		testing.expect(t, app.backend.state.documents[index].id == authoritative_before[index],
+			"the proposed order must not mutate authoritative Scratchpad document order")
+	}
+
+	// Reverse the pointer quickly, then repeat the same proposal. Retargeting is
+	// proportional to changed slots; the repeated target is a motion no-op.
+	app.workspace_drag_target = ids[1]
+	alicorn.invalidate_root(&rt, "reverse tab reorder toward B")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	reversed_stats := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, reversed_stats.intent_declarations >= first_stats.intent_declarations,
+		"rapid insertion-slot reversal should safely retarget the existing neighboring motion")
+	alicorn.invalidate_root(&rt, "repeat unchanged tab insertion target")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(30_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	repeated_stats := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, repeated_stats.intent_declarations == reversed_stats.intent_declarations,
+		"re-describing an unchanged insertion target should declare no additional motion")
+	testing.expect(t, connected_titlebar_test_semantic_selection_matches(&rt, ids[:], ids[0]) &&
+		connected_titlebar_test_chrome_regions_match(&app, &rt, chrome_regions_before[:], chrome_bounds_before),
+		"rapid reversal must keep selection semantics and caption hit regions stable")
+
+	// A successful drop commits the authoritative order once; zeroing paint
+	// translations against the reordered layout should not leave motion active.
+	app.backend.state.documents[1], app.backend.state.documents[2] =
+		app.backend.state.documents[2], app.backend.state.documents[1]
+	app.workspace_drag_kind = .None
+	app.workspace_drag_source_document_id = ""
+	app.workspace_drag_target = {}
+	app.workspace_drag_position = .None
+	app.workspace_drag_motion_reset_pending = true
+	app.workspace_drag_motion_reset_snap = true
+	alicorn.invalidate_root(&rt, "commit proposed tab order")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(40_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	testing.expect(t, app.backend.state.documents[0].id == "reorder-tab-a" &&
+		app.backend.state.documents[1].id == "reorder-tab-c" &&
+		app.backend.state.documents[2].id == "reorder-tab-b" &&
+		!app.document_tab_reorder_motion_active && !app.workspace_drag_motion_reset_pending &&
+		alicorn.motion_activity(&rt).active_owners == 0,
+		"drop should commit the displayed order and snap to new logical geometry without residual motion")
+
+	// A canceled live gesture clears application drag state and settles the
+	// neighboring tabs back to the unchanged authoritative order.
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Started,
+		drag_type=SCRATCHPAD_DRAG_TABS,
+		source=ids[2],
+		target=ids[0],
+		position=.Before,
+	})
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(50_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	testing.expect(t, app.document_tab_reorder_motion_active,
+		"a second live drag should establish neighbors to settle on cancellation")
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Cancelled,
+		drag_type=SCRATCHPAD_DRAG_TABS,
+	})
+	order_before_cancel_build := [3]string{
+		app.backend.state.documents[0].id,
+		app.backend.state.documents[1].id,
+		app.backend.state.documents[2].id,
+	}
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(60_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	testing.expect(t, app.workspace_drag_kind == .None &&
+		!app.workspace_drag_motion_reset_pending &&
+		app.backend.state.documents[0].id == order_before_cancel_build[0] &&
+		app.backend.state.documents[1].id == order_before_cancel_build[1] &&
+		app.backend.state.documents[2].id == order_before_cancel_build[2],
+		"cancel should reset transient motion without changing authoritative document order")
+	delete(button_bounds_before)
+	delete(chrome_regions_before)
+	delete(chrome_bounds_before)
+}
+
+@(test)
+test_connected_titlebar_live_reorder_motion_preserves_semantics_and_geometry :: proc(t: ^testing.T) {
+	connected_titlebar_test_reorder_motion_case(t, false)
+	connected_titlebar_test_reorder_motion_case(t, true)
 }
 
 @(test)

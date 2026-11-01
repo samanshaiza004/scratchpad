@@ -4,6 +4,7 @@ import "core:fmt"
 import alicorn "alicorn:runtime"
 import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
+import bridge "./bridge"
 
 SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT :: f32(42)
 SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT :: SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT
@@ -819,12 +820,22 @@ scratchpad_document_tabs_build :: proc(
 	if compact && !app.find_open && tab_options.appearance == .Connected {
 		tab_options.animate_selection_indicator = true
 	}
+	if app.workspace_drag_motion_reset_pending {
+		tab_options.animate_drag_reorder = true
+	} else if compact && !app.find_open && app.floating_window == nil {
+		tab_options.animate_drag_reorder = true
+		tab_options.drag_preview_mode = .Source_Subtree
+	}
 	tab_result := alicorn.tab_bar(
 		ui,
 		alicorn.key_string("scratchpad-document-tab-bar"),
 		tab_items[:],
 		tab_options,
 		tab_style,
+	)
+	scratchpad_document_tabs_reorder_motion(
+		app, ui, rt, state.documents, tab_document_indices[:], tab_result.item_nodes,
+		compact && app.floating_window == nil,
 	)
 	if tab_options.animate_selection_indicator && len(tab_result.item_indicators) == len(tab_items) {
 		previous_indicator_retained := false
@@ -891,4 +902,92 @@ scratchpad_document_tabs_build :: proc(
 			alicorn.invalidate_root(rt, "Scratchpad could not defer a document tab action")
 		}
 	}
+}
+
+scratchpad_document_tabs_reorder_motion :: proc(
+	app: ^App,
+	ui: ^alicorn.UI,
+	rt: ^alicorn.Runtime,
+	documents: []bridge.State_Document,
+	tab_document_indices: []int,
+	tab_nodes: []alicorn.Node_ID,
+	enabled: bool,
+) {
+	if app == nil || ui == nil || rt == nil || len(tab_nodes) != len(tab_document_indices) { return }
+	if app.workspace_drag_motion_reset_pending {
+		intent := gui.Motion_Intent.Settle
+		if app.workspace_drag_motion_reset_snap { intent = .Snap }
+		for node in tab_nodes {
+			_ = gui.motion(ui, node, gui.Motion_Target{
+				translation={}, has_translation=true,
+			}, intent)
+		}
+		app.document_tab_reorder_motion_active = false
+		app.document_tab_reorder_motion_signature = 0
+		app.workspace_drag_motion_reset_pending = false
+		app.workspace_drag_motion_reset_snap = false
+		return
+	}
+	if !enabled || app.workspace_drag_kind != .Tabs || app.workspace_drag_source_document_id == "" { return }
+
+	order := make([dynamic]string, 0, len(tab_document_indices), allocator=context.temp_allocator)
+	defer delete(order)
+	for index in tab_document_indices { append(&order, documents[index].id) }
+	if app.workspace_drag_target.namespace == TAB_SEMANTIC_NAMESPACE &&
+		(app.workspace_drag_position == .Before || app.workspace_drag_position == .After) {
+		target_id := ""
+		for document in documents {
+			if document_tab_semantic_id(document.id) == app.workspace_drag_target {
+				target_id = document.id
+				break
+			}
+		}
+		if target_id != "" {
+			proposed, _ := workspace_tab_order_after_drop(
+				documents,
+				app.workspace_drag_source_document_id,
+				target_id,
+				app.workspace_drag_position,
+				context.temp_allocator,
+			)
+			if len(proposed) == len(order) {
+				copy(order[:], proposed[:])
+			}
+			delete(proposed)
+		}
+	}
+
+	stride: f32 = 0
+	if len(tab_nodes) > 1 {
+		first, first_ok := alicorn.node_info(rt, tab_nodes[0])
+		second, second_ok := alicorn.node_info(rt, tab_nodes[1])
+		if first_ok && second_ok { stride = second.bounds.x-first.bounds.x }
+	}
+	signature := workspace_tab_reorder_order_signature(order[:], stride)
+	if signature == app.document_tab_reorder_motion_signature { return }
+
+	any_offset := false
+	for node, index in tab_nodes {
+		document_id := documents[tab_document_indices[index]].id
+		if document_id == app.workspace_drag_source_document_id { continue }
+		delta := workspace_tab_reorder_translation(order[:], document_id, index, stride)
+		if delta != 0 { any_offset = true }
+		_ = gui.motion(ui, node, gui.Motion_Target{
+			translation=gui.Motion_Vector2{x=f64(delta)},
+			has_translation=true,
+		}, .Settle)
+	}
+	app.document_tab_reorder_motion_signature = signature
+	app.document_tab_reorder_motion_active = any_offset
+}
+
+workspace_tab_reorder_order_signature :: proc(order: []string, stride: f32) -> u64 {
+	hash: u64 = 14_695_981_039_346_656_037
+	for id in order {
+		for character in id { hash = (hash ~ u64(character)) * 1_099_511_628_211 }
+		hash = (hash ~ 0xff) * 1_099_511_628_211
+	}
+	hash = (hash ~ u64(transmute(u32)stride)) * 1_099_511_628_211
+	if hash == 0 { hash = 1 }
+	return hash
 }
