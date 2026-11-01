@@ -23,6 +23,7 @@ build_app :: proc(
 	scratchpad_image_preview_sync(app, rt)
 	session_ui_prepare(app, rt)
 	pinned_refresh(app,rt)
+	pinned_appearance_fixture_prepare(app,rt)
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build { return 0 }
 	previous_ui_description_runtime := app.ui_description_runtime

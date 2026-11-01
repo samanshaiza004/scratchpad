@@ -252,4 +252,111 @@ test_pinned_surface_rejects_old_pages_and_bounds_cache :: proc(t: ^testing.T) {
 		f.app.pinned.snapshot.ranges[0].status=="stale" && f.app.pinned.snapshot.revision!=old.revision,
 		"a source edit should discard cached bytes and preserve a visibly stale pin")
 	when ODIN_DEBUG {testing.expect(t,f.app.pinned.source_invalidations>0,"source revision invalidation should be observable in debug builds")}
+	f.app.pinned.visible=true
+	f.app.theme_choice=.Workbench_Relief
+	f.app.editor_text_scale=1.5
+	scratchpad_styles_ensure(&f.app,&f.rt)
+	f.rt.viewport=alicorn.Rect{0,0,320,600}
+	alicorn.set_presentation_scale(&f.rt,1.5,1.5)
+	for _ in 0..<3 {alicorn.invalidate_root(&f.rt,"Stale pinned paper fixture");pinned_surface_test_frame(&f)}
+	pin:=f.app.pinned.snapshot.ranges[0]
+	go_id:=pinned_surface_test_control(&f.app,pin.id,"go")
+	copy_id:=pinned_surface_test_control(&f.app,pin.id,"copy")
+	status_found:=false
+	for _,node in f.rt.nodes {
+		if node.kind==.Text && strings.contains(node.text,"Source changed. Select the current passage") {
+			status_found=true
+			info,valid:=alicorn.node_info(&f.rt,node.id)
+			testing.expect(t,valid && info.text_content_height<=info.bounds.h+1/max(f.rt.presentation_scale_y,1),
+				"stale-source guidance should wrap completely inside its paper at narrow width and increased scale")
+		}
+	}
+	testing.expect(t,status_found,"stale sources should explain why their excerpt is no longer current")
+	testing.expect(t,go_id!=0 && f.rt.nodes[go_id].disabled && copy_id!=0 && f.rt.nodes[copy_id].disabled,
+		"stale source cards should keep navigation and copy disabled")
+}
+
+
+pinned_surface_test_paper :: proc(rt: ^alicorn.Runtime, descendant: alicorn.Node_ID) -> alicorn.Node_ID {
+	current := descendant
+	for current!=0 {
+		node,found := rt.nodes[current]
+		if !found { return 0 }
+		if node.label=="Pinned source paper" { return current }
+		current=node.parent
+	}
+	return 0
+}
+
+@(test)
+test_pinned_wrapped_rows_keep_distinct_identity_and_continuous_paper :: proc(t: ^testing.T) {
+	f: Semantic_Zoom_Test_Editor
+	source := "Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.\n" +
+		"    func reference() { preserve_source_indentation_and_wrap_the_long_source_line_without_losing_the_paper_background() }\n" +
+		"The final source line stays inside the same reference card.\n"
+	if !semantic_zoom_test_open(&f,t,"md",source) { semantic_zoom_test_destroy(&f,t); return }
+	defer { pinned_destroy(&f.app.pinned); semantic_zoom_test_destroy(&f,t) }
+	view_index := editor_view_find(f.app.editor_views[:],f.document_id)
+	if view_index<0 { testing.expect(t,false,"fixture must own a source view"); return }
+	view := &f.app.editor_views[view_index]
+	alicorn.focus(&f.rt,f.app.editor_scroll_owner)
+	view.selection_anchor,view.caret_byte=0,u64(len(source))
+	pinned_command(&f.app,&f.rt,"add")
+	pinned_refresh(&f.app,&f.rt)
+	second_start := strings.index(source,"    func")
+	view.selection_anchor,view.caret_byte=u64(second_start),u64(second_start+20)
+	pinned_command(&f.app,&f.rt,"add")
+	pinned_refresh(&f.app,&f.rt)
+	if len(f.app.pinned.snapshot.ranges)!=2 { testing.expect(t,false,"fixture needs two independently identified pins from one source"); return }
+	for theme in ([3]Scratchpad_Theme_Choice{.Warm,.Cool_Light,.Workbench_Relief}) {
+		f.app.theme_choice=theme
+		scratchpad_styles_ensure(&f.app,&f.rt)
+		for width in ([2]f32{280,440}) {
+		for scale in ([3]f32{1,1.5,2}) {
+			f.rt.viewport=alicorn.Rect{0,0,width,4000}
+			f.app.editor_text_scale=scale
+			alicorn.set_presentation_scale(&f.rt,scale,scale)
+			for _ in 0..<3 { alicorn.invalidate_root(&f.rt,"Pinned containment fixture"); pinned_surface_test_frame(&f) }
+			testing.expect(t,!f.rt.hard_error,fmt.tprintf("each virtual row must have independent retained identity: %s",f.rt.diagnostic))
+			if f.rt.hard_error { return }
+			text_count:=0
+			previous_card: alicorn.Rect
+			for pin,pin_index in f.app.pinned.snapshot.ranges {
+				heading:=pinned_surface_test_control(&f.app,pin.id,"heading")
+				paper_id:=pinned_surface_test_paper(&f.rt,heading)
+				if paper_id==0 { testing.expect(t,false,"every reference should have its own paper header"); return }
+				previous:=f.rt.nodes[paper_id].bounds
+				if pin_index>0 { testing.expect(t,abs(previous.y-previous_card.y-previous_card.h-PINNED_CARD_GAP)<0.1,"only the space between references should interrupt the paper") }
+				for local:=1; local<=pin.line_count; local+=1 {
+					_,item,found:=pinned_find_row(&f.app.pinned,pin.first_row+local)
+					testing.expect(t,found,"the bounded fixture should realize all selected source rows")
+					if !found { return }
+					text_id,exists:=alicorn.node_by_key(&f.rt,alicorn.key_pair(u64(pin.id),u64(item.start_byte)),.Text)
+					info,valid:=alicorn.node_info(&f.rt,text_id)
+					testing.expect(t,exists && valid && info.text_geometry_available,"each source row must retain its own shaped text")
+					if !exists || !valid { return }
+					text_count+=1
+					paper_id=pinned_surface_test_paper(&f.rt,text_id)
+					if paper_id==0 { testing.expect(t,false,"every source line needs paper underneath it"); return }
+					paper:=f.rt.nodes[paper_id]
+					row:=f.rt.nodes[paper.parent]
+					testing.expect(t,abs(previous.y+previous.h-paper.bounds.y)<0.1,"adjacent source lines must form one seamless excerpt")
+					edge_tolerance:=1/max(f.rt.presentation_scale_x,1)
+					testing.expect(t,info.bounds.h+edge_tolerance>=info.text_content_height && info.bounds.x>=paper.bounds.x-edge_tolerance &&
+						info.bounds.x+info.bounds.w<=paper.bounds.x+paper.bounds.w+edge_tolerance && info.bounds.y>=paper.bounds.y-edge_tolerance &&
+						info.bounds.y+info.bounds.h<=paper.bounds.y+paper.bounds.h+edge_tolerance,
+						fmt.tprintf("wrapped text must fit on its paper at width %.0f, scale %.1f (text %.1f, text bounds %.1f %.1f %.1f %.1f, paper %.1f %.1f %.1f %.1f)",width,scale,info.text_content_height,info.bounds.x,info.bounds.y,info.bounds.w,info.bounds.h,paper.bounds.x,paper.bounds.y,paper.bounds.w,paper.bounds.h))
+					testing.expect(t,abs(row.bounds.h-alicorn.virtual_list_height_index_item_height(&f.app.pinned.index,pin.first_row+local))<0.1,
+						"virtual heights must include text, insets, continuation/actions and inter-card spacing")
+					for command in paper.paint {
+						if surface,ok:=command.payload.(alicorn.Surface_Paint); ok { testing.expect(t,surface.material==alicorn.MATERIAL_FLAT && surface.physical_height==0,"excerpt paper should stay flat in Relief as well as the light themes") }
+					}
+					previous=paper.bounds
+				}
+				previous_card=previous
+			}
+			testing.expect(t,text_count==4,"three wrapped source lines and a second pin must all survive reconciliation")
+		}
+		}
+	}
 }

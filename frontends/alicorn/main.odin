@@ -130,6 +130,7 @@ App :: struct {
 	floating_surface_material: alicorn.Material_ID,
 	relief_materials: Scratchpad_Relief_Materials,
 	appearance_fixture_workbench: bool,
+	appearance_fixture_pinned, appearance_fixture_pinned_ready: bool,
 	backend:                bridge.Backend,
 	visible_window_lane:    bridge.Visible_Window_Lane,
 	accessibility_source_lane: Accessibility_Source_Lane,
@@ -3168,9 +3169,12 @@ main :: proc() {
 		name := fixture
 		workbench := strings.has_prefix(fixture, "workbench-")
 		if workbench { name = fixture[len("workbench-"):] }
-		if name == "flat" || name == "relief" || name == "contrast" {
+		theme, valid := scratchpad_theme_choice_parse(name)
+		if name == "relief" { theme, valid = .Workbench_Relief, true }
+		if name == "contrast" { theme, valid = .Flat, true }
+		if valid {
 			app.appearance_fixture_workbench = workbench
-			app.theme_choice = .Flat if name == "flat" else .Workbench_Relief
+			app.theme_choice = .Flat if name == "contrast" else theme
 			app.settings_surface_open = !app.appearance_fixture_workbench
 			app.settings_category = .Editor
 			if name == "contrast" {
@@ -3178,6 +3182,10 @@ main :: proc() {
 				app.accessibility_appearance = {increased_contrast=true, reduce_transparency=true}
 			}
 		}
+	}
+	if fixture, found := os.lookup_env("SCRATCHPAD_PINNED_FIXTURE", context.allocator); found {
+		defer delete(fixture, context.allocator)
+		app.appearance_fixture_pinned = fixture == "1" || fixture == "true"
 	}
 	window_decorations := host.Window_Decoration_Mode.System
 	when ODIN_OS == .Windows {

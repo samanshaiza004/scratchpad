@@ -449,6 +449,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		label="scratchpad-visible-document-lines",
 		axes=.Both,
 		focusable=true,
+		focus_visual=.Content,
 		restore=scroll_restore,
 	)
 	editor_accessibility_build_semantics(app, ui, rt, document, editor_scroll.id, view)
@@ -828,6 +829,19 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 }
 
+// The caret and active line identify the editing destination. If the caret
+// has scrolled away, the status strip supplies a small persistent focus cue.
+editor_focus_needs_status_cue :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app==nil || rt==nil || app.editor_scroll_owner==0 || alicorn.focused_node(rt)!=app.editor_scroll_owner { return false }
+	if app.editor_input_anchor_node==0 { return true }
+	caret := alicorn.text_node_caret_geometry(rt,app.editor_input_anchor_node,
+		alicorn.Text_Position{byte=app.editor_input_anchor_byte,affinity=app.editor_input_anchor_affinity})
+	if !caret.valid { return true }
+	viewport := alicorn.scroll_region_state(rt,app.editor_scroll_owner).viewport_bounds
+	return caret.rect.x+caret.rect.w<=viewport.x || caret.rect.x>=viewport.x+viewport.w ||
+		caret.rect.y+caret.rect.h<=viewport.y || caret.rect.y>=viewport.y+viewport.h
+}
+
 build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
 	if app == nil || ui == nil { return }
 	if document.view_kind == "image" || document.view_kind == "unsupported" {
@@ -876,6 +890,10 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	case .Auto: wrap_label = "Auto"
 	}
 	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=40, gap=10, padding=8, align=.Center), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
+	if editor_focus_needs_status_cue(app,rt) {
+		gui.text(ui,"Editor focused",key="document-editor-focus-cue",style=alicorn.layout_style(width=100,height=24),
+			text_style=alicorn.Text_Style{font_size=12,overflow=.Ellipsis},color=alicorn.style_color(ui,.Muted_Text))
+	}
 	alicorn.adaptive_begin(ui, alicorn.key_string("document-status-responsive"),
 		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center),
 		label="document-status-responsive")
