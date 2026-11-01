@@ -193,6 +193,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	accessKitCompilerArgs, err := accessKitCompilerArguments(alicornRoot)
+	if err != nil {
+		return err
+	}
 
 	switch command {
 	case "build":
@@ -200,8 +204,9 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		compilerArgs := append(appMutationDiagnosticCompilerArgs(*mutationDiagnostics), accessKitCompilerArgs...)
 		exe, err := buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags,
-			appMutationDiagnosticCompilerArgs(*mutationDiagnostics), true, *release, false, frontendEnv)
+			compilerArgs, true, *release, false, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -211,7 +216,9 @@ func run(args []string) error {
 		if err := runGoTests(root, goExe, env); err != nil {
 			return err
 		}
-		if err := runCommand(root, nil, "odin", odinExe, "check", filepath.Join(root, "frontends", "alicorn"), collectionArg); err != nil {
+		checkArgs := []string{"check", filepath.Join(root, "frontends", "alicorn"), collectionArg}
+		checkArgs = append(checkArgs, accessKitCompilerArgs...)
+		if err := runCommand(root, nil, "odin", odinExe, checkArgs...); err != nil {
 			return fmt.Errorf("Alicorn frontend type check: %w", err)
 		}
 		frontendEnv, err := prepareNativeFrontendEnv(root, env)
@@ -234,6 +241,7 @@ func run(args []string) error {
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
 		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
+		testArgs = append(testArgs, accessKitCompilerArgs...)
 		testArgs = append(testArgs, appMutationDiagnosticCompilerArgs(*mutationDiagnostics)...)
 		testArgs = appendLinkerFlags(testArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
 		if err := runCommand(root, testEnv, "odin", odinExe, testArgs...); err != nil {
@@ -245,8 +253,9 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		compilerArgs := append(appMutationDiagnosticCompilerArgs(*mutationDiagnostics), accessKitCompilerArgs...)
 		exe, err := buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags,
-			appMutationDiagnosticCompilerArgs(*mutationDiagnostics), true, *release, false, frontendEnv)
+			compilerArgs, true, *release, false, frontendEnv)
 		if err != nil {
 			return err
 		}
@@ -583,8 +592,8 @@ func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg str
 	return nil
 }
 
-func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, release, consumerBuild bool, env []string) (string, error) {
-	return buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags, nil, true, release, consumerBuild, env)
+func buildFrontend(root, out, odinExe, collectionArg, accessKitFlags string, release, consumerBuild bool, env []string, extraCompilerArguments ...string) (string, error) {
+	return buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags, extraCompilerArguments, true, release, consumerBuild, env)
 }
 
 func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags string, compilerArguments []string, stageSharedSDL, release, consumerBuild bool, env []string) (string, error) {

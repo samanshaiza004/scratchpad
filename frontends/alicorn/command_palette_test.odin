@@ -142,6 +142,89 @@ command_palette_test_build :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtim
 	return true
 }
 
+command_palette_motion_test_build :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if !scratchpad_styles_ensure(app, rt) {
+		testing.expect(t, false, "palette motion fixture should register the workbench theme")
+		return false
+	}
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build {
+		testing.expect(t, false, "palette motion fixture should build its invalidated description")
+		return false
+	}
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
+	command_palette_build(app, &ui, rt)
+	alicorn.style_environment_pop(&ui, scope)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	return true
+}
+
+@(test)
+test_command_palette_reveals_only_its_decoration_once :: proc(t: ^testing.T) {
+	for reduce_motion in ([2]bool{false, true}) {
+		rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 650})
+		app: App
+		init_menus(&app)
+		app.accessibility_appearance_override_enabled = true
+		app.accessibility_appearance.reduce_motion = reduce_motion
+		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
+		command_palette_open_surface(&app, &rt)
+		testing.expect(t, app.command_palette_reveal_pending,
+			"opening the palette should queue one decorative Reveal")
+		if !command_palette_motion_test_build(t, &app, &rt) {
+			alicorn.destroy_runtime(&rt)
+			continue
+		}
+		command_palette_restore_focus_after_frame(&app, &rt)
+		accent_id := app.command_palette_motion_accent_node
+		accent, accent_ok := alicorn.node_info(&rt, accent_id)
+		query_focus_ok := app.command_palette_node != 0 && rt.focused == app.command_palette_node
+		stats := alicorn.motion_diagnostics_stats(&rt)
+		handle, handle_status := alicorn.motion_owner_begin(&rt, accent_id)
+		presentation := alicorn.motion_presentation(&rt, handle)
+		testing.expect(t, accent_ok && app.command_palette_panel_node != 0 && app.command_palette_node != 0 &&
+			query_focus_ok && !app.command_palette_reveal_pending,
+			"the palette panel and query remain present and focused immediately while the accent reveals")
+		testing.expect(t, stats.reveals == 1 && handle_status == .Ok,
+			"the opt-in Reveal should belong only to the passive accent surface")
+		if reduce_motion {
+			testing.expect(t, !presentation.active && presentation.presented_opacity == 1 &&
+				presentation.presented_translation == [2]f32{0, 0},
+				"reduced motion should snap the palette accent to its final presentation")
+		} else {
+			testing.expect(t, presentation.active && presentation.presented_opacity == 0 &&
+				presentation.presented_translation == [2]f32{0, -6},
+				"normal motion should reveal the accent from a small offset and zero opacity")
+		}
+
+		find_set_message(&app.command_palette_query, "Open File")
+		alicorn.invalidate_root(&rt, "palette query rebuild after Reveal")
+		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
+		if command_palette_motion_test_build(t, &app, &rt) {
+			command_palette_restore_focus_after_frame(&app, &rt)
+			updated_accent, updated_ok := alicorn.node_info(&rt, app.command_palette_motion_accent_node)
+			updated_stats := alicorn.motion_diagnostics_stats(&rt)
+			testing.expect(t, updated_ok && app.command_palette_motion_accent_node == accent_id &&
+				updated_accent.bounds == accent.bounds && updated_stats.reveals == 1 &&
+				updated_stats.intent_declarations == stats.intent_declarations,
+				"query updates should preserve accent geometry and never replay its birth animation")
+			testing.expect(t, rt.focused == app.command_palette_node,
+				"query rebuilds should keep keyboard focus on the palette field")
+		}
+		if !reduce_motion {
+			_ = alicorn.motion_tick(&rt, alicorn.Motion_Time(5_000_000_000))
+		}
+		testing.expect(t, alicorn.motion_activity(&rt).active_owners == 0,
+			"the palette accent should have no motion activity after settlement")
+		command_palette_close_surface(&app, &rt, false)
+		testing.expect(t, !app.command_palette_reveal_pending,
+			"closing the palette should discard any pending entrance intent without an exit ghost")
+		alicorn.destroy_runtime(&rt)
+	}
+}
+
 @(test)
 test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
@@ -165,7 +248,7 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	}
 	app.backend.state.actions = synthetic_actions[:]
 	app.command_palette_open = true
-	app.command_palette_query = "Open File"
+	find_set_message(&app.command_palette_query, "Open File")
 
 	results := command_palette_collect_results(&app, context.temp_allocator)
 	defer delete(results)
@@ -182,7 +265,7 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 			"the command palette panel height should come from its realized query, result, and footer contents")
 	}
 
-	app.command_palette_query = ""
+	find_set_message(&app.command_palette_query, "")
 	alicorn.invalidate_root(&rt, "command palette content sizing stress")
 	all_results := command_palette_filter_results(results[:], "", {}, context.temp_allocator)
 	defer delete(all_results)

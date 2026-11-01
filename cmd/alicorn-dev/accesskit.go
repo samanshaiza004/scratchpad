@@ -40,6 +40,71 @@ func accessKitLinkerFlags(alicornRoot string) (string, error) {
 	return flags, nil
 }
 
+func accessKitCompilerArguments(alicornRoot string) ([]string, error) {
+	if _, err := os.Stat(filepath.Join(alicornRoot, "native", "sdl_gpu", "accessibility_accesskit.odin")); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect Alicorn AccessKit integration: %w", err)
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		helper := filepath.Join(alicornRoot, "tools", "common.ps1")
+		if _, err := os.Stat(helper); err != nil {
+			return nil, fmt.Errorf("Alicorn AccessKit bootstrap helper is unavailable at %s: %w", helper, err)
+		}
+		powershell, err := accessKitPowerShell(exec.LookPath)
+		if err != nil {
+			return nil, fmt.Errorf("PowerShell is required to resolve Alicorn's AccessKit collections: %w", err)
+		}
+		quotedHelper := strings.ReplaceAll(helper, "'", "''")
+		script := fmt.Sprintf("$ErrorActionPreference = 'Stop'; . '%s'; $native = Get-AlicornAccessKit; [Console]::Out.WriteLine($native.BindingRoot); [Console]::Out.WriteLine($native.LibraryDirectory)", quotedHelper)
+		cmd := exec.Command(powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		cmd.Dir = alicornRoot
+		cmd.Stderr = os.Stderr
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("resolve Alicorn AccessKit Odin collections: %w", err)
+		}
+		lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(string(output)), "\r\n", "\n"), "\n")
+		if len(lines) != 2 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
+			return nil, fmt.Errorf("Alicorn AccessKit helper returned %d compiler collection paths, want 2", len(lines))
+		}
+		return accessKitCollectionCompilerArguments(strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])), nil
+	case "darwin", "linux":
+		helper := filepath.Join(alicornRoot, "tools", "accesskit.sh")
+		if _, err := os.Stat(helper); err != nil {
+			return nil, fmt.Errorf("Alicorn AccessKit bootstrap helper is unavailable at %s: %w", helper, err)
+		}
+		script := ". ./tools/accesskit.sh && binding=$(alicorn_accesskit_binding_root) && native=$(alicorn_accesskit_library_directory) && printf '%s\\n%s\\n' \"-collection:accesskit=$binding\" \"-collection:accesskit_c=$native\""
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Dir = alicornRoot
+		cmd.Env = setEnv(os.Environ(), "REPO_ROOT", alicornRoot)
+		cmd.Stderr = os.Stderr
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("resolve Alicorn AccessKit Odin collections: %w", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		if len(lines) != 2 {
+			return nil, fmt.Errorf("Alicorn AccessKit helper returned %d compiler collection lines, want 2", len(lines))
+		}
+		return []string{strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])}, nil
+	default:
+		return nil, fmt.Errorf("Alicorn AccessKit collections are not configured for %s", runtime.GOOS)
+	}
+}
+
+func accessKitCollectionCompilerArguments(bindingRoot, nativeRoot string) []string {
+	if bindingRoot == "" || nativeRoot == "" {
+		return nil
+	}
+	return []string{
+		"-collection:accesskit=" + filepath.ToSlash(bindingRoot),
+		"-collection:accesskit_c=" + filepath.ToSlash(nativeRoot),
+	}
+}
+
 // accessKitLinkerFlagsFor mirrors Alicorn's pinned native link contract. Paths
 // are absolute because Odin is invoked from Scratchpad, while the ignored
 // dependency cache belongs to the selected Alicorn checkout.

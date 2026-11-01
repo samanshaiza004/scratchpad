@@ -180,6 +180,185 @@ test_connected_titlebar_resolves_editor_theme_and_disconnects_for_find :: proc(t
 		"Find inserts another surface, so the tab must not advertise a direct connection to paper")
 }
 
+connected_titlebar_test_semantic_selection_matches :: proc(
+	rt: ^alicorn.Runtime,
+	tab_ids: []alicorn.Semantic_ID,
+	selected_id: alicorn.Semantic_ID,
+) -> bool {
+	snapshot := alicorn.semantic_snapshot(rt, context.temp_allocator)
+	defer alicorn.semantic_snapshot_destroy(&snapshot)
+	selected_count := 0
+	for semantic_id in tab_ids {
+		node_found := false
+		for node in snapshot.nodes {
+			if node.id != semantic_id { continue }
+			node_found = true
+			node_selected := alicorn.semantic_states_has(node.states, .Selected)
+			if node.role != .Tab || node_selected != (semantic_id == selected_id) { return false }
+			if node_selected { selected_count += 1 }
+			break
+		}
+		if !node_found { return false }
+	}
+	return selected_count == 1
+}
+connected_titlebar_test_chrome_regions_match :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	expected: []host.Window_Chrome_Region,
+	expected_bounds: map[alicorn.Node_ID]alicorn.Rect,
+) -> bool {
+	if app.window_chrome_region_count != len(expected) { return false }
+	for index in 0..<len(expected) {
+		region := app.window_chrome_regions[index]
+		if region.node != expected[index].node || region.kind != expected[index].kind { return false }
+		before, before_found := expected_bounds[region.node]
+		node, node_found := alicorn.node_info(rt, region.node)
+		if !before_found || !node_found || node.bounds != before { return false }
+	}
+	return true
+}
+connected_titlebar_test_button_in_tab_tree :: proc(rt: ^alicorn.Runtime, id: alicorn.Node_ID, tabs: []alicorn.Semantic_ID) -> bool {
+	for current := id; current != 0; {
+		node, found := rt.nodes[current]
+		if !found { return false }
+		for semantic_id in tabs {
+			if node.semantic_id == semantic_id { return true }
+		}
+		current = node.parent
+	}
+	return false
+}
+
+connected_titlebar_test_motion_case :: proc(t: ^testing.T, reduce_motion: bool) {
+	when ODIN_OS != .Windows && ODIN_OS != .Darwin { return }
+	rt := alicorn.new_runtime({0, 0, 1200, 760})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	documents := [?]bridge.State_Document{
+		{id="motion-tab-a", path="alpha.txt", language="plain-text", line_count=1, preview=true},
+		{id="motion-tab-b", path="beta.txt", language="plain-text", line_count=1, preview=true},
+		{id="motion-tab-c", path="gamma.txt", language="plain-text", line_count=1, preview=true},
+	}
+	loaded := connected_titlebar_test_prepare(&app, &rt, documents[:], 1200, 1)
+	defer connected_titlebar_test_destroy(&app)
+	testing.expect(t, loaded, "the connected-tab motion fixture should load its font roles")
+	if !loaded { return }
+	app.accessibility_appearance_override_enabled = true
+	app.accessibility_appearance.reduce_motion = reduce_motion
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	initial_stats := alicorn.motion_diagnostics_stats(&rt)
+	paper_fill, paper_ok := alicorn.style_extension_color(&rt, app.editor_theme, scratchpad_editor_paper_surface_role())
+	testing.expect(t, app.document_tab_motion_initialized && initial_stats.intent_declarations >= 3 && alicorn.motion_activity(&rt).active_owners == 0,
+		fmt.tprintf("first connected-tab description should snap three decorations: initialized=%v intents=%d paper=%v theme=%d find=%v connected_node=%d",
+			app.document_tab_motion_initialized, initial_stats.intent_declarations, paper_ok, app.editor_theme, app.find_open, app.document_connected_tab_node))
+
+	tab_semantic_ids := [?]alicorn.Semantic_ID{
+		document_tab_semantic_id("motion-tab-a"),
+		document_tab_semantic_id("motion-tab-b"),
+		document_tab_semantic_id("motion-tab-c"),
+	}
+	testing.expect(t, connected_titlebar_test_semantic_selection_matches(&rt, tab_semantic_ids[:], tab_semantic_ids[0]),
+		"the selected tab semantic state should be immediate before any indicator transition settles")
+	chrome_regions_before := make([dynamic]host.Window_Chrome_Region, 0, app.window_chrome_region_count, allocator=context.temp_allocator)
+	chrome_bounds_before := make(map[alicorn.Node_ID]alicorn.Rect, allocator=context.temp_allocator)
+	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
+		append(&chrome_regions_before, region)
+		node, node_found := alicorn.node_info(&rt, region.node)
+		if node_found { chrome_bounds_before[region.node] = node.bounds }
+	}
+	testing.expect(t, len(chrome_regions_before) > 0, "the motion fixture should register native caption and drag regions")
+	keyboard_focus_before := rt.focused
+	semantic_focus_before := rt.semantic_keyboard_focus
+	button_bounds := make(map[alicorn.Node_ID]alicorn.Rect, allocator=context.temp_allocator)
+	for id in rt.order {
+		node, found := rt.nodes[id]
+		if !found || !node.active || node.kind != .Button ||
+			!connected_titlebar_test_button_in_tab_tree(&rt, id, tab_semantic_ids[:]) { continue }
+		info, info_ok := alicorn.node_info(&rt, id)
+		if info_ok { button_bounds[id] = info.hit_bounds }
+	}
+
+	app.backend.state.active = "motion-tab-b"
+	alicorn.invalidate_root(&rt, "motion tab selection B")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(10_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	after_b := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, connected_titlebar_test_chrome_regions_match(&app, &rt, chrome_regions_before[:], chrome_bounds_before) && rt.focused == keyboard_focus_before && rt.semantic_keyboard_focus == semantic_focus_before, "tab motion should preserve caption hit regions and both focus states")
+	testing.expect(t, connected_titlebar_test_semantic_selection_matches(&rt, tab_semantic_ids[:], tab_semantic_ids[1]),
+		"the B tab should become semantically selected immediately while its decoration animates")
+	testing.expect(t, after_b.intent_declarations == initial_stats.intent_declarations+2,
+		"A→B should declare only outgoing and incoming decoration targets")
+	if reduce_motion {
+		testing.expect(t, alicorn.motion_activity(&rt).active_owners == 0,
+			"reduced motion should apply tab selection immediately")
+	} else {
+		testing.expect(t, alicorn.motion_activity(&rt).active_owners == 2,
+			"normal motion should animate only the outgoing and incoming decorations")
+	}
+
+	app.backend.state.active = "motion-tab-c"
+	alicorn.invalidate_root(&rt, "motion tab selection C")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	after_c := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, connected_titlebar_test_chrome_regions_match(&app, &rt, chrome_regions_before[:], chrome_bounds_before) && rt.focused == keyboard_focus_before && rt.semantic_keyboard_focus == semantic_focus_before, "rapid retargeting should preserve caption hit regions and both focus states")
+	testing.expect(t, connected_titlebar_test_semantic_selection_matches(&rt, tab_semantic_ids[:], tab_semantic_ids[2]),
+		"the C tab should become semantically selected immediately after rapid retargeting")
+	testing.expect(t, after_c.intent_declarations == after_b.intent_declarations+2,
+		"rapid B→C retargeting should remain bounded to the two changed decorations")
+	testing.expect(t, app.document_tab_motion_selected_semantic_id == document_tab_semantic_id("motion-tab-c"),
+		"the selected decoration should follow authoritative document identity immediately")
+
+	// Re-describe the same selection to model an unrelated application update.
+	alicorn.invalidate_root(&rt, "repeat selected tab description")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(30_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	repeated := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, connected_titlebar_test_chrome_regions_match(&app, &rt, chrome_regions_before[:], chrome_bounds_before) && rt.focused == keyboard_focus_before && rt.semantic_keyboard_focus == semantic_focus_before, "repeated selection should leave native caption regions and focus unchanged")
+	testing.expect(t, connected_titlebar_test_semantic_selection_matches(&rt, tab_semantic_ids[:], tab_semantic_ids[2]),
+		"a repeated selection description should preserve exactly the same semantic selection")
+	testing.expect(t, repeated.intent_declarations == after_c.intent_declarations,
+		"repeating the current selection should declare no motion")
+	hit_geometry_stable := len(button_bounds) == 6
+	mismatch := ""
+	for id, bounds in button_bounds {
+		info, found := alicorn.node_info(&rt, id)
+		if !found || !info.active || info.hit_bounds != bounds {
+			hit_geometry_stable = false
+			if found { mismatch = fmt.tprintf("node=%d before=%v after=%v", id, bounds, info.hit_bounds) }
+			break
+		}
+	}
+	testing.expect(t, hit_geometry_stable,
+		fmt.tprintf("selection animation must leave tab/close hit targets stable: count=%d %s", len(button_bounds), mismatch))
+
+	if !reduce_motion {
+		_ = alicorn.motion_tick(&rt, alicorn.Motion_Time(5_000_000_000))
+	}
+	settled := alicorn.motion_activity(&rt)
+	settled_stats := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, settled.active_owners == 0 && settled.active_properties == 0,
+		"tab selection motion should eventually settle completely")
+	alicorn.invalidate_root(&rt, "settled selected tab description")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(5_000_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	after_settlement := alicorn.motion_diagnostics_stats(&rt)
+	testing.expect(t, after_settlement.intent_declarations == settled_stats.intent_declarations &&
+		alicorn.motion_activity(&rt).active_owners == 0,
+		"settled selections should add no declarations or motion activity on later descriptions")
+	delete(button_bounds)
+	delete(chrome_regions_before)
+	delete(chrome_bounds_before)
+}
+
+@(test)
+test_connected_tab_selection_motion_is_local_and_one_shot :: proc(t: ^testing.T) {
+	connected_titlebar_test_motion_case(t, false)
+	connected_titlebar_test_motion_case(t, true)
+}
+
 @(test)
 test_connected_titlebar_narrow_overflow_reserves_native_caption_band :: proc(t: ^testing.T) {
 	when ODIN_OS != .Windows && ODIN_OS != .Darwin { return }

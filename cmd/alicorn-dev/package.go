@@ -189,8 +189,13 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 		return err
 	}
 	accessKitFlags := ""
+	var accessKitCompilerArgs []string
 	if staticRecipe == nil {
 		accessKitFlags, err = accessKitLinkerFlags(alicornRoot)
+		if err != nil {
+			return err
+		}
+		accessKitCompilerArgs, err = accessKitCompilerArguments(alicornRoot)
 		if err != nil {
 			return err
 		}
@@ -213,7 +218,7 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 	if staticRecipe != nil {
 		executable, err = buildFrontendWithOptions(root, buildDir, staticRecipe.Odin.Executable, collectionArg, "", staticRecipe.Odin.CompilerArguments, false, true, true, frontendEnv)
 	} else {
-		executable, err = buildFrontend(root, buildDir, odinExe, collectionArg, accessKitFlags, true, true, frontendEnv)
+		executable, err = buildFrontend(root, buildDir, odinExe, collectionArg, accessKitFlags, true, true, frontendEnv, accessKitCompilerArgs...)
 	}
 	if err != nil {
 		return err

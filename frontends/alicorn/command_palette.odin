@@ -338,6 +338,8 @@ command_palette_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	app.command_palette_focus_pending = true
 	app.command_palette_restore_pending = false
 	app.command_palette_node = 0
+	app.command_palette_motion_accent_node = 0
+	app.command_palette_reveal_pending = true
 	app.command_palette_results_scroll_node = 0
 	app.command_palette_selected_index = 0
 	find_set_message(&app.command_palette_query, "")
@@ -350,6 +352,8 @@ command_palette_close_surface :: proc(app: ^App, rt: ^alicorn.Runtime, restore_f
 	app.command_palette_focus_pending = false
 	app.command_palette_restore_pending = restore_focus
 	app.command_palette_node = 0
+	app.command_palette_motion_accent_node = 0
+	app.command_palette_reveal_pending = false
 	app.command_palette_results_scroll_node = 0
 	find_set_message(&app.command_palette_query, "")
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad command palette closed") }
@@ -478,8 +482,26 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
 	)
-	if gui.row(ui, label="scratchpad-command-palette-query-row", height=44, gap=8, align=.Center) {
-		gui.text(ui, ">", style=alicorn.layout_style(.Row, width=18, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
+	if gui.row(ui, label="scratchpad-command-palette-query-row", height=44, gap=4, align=.Center) {
+		app.command_palette_motion_accent_node = alicorn.surface_begin(
+			ui,
+			alicorn.surface_core_color_role(.Accent),
+			key=alicorn.key_string("scratchpad-command-palette-motion-accent"),
+			style=alicorn.layout_style(.Row, width=2, height=26),
+			label="scratchpad-command-palette-motion-accent",
+		)
+		alicorn.surface_end(ui)
+		if app.command_palette_reveal_pending && app.command_palette_motion_accent_node != 0 {
+			status := gui.motion(
+				ui,
+				app.command_palette_motion_accent_node,
+				gui.Motion_Target{opacity=1, has_opacity=true, has_translation=true},
+				.Reveal,
+				gui.Motion_Vector2{y=-6},
+			)
+			if status == .Ok { app.command_palette_reveal_pending = false }
+		}
+		gui.text(ui, ">", style=alicorn.layout_style(.Row, width=16, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
 		app.command_palette_node = alicorn.text_field(
 			ui,
 			app.command_palette_query,

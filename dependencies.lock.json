@@ -3,7 +3,7 @@
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
     "ref": "master",
-    "revision": "974baf86dffa3b9732fa4a6ee45fb1e97c33a8af"
+    "revision": "54aec2cf22e1fccf8de2d63cec347b1f57aa02ad"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",
