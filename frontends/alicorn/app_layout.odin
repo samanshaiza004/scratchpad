@@ -919,7 +919,8 @@ scratchpad_document_tabs_reorder_motion :: proc(
 		if app.workspace_drag_motion_reset_snap { intent = .Snap }
 		for node in tab_nodes {
 			_ = gui.motion(ui, node, gui.Motion_Target{
-				translation={}, has_translation=true,
+				translation={}, clip_policy=gui.Motion_Clip_Policy.Follow_Visual,
+				has_translation=true,
 			}, intent)
 		}
 		app.document_tab_reorder_motion_active = false
@@ -974,6 +975,7 @@ scratchpad_document_tabs_reorder_motion :: proc(
 		if delta != 0 { any_offset = true }
 		_ = gui.motion(ui, node, gui.Motion_Target{
 			translation=gui.Motion_Vector2{x=f64(delta)},
+			clip_policy=gui.Motion_Clip_Policy.Follow_Visual,
 			has_translation=true,
 		}, .Settle)
 	}
