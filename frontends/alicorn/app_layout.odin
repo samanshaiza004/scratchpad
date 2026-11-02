@@ -818,9 +818,6 @@ scratchpad_document_tabs_build :: proc(
 			}
 		}
 	}
-	if compact && !app.find_open && tab_options.appearance == .Connected {
-		tab_options.animate_selection_indicator = true
-	}
 	if app.workspace_drag_motion_reset_pending {
 		tab_options.animate_drag_reorder = true
 	} else if compact && !app.find_open && app.floating_window == nil {
@@ -838,62 +835,6 @@ scratchpad_document_tabs_build :: proc(
 		app, ui, rt, state.documents, tab_document_indices[:], tab_result.item_nodes,
 		compact && app.floating_window == nil,
 	)
-	if tab_options.animate_selection_indicator && len(tab_result.item_indicators) == len(tab_items) {
-		previous_indicator_retained := false
-		if app.document_tab_motion_initialized && app.document_tab_motion_selected_indicator != 0 {
-			_, previous_indicator_retained = alicorn.node_info(rt, app.document_tab_motion_selected_indicator)
-		}
-		if app.document_tab_motion_initialized && !previous_indicator_retained {
-			app.document_tab_motion_initialized = false
-		}
-		selected_index := -1
-		for index in 0..<len(tab_items) {
-			item := tab_items[index]
-			if item.selected { selected_index = index; break }
-		}
-		if !app.document_tab_motion_initialized {
-			for index in 0..<len(tab_result.item_indicators) {
-				opacity := f64(0)
-				if index == selected_index { opacity = 1 }
-				_ = gui.motion(ui, tab_result.item_indicators[index],
-					gui.Motion_Target{opacity=opacity, has_opacity=true}, .Snap)
-			}
-			app.document_tab_motion_initialized = true
-		} else if selected_index >= 0 {
-			selected_semantic_id := tab_items[selected_index].semantic_id
-			if selected_semantic_id != app.document_tab_motion_selected_semantic_id {
-				for index in 0..<len(tab_items) {
-					item := tab_items[index]
-					if index != selected_index && item.semantic_id == app.document_tab_motion_selected_semantic_id {
-						_ = gui.motion(ui, tab_result.item_indicators[index],
-							gui.Motion_Target{opacity=0, has_opacity=true}, .Settle)
-						break
-					}
-				}
-				_ = gui.motion(ui, tab_result.item_indicators[selected_index],
-					gui.Motion_Target{opacity=1, has_opacity=true}, .Settle)
-			}
-		}
-		if selected_index >= 0 {
-			app.document_tab_motion_selected_semantic_id = tab_items[selected_index].semantic_id
-			app.document_tab_motion_selected_indicator = tab_result.item_indicators[selected_index]
-		} else {
-			for index in 0..<len(tab_items) {
-				item := tab_items[index]
-				if item.semantic_id == app.document_tab_motion_selected_semantic_id {
-					_ = gui.motion(ui, tab_result.item_indicators[index],
-						gui.Motion_Target{opacity=0, has_opacity=true}, .Settle)
-					break
-				}
-			}
-			app.document_tab_motion_selected_semantic_id = {}
-			app.document_tab_motion_selected_indicator = 0
-		}
-	} else {
-		app.document_tab_motion_initialized = false
-		app.document_tab_motion_selected_semantic_id = {}
-		app.document_tab_motion_selected_indicator = 0
-	}
 	if compact && !app.find_open { app.document_connected_tab_node = tab_result.selected_tab }
 	if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(tab_document_indices) {
 		document_id := state.documents[tab_document_indices[tab_result.item_index]].id
