@@ -195,6 +195,14 @@
         "alpha": 1.0
       }
     },
+    "scratchpad.palette.modal_backdrop": {
+      "$type": "color",
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [0.13, 0.15, 0.19],
+        "alpha": 0.72
+      }
+    },
     "scratchpad.palette.scrollbar_track": {
       "$type": "color",
       "$value": {
@@ -259,6 +267,12 @@
       "success": "{scratchpad.palette.success}",
       "scrollbar_track": "{scratchpad.palette.scrollbar_track}",
       "scrollbar_thumb": "{scratchpad.palette.scrollbar_thumb}"
+    },
+    "extensions": {
+      "app.scratchpad.workbench.modal_backdrop": {
+        "$type": "color",
+        "$value": "{scratchpad.palette.modal_backdrop}"
+      }
     }
   }
 }

@@ -2,12 +2,15 @@ package main
 
 import alicorn "alicorn:runtime"
 
+EDITOR_PRESENTATION_CODE_KIND_COUNT :: int(EDITOR_PRESENTATION_CODE_ATTRIBUTE-EDITOR_PRESENTATION_CODE_COMMENT+1)
+
 Editor_Markdown_Palette :: struct {
 	text: alicorn.Color,
 	muted_text: alicorn.Color,
 	accent: alicorn.Color,
 	subtle_surface: alicorn.Color,
 	success: alicorn.Color,
+	syntax_colors: [EDITOR_PRESENTATION_CODE_KIND_COUNT]alicorn.Color,
 	active_line: alicorn.Color,
 	active_line_gutter: alicorn.Color,
 	find_passive_background: alicorn.Color,
@@ -23,7 +26,7 @@ editor_markdown_palette :: proc(rt: ^alicorn.Runtime, theme: alicorn.Style_Theme
 	if !active_line_found { active_line = editor_markdown_tint(selection, 0.24) }
 	active_line_gutter, active_line_gutter_found := alicorn.style_extension_color(rt, theme, scratchpad_editor_active_line_gutter_role())
 	if !active_line_gutter_found { active_line_gutter = editor_markdown_tint(selection, 0.36) }
-	return Editor_Markdown_Palette{
+	palette := Editor_Markdown_Palette{
 		text=alicorn.style_theme_color(rt, theme, .Text),
 		muted_text=alicorn.style_theme_color(rt, theme, .Muted_Text),
 		accent=accent,
@@ -36,6 +39,14 @@ editor_markdown_palette :: proc(rt: ^alicorn.Runtime, theme: alicorn.Style_Theme
 		workspace_search_background=editor_markdown_tint(accent, 0.32),
 		bracket_match_background=editor_markdown_tint(accent, 0.58),
 	}
+	for kind in EDITOR_PRESENTATION_CODE_COMMENT..=EDITOR_PRESENTATION_CODE_ATTRIBUTE {
+		extension_role, fallback_role, role_found := editor_presentation_code_style(kind)
+		if !role_found { continue }
+		color, found := alicorn.style_extension_color(rt, theme, extension_role)
+		if !found { color = alicorn.style_theme_color(rt, theme, fallback_role) }
+		palette.syntax_colors[int(kind-EDITOR_PRESENTATION_CODE_COMMENT)] = color
+	}
+	return palette
 }
 
 editor_markdown_tint :: proc(color: alicorn.Color, alpha: f32) -> alicorn.Color {
@@ -44,65 +55,59 @@ editor_markdown_tint :: proc(color: alicorn.Color, alpha: f32) -> alicorn.Color 
 	return tinted
 }
 
-editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, color_set: bool) {
+editor_presentation_code_style :: proc(kind: u32) -> (
+	extension_role: alicorn.Style_Extension_Color_Role_ID,
+	fallback_role: alicorn.Style_Color_Role,
+	role_found: bool,
+) {
+	name: string
+	fallback_role = .Text
 	switch kind {
-	case EDITOR_PRESENTATION_HEADING:
-		return {}, false
-	case EDITOR_PRESENTATION_STRONG:
-		return alicorn.Color{0.31, 0.29, 0.25, 1}, true
-	case EDITOR_PRESENTATION_EMPHASIS:
-		return alicorn.Color{0.43, 0.38, 0.30, 1}, true
-	case EDITOR_PRESENTATION_INLINE_CODE:
-		return alicorn.Color{0.49, 0.34, 0.17, 1}, true
-	case EDITOR_PRESENTATION_LINK:
-		return alicorn.Color{0.14, 0.38, 0.51, 1}, true
-	case EDITOR_PRESENTATION_CODE_BLOCK:
-		return alicorn.Color{0.32, 0.33, 0.30, 1}, true
-	case 9, 28, 31: // quote marker, thematic break, table delimiter
-		return alicorn.Color{0.47, 0.46, 0.41, 1}, true
-	case EDITOR_PRESENTATION_LIST_MARKER:
-		return alicorn.Color{0.35, 0.43, 0.29, 1}, true
-	case EDITOR_PRESENTATION_TASK_MARKER:
-		return alicorn.Color{0.19, 0.43, 0.38, 1}, true
 	case EDITOR_PRESENTATION_CODE_COMMENT:
-		return alicorn.Color{0.34, 0.46, 0.34, 1}, true
+		name, fallback_role = "comment", .Muted_Text
 	case EDITOR_PRESENTATION_CODE_KEYWORD:
-		return alicorn.Color{0.43, 0.30, 0.53, 1}, true
+		name, fallback_role = "keyword", .Accent
 	case EDITOR_PRESENTATION_CODE_STRING:
-		return alicorn.Color{0.56, 0.34, 0.14, 1}, true
+		name, fallback_role = "string", .Success
 	case EDITOR_PRESENTATION_CODE_NUMBER:
-		return alicorn.Color{0.20, 0.43, 0.49, 1}, true
+		name, fallback_role = "number", .Semantic_Focus
 	case EDITOR_PRESENTATION_CODE_TYPE:
-		return alicorn.Color{0.16, 0.43, 0.39, 1}, true
-	case EDITOR_PRESENTATION_CODE_FUNCTION, EDITOR_PRESENTATION_CODE_METHOD:
-		return alicorn.Color{0.18, 0.38, 0.59, 1}, true
+		name, fallback_role = "type", .Accent_Hover
+	case EDITOR_PRESENTATION_CODE_FUNCTION:
+		name, fallback_role = "function", .Accent
+	case EDITOR_PRESENTATION_CODE_METHOD:
+		name, fallback_role = "method", .Accent
 	case EDITOR_PRESENTATION_CODE_VARIABLE:
-		return alicorn.Color{0.29, 0.30, 0.28, 1}, true
+		name, fallback_role = "variable", .Text
 	case EDITOR_PRESENTATION_CODE_CONSTANT:
-		return alicorn.Color{0.55, 0.36, 0.14, 1}, true
+		name, fallback_role = "constant", .Danger
 	case EDITOR_PRESENTATION_CODE_PROPERTY:
-		return alicorn.Color{0.20, 0.38, 0.56, 1}, true
+		name, fallback_role = "property", .Accent_Hover
 	case EDITOR_PRESENTATION_CODE_OPERATOR:
-		return alicorn.Color{0.39, 0.39, 0.36, 1}, true
+		name, fallback_role = "operator", .Muted_Text
 	case EDITOR_PRESENTATION_CODE_PUNCTUATION:
-		return alicorn.Color{0.43, 0.43, 0.39, 1}, true
+		name, fallback_role = "punctuation", .Muted_Text
 	case EDITOR_PRESENTATION_CODE_BUILTIN:
-		return alicorn.Color{0.16, 0.44, 0.48, 1}, true
+		name, fallback_role = "builtin", .Success
 	case EDITOR_PRESENTATION_CODE_PARAMETER:
-		return alicorn.Color{0.43, 0.34, 0.47, 1}, true
+		name, fallback_role = "parameter", .Semantic_Focus
 	case EDITOR_PRESENTATION_CODE_TAG:
-		return alicorn.Color{0.56, 0.26, 0.31, 1}, true
+		name, fallback_role = "tag", .Danger
 	case EDITOR_PRESENTATION_CODE_ATTRIBUTE:
-		return alicorn.Color{0.55, 0.41, 0.19, 1}, true
-	case 29: // table
-		return alicorn.Color{0.36, 0.37, 0.34, 1}, true
-	case 30: // table header
-		return alicorn.Color{0.24, 0.24, 0.21, 1}, true
-	case 32: // table pipe
-		return alicorn.Color{0.54, 0.52, 0.45, 1}, true
+		name, fallback_role = "attribute", .Accent_Hover
 	case:
-		return {}, false
+		return {}, .Text, false
 	}
+	return alicorn.style_extension_color_role_id("app.scratchpad.syntax", name), fallback_role, true
+}
+
+// Compatibility helper for callers that only need to know whether a syntax
+// record is colorable. Actual editor paint resolves the active theme palette.
+editor_presentation_record_color :: proc(kind: u32) -> (color: alicorn.Color, color_set: bool) {
+	_, fallback_role, role_found := editor_presentation_code_style(kind)
+	if !role_found { return {}, false }
+	default_theme := alicorn.DEFAULT_STYLE_THEME
+	return default_theme.colors[int(fallback_role)], true
 }
 
 Editor_Markdown_Row_Presentation :: struct {
@@ -294,6 +299,10 @@ editor_presentation_spans_for_line :: proc(
 		start, end, mapped := editor_source_range_to_display(line, start_byte, end_byte)
 		if !mapped { continue }
 		color, color_set := editor_presentation_record_color(record.kind)
+		if record.kind >= EDITOR_PRESENTATION_CODE_COMMENT && record.kind <= EDITOR_PRESENTATION_CODE_ATTRIBUTE {
+			color = palette.syntax_colors[int(record.kind-EDITOR_PRESENTATION_CODE_COMMENT)]
+			color_set = true
+		}
 		switch record.kind {
 		case EDITOR_PRESENTATION_STRONG, EDITOR_PRESENTATION_EMPHASIS,
 	     EDITOR_PRESENTATION_INLINE_CODE, EDITOR_PRESENTATION_CODE_BLOCK,

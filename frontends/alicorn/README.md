@@ -34,6 +34,12 @@ Scratchpad's Warm workbench and paper palettes are authored in `themes/scratchpa
 
 Choose Warm or Cool Light from **View → Use … Theme**, the command palette, or **Settings → Appearance**. Scratchpad stores the choice as a small versioned JSON preference at `%LOCALAPPDATA%\\Scratchpad\\preferences.json` on Windows and `~/Library/Application Support/Scratchpad/preferences.json` on macOS (using the platform configuration directory reported by Odin). A missing, malformed, unsupported-version, or unknown-theme preference falls back to Warm. If writing the preference fails, the selected theme remains active for the current session and Scratchpad reports the save failure.
 
+The paper and Cool Light themes also author the editor's code syntax palette as
+`app.scratchpad.syntax.*` extension roles. The editor maps Tree-sitter semantic
+kinds to those named roles; the selected Alicorn theme supplies the colors.
+Modal backdrops use the `app.scratchpad.workbench.modal_backdrop` role as well,
+so switching themes updates overlays with the rest of the workbench appearance.
+
 The build, test, smoke, and run commands use Alicorn's `theme compile` command to generate static Odin theme data before checking or building the frontend. The application registers those immutable values at runtime; it does not read theme files or include the JSON compiler in the shipped binary. The paper surface uses its namespaced role and generated material definition, while Alicorn's core editor-background role remains available as the fallback. The tab recipe remains a sparse override of Alicorn's built-in defaults. The repository has no Scratchpad-specific theme serializer.
 
 From the repository root, check and explain authored tokens with:

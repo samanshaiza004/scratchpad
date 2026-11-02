@@ -154,7 +154,7 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 	if app.workspace_mutation_kind == .Move { label = "Move" }
 	if app.workspace_mutation_kind == .Trash { label = "Move to Trash" }
 	if app.workspace_mutation_kind == .Trash {
-		alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-trash-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+		alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-trash-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
 		alicorn.container_begin(ui, .Container, label="workspace-trash-dialog", style=alicorn.layout_style(.Column, width=500, height=220, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
 		gui.text(ui, "Move this workspace item to the operating system Trash?")
 		gui.text(ui, app.workspace_mutation_source)
@@ -194,7 +194,7 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 		return
 	}
 
-	alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-mutation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-mutation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
 	alicorn.container_begin(ui, .Container, label="workspace-mutation-dialog", style=alicorn.layout_style(.Column, width=500, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=320, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
 	gui.text(ui, label)
 	if app.workspace_mutation_queued {

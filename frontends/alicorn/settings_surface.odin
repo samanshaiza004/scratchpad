@@ -81,7 +81,7 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	form_width := min(920, max(content_width-32-alicorn.SCROLLBAR_THICKNESS, 1))
 	names := SETTINGS_CATEGORY_NAMES
 
-	alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-settings-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-settings-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
 	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("scratchpad-settings"), label="scratchpad-settings", style=alicorn.layout_style(.Column, width=panel_width, height=panel_height, padding=padding, gap=gap, clip=true), shape=scratchpad_surface_shape(app, 6), material=scratchpad_surface_material(app, app.floating_surface_material), physical_height=scratchpad_surface_height(app, 1))
 	if gui.row(ui, label="scratchpad-settings-header", height=max(48, 30*scale), align=.Center) {
 		gui.text(ui, "Settings", key="settings-heading", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{font_size=24, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD, overflow=.Ellipsis})

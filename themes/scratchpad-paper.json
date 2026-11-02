@@ -195,6 +195,21 @@
         "alpha": 1.0
       }
     },
+    "scratchpad.syntax.comment": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.384, 0.400, 0.341], "alpha": 1}},
+    "scratchpad.syntax.keyword": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.396, 0.290, 0.478], "alpha": 1}},
+    "scratchpad.syntax.string": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.478, 0.294, 0.122], "alpha": 1}},
+    "scratchpad.syntax.number": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.137, 0.361, 0.400], "alpha": 1}},
+    "scratchpad.syntax.type": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.157, 0.361, 0.310], "alpha": 1}},
+    "scratchpad.syntax.function": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.169, 0.322, 0.471], "alpha": 1}},
+    "scratchpad.syntax.variable": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.298, 0.298, 0.259], "alpha": 1}},
+    "scratchpad.syntax.constant": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.459, 0.267, 0.067], "alpha": 1}},
+    "scratchpad.syntax.property": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.180, 0.345, 0.467], "alpha": 1}},
+    "scratchpad.syntax.operator": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.337, 0.337, 0.310], "alpha": 1}},
+    "scratchpad.syntax.punctuation": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.337, 0.337, 0.310], "alpha": 1}},
+    "scratchpad.syntax.builtin": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.137, 0.380, 0.416], "alpha": 1}},
+    "scratchpad.syntax.parameter": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.376, 0.310, 0.412], "alpha": 1}},
+    "scratchpad.syntax.tag": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.478, 0.204, 0.251], "alpha": 1}},
+    "scratchpad.syntax.attribute": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.412, 0.310, 0.129], "alpha": 1}},
     "scratchpad.dimension.editor_padding": {
       "$type": "dimension",
       "$value": {
@@ -301,6 +316,22 @@
         "$type": "color",
         "$value": "{scratchpad.semantic.editor.active_line_gutter}"
       },
+      "app.scratchpad.syntax.comment": {"$type": "color", "$value": "{scratchpad.syntax.comment}"},
+      "app.scratchpad.syntax.keyword": {"$type": "color", "$value": "{scratchpad.syntax.keyword}"},
+      "app.scratchpad.syntax.string": {"$type": "color", "$value": "{scratchpad.syntax.string}"},
+      "app.scratchpad.syntax.number": {"$type": "color", "$value": "{scratchpad.syntax.number}"},
+      "app.scratchpad.syntax.type": {"$type": "color", "$value": "{scratchpad.syntax.type}"},
+      "app.scratchpad.syntax.function": {"$type": "color", "$value": "{scratchpad.syntax.function}"},
+      "app.scratchpad.syntax.method": {"$type": "color", "$value": "{scratchpad.syntax.function}"},
+      "app.scratchpad.syntax.variable": {"$type": "color", "$value": "{scratchpad.syntax.variable}"},
+      "app.scratchpad.syntax.constant": {"$type": "color", "$value": "{scratchpad.syntax.constant}"},
+      "app.scratchpad.syntax.property": {"$type": "color", "$value": "{scratchpad.syntax.property}"},
+      "app.scratchpad.syntax.operator": {"$type": "color", "$value": "{scratchpad.syntax.operator}"},
+      "app.scratchpad.syntax.punctuation": {"$type": "color", "$value": "{scratchpad.syntax.punctuation}"},
+      "app.scratchpad.syntax.builtin": {"$type": "color", "$value": "{scratchpad.syntax.builtin}"},
+      "app.scratchpad.syntax.parameter": {"$type": "color", "$value": "{scratchpad.syntax.parameter}"},
+      "app.scratchpad.syntax.tag": {"$type": "color", "$value": "{scratchpad.syntax.tag}"},
+      "app.scratchpad.syntax.attribute": {"$type": "color", "$value": "{scratchpad.syntax.attribute}"},
       "app.scratchpad.editor.padding": {
         "$type": "dimension",
         "$value": "{scratchpad.semantic.editor.padding}"

@@ -470,7 +470,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		ui,
 		alicorn.key_string("scratchpad-command-palette-overlay"),
 		style=alicorn.layout_style(.Column, grow=1, padding=48, align=.Center, clip=true),
-		backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72},
+		backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme),
 	)
 	app.command_palette_panel_node = alicorn.surface_begin(
 		ui,
