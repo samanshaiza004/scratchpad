@@ -175,7 +175,7 @@ scratchpad_editor_font_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^ali
 			}
 		}
 	}
-	app.editor_font_picker_overlay_node = alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-editor-font-picker-overlay"), style=alicorn.layout_style(.Column, grow=1, padding=24, align=.Center, justify=.Center, clip=true), backdrop_color=alicorn.Color{0.015, 0.02, 0.03, 0.72})
+	app.editor_font_picker_overlay_node = alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-editor-font-picker-overlay"), style=alicorn.layout_style(.Column, grow=1, padding=24, align=.Center, justify=.Center, clip=true), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
 	viewport := alicorn.viewport_bounds(rt)
 	panel_sizing := gui.sizing(
 		width=gui.percent(1),

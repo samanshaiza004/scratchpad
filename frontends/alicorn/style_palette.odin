@@ -114,6 +114,13 @@ scratchpad_editor_active_line_gutter_role :: proc() -> alicorn.Style_Extension_C
 	return alicorn.style_extension_color_role_id("app.scratchpad.editor", "active_line_gutter")
 }
 
+scratchpad_modal_backdrop_color :: proc(rt: ^alicorn.Runtime, theme: alicorn.Style_Theme_ID) -> alicorn.Color {
+	role := alicorn.style_extension_color_role_id("app.scratchpad.workbench", "modal_backdrop")
+	color, found := alicorn.style_extension_color(rt, theme, role)
+	if found { return color }
+	return alicorn.Color{0.015, 0.02, 0.03, 0.72}
+}
+
 scratchpad_workbench_style_environment :: proc(app: ^App) -> alicorn.Style_Environment {
 	if app == nil { return alicorn.Style_Environment{} }
 	environment := alicorn.Style_Environment{theme=app.workbench_theme}
