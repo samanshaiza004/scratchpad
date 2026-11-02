@@ -676,3 +676,42 @@ test_editor_100k_paste_fits_full_visible_window_and_bounded_optimistic_source ::
 		editor_bytes_equal(updated.source[:len(source)], source),
 		"the optimistic projection should retain the full 64 KiB base and append all 100 KiB without truncation")
 }
+
+@(test)
+test_editor_status_column_matches_source_grapheme_navigation :: proc(t: ^testing.T) {
+	fixtures := [?]string{"ASCII text", "a\tb", "e\u0301x", "👩‍💻!", "\ufeffstart", "\xffa\t\x01z", "🇺🇸 flag", "\t\u0301x", "a\t\u0301b", "👩‍💻\t\u0301\xffx", "\ufeff\t\xff\u0301y"}
+	for source in fixtures {
+		line, ok := editor_project_line(transmute([]u8)source, 3, 100, context.temp_allocator)
+		testing.expect(t, ok, "column fixture must project")
+		if !ok { continue }
+		for offset in 0..=len(source) {
+			caret := line.source_start+u64(offset)
+			expected: u64 = 1
+			position := line.source_start
+			for position < caret {
+				next, _, moved := editor_move_horizontal(&line, position, .Leading, 1)
+				if !moved || next <= position { break }
+				position = next
+				expected += 1
+			}
+			actual := editor_column_for_source(&line, caret)
+			testing.expect(t, actual == expected, fmt.tprintf("column mismatch at byte %d: got %d, want %d", offset, actual, expected))
+		}
+		delete(line.display, context.temp_allocator)
+		delete(line.display_bytes, context.temp_allocator)
+	}
+}
+
+@(test)
+test_editor_status_column_handles_long_source_line :: proc(t: ^testing.T) {
+	source := make([dynamic]u8, 0, 8192, allocator=context.temp_allocator)
+	defer delete(source)
+	for _ in 0..<8192 { append(&source, 'a') }
+	line, ok := editor_project_line(source[:], 0, 37, context.temp_allocator)
+	testing.expect(t, ok, "long status line should project")
+	if !ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	testing.expect(t, editor_column_for_source(&line, line.source_end) == 8193,
+		"the status column should count a long source line without rescanning its prefix for every grapheme")
+}
