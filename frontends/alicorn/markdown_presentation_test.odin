@@ -398,6 +398,92 @@ test_code_syntax_paint_spans_use_semantic_roles_and_source_bytes :: proc(t: ^tes
 	}
 }
 
+@(test)
+test_code_syntax_colors_follow_compiled_theme_roles_and_core_fallbacks :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer alicorn.destroy_runtime(&rt)
+	app := App{theme_choice=.Warm}
+	if !scratchpad_styles_ensure(&app, &rt) {
+		testing.expect(t, false, "syntax palette fixture should register Scratchpad themes")
+		return
+	}
+
+	source := "return \"ok\" // note"
+	source_bytes, source_error := make([]u8, len(source), context.temp_allocator)
+	if source_error != nil { testing.expect(t, false, "could not allocate syntax palette test source"); return }
+	defer delete(source_bytes, context.temp_allocator)
+	for index in 0..<len(source) { source_bytes[index] = source[index] }
+	line, line_ok := editor_project_line(source_bytes, 0, 0, context.temp_allocator)
+	testing.expect(t, line_ok, "source should project for theme-resolved syntax paint")
+	if !line_ok { return }
+	defer delete(line.display, context.temp_allocator)
+	defer delete(line.display_bytes, context.temp_allocator)
+	spans := [?]bridge.Presentation_Record{
+		{kind=EDITOR_PRESENTATION_CODE_KEYWORD, start_byte=0, end_byte=6},
+		{kind=EDITOR_PRESENTATION_CODE_STRING, start_byte=7, end_byte=11},
+		{kind=EDITOR_PRESENTATION_CODE_COMMENT, start_byte=12, end_byte=19},
+	}
+	window := Editor_Window{
+		document_id="syntax-theme-resolution-test",
+		editor_revision=1,
+		start_byte=0,
+		source=source_bytes,
+		presentation_revision=1,
+		presentation_ready=true,
+		presentation_spans=spans[:],
+	}
+	kinds := [?]u32{
+		EDITOR_PRESENTATION_CODE_KEYWORD,
+		EDITOR_PRESENTATION_CODE_STRING,
+		EDITOR_PRESENTATION_CODE_COMMENT,
+	}
+	warm_colors: [3]alicorn.Color
+	cool_colors: [3]alicorn.Color
+	choices := [?]Scratchpad_Theme_Choice{.Warm, .Cool_Light, .Flat, .Workbench_Relief}
+	for choice in choices {
+		selected := scratchpad_theme_select(&app, &rt, choice)
+		testing.expect(t, selected, "each supported appearance should select for syntax palette resolution")
+		if !selected { continue }
+		palette := editor_markdown_palette(&rt, app.editor_theme)
+		paints := editor_presentation_spans_for_line(&window, &line, palette, context.temp_allocator)
+		if len(paints) != len(kinds) {
+			testing.expect(t, false, "keyword, string, and comment should each produce a syntax paint span")
+			delete(paints, context.temp_allocator)
+			continue
+		}
+		for index in 0..<len(kinds) {
+			kind := kinds[index]
+			extension_role, fallback_role, role_valid := editor_presentation_code_style(kind)
+			testing.expect(t, role_valid, "the syntax category should map to a semantic theme role")
+			if !role_valid { continue }
+			expected, extension_defined := alicorn.style_extension_color(&rt, app.editor_theme, extension_role)
+			if !extension_defined {
+				expected = alicorn.style_theme_color(&rt, app.editor_theme, fallback_role)
+			}
+			actual := palette.syntax_colors[int(kind-EDITOR_PRESENTATION_CODE_COMMENT)]
+			testing.expect(t, actual == expected && paints[index].color == expected,
+				"editor syntax paint should resolve from the selected compiled extension role or its core fallback")
+			if choice == .Warm { warm_colors[index] = actual }
+			if choice == .Cool_Light { cool_colors[index] = actual }
+		}
+		delete(paints, context.temp_allocator)
+	}
+	for index in 0..<len(kinds) {
+		testing.expect(t, warm_colors[index] != cool_colors[index],
+			"Warm and Cool Light should resolve distinct keyword, string, and comment colors")
+	}
+
+	default_palette := editor_markdown_palette(&rt, alicorn.DEFAULT_STYLE_THEME_ID)
+	for kind in kinds {
+		extension_role, fallback_role, role_valid := editor_presentation_code_style(kind)
+		_, extension_defined := alicorn.style_extension_color(&rt, alicorn.DEFAULT_STYLE_THEME_ID, extension_role)
+		expected := alicorn.style_theme_color(&rt, alicorn.DEFAULT_STYLE_THEME_ID, fallback_role)
+		actual := default_palette.syntax_colors[int(kind-EDITOR_PRESENTATION_CODE_COMMENT)]
+		testing.expect(t, role_valid && !extension_defined && actual == expected,
+			"themes without Scratchpad syntax extensions should use the documented Alicorn core-role fallback")
+	}
+}
+
 test_table_window :: proc(source: string) -> (window: Editor_Window, ok: bool) {
 	bytes, allocation_error := make([]u8, len(source), context.temp_allocator)
 	if allocation_error != nil { return }
