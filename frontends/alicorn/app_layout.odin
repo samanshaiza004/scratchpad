@@ -302,11 +302,11 @@ build_app :: proc(
 			alicorn.split_first_end(&ui,pinned_split)
 			alicorn.split_divider(&ui,pinned_split)
 			alicorn.split_second_begin(&ui,pinned_split)
-			pinned_surface_build(app,&ui,rt)
+			pinned_surface_build(app,&ui,rt,dpi_scale)
 			alicorn.split_second_end(&ui,pinned_split)
 			alicorn.split_end(&ui,pinned_split)
 		} else if app.pinned.visible && !show_source {
-			pinned_surface_build(app,&ui,rt)
+			pinned_surface_build(app,&ui,rt,dpi_scale)
 		}
 		alicorn.container_end(&ui)
 		alicorn.split_second_end(&ui, workspace_split)

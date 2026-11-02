@@ -462,7 +462,7 @@ pinned_card_actions :: proc(app: ^App, ui: ^alicorn.UI, pin: bridge.Pinned_Range
 	}
 }
 
-pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_scale: f32) {
 	s := &app.pinned
 	clear(&s.controls)
 	s.focus_target = 0
@@ -551,7 +551,7 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			if !s.measurement_refresh_pending {
 				if text_node,exists := alicorn.node_by_key(rt,text_key,.Text); exists {
 					if info,valid := alicorn.node_info(rt,text_node); valid && info.text_geometry_available && abs(info.bounds.w-content_width)<0.5 {
-						text_height=pinned_text_allocation_height(info.text_content_height,text_height,rt.presentation_scale_y)
+						text_height=pinned_text_allocation_height(info.text_content_height,text_height,dpi_scale)
 						used_retained_measurement=true
 						when ODIN_DEBUG { s.retained_text_measurement_hits+=1 }
 					}
@@ -560,7 +560,7 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			if !used_retained_measurement {
 				when ODIN_DEBUG { s.temporary_text_measurement_builds+=1 }
 				run,built := alicorn.runtime_text_run_build(rt,text,size=PINNED_TEXT_SIZE*scale,max_width=content_width,font=font,overflow=.Wrap,allocator=context.temp_allocator,scratch_allocator=alicorn.runtime_scratch_allocator(rt))
-				if built { text_height=pinned_text_allocation_height(run.height,text_height,rt.presentation_scale_y); alicorn.text_run_destroy(&run) }
+				if built { text_height=pinned_text_allocation_height(run.height,text_height,dpi_scale); alicorn.text_run_destroy(&run) }
 			}
 			top := PINNED_CARD_INSET if first else 0
 			bottom := PINNED_CARD_INSET+1 if last else 0

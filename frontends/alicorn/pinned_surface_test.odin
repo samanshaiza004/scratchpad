@@ -22,13 +22,13 @@ test_pinned_source_focus_respects_detached_owner :: proc(t: ^testing.T) {
 		"ordinary pinned source navigation should return to the main editor")
 }
 
-pinned_surface_test_frame :: proc(f: ^Semantic_Zoom_Test_Editor) {
+pinned_surface_test_frame :: proc(f: ^Semantic_Zoom_Test_Editor, dpi_scale: f32 = 1) {
 	if !scratchpad_styles_ensure(&f.app,&f.rt) {return}
 	ui, build := alicorn.begin_frame(&f.rt)
 	if !build { return }
 	_ = alicorn.container_begin(&ui,.Root,label="pinned-surface-test-root",style=alicorn.layout_style(.Column,grow=1,clip=true))
 	workbench_scope:=alicorn.style_environment_push(&ui,scratchpad_workbench_style_environment(&f.app))
-	pinned_surface_build(&f.app,&ui,&f.rt)
+	pinned_surface_build(&f.app,&ui,&f.rt,dpi_scale)
 	alicorn.style_environment_pop(&ui,workbench_scope)
 	alicorn.container_end(&ui)
 	pinned_context_menu_build(&f.app,&ui,&f.rt)
@@ -129,7 +129,7 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 	}
 	for device_scale in ([4]f32{1,1.25,1.5,2}) {
 		_ = alicorn.set_presentation_scale(&f.rt,device_scale,device_scale)
-		pinned_surface_test_frame(&f)
+		pinned_surface_test_frame(&f,device_scale)
 		go_info,go_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"go"))
 		copy_info,copy_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"copy"))
 		more_info,more_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"more"))
@@ -139,6 +139,7 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 			!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
 			fmt.tprintf("source-card action bounds should remain separate at %.0f%% display scale",device_scale*100))
 	}
+	_ = alicorn.set_presentation_scale(&f.rt,1,1)
 	more=pinned_surface_test_control(&f.app,pin.id,"more")
 	_ = alicorn.focus(&f.rt,more)
 	testing.expect(t,pinned_key(&f.app,&f.rt,.Context_Menu),
@@ -258,7 +259,7 @@ test_pinned_surface_rejects_old_pages_and_bounds_cache :: proc(t: ^testing.T) {
 	scratchpad_styles_ensure(&f.app,&f.rt)
 	f.rt.viewport=alicorn.Rect{0,0,320,600}
 	alicorn.set_presentation_scale(&f.rt,1.5,1.5)
-	for _ in 0..<3 {alicorn.invalidate_root(&f.rt,"Stale pinned paper fixture");pinned_surface_test_frame(&f)}
+	for _ in 0..<3 {alicorn.invalidate_root(&f.rt,"Stale pinned paper fixture");pinned_surface_test_frame(&f,1.5)}
 	pin:=f.app.pinned.snapshot.ranges[0]
 	go_id:=pinned_surface_test_control(&f.app,pin.id,"go")
 	copy_id:=pinned_surface_test_control(&f.app,pin.id,"copy")
@@ -316,7 +317,7 @@ test_pinned_wrapped_rows_keep_distinct_identity_and_continuous_paper :: proc(t: 
 			f.rt.viewport=alicorn.Rect{0,0,width,4000}
 			f.app.editor_text_scale=scale
 			alicorn.set_presentation_scale(&f.rt,scale,scale)
-			for _ in 0..<3 { alicorn.invalidate_root(&f.rt,"Pinned containment fixture"); pinned_surface_test_frame(&f) }
+			for _ in 0..<3 { alicorn.invalidate_root(&f.rt,"Pinned containment fixture"); pinned_surface_test_frame(&f,scale) }
 			testing.expect(t,!f.rt.hard_error,fmt.tprintf("each virtual row must have independent retained identity: %s",f.rt.diagnostic))
 			if f.rt.hard_error { return }
 			text_count:=0
