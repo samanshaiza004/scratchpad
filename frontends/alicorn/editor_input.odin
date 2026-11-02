@@ -5,6 +5,7 @@ import "core:mem"
 import "core:time"
 import "core:unicode/utf8"
 import alicorn "alicorn:runtime"
+import runa "alicorn:third_party/Runa"
 
 Editor_Edit_Selection_Snapshot :: struct {
 	before_anchor_byte: u64,
@@ -318,6 +319,26 @@ editor_move_horizontal :: proc(
 		position = next
 	}
 	return source_byte, affinity, false
+}
+
+// editor_column_for_source reports the one-based grapheme column in the source projection.
+// Tab and escaped-byte expansions can map several display boundaries to one
+// source byte; count each source movement once, in a single grapheme pass.
+editor_column_for_source :: proc(line: ^Editor_Display_Line, source_byte: u64) -> u64 {
+	if line == nil { return 1 }
+	target := min(source_byte, line.source_end)
+	column: u64 = 1
+	position := line.source_start
+	iterator := runa.grapheme_iter_make(line.display)
+	for position < target {
+		_, end, ok := runa.grapheme_iter_next(&iterator)
+		if !ok { break }
+		next := editor_display_to_source(line, end)
+		if next <= position { continue }
+		position = next
+		column += 1
+	}
+	return column
 }
 
 // editor_move_word_source applies Alicorn/Runa's Unicode word segmentation to

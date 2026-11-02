@@ -869,14 +869,7 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	if view.pending_goto_line {
 		location = fmt.tprintf("Ln %d  Col %d", view.pending_goto_target_line+1, view.pending_goto_column)
 	} else if line, found := editor_line_for_source(window, view.caret_byte); found {
-		column := u64(1)
-		position := line.source_start
-		for position < min(view.caret_byte, line.source_end) {
-			next, _, moved := editor_move_horizontal(line, position, .Leading, 1)
-			if !moved || next <= position { break }
-			position = next
-			column += 1
-		}
+		column := editor_column_for_source(line, view.caret_byte)
 		location = fmt.tprintf("Ln %d  Col %d", line.logical_line+1, column)
 		if editor_window_is_long_line_chunk(window) { location = fmt.tprintf("%s  (chunk)", location) }
 	}
