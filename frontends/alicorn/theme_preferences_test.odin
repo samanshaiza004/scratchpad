@@ -196,6 +196,21 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		"color-only theme switching should trigger no layout visits or text measurements")
 	testing.expect(t, rt.stats.paint_nodes_visited > before_paint_visits,
 		"color-only theme switching should refresh paint for the retained presentation")
+	stats_before_idle := rt.stats
+	idle_ui, idle_should_build := alicorn.begin_frame(&rt)
+	testing.expect(t, !idle_should_build,
+		"after the application paints the selected theme, an idle frame should not request another description")
+	if idle_should_build { alicorn.end_frame(&idle_ui) }
+	testing.expect(t, rt.stats.frames_built == stats_before_idle.frames_built &&
+		rt.stats.descriptions_emitted == stats_before_idle.descriptions_emitted &&
+		rt.stats.reconcile_nodes_visited == stats_before_idle.reconcile_nodes_visited &&
+		rt.stats.layout_nodes_visited == stats_before_idle.layout_nodes_visited &&
+		rt.stats.paint_nodes_visited == stats_before_idle.paint_nodes_visited &&
+		rt.stats.composition_nodes_visited == stats_before_idle.composition_nodes_visited &&
+		rt.stats.measure_requests == stats_before_idle.measure_requests &&
+		rt.stats.text_shape_requests == stats_before_idle.text_shape_requests &&
+		rt.stats.idle_frames == stats_before_idle.idle_frames+1,
+		"the theme switch should settle into a no-work idle frame")
 
 	choice, loaded := scratchpad_theme_preferences_load(path)
 	testing.expect(t, loaded && choice == .Cool_Light,
