@@ -531,8 +531,11 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.HasTargetByte && request.TargetByte > uint64(^uint(0)>>1) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_target_byte", "target_byte does not fit the host word size", false), false
 		}
-		if request.Disposition != "" && request.Disposition != "preview" {
-			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "open_path disposition must be empty or preview", false), false
+		if request.Disposition != "" && request.Disposition != "preview" && request.Disposition != "background" {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "open_path disposition must be empty, preview, or background", false), false
+		}
+		if request.Disposition == "background" && request.HasTargetByte {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "background open cannot set the active editor selection", false), false
 		}
 	case "select_document", "save_document", "close_document", "reload_conflict", "keep_mine_conflict", string(commands.EditUndo), string(commands.EditRedo):
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {

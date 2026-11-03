@@ -322,6 +322,56 @@ func (a *Application) OpenDocument(path string) error {
 	return nil
 }
 
+// OpenBackgroundPath opens a source document for a presentation that needs
+// revision-checked access without navigating the active editor away from its
+// current document. It does not replace or promote the preview slot.
+func (a *Application) OpenBackgroundPath(path string) error {
+	if a == nil {
+		return errors.New("nil application")
+	}
+	if path == "" {
+		return errors.New("empty path")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+	info, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return errors.New("background open requires a file path")
+	}
+
+	id := documentID(abs)
+	if _, open := a.Documents[id]; open {
+		return nil
+	}
+	doc, fileView, err := a.loadDocumentView(abs)
+	if err != nil {
+		return err
+	}
+	a.Documents[id] = doc
+	if fileView.Kind != FileViewText {
+		a.FileViews[id] = fileView
+	}
+	a.Order = append(a.Order, id)
+	a.Views[id] = ViewState{}
+	if a.Active == "" {
+		a.Active = id
+	}
+	a.touchPresentation()
+	if a.Watcher != nil {
+		if err := a.Watcher.WatchDirectory(filepath.Dir(doc.Path)); err != nil {
+			return err
+		}
+	}
+	a.recordRecent(doc.Path)
+	return nil
+}
+
 func (a *Application) loadDocumentView(path string) (*document.Document, FileView, error) {
 	snapshot, err := a.Store.Load(path)
 	if err == nil {

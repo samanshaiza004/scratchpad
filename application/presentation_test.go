@@ -69,6 +69,41 @@ func TestPresentationContractKeepsLifecycleSemantic(t *testing.T) {
 	}
 }
 
+func TestBackgroundOpenPreservesActiveDocumentAndPreview(t *testing.T) {
+	dir := t.TempDir()
+	activePath := filepath.Join(dir, "active.txt")
+	previewPath := filepath.Join(dir, "preview.txt")
+	backgroundPath := filepath.Join(dir, "search-result.txt")
+	for path, body := range map[string]string{activePath: "active", previewPath: "preview", backgroundPath: "background"} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	app := New(nil)
+	if err := app.OpenPath(activePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.OpenPreviewPath(previewPath); err != nil {
+		t.Fatal(err)
+	}
+	activeBefore, previewBefore := app.Active, app.Preview
+
+	if err := app.Dispatch(PresentationCommand{Kind: PresentationOpenPath, Path: backgroundPath, Background: true}); err != nil {
+		t.Fatal(err)
+	}
+	if app.Active != activeBefore || app.Preview != previewBefore {
+		t.Fatalf("background open changed navigation state: active %q -> %q, preview %q -> %q", activeBefore, app.Active, previewBefore, app.Preview)
+	}
+	backgroundID := documentID(backgroundPath)
+	if app.Documents[backgroundID] == nil || app.Documents[backgroundID].Path != backgroundPath {
+		t.Fatalf("background source was not retained: %+v", app.Documents[backgroundID])
+	}
+	if len(app.Order) != 3 || app.Preview != previewBefore {
+		t.Fatalf("background source should be a normal additional document without replacing preview: order=%v preview=%q", app.Order, app.Preview)
+	}
+}
+
 func TestPresentationContractRejectsUnknownCommandsAndDocuments(t *testing.T) {
 	app := New(nil)
 	var client PresentationClient = app

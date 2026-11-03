@@ -723,9 +723,10 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 	case "open_path":
 		if err := r.app.Dispatch(application.PresentationCommand{
-			Kind:    application.PresentationOpenPath,
-			Path:    request.Path,
-			Preview: request.Disposition == "preview",
+			Kind:       application.PresentationOpenPath,
+			Path:       request.Path,
+			Preview:    request.Disposition == "preview",
+			Background: request.Disposition == "background",
 		}); err != nil {
 			return commandError(request, "application_error", err)
 		}

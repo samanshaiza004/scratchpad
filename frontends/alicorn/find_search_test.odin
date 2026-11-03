@@ -5,6 +5,30 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
+test_workspace_search_preview_centers_long_match_and_maps_caret :: proc(t: ^testing.T) {
+	bytes := make([]u8, 180, allocator=context.temp_allocator)
+	for index in 0..<len(bytes) { bytes[index] = 'x' }
+	copy_from_string(bytes[132:138], "needle")
+	source := string(bytes)
+	result := bridge.Workspace_Search_Result{
+		text=source,
+		start_byte=132,
+		end_byte=138,
+		context_start_byte=0,
+		context_end_byte=len(source),
+	}
+	preview := workspace_search_result_preview(result)
+	testing.expect(t, len(preview.text) <= 102 && preview.source_start <= 132 && preview.source_end >= 138,
+		"the compact preview should include the entire long-line match")
+	testing.expect(t, preview.text[preview.match_start:preview.match_end] == "needle",
+		"the preview highlight range should still identify the actual match")
+	display_caret := preview.match_start
+	source_caret := workspace_search_preview_source_position(preview, display_caret)
+	testing.expect(t, source_caret == 132,
+		"pointer caret positions in a centered preview should map to the original source byte")
+}
+
+@(test)
 test_editor_focus_pending_waits_for_editor_owner :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
 	defer alicorn.destroy_runtime(&rt)

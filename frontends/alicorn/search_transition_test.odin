@@ -47,6 +47,20 @@ test_search_result_actions_complete_outside_description_loop :: proc(t: ^testing
 	if !loaded { testing.expect(t, false, message); return }
 	started, start_message := bridge.backend_start(&app.backend, workspace, tree_test_wake, nil, context.allocator)
 	if !started { testing.expect(t, false, start_message); return }
+	keep_path := fmt.tprintf("%s/keep.txt", workspace)
+	if os.write_entire_file_from_string(keep_path, "keep this editor active\n") != nil {
+		testing.expect(t, false, "active editor fixture source must exist"); return
+	}
+	keep_open := bridge.backend_command(&app.backend, "open_path", path=keep_path)
+	if !keep_open.ok {
+		testing.expect(t, false, keep_open.message)
+		bridge.backend_command_result_destroy(&keep_open, context.allocator)
+		return
+	}
+	handle_command_result(&app, &rt, &keep_open)
+	bridge.backend_command_result_destroy(&keep_open, context.allocator)
+	active_document_before := app.backend.state.active
+	testing.expect(t, active_document_before != "", "fixture must begin with an active editor document")
 	app.workspace_search_mode = true
 	app.workspace_search_query, _ = strings.clone("needle", context.allocator)
 	app.workspace_search_started_query, _ = strings.clone("needle", context.allocator)
@@ -74,8 +88,10 @@ test_search_result_actions_complete_outside_description_loop :: proc(t: ^testing
 	application_pointer(rawptr(&app), &rt, click, target)
 	testing.expect(t, app.workspace_search_edit_active && app.workspace_search_edit_index == 0,
 		"clicking source text must activate its result directly")
-	// Context is known exactly in this fixture; bypass the unrelated window worker.
-	app.workspace_search_edit_ready = true
+	testing.expect(t, app.workspace_search_edit_ready,
+		"the bounded source context should be validated before text input is enabled")
+	testing.expect(t, app.backend.state.active == active_document_before,
+		"editing a Search excerpt must not activate its source document in the main editor")
 	_ = build_app(rawptr(&app), &rt, 1000, 800, 1)
 	first_edit_node := app.workspace_search_edit_node
 	first_interaction, first_interaction_found := alicorn.text_field_interaction(&rt, first_edit_node)
@@ -94,7 +110,8 @@ test_search_result_actions_complete_outside_description_loop :: proc(t: ^testing
 	application_pointer(rawptr(&app), &rt, second_click, second_target)
 	testing.expect(t, app.workspace_search_edit_active && app.workspace_search_edit_index == 1 &&
 		app.workspace_search_edit_buffer.text == "needle two", "clicking a different result must safely transfer the single edit buffer")
-	app.workspace_search_edit_ready = true
+	testing.expect(t, app.backend.state.active == active_document_before,
+		"switching Search edit targets must preserve the main editor's active document")
 	alicorn.invalidate_root(&rt, "describe second search editor")
 	_ = build_app(rawptr(&app), &rt, 1000, 800, 1)
 	testing.expect(t, settings_test_find_node(&rt, "", "Edit result") == 0 &&

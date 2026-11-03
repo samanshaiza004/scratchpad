@@ -117,6 +117,26 @@ func TestOpenPathPreviewDispositionValidation(t *testing.T) {
 		t.Fatalf("preview open request = %+v, response = %+v, ok=%v", request, response, ok)
 	}
 
+	base.Disposition = "background"
+	input, err = json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, response, ok = decodeCommandRequest(input, lifecycleRunning)
+	if !ok || request.Disposition != "background" {
+		t.Fatalf("background open request = %+v, response = %+v, ok=%v", request, response, ok)
+	}
+
+	base.HasTargetByte = true
+	input, err = json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, response, ok := decodeCommandRequest(input, lifecycleRunning); ok || response.Outcome.Code != "invalid_disposition" {
+		t.Fatalf("background open with active selection response = %+v, ok=%v", response, ok)
+	}
+
+	base.HasTargetByte = false
 	base.Disposition = "replace"
 	input, err = json.Marshal(base)
 	if err != nil {

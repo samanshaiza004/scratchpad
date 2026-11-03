@@ -2234,6 +2234,10 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	view := &app.editor_views[view_index]
 	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
+	if workspace_search_edit {
+		selection_snapshot.after_anchor_byte = view.selection_anchor
+		selection_snapshot.after_cursor_byte = view.caret_byte
+	}
 	pinned_end_after_edit:u64=0
 	if pinned_edit {
 		valid,new_end:=pinned_edit_validate_replacement(app,document.id,start_byte,end_byte,len(replacement),
@@ -2250,12 +2254,7 @@ editor_apply_local_replace_with_wire :: proc(
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	window_end: u64 = 0
 	if window_matches { window_end = window.start_byte+u64(len(window.source)) }
-	optimistic_projection := window_matches && start_byte >= window.start_byte && end_byte <= window_end
-	if workspace_search_edit && !optimistic_projection {
-		set_error(app, "The bounded source window is not ready for this search-result edit.")
-		alicorn.invalidate_root(rt, "Scratchpad deferred a search projection edit outside the validated source window")
-		return false
-	}
+	optimistic_projection := !workspace_search_edit && window_matches && start_byte >= window.start_byte && end_byte <= window_end
 	if !optimistic_projection && !allow_offscreen_authoritative && !pinned_edit {
 		set_error(app, "The bounded source window is not ready for local editing.")
 		alicorn.invalidate_root(rt, "Scratchpad local replacement waited for a source window")
@@ -2277,13 +2276,13 @@ editor_apply_local_replace_with_wire :: proc(
 		return false
 	}
 	if typing_group_id == 0 { editor_undo_group_break(view) }
-	workspace_search_match_clear(view)
+	if !workspace_search_edit { workspace_search_match_clear(view) }
 	local_start, local_end: int
 	if optimistic_projection {
 		local_start = int(start_byte-window.start_byte)
 		local_end = int(end_byte-window.start_byte)
 	}
-	if view.auto_pair_valid {
+	if !workspace_search_edit && view.auto_pair_valid {
 		marker := view.auto_pair_closer_byte
 		if start_byte <= marker && end_byte <= marker {
 			delta := i64(len(replacement))-i64(end_byte-start_byte)
@@ -2390,11 +2389,13 @@ editor_apply_local_replace_with_wire :: proc(
 		reveal_logical_line=reveal_logical_line,
 	})
 	if pinned_edit {app.pinned.edit_end_byte=pinned_end_after_edit}
-	view.selection_anchor = resulting_anchor
-	view.caret_byte = resulting_caret
-	view.anchor_affinity = .Trailing
-	view.caret_affinity = .Trailing
-	view.preferred_x_set = false
+	if !workspace_search_edit {
+		view.selection_anchor = resulting_anchor
+		view.caret_byte = resulting_caret
+		view.anchor_affinity = .Trailing
+		view.caret_affinity = .Trailing
+		view.preferred_x_set = false
+	}
 	sync_menu_states(app)
 	// Text and the next key can arrive in the same SDL pump, before the next
 	// application build refreshes action metadata.

@@ -93,23 +93,44 @@ workspace_search_result_heading :: proc(result: bridge.Workspace_Search_Result) 
 	return fmt.tprintf("%s:%d", result.path, result.line+1)
 }
 
-workspace_search_result_preview :: proc(result: bridge.Workspace_Search_Result, max_preview_bytes := 96) -> string {
-	preview := result.text
-	truncated := result.text_truncated
-	if len(preview) > max_preview_bytes {
-		end := max(max_preview_bytes, 0)
-		for end > 0 && end < len(preview) && (u8(preview[end]) & 0xC0) == 0x80 { end -= 1 }
-		preview = preview[:end]
-		truncated = true
-	}
-	if truncated { preview = fmt.tprintf("%s…", preview) }
-	return preview
+Workspace_Search_Preview :: struct {
+	text: string,
+	source_start: int,
+	source_end: int,
+	prefix_bytes: int,
+	match_start: int,
+	match_end: int,
 }
 
-workspace_search_result_preview_source_bytes :: proc(result: bridge.Workspace_Search_Result, max_preview_bytes := 96) -> int {
-	end := min(len(result.text), max(max_preview_bytes, 0))
-	for end > 0 && end < len(result.text) && (u8(result.text[end]) & 0xC0) == 0x80 { end -= 1 }
-	return end
+workspace_search_result_preview :: proc(result: bridge.Workspace_Search_Result, max_preview_bytes := 96) -> Workspace_Search_Preview {
+	text_length := len(result.text)
+	match_start := min(max(result.start_byte-result.context_start_byte, 0), text_length)
+	match_end := min(max(result.end_byte-result.context_start_byte, match_start), text_length)
+	match_length := match_end-match_start
+	preview_length := min(text_length, max(max_preview_bytes, match_length))
+	preview_start := max(0, match_start-max((preview_length-match_length)/2, 0))
+	if preview_start+preview_length > text_length { preview_start = max(0, text_length-preview_length) }
+	for preview_start > 0 && !workspace_search_utf8_boundary(result.text, preview_start) { preview_start -= 1 }
+	preview_end := min(text_length, preview_start+preview_length)
+	for preview_end < text_length && !workspace_search_utf8_boundary(result.text, preview_end) { preview_end += 1 }
+
+	prefix := "" if preview_start == 0 else "…"
+	suffix := "" if preview_end == text_length && !result.text_truncated else "…"
+	display_text := fmt.tprintf("%s%s%s", prefix, result.text[preview_start:preview_end], suffix)
+	prefix_bytes := len(prefix)
+	return Workspace_Search_Preview{
+		text=display_text,
+		source_start=preview_start,
+		source_end=preview_end,
+		prefix_bytes=prefix_bytes,
+		match_start=prefix_bytes+match_start-preview_start,
+		match_end=prefix_bytes+match_end-preview_start,
+	}
+}
+
+workspace_search_preview_source_position :: proc(preview: Workspace_Search_Preview, display_byte: int) -> int {
+	shown_length := max(preview.source_end-preview.source_start, 0)
+	return preview.source_start+min(max(display_byte-preview.prefix_bytes, 0), shown_length)
 }
 
 find_presentation_install :: proc(

@@ -148,7 +148,7 @@ build_app :: proc(
 			else if app.workspace_search_query == "" { gui.text(&ui, "Type to search workspace files.") }
 			else if app.workspace_search_view.done && app.workspace_search_view.count == 0 { gui.text(&ui, "No matches") }
 			else if app.workspace_search_view.done {
-				count_text := fmt.tprintf("%d matches · click text to edit", app.workspace_search_view.count)
+				count_text := fmt.tprintf("%d matches", app.workspace_search_view.count)
 				if app.workspace_search_view.truncated { count_text = fmt.tprintf("%s · result limit reached", count_text) }
 				gui.text(&ui, count_text)
 			} else {
@@ -171,15 +171,22 @@ build_app :: proc(
 						style=alicorn.layout_style(.Column, height=WORKSPACE_SEARCH_ROW_HEIGHT-4, padding=4, gap=2, clip=true),
 						color=row_color,
 					)
-					show_file_heading := position == 0 || position == search_list.first
-					if position > 0 && app.workspace_search_view.results[position-1].path != result.path { show_file_heading = true }
+					file_boundary := position == 0
+					if position > 0 && app.workspace_search_view.results[position-1].path != result.path { file_boundary = true }
+					show_file_heading := file_boundary || position == search_list.first
 					heading := fmt.tprintf("Line %d", result.line+1)
 					if show_file_heading { heading = fmt.tprintf("%s  ·  %d", result.path, result.line+1) }
 					if !result.editable { heading = fmt.tprintf("%s  ·  read-only", heading) }
+					heading_color := alicorn.style_color(&ui, .Muted_Text)
+					heading_weight := alicorn.FONT_WEIGHT_REGULAR
+					if file_boundary {
+						heading_color = alicorn.style_color(&ui, .Text)
+						heading_weight = alicorn.FONT_WEIGHT_MEDIUM
+					}
 					heading_node := gui.text(&ui, heading,
 						style=alicorn.layout_style(.Row, height=15),
-						color=alicorn.style_color(&ui, .Muted_Text),
-						text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
+						color=heading_color,
+						text_style=alicorn.Text_Style{font_size=12, font_weight=heading_weight, overflow=.Ellipsis},
 					)
 					append(&app.workspace_search_pointer_targets, Workspace_Search_Pointer_Target{
 						node=heading_node,
@@ -196,24 +203,36 @@ build_app :: proc(
 								text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
 							)
 							app.workspace_search_edit_node = edit_field.node
-							if edit_field.node != 0 { _ = alicorn.semantic_text_field_label(&ui, fmt.tprintf("Search result in %s, line %d", result.path, result.line+1)) }
+							if edit_field.node != 0 {
+								_ = alicorn.semantic_text_field_label(&ui, fmt.tprintf("Search result in %s, line %d", result.path, result.line+1))
+								match_start := min(max(app.workspace_search_edit_match_start, 0), len(app.workspace_search_edit_buffer.text))
+								match_end := min(max(app.workspace_search_edit_match_end, match_start), len(app.workspace_search_edit_buffer.text))
+								if match_end > match_start {
+									match_paint := [?]alicorn.Text_Paint_Span{{
+										start=match_start,
+										end=match_end,
+										background=search_palette.workspace_search_background,
+										background_set=true,
+									}}
+									_ = alicorn.text_paint_spans(&ui, edit_field.node, match_paint[:])
+								}
+							}
 							if edit_field.changed { _ = workspace_search_edit_apply_change(app, rt) }
 						} else {
 							gui.text(&ui, "Validating source context…", style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT), text_style=alicorn.Text_Style{font_size=13})
 						}
 					} else {
 						preview := workspace_search_result_preview(result)
-						preview_node := gui.text(&ui, preview,
+						preview_node := gui.text(&ui, preview.text,
 							style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true),
 							font=.Monospace,
 							color=alicorn.style_color(&ui, .Text) if result.editable else alicorn.style_color(&ui, .Muted_Text),
 							text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
 						)
 						if result.editable {
-							match_start := result.start_byte-result.context_start_byte
-							match_end := result.end_byte-result.context_start_byte
-							match_end = min(match_end, workspace_search_result_preview_source_bytes(result))
-							if match_start >= 0 && match_end > match_start {
+							match_start := preview.match_start
+							match_end := preview.match_end
+							if match_start >= preview.prefix_bytes && match_end > match_start {
 								match_paint := [?]alicorn.Text_Paint_Span{{
 									start=match_start,
 									end=match_end,

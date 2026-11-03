@@ -33,6 +33,7 @@ type PresentationCommand struct {
 	ActionID          string
 	Path              string
 	Preview           bool
+	Background        bool
 	DocumentID        DocumentID
 	Discard           bool
 	EditorRevision    uint64
@@ -207,6 +208,12 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 	}
 	switch command.Kind {
 	case PresentationOpenPath:
+		if command.Background {
+			if command.Preview {
+				return errors.New("background and preview open dispositions are mutually exclusive")
+			}
+			return a.OpenBackgroundPath(command.Path)
+		}
 		if command.Preview {
 			return a.OpenPreviewPath(command.Path)
 		}
