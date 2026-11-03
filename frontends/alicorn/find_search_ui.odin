@@ -811,6 +811,7 @@ workspace_search_edit_clear :: proc(app: ^App) {
 	app.workspace_search_edit_finish_pending = false
 	app.workspace_search_edit_focus_pending = false
 	app.workspace_search_edit_select_match_pending = false
+	app.workspace_search_edit_place_caret_pending = false
 	app.workspace_search_edit_source_changed = false
 	app.workspace_search_edit_index = -1
 	app.workspace_search_edit_generation = 0
@@ -824,6 +825,7 @@ workspace_search_edit_clear :: proc(app: ^App) {
 	app.workspace_search_edit_caret_byte = 0
 	app.workspace_search_edit_match_start = 0
 	app.workspace_search_edit_match_end = 0
+	app.workspace_search_edit_initial_caret = 0
 	app.workspace_search_edit_node = 0
 }
 
@@ -876,6 +878,9 @@ workspace_search_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, refresh :=
 
 workspace_search_edit_focus_transition :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil || !app.workspace_search_edit_active || app.workspace_search_edit_focus_pending { return }
+	// The search context menu is a temporary focus surface. Keep the active
+	// excerpt alive until the user chooses an action or dismisses the menu.
+	if app.workspace_search_context_menu_open && alicorn.context_menu_is_open(rt) { return }
 	if !app.workspace_search_mode || alicorn.focused_node(rt) != app.workspace_search_edit_node {
 		_ = workspace_search_edit_finish(app, rt, refresh=app.workspace_search_mode)
 	}
@@ -886,11 +891,23 @@ Workspace_Search_Transition :: struct {
 	kind: Workspace_Search_Transition_Kind,
 	generation: u64,
 	projection_key: u64,
+	initial_caret: int,
 }
 
-workspace_search_transition_request :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspace_Search_Transition_Kind, index: int) {
+workspace_search_transition_request :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	kind: Workspace_Search_Transition_Kind,
+	index: int,
+	initial_caret: int = -1,
+) {
 	if app == nil || rt == nil || index < 0 || index >= len(app.workspace_search_view.results) { return }
-	app.workspace_search_transition = {kind, app.workspace_search_view.generation, app.workspace_search_view.results[index].projection_key}
+	app.workspace_search_transition = {
+		kind=kind,
+	generation=app.workspace_search_view.generation,
+		projection_key=app.workspace_search_view.results[index].projection_key,
+		initial_caret=initial_caret,
+	}
 	scratchpad_diagnostic_event("search.transition.requested", app.workspace_search_transition.projection_key)
 	alicorn.invalidate_root(rt, "Scratchpad deferred a search-result transition until frame completion")
 }
@@ -912,7 +929,7 @@ workspace_search_transition_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime)
 	for result, index in app.workspace_search_view.results {
 		if result.projection_key != transition.projection_key { continue }
 		switch transition.kind {
-		case .Edit: _ = workspace_search_edit_begin(app, rt, index)
+		case .Edit: _ = workspace_search_edit_begin(app, rt, index, initial_caret=transition.initial_caret)
 		case .Source: _ = workspace_search_go_to_source(app, rt, index)
 		case .Finish: _ = workspace_search_edit_finish(app, rt, refresh=true)
 		case .None:
@@ -924,11 +941,113 @@ workspace_search_transition_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime)
 	alicorn.invalidate_root(rt, "Scratchpad discarded a missing search-result projection")
 }
 
-workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int) -> bool {
+workspace_search_result_index_for_key :: proc(app: ^App, generation, projection_key: u64) -> int {
+	if app == nil || generation != app.workspace_search_view.generation { return -1 }
+	for result, index in app.workspace_search_view.results {
+		if result.projection_key == projection_key { return index }
+	}
+	return -1
+}
+
+workspace_search_context_menu_open :: proc(app: ^App, rt: ^alicorn.Runtime, index: int, x, y: f32) -> bool {
+	if app == nil || rt == nil || !app.workspace_search_mode || app.workspace_search_results_owner == 0 ||
+	   index < 0 || index >= len(app.workspace_search_view.results) { return false }
+	result := app.workspace_search_view.results[index]
+	owner := app.workspace_search_results_owner
+	if app.workspace_search_edit_active && app.workspace_search_edit_index == index && app.workspace_search_edit_node != 0 {
+		owner = app.workspace_search_edit_node
+	}
+	if !alicorn.context_menu_open(rt, alicorn.Rect{x, y, 0, 0}, owner) { return false }
+	app.workspace_search_selected = index
+	app.workspace_search_context_menu_open = true
+	app.workspace_search_context_generation = app.workspace_search_view.generation
+	app.workspace_search_context_projection_key = result.projection_key
+	alicorn.invalidate_root(rt, "Scratchpad opened the selected search result context menu")
+	return true
+}
+
+workspace_search_context_menu_open_selected :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || !app.workspace_search_mode || len(app.workspace_search_view.results) == 0 { return false }
+	index := app.workspace_search_selected
+	if index < 0 || index >= len(app.workspace_search_view.results) { index = 0 }
+	if app.workspace_search_results_owner != 0 {
+		_ = alicorn.virtual_list_ensure_visible(rt, app.workspace_search_results_owner, index,
+			"Scratchpad keyboard context menu selected a search result")
+	}
+	anchor := alicorn.Rect{}
+	for pointer_target in app.workspace_search_pointer_targets {
+		if pointer_target.generation != app.workspace_search_view.generation ||
+		   pointer_target.projection_key != app.workspace_search_view.results[index].projection_key { continue }
+		if info, found := alicorn.node_info(rt, pointer_target.node); found && info.active { anchor = info.bounds; break }
+	}
+	if anchor.w <= 0 || anchor.h <= 0 {
+		if info, found := alicorn.node_info(rt, app.workspace_search_query_node); found { anchor = info.bounds }
+	}
+	return workspace_search_context_menu_open(app, rt, index, anchor.x+anchor.w, anchor.y+anchor.h)
+}
+
+workspace_search_pointer :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	event: alicorn.Pointer_Event,
+	target_node: alicorn.Node_ID,
+) -> bool {
+	if app == nil || rt == nil || !app.workspace_search_mode || event.kind != .Down ||
+	   (event.button != alicorn.POINTER_BUTTON_PRIMARY && event.button != alicorn.POINTER_BUTTON_SECONDARY) {
+		return false
+	}
+	if app.workspace_search_results_owner == 0 { return false }
+	viewport := alicorn.scroll_region_state(rt, app.workspace_search_results_owner).viewport_bounds
+	if viewport.w <= 0 || viewport.h <= 0 || event.x < viewport.x || event.x >= viewport.x+viewport.w ||
+	   event.y < viewport.y || event.y >= viewport.y+viewport.h { return false }
+
+	// A secondary click on the active Text_Field has no static preview target,
+	// so route it by the retained field geometry.
+	if event.button == alicorn.POINTER_BUTTON_SECONDARY && app.workspace_search_edit_active &&
+	   app.workspace_search_edit_node != 0 {
+		if info, found := alicorn.node_info(rt, app.workspace_search_edit_node); found &&
+		   event.x >= info.bounds.x && event.x < info.bounds.x+info.bounds.w &&
+		   event.y >= info.bounds.y && event.y < info.bounds.y+info.bounds.h {
+			return workspace_search_context_menu_open(app, rt, app.workspace_search_edit_index, event.x, event.y)
+		}
+	}
+
+	for pointer_target in app.workspace_search_pointer_targets {
+		if pointer_target.generation != app.workspace_search_view.generation { continue }
+		info, found := alicorn.node_info(rt, pointer_target.node)
+		if !found || !info.active || event.x < info.bounds.x || event.x >= info.bounds.x+info.bounds.w ||
+		   event.y < info.bounds.y || event.y >= info.bounds.y+info.bounds.h { continue }
+		index := workspace_search_result_index_for_key(app, pointer_target.generation, pointer_target.projection_key)
+		if index < 0 { continue }
+		app.workspace_search_selected = index
+		if event.button == alicorn.POINTER_BUTTON_SECONDARY {
+			return workspace_search_context_menu_open(app, rt, index, event.x, event.y)
+		}
+		if target_node != 0 && target_node == app.workspace_search_edit_node { return false }
+		if pointer_target.kind == .Navigate_Source {
+			_ = workspace_search_go_to_source(app, rt, index)
+			return true
+		}
+		result := app.workspace_search_view.results[index]
+		if !result.editable {
+			find_set_message(&app.workspace_search_error, "This result is read-only; use its file and line heading to inspect the source.")
+			alicorn.invalidate_root(rt, "Scratchpad selected a read-only workspace search result")
+			return true
+		}
+		position, hit := alicorn.text_node_hit_test(rt, pointer_target.node, event.x, event.y)
+		initial_caret := result.start_byte-result.context_start_byte
+		if hit { initial_caret = min(max(position.byte, 0), workspace_search_result_preview_source_bytes(result)) }
+		_ = workspace_search_edit_begin(app, rt, index, initial_caret=initial_caret)
+		return true
+	}
+	return false
+}
+
+workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int, initial_caret: int = -1) -> bool {
 	if app == nil || rt == nil || !app.backend.started || !app.workspace_search_mode ||
 	   result_index < 0 || result_index >= len(app.workspace_search_view.results) { return false }
 	if app.ui_description_runtime != nil {
-		workspace_search_transition_request(app, rt, .Edit, result_index)
+		workspace_search_transition_request(app, rt, .Edit, result_index, initial_caret)
 		return true
 	}
 	scratchpad_diagnostic_event("search.edit.begin", app.workspace_search_view.results[result_index].projection_key)
@@ -937,6 +1056,11 @@ workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_inde
 		if app.pinned.editing { return true }
 	}
 	if workspace_search_edit_session_matches(app, result_index) {
+		if initial_caret >= 0 {
+			app.workspace_search_edit_initial_caret = min(max(initial_caret, 0), len(app.workspace_search_edit_buffer.text))
+			app.workspace_search_edit_place_caret_pending = true
+			app.workspace_search_edit_select_match_pending = false
+		}
 		app.workspace_search_edit_focus_pending = true
 		return true
 	}
@@ -1028,13 +1152,19 @@ workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_inde
 	app.workspace_search_edit_context_end = u64(result.context_end_byte)
 	app.workspace_search_edit_match_start = result.start_byte-result.context_start_byte
 	app.workspace_search_edit_match_end = result.end_byte-result.context_start_byte
-	app.workspace_search_edit_caret_byte = u64(result.start_byte)
+	app.workspace_search_edit_initial_caret = initial_caret
+	app.workspace_search_edit_place_caret_pending = initial_caret >= 0
+	caret_byte := result.start_byte
+	if initial_caret >= 0 {
+		caret_byte = result.context_start_byte + min(max(initial_caret, 0), len(result.text))
+	}
+	app.workspace_search_edit_caret_byte = u64(max(caret_byte, 0))
 	app.workspace_search_edit_generation = app.workspace_search_view.generation
 	app.workspace_search_edit_projection_key = result.projection_key
 	app.workspace_search_edit_index = result_index
 	app.workspace_search_selected = result_index
 	app.workspace_search_edit_focus_pending = true
-	app.workspace_search_edit_select_match_pending = true
+	app.workspace_search_edit_select_match_pending = initial_caret < 0
 	app.editor_focus_pending = false
 	app.find_focus_pending = false
 	app.workspace_search_focus_pending = false
@@ -1324,15 +1454,21 @@ find_restore_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		app.editor_focus_pending = false
 	} else if app.workspace_search_edit_focus_pending && app.workspace_search_edit_node != 0 {
 		if alicorn.focus(rt, app.workspace_search_edit_node) {
-			if app.workspace_search_edit_select_match_pending {
+			position_applied := true
+			if app.workspace_search_edit_place_caret_pending {
+				position_applied = alicorn.set_text_caret(rt, app.workspace_search_edit_node, app.workspace_search_edit_initial_caret)
+				if position_applied { app.workspace_search_edit_place_caret_pending = false }
+			} else if app.workspace_search_edit_select_match_pending {
 				_ = alicorn.set_text_selection(rt, app.workspace_search_edit_node,
 					app.workspace_search_edit_match_start, app.workspace_search_edit_match_end)
 				app.workspace_search_edit_select_match_pending = false
 			}
-			app.workspace_search_edit_focus_pending = false
-			app.workspace_search_focus_pending = false
-			app.find_focus_pending = false
-			app.editor_focus_pending = false
+			if position_applied {
+				app.workspace_search_edit_focus_pending = false
+				app.workspace_search_focus_pending = false
+				app.find_focus_pending = false
+				app.editor_focus_pending = false
+			}
 		}
 	} else if app.workspace_search_focus_pending && app.workspace_search_query_node != 0 {
 		_ = alicorn.focus(rt, app.workspace_search_query_node)

@@ -132,6 +132,42 @@ workspace_context_menu_open_focused :: proc(app: ^App, rt: ^alicorn.Runtime) -> 
 workspace_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	if app.pinned.context_menu_open { return }
+	if app.workspace_search_context_menu_open {
+		if !alicorn.context_menu_is_open(rt) {
+			app.workspace_search_context_menu_open = false
+			app.workspace_search_context_generation = 0
+			app.workspace_search_context_projection_key = 0
+			return
+		}
+		index := workspace_search_result_index_for_key(
+			app,
+			app.workspace_search_context_generation,
+			app.workspace_search_context_projection_key,
+		)
+		if index < 0 {
+			alicorn.context_menu_close(rt)
+			app.workspace_search_context_menu_open = false
+			app.workspace_search_context_generation = 0
+			app.workspace_search_context_projection_key = 0
+			return
+		}
+		if !alicorn.context_menu_begin(ui, alicorn.key_string("scratchpad-workspace-search-context-menu")) { return }
+		can_go_to_source := true
+		if app.workspace_search_edit_active {
+			can_go_to_source = !workspace_search_edit_has_pending_intents(app)
+			if app.workspace_search_edit_node != 0 {
+				interaction, found := alicorn.text_field_interaction(rt, app.workspace_search_edit_node)
+				if found && interaction.composition_active { can_go_to_source = false }
+			}
+		}
+		alicorn.context_menu_item(ui, action_id_for(ACTION_WORKSPACE_SEARCH_GO_TO_SOURCE), "Go to source", can_go_to_source)
+		action := alicorn.context_menu_end(ui)
+		if action == action_id_for(ACTION_WORKSPACE_SEARCH_GO_TO_SOURCE) && can_go_to_source {
+			app.workspace_search_context_menu_open = false
+			_ = workspace_search_go_to_source(app, rt, index)
+		}
+		return
+	}
 	if !alicorn.context_menu_is_open(rt) {
 		workspace_context_menu_clear(app)
 		return
@@ -191,6 +227,7 @@ application_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.
 		return
 	}
 	if pinned_context_pointer(app,rt,event) { return }
+	if workspace_search_pointer(app, rt, event, target) { return }
 	if workspace_context_menu_pointer(app, rt, event, target) { return }
 	editor_pointer(state, rt, event, target)
 }

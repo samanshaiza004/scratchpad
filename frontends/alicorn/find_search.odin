@@ -21,6 +21,8 @@ Find_Presentation :: struct {
 
 FIND_MAX_MATCHES :: 1000
 WORKSPACE_SEARCH_MAX_RESULTS :: 5000
+WORKSPACE_SEARCH_ROW_HEIGHT :: f32(62)
+WORKSPACE_SEARCH_TEXT_HEIGHT :: f32(28)
 
 Workspace_Search_View :: struct {
 	generation:  u64,
@@ -30,6 +32,20 @@ Workspace_Search_View :: struct {
 	truncated:   bool,
 	results:     [dynamic]bridge.Workspace_Search_Result,
 	allocator:   mem.Allocator,
+}
+
+Workspace_Search_Pointer_Target_Kind :: enum {
+	Edit_Text,
+	Navigate_Source,
+}
+
+// Only rows currently emitted by the virtual list register pointer targets.
+// This keeps pointer routing bounded by the viewport instead of result count.
+Workspace_Search_Pointer_Target :: struct {
+	node: alicorn.Node_ID,
+	generation: u64,
+	projection_key: u64,
+	kind: Workspace_Search_Pointer_Target_Kind,
 }
 
 find_initial_match :: proc(matches: []bridge.Current_Match, source_cursor: u64) -> int {
@@ -88,6 +104,12 @@ workspace_search_result_preview :: proc(result: bridge.Workspace_Search_Result, 
 	}
 	if truncated { preview = fmt.tprintf("%s…", preview) }
 	return preview
+}
+
+workspace_search_result_preview_source_bytes :: proc(result: bridge.Workspace_Search_Result, max_preview_bytes := 96) -> int {
+	end := min(len(result.text), max(max_preview_bytes, 0))
+	for end > 0 && end < len(result.text) && (u8(result.text[end]) & 0xC0) == 0x80 { end -= 1 }
+	return end
 }
 
 find_presentation_install :: proc(

@@ -34,6 +34,7 @@ build_app :: proc(
 	}
 	_ = find_capture_text_field(rt, app.workspace_search_query_node, &app.workspace_search_query)
 	app.workspace_search_results_owner = 0
+	clear(&app.workspace_search_pointer_targets)
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
 	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
@@ -147,7 +148,7 @@ build_app :: proc(
 			else if app.workspace_search_query == "" { gui.text(&ui, "Type to search workspace files.") }
 			else if app.workspace_search_view.done && app.workspace_search_view.count == 0 { gui.text(&ui, "No matches") }
 			else if app.workspace_search_view.done {
-				count_text := fmt.tprintf("%d matches", app.workspace_search_view.count)
+				count_text := fmt.tprintf("%d matches · click text to edit", app.workspace_search_view.count)
 				if app.workspace_search_view.truncated { count_text = fmt.tprintf("%s · result limit reached", count_text) }
 				gui.text(&ui, count_text)
 			} else {
@@ -155,57 +156,80 @@ build_app :: proc(
 			}
 			if len(app.workspace_search_view.results) > 0 {
 				_ = workspace_search_edit_validate_window(app, rt)
-				search_list := alicorn.virtual_list_begin(&ui, len(app.workspace_search_view.results), 116, key=alicorn.key_string("scratchpad-workspace-search-results"), style=alicorn.layout_style(grow=1, clip=true), label="scratchpad-workspace-search-results", focusable=true)
+				search_palette := editor_markdown_palette(rt, app.workbench_theme)
+				search_list := alicorn.virtual_list_begin(&ui, len(app.workspace_search_view.results), WORKSPACE_SEARCH_ROW_HEIGHT, key=alicorn.key_string("scratchpad-workspace-search-results"), style=alicorn.layout_style(grow=1, clip=true), label="scratchpad-workspace-search-results", focusable=true)
 				app.workspace_search_results_owner = search_list.scroll.id
 				for position := search_list.first; position < search_list.last; position += 1 {
 					result := app.workspace_search_view.results[position]
 					active_edit := workspace_search_edit_session_matches(app, position)
+					selected := app.workspace_search_selected == position
+					row_color := alicorn.NO_BACKGROUND_COLOR
+					if selected { row_color = editor_markdown_tint(alicorn.style_color(&ui, .Selection), 0.14) }
 					alicorn.container_begin(&ui, .Container,
 						key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key),
 						label="workspace-search-result",
-						style=alicorn.layout_style(.Column, height=108, padding=5, gap=3, clip=true),
-						color=alicorn.style_color(&ui, .Surface),
+						style=alicorn.layout_style(.Column, height=WORKSPACE_SEARCH_ROW_HEIGHT-4, padding=4, gap=2, clip=true),
+						color=row_color,
 					)
-					gui.text(&ui, workspace_search_result_heading(result), style=alicorn.layout_style(.Row, height=18), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+					show_file_heading := position == 0 || position == search_list.first
+					if position > 0 && app.workspace_search_view.results[position-1].path != result.path { show_file_heading = true }
+					heading := fmt.tprintf("Line %d", result.line+1)
+					if show_file_heading { heading = fmt.tprintf("%s  ·  %d", result.path, result.line+1) }
+					if !result.editable { heading = fmt.tprintf("%s  ·  read-only", heading) }
+					heading_node := gui.text(&ui, heading,
+						style=alicorn.layout_style(.Row, height=15),
+						color=alicorn.style_color(&ui, .Muted_Text),
+						text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
+					)
+					append(&app.workspace_search_pointer_targets, Workspace_Search_Pointer_Target{
+						node=heading_node,
+						generation=app.workspace_search_view.generation,
+						projection_key=result.projection_key,
+						kind=.Navigate_Source,
+					})
 					if active_edit {
 						if app.workspace_search_edit_ready {
-							edit_field := gui.text_field(&ui, "Editable search result", &app.workspace_search_edit_buffer,
+							edit_field := alicorn.text_field_controlled(&ui, &app.workspace_search_edit_buffer,
 								key=alicorn.key_pair(app.workspace_search_edit_generation, app.workspace_search_edit_projection_key),
-								style=alicorn.layout_style(.Row, height=40),
-								text_style=alicorn.Text_Style{overflow=.Ellipsis},
+								style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true),
+								font=.Monospace,
+								text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
 							)
 							app.workspace_search_edit_node = edit_field.node
+							if edit_field.node != 0 { _ = alicorn.semantic_text_field_label(&ui, fmt.tprintf("Search result in %s, line %d", result.path, result.line+1)) }
 							if edit_field.changed { _ = workspace_search_edit_apply_change(app, rt) }
 						} else {
-						gui.text(&ui, "Validating source context…", style=alicorn.layout_style(.Row, height=36))
-					}
-					if gui.row(&ui, height=26, gap=4, align=.Center) {
-						if gui.button(&ui, "Go to source", key=alicorn.key_string(fmt.tprintf("workspace-search-source-%d", result.projection_key)), height=24, variant=.Quiet) {
-							_ = workspace_search_go_to_source(app, rt, position)
+							gui.text(&ui, "Validating source context…", style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT), text_style=alicorn.Text_Style{font_size=13})
 						}
-						if gui.button(&ui, "Done", key=alicorn.key_string(fmt.tprintf("workspace-search-done-%d", result.projection_key)), height=24, variant=.Quiet) {
-							workspace_search_transition_request(app, rt, .Finish, position)
+					} else {
+						preview := workspace_search_result_preview(result)
+						preview_node := gui.text(&ui, preview,
+							style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true),
+							font=.Monospace,
+							color=alicorn.style_color(&ui, .Text) if result.editable else alicorn.style_color(&ui, .Muted_Text),
+							text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
+						)
+						if result.editable {
+							match_start := result.start_byte-result.context_start_byte
+							match_end := result.end_byte-result.context_start_byte
+							match_end = min(match_end, workspace_search_result_preview_source_bytes(result))
+							if match_start >= 0 && match_end > match_start {
+								match_paint := [?]alicorn.Text_Paint_Span{{
+									start=match_start,
+									end=match_end,
+									background=search_palette.workspace_search_background,
+									background_set=true,
+								}}
+								_ = alicorn.text_paint_spans(&ui, preview_node, match_paint[:])
+							}
 						}
+						append(&app.workspace_search_pointer_targets, Workspace_Search_Pointer_Target{
+							node=preview_node,
+							generation=app.workspace_search_view.generation,
+							projection_key=result.projection_key,
+							kind=.Edit_Text,
+						})
 					}
-				} else {
-					preview := workspace_search_result_preview(result)
-					if gui.button(&ui, preview, key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key), height=42,
-						state=alicorn.Button_State{selected=app.workspace_search_selected == position, disabled=!result.editable},
-						text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
-						content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=3), variant=.Quiet) {
-						app.workspace_search_selected = position
-						_ = workspace_search_edit_begin(app, rt, position)
-					}
-					if gui.row(&ui, height=26, gap=4, align=.Center) {
-						if gui.button(&ui, "Edit result", key=alicorn.key_string(fmt.tprintf("workspace-search-edit-%d", result.projection_key)), height=24, state=alicorn.Button_State{disabled=!result.editable}, variant=.Quiet) {
-							app.workspace_search_selected = position
-							_ = workspace_search_edit_begin(app, rt, position)
-						}
-						if gui.button(&ui, "Go to source", key=alicorn.key_string(fmt.tprintf("workspace-search-source-%d", result.projection_key)), height=24, variant=.Quiet) {
-							_ = workspace_search_go_to_source(app, rt, position)
-						}
-					}
-				}
 				alicorn.container_end(&ui)
 				}
 				alicorn.virtual_list_end(&ui, search_list)

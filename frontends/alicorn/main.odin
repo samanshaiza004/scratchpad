@@ -50,6 +50,7 @@ ACTION_WORKSPACE_SETTINGS :: "workspace.settings"
 ACTION_WORKSPACE_RENAME :: "workspace.rename"
 ACTION_WORKSPACE_MOVE :: "workspace.move"
 ACTION_WORKSPACE_TRASH :: "workspace.trash"
+ACTION_WORKSPACE_SEARCH_GO_TO_SOURCE :: "workspace-search.go-to-source"
 ACTION_EDIT_UNDO       :: "edit.undo"
 ACTION_EDIT_REDO       :: "edit.redo"
 ACTION_EDIT_CUT        :: "edit.cut"
@@ -251,11 +252,16 @@ App :: struct {
 	workspace_search_error: string,
 	workspace_search_selected: int,
 	workspace_search_results_owner: alicorn.Node_ID,
+	workspace_search_pointer_targets: [dynamic]Workspace_Search_Pointer_Target,
+	workspace_search_context_menu_open: bool,
+	workspace_search_context_generation: u64,
+	workspace_search_context_projection_key: u64,
 	workspace_search_edit_active: bool,
 	workspace_search_edit_ready: bool,
 	workspace_search_edit_finish_pending: bool,
 	workspace_search_edit_focus_pending: bool,
 	workspace_search_edit_select_match_pending: bool,
+	workspace_search_edit_place_caret_pending: bool,
 	workspace_search_edit_source_changed: bool,
 	workspace_search_transition: Workspace_Search_Transition,
 	workspace_search_restore_selection_pending: bool,
@@ -271,6 +277,7 @@ App :: struct {
 	workspace_search_edit_caret_byte: u64,
 	workspace_search_edit_match_start: int,
 	workspace_search_edit_match_end: int,
+	workspace_search_edit_initial_caret: int,
 	workspace_search_restore_selection_byte: u64,
 	workspace_search_edit_buffer: alicorn.Text_Field_Buffer,
 	workspace_search_edit_source_text: string,
@@ -1043,6 +1050,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return true
 	}
 	if key == .Context_Menu {
+		if app.workspace_search_mode && workspace_search_context_menu_open_selected(app, rt) { return true }
 		return workspace_context_menu_open_focused(app, rt)
 	}
 	if key == .Workspace_Rename {
@@ -1076,6 +1084,10 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 			return workspace_search_move_selection(app, rt, -1)
 		case .Down:
 			return workspace_search_move_selection(app, rt, 1)
+		case .Find_Next:
+			return workspace_search_move_selection(app, rt, 1)
+		case .Find_Previous:
+			return workspace_search_move_selection(app, rt, -1)
 		case:
 		}
 	}
@@ -3560,6 +3572,11 @@ application_stop :: proc(state: rawptr) {
 	find_presentation_destroy(&app.find_presentation, context.allocator)
 	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
 	workspace_search_edit_clear(app)
+	delete(app.workspace_search_pointer_targets)
+	app.workspace_search_pointer_targets = {}
+	app.workspace_search_context_menu_open = false
+	app.workspace_search_context_generation = 0
+	app.workspace_search_context_projection_key = 0
 	workspace_search_restore_selection_clear(app)
 	find_discard_saved_selection(app)
 	alicorn.text_field_buffer_destroy(&app.find_query)
@@ -3586,6 +3603,7 @@ main :: proc() {
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
 	app.retired_brand_marks = make([dynamic]Scratchpad_Image_Retirement, 0, allocator=context.allocator)
 	app.workspace_search_selected = -1
+	app.workspace_search_pointer_targets = make([dynamic]Workspace_Search_Pointer_Target, 0, allocator=context.allocator)
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
