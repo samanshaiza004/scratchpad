@@ -49,6 +49,17 @@ pinned_surface_test_button_semantics :: proc(rt: ^alicorn.Runtime, node: alicorn
 	return count
 }
 
+pinned_surface_test_button_enabled :: proc(rt: ^alicorn.Runtime, label: string) -> bool {
+	snapshot:=alicorn.semantic_snapshot(rt,context.temp_allocator)
+	defer alicorn.semantic_snapshot_destroy(&snapshot)
+	for item in snapshot.nodes {
+		if item.role==.Button && item.label==label {
+			return !alicorn.semantic_states_has(item.states,.Disabled)
+		}
+	}
+	return false
+}
+
 pinned_surface_test_rects_overlap :: proc(a,b: alicorn.Rect) -> bool {
 	return a.x<b.x+b.w && b.x<a.x+a.w && a.y<b.y+b.h && b.y<a.y+a.h
 }
@@ -161,6 +172,72 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 		"the keyboard-opened pin menu should expose Move up, Move down and Remove pin once")
 	alicorn.context_menu_close(&f.rt)
 	pinned_surface_test_frame(&f)
+}
+
+@(test)
+test_pinned_menu_remains_available_and_guards_active_edit :: proc(t: ^testing.T) {
+	f: Semantic_Zoom_Test_Editor
+	source:="package demo\nfunc Alpha() { return }\n"
+	if !semantic_zoom_test_open(&f,t,"go",source) {semantic_zoom_test_destroy(&f,t);return}
+	defer {
+		pinned_destroy(&f.app.pinned)
+		semantic_zoom_test_destroy(&f,t)
+	}
+	view_index:=editor_view_find(f.app.editor_views[:],f.document_id)
+	if view_index<0 {testing.expect(t,false,"fixture editor view should exist");return}
+	view:=&f.app.editor_views[view_index]
+	view.selection_anchor,view.caret_byte=0,7
+	_ = alicorn.focus(&f.rt,f.app.editor_scroll_owner)
+	pinned_command(&f.app,&f.rt,"add")
+	pinned_refresh(&f.app,&f.rt)
+	if len(f.app.pinned.snapshot.ranges)!=1 {testing.expect(t,false,"fixture pin should exist");return}
+	pin:=f.app.pinned.snapshot.ranges[0]
+	pinned_edit_begin(&f.app,&f.rt,pin.id)
+	if !f.app.pinned.editing {testing.expect(t,false,"the current pin should enter its editing session");return}
+	pinned_surface_test_frame(&f)
+	more:=pinned_surface_test_control(&f.app,pin.id,"more")
+	testing.expect(t,more!=0 && pinned_surface_test_button_enabled(&f.rt,"More actions"),
+		"the overflow control should remain actionable while the pin is being edited")
+	testing.expect(t,pinned_surface_test_control(&f.app,pin.id,"go")!=0 &&
+		pinned_surface_test_button_enabled(&f.rt,"Go to source"),
+		"Go to source should remain available when the active edit can be safely finished")
+	testing.expect(t,pinned_surface_test_control(&f.app,pin.id,"copy")!=0 &&
+		pinned_surface_test_button_enabled(&f.rt,"Copy"),
+		"Copy should remain visible and available for a current pin during editing")
+
+	pinned_open_action_menu(&f.app,&f.rt,pin.id)
+	pinned_surface_test_frame(&f)
+	testing.expect(t,pinned_surface_test_button_enabled(&f.rt,"Remove pin"),
+		"Remove pin should be enabled when no edit acknowledgement or composition is pending")
+
+	append(&f.app.editor_edits,Editor_Edit_Intent{pinned_edit=true,pin_id=u64(pin.id)})
+	pinned_surface_test_frame(&f)
+	testing.expect(t,!pinned_surface_test_button_enabled(&f.rt,"Remove pin"),
+		"structural menu actions should be disabled while this pin has an unacknowledged edit")
+	pinned_command(&f.app,&f.rt,"remove",pin.id)
+	testing.expect(t,f.app.pinned.editing && len(f.app.pinned.snapshot.ranges)==1,
+		"a remove request during a pending acknowledgement must retain the pin and editing session")
+	clear(&f.app.editor_edits)
+
+	view.preedit_active=true
+	pinned_surface_test_frame(&f)
+	testing.expect(t,!pinned_surface_test_button_enabled(&f.rt,"Remove pin"),
+		"structural menu actions should be disabled during IME composition")
+	pinned_command(&f.app,&f.rt,"remove",pin.id)
+	testing.expect(t,f.app.pinned.editing && len(f.app.pinned.snapshot.ranges)==1,
+		"a remove request during IME composition must retain the pin and editing session")
+	view.preedit_active=false
+
+	alicorn.context_menu_close(&f.rt)
+	f.app.pinned.context_menu_open=false
+	f.app.pinned.action_menu_pin=0
+	document,_:=find_document(&f.app.backend.state,f.document_id)
+	before_revision:=document.editor_revision
+	pinned_command(&f.app,&f.rt,"remove",pin.id)
+	pinned_refresh(&f.app,&f.rt)
+	testing.expect(t,!f.app.pinned.editing && len(f.app.pinned.snapshot.ranges)==0 &&
+		document.editor_revision==before_revision,
+		"removing an active pin should finish editing, remove the pin, and leave source bytes untouched")
 }
 
 @(test)

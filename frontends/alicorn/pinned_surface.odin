@@ -469,8 +469,8 @@ pinned_edit_begin :: proc(
 		app.pinned.edit_anchor_byte = caret_byte
 		app.pinned.edit_caret_byte = caret_byte
 	} else if !resume_pin_selection {
-		app.pinned.edit_anchor_byte = pin_start
-		app.pinned.edit_caret_byte = pin_start
+		app.pinned.edit_anchor_byte = pin_end
+		app.pinned.edit_caret_byte = pin_end
 	}
 	app.pinned.editing = true
 	app.pinned.edit_document_id = edit_document_id
@@ -533,6 +533,17 @@ pinned_edit_transition_block :: proc(app: ^App, rt: ^alicorn.Runtime, message, r
 		if app != nil && app.pinned.owner != 0 { _ = alicorn.focus(rt, app.pinned.owner) }
 		alicorn.invalidate_root(rt, reason)
 	}
+}
+
+pinned_edit_transition_ready :: proc(app: ^App) -> bool {
+	if app == nil || !app.pinned.editing { return true }
+	for edit in app.editor_edits {
+		if edit.pinned_edit && edit.pin_id == u64(app.pinned.edit_pin) { return false }
+	}
+	if index := editor_view_find(app.editor_views[:], app.pinned.edit_document_id); index >= 0 {
+		if app.editor_views[index].preedit_active { return false }
+	}
+	return true
 }
 
 pinned_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, restore_active_document:=true) {
@@ -690,9 +701,10 @@ pinned_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runti
 			app.pinned.context_menu_open=false;app.pinned.action_menu_pin=0
 			return
 		}
-		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_MOVE_UP),"Move up",pin_index>0)
-		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_MOVE_DOWN),"Move down",pin_index+1<len(app.pinned.snapshot.ranges))
-		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_REMOVE),"Remove pin")
+		can_change_pins := pinned_edit_transition_ready(app)
+		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_MOVE_UP),"Move up",pin_index>0 && can_change_pins)
+		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_MOVE_DOWN),"Move down",pin_index+1<len(app.pinned.snapshot.ranges) && can_change_pins)
+		alicorn.context_menu_item(ui,action_id_for(ACTION_PINNED_REMOVE),"Remove pin",can_change_pins)
 		action:=alicorn.context_menu_end(ui)
 		if action!=0 {
 			app.pinned.action_menu_pin=0;app.pinned.context_menu_open=false
@@ -784,6 +796,13 @@ pinned_command :: proc(app: ^App, rt: ^alicorn.Runtime, command: string, pin: br
 		if frame_deferred_action_schedule(app,.Pinned_Action,value=command,source_start=u64(pin),source_end=u64(delta+1),editor_revision=app.pinned.snapshot.revision,source_line=app.pinned.snapshot.epoch) {return}
 		set_error(app,"Could not queue the pinned action.");return
 	}
+	if command=="go_to_source" && (len(app.editor_edits)>0 || editor_active_preedit(app)) {
+		set_error(app,"Finish pending text input before navigating to pinned source.");return
+	}
+	if app.pinned.editing && (command=="move" || command=="remove" || command=="go_to_source") {
+		pinned_edit_finish(app,rt,restore_active_document=command!="go_to_source")
+		if app.pinned.editing {return}
+	}
 	if app.pinned.editing && (command=="undo" || command=="redo") {
 		pinned_edit_history(app,rt,command=="redo")
 		return
@@ -805,7 +824,6 @@ pinned_command :: proc(app: ^App, rt: ^alicorn.Runtime, command: string, pin: br
 	} else {
 		selected_pin:=pin
 		if selected_pin==0 {selected_pin=app.pinned.selected}
-		if command=="go_to_source" && (len(app.editor_edits)>0 || editor_active_preedit(app)) {set_error(app,"Finish pending text input before navigating to pinned source.");return}
 		result:=bridge.backend_command(&app.backend,fmt.tprintf("pinned_%s",command),pin_id=u64(selected_pin),pin_epoch=app.pinned.snapshot.epoch,pin_revision=app.pinned.snapshot.revision,pin_delta=delta,read_latest_after=command!="copy")
 		if !result.ok {set_error(app,result.message);when ODIN_DEBUG {app.pinned.rejected_responses+=1};app.pinned.force_refresh=true} else {
 			switch command {
@@ -946,18 +964,12 @@ pinned_button :: proc(app: ^App, ui: ^alicorn.UI, label, key: string, pin: bridg
 }
 
 pinned_more_button :: proc(app: ^App, ui: ^alicorn.UI, pin: bridge.Pin_ID) -> bool {
-	disabled:=app.pinned.editing
-	id, clicked := alicorn.button_begin(ui, "⋯", key="pinned-more",state=alicorn.Button_State{disabled=disabled},
+	id, clicked := alicorn.button_begin(ui, "⋯", key="pinned-more",
 		style=alicorn.layout_style(.Row,width=32,height=32), variant=.Quiet,
 		text_style=alicorn.Text_Style{font_size=20},
 		content_style=alicorn.button_content_style(.Center,padding_x=0,padding_y=0))
 	alicorn.button_end(ui)
-	if disabled {
-		states:=alicorn.semantic_states_add({},.Disabled)
-		_ = alicorn.semantic_description(ui,.Button,"More actions",states=states)
-	} else {
-		alicorn.semantic_description(ui,.Button,"More actions",actions={.Press,.Focus})
-	}
+	alicorn.semantic_description(ui,.Button,"More actions",actions={.Press,.Focus})
 	append(&app.pinned.controls, Pinned_Control{id,pin,"more"})
 	if clicked { pinned_open_action_menu(app,ui.runtime,pin) }
 	return clicked
@@ -1033,11 +1045,16 @@ pinned_card_rule :: proc(ui: ^alicorn.UI, loc:=#caller_location) {
 pinned_card_actions :: proc(app: ^App, ui: ^alicorn.UI, pin: bridge.Pinned_Range) {
 	if gui.row(ui, label="Pinned source actions", height=PINNED_CARD_ACTION_HEIGHT, gap=4, align=.Center) {
 		pinned_card_space(ui, PINNED_CARD_INSET)
-		if pinned_button(app,ui,"Go to source","go",pin.id,width=112,disabled=pin.status!="current"||app.pinned.editing) { pinned_command(app,ui.runtime,"go_to_source",pin.id) }
+		transition_ready := pinned_edit_transition_ready(app)
+		go_blocked := app.pinned.editing && !transition_ready
+		if pinned_button(app,ui,"Go to source","go",pin.id,width=112,disabled=pin.status!="current"||go_blocked) { pinned_command(app,ui.runtime,"go_to_source",pin.id) }
+		if go_blocked { alicorn.tooltip(ui,"Finish the pending edit or input composition before navigating to source.") }
 		alicorn.container_begin(ui, .Container, style=alicorn.layout_style(grow=1))
 		alicorn.container_end(ui)
 		copy_too_large := pin.end_byte-pin.start_byte>64*1024
-		if !app.pinned.editing && pinned_button(app,ui,"Copy","copy",pin.id,width=58,disabled=pin.status!="current"||copy_too_large) { pinned_command(app,ui.runtime,"copy",pin.id) }
+		copy_blocked := app.pinned.editing && app.pinned.edit_pin==pin.id && !transition_ready
+		if pinned_button(app,ui,"Copy","copy",pin.id,width=58,disabled=pin.status!="current"||copy_too_large||copy_blocked) { pinned_command(app,ui.runtime,"copy",pin.id) }
+		if copy_blocked { alicorn.tooltip(ui,"Finish the pending edit or input composition before copying this passage.") }
 		if copy_too_large { alicorn.tooltip(ui,"Copy requires the complete range and is limited to 64 KiB; nothing will be copied for a larger pin.") }
 		pinned_card_space(ui, PINNED_CARD_INSET)
 	}
