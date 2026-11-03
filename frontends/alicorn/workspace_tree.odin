@@ -421,6 +421,12 @@ tree_activate_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row) {
 		alicorn.invalidate_root(rt, "Scratchpad workspace path resolution failed")
 		return
 	}
+	if app.workspace_search_mode {
+		if !workspace_search_deactivate(app, rt) {
+			delete(absolute_path, context.allocator)
+			return
+		}
+	}
 	if len(app.editor_edits) > 0 {
 		queued := deferred_action_enqueue(app, .Open_Path, path=absolute_path, disposition="preview")
 		delete(absolute_path, context.allocator)

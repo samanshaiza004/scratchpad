@@ -250,6 +250,10 @@ quick_open_execute :: proc(app: ^App, rt: ^alicorn.Runtime, path: string, from_b
 		return false
 	}
 	defer delete(resolved_path, context.temp_allocator)
+	if app.workspace_search_mode {
+		if !workspace_search_deactivate(app, rt) { return false }
+		app.editor_focus_pending = true
+	}
 	quick_open_close_surface(app, rt, false)
 	if from_build {
 		if !frame_deferred_action_schedule(app, .Open_Path, resolved_path) {

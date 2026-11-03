@@ -24,6 +24,18 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 		alicorn.invalidate_root(rt, "Scratchpad opened recent workspaces")
 		return
 	}
+	if command == action_id_for(ACTION_WORKSPACE_GO_TO_SYMBOL) {
+		symbol_picker_open_surface(app, rt)
+		return
+	}
+	if command == action_id_for(ACTION_WORKSPACE_SEARCH_OPEN) {
+		workspace_search_open_surface(app, rt)
+		return
+	}
+	if command == action_id_for(ACTION_DOCUMENT_CLOSE) && app.workspace_search_mode {
+		_ = workspace_search_close_tab(app, rt)
+		return
+	}
 	if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) || command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT) || command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET) {
 		key := host.Application_Key.Zoom_Reset
 		if command == action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN) { key = .Zoom_In }
@@ -566,10 +578,12 @@ init_menus :: proc(app: ^App) {
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_EDIT_DELETE_LINE), label="Delete Line", shortcut=host.Application_Menu_Shortcut{'K', {.Primary, .Shift}}},
 	}
-	app.workspace_items = [7]host.Application_Menu_Item{
+	app.workspace_items = [9]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FILE), label="New File"},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FOLDER), label="New Folder"},
+		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_GO_TO_SYMBOL), label="Go to Symbol…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'O', {.Primary, .Shift}}},
 		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SEARCH_OPEN), label="Search Workspace…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'F', {.Primary, .Shift}}},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_RECENT), label="Open Recent Workspace…", state=alicorn.Action_State{enabled=true}},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_REFRESH), label="Refresh Workspace", shortcut=host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}},
 		{kind=.Separator},

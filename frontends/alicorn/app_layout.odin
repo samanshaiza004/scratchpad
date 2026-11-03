@@ -39,6 +39,7 @@ build_app :: proc(
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
 	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
 	_ = find_capture_text_field(rt, app.quick_open_node, &app.quick_open_query)
+	_ = find_capture_text_field(rt, app.symbol_picker_query_node, &app.symbol_picker_query)
 	_ = find_capture_text_field(rt, app.editor_font_picker_query_node, &app.editor_font_picker_query)
 	if active, found := find_document(&app.backend.state, app.backend.state.active); found &&
 	   (active.view_kind == "image" || active.view_kind == "unsupported" || floating_window_contains(app, active.id)) {
@@ -52,8 +53,11 @@ build_app :: proc(
 		if floating_window_contains(app, active.id) { editor_accessibility_retire(app, rt) }
 	}
 	app.image_scroll_owner = 0
-	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
-	if app.workspace_outline_mode { projection_sidebar_prepare(app, rt) }
+	if app.workspace_search_tab_open { workspace_search_start_query(app, rt) }
+	if app.workspace_projection_mode || app.symbol_picker_open {
+		requested_first := app.symbol_picker_page_first if app.symbol_picker_open else -1
+		projection_sidebar_prepare(app, rt, requested_first)
+	}
 	clear(&app.editor_row_targets)
 	app.editor_input_anchor_node = 0
 	if !scratchpad_styles_ensure(app, rt) { set_error(app, "Could not initialize the warm style palette.") }
@@ -141,124 +145,15 @@ build_app :: proc(
 			)
 			app.workspace_search_edit_node = 0
 		}
-		if app.workspace_search_mode {
-			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=32))
-			app.workspace_search_query_node = query_node
-			if app.workspace_search_error != "" { gui.text(&ui, app.workspace_search_error) }
-			else if !state.has_workspace { gui.text(&ui, "Open a workspace to search.") }
-			else if app.workspace_search_query == "" { gui.text(&ui, "Type to search workspace files.") }
-			else if app.workspace_search_view.done && app.workspace_search_view.count == 0 { gui.text(&ui, "No matches") }
-			else if app.workspace_search_view.done {
-				count_text := fmt.tprintf("%d matches", app.workspace_search_view.count)
-				if app.workspace_search_view.truncated { count_text = fmt.tprintf("%s · result limit reached", count_text) }
-				gui.text(&ui, count_text)
-			} else {
-				gui.text(&ui, fmt.tprintf("Searching… %d matches", app.workspace_search_view.count))
-			}
-			if len(app.workspace_search_view.results) > 0 {
-				_ = workspace_search_edit_validate_window(app, rt)
-				search_palette := editor_markdown_palette(rt, app.workbench_theme)
-				search_list := alicorn.virtual_list_begin(&ui, len(app.workspace_search_view.results), WORKSPACE_SEARCH_ROW_HEIGHT, key=alicorn.key_string("scratchpad-workspace-search-results"), style=alicorn.layout_style(grow=1, clip=true), label="scratchpad-workspace-search-results", focusable=true)
-				app.workspace_search_results_owner = search_list.scroll.id
-				for position := search_list.first; position < search_list.last; position += 1 {
-					result := app.workspace_search_view.results[position]
-					active_edit := workspace_search_edit_session_matches(app, position)
-					selected := app.workspace_search_selected == position
-					row_color := alicorn.NO_BACKGROUND_COLOR
-					if selected { row_color = editor_markdown_tint(alicorn.style_color(&ui, .Selection), 0.14) }
-					alicorn.container_begin(&ui, .Container,
-						key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key),
-						label="workspace-search-result",
-						style=alicorn.layout_style(.Column, height=WORKSPACE_SEARCH_ROW_HEIGHT-4, padding=4, gap=2, clip=true),
-						color=row_color,
-					)
-					file_boundary := position == 0
-					if position > 0 && app.workspace_search_view.results[position-1].path != result.path { file_boundary = true }
-					show_file_heading := file_boundary || position == search_list.first
-					heading := fmt.tprintf("Line %d", result.line+1)
-					if show_file_heading { heading = fmt.tprintf("%s  ·  %d", result.path, result.line+1) }
-					if !result.editable { heading = fmt.tprintf("%s  ·  read-only", heading) }
-					heading_color := alicorn.style_color(&ui, .Muted_Text)
-					heading_weight := alicorn.FONT_WEIGHT_REGULAR
-					if file_boundary {
-						heading_color = alicorn.style_color(&ui, .Text)
-						heading_weight = alicorn.FONT_WEIGHT_MEDIUM
-					}
-					heading_node := gui.text(&ui, heading,
-						style=alicorn.layout_style(.Row, height=15),
-						color=heading_color,
-						text_style=alicorn.Text_Style{font_size=12, font_weight=heading_weight, overflow=.Ellipsis},
-					)
-					append(&app.workspace_search_pointer_targets, Workspace_Search_Pointer_Target{
-						node=heading_node,
-						generation=app.workspace_search_view.generation,
-						projection_key=result.projection_key,
-						kind=.Navigate_Source,
-					})
-					if active_edit {
-						if app.workspace_search_edit_ready {
-							edit_field := alicorn.text_field_controlled(&ui, &app.workspace_search_edit_buffer,
-								key=alicorn.key_pair(app.workspace_search_edit_generation, app.workspace_search_edit_projection_key),
-								style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true),
-								font=.Monospace,
-								text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
-							)
-							app.workspace_search_edit_node = edit_field.node
-							if edit_field.node != 0 {
-								_ = alicorn.semantic_text_field_label(&ui, fmt.tprintf("Search result in %s, line %d", result.path, result.line+1))
-								match_start := min(max(app.workspace_search_edit_match_start, 0), len(app.workspace_search_edit_buffer.text))
-								match_end := min(max(app.workspace_search_edit_match_end, match_start), len(app.workspace_search_edit_buffer.text))
-								if match_end > match_start {
-									match_paint := [?]alicorn.Text_Paint_Span{{
-										start=match_start,
-										end=match_end,
-										background=search_palette.workspace_search_background,
-										background_set=true,
-									}}
-									_ = alicorn.text_paint_spans(&ui, edit_field.node, match_paint[:])
-								}
-							}
-							if edit_field.changed { _ = workspace_search_edit_apply_change(app, rt) }
-						} else {
-							gui.text(&ui, "Validating source context…", style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT), text_style=alicorn.Text_Style{font_size=13})
-						}
-					} else {
-						preview := workspace_search_result_preview(result)
-						preview_node := gui.text(&ui, preview.text,
-							style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true),
-							font=.Monospace,
-							color=alicorn.style_color(&ui, .Text) if result.editable else alicorn.style_color(&ui, .Muted_Text),
-							text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
-						)
-						if result.editable {
-							match_start := preview.match_start
-							match_end := preview.match_end
-							if match_start >= preview.prefix_bytes && match_end > match_start {
-								match_paint := [?]alicorn.Text_Paint_Span{{
-									start=match_start,
-									end=match_end,
-									background=search_palette.workspace_search_background,
-									background_set=true,
-								}}
-								_ = alicorn.text_paint_spans(&ui, preview_node, match_paint[:])
-							}
-						}
-						append(&app.workspace_search_pointer_targets, Workspace_Search_Pointer_Target{
-							node=preview_node,
-							generation=app.workspace_search_view.generation,
-							projection_key=result.projection_key,
-							kind=.Edit_Text,
-						})
-					}
-				alicorn.container_end(&ui)
-				}
-				alicorn.virtual_list_end(&ui, search_list)
-			}
-		} else if app.workspace_outline_mode {
+		if app.workspace_projection_mode {
 			projection_sidebar_build(app, &ui, rt)
 		} else {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center), shape=scratchpad_surface_shape(app, 4), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			gui.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+			if gui.button(&ui, "Symbols…", key="workspace-go-to-symbol", width=82, height=23, variant=.Toolbar,
+				text_style=alicorn.Text_Style{font_size=11, overflow=.Ellipsis}) {
+				symbol_picker_open_surface(app, rt)
+			}
 			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
 		}
@@ -281,8 +176,8 @@ build_app :: proc(
 			scratchpad_document_tabs_build(app, &ui, rt, width=0, height=32, compact=false, show_empty=true)
 			alicorn.surface_end(&ui)
 		}
-		pinned_side_open := app.pinned.visible && !app.pinned.narrow_source && f32(logical_width)-app.workspace_sidebar_width >= 760
-		show_source := !app.pinned.visible || pinned_side_open || app.pinned.narrow_source
+		pinned_side_open := !app.workspace_search_mode && app.pinned.visible && !app.pinned.narrow_source && f32(logical_width)-app.workspace_sidebar_width >= 760
+		show_source := app.workspace_search_mode || !app.pinned.visible || pinned_side_open || app.pinned.narrow_source
 		app.pinned.single_pane=app.pinned.visible && !pinned_side_open && !app.pinned.narrow_source
 		if app.find_open && show_source {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
@@ -354,7 +249,9 @@ build_app :: proc(
 		paper_padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
 		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75), open_top_edge=app.document_connected_tab_node)
 		build_startup_notice(app, &ui, rt)
-		if active, found := find_document(state, state.active); found {
+		if app.workspace_search_mode {
+			workspace_search_editor_build(app, &ui, rt)
+		} else if active, found := find_document(state, state.active); found {
 			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
 				if floating_window_contains(app, active.id) {
 					if gui.column(&ui, label="floating-document-placeholder", height=-1, grow=1, align=.Center, justify=.Center, gap=10) {
@@ -391,8 +288,10 @@ build_app :: proc(
 		}
 		alicorn.style_environment_pop(&ui, editor_theme_scope)
 		alicorn.surface_end(&ui)
-		if active, found := find_document(state, state.active); found && !floating_window_contains(app, active.id) {
-			build_document_status(app, &ui, rt, active)
+		if !app.workspace_search_mode {
+			if active, found := find_document(state, state.active); found && !floating_window_contains(app, active.id) {
+				build_document_status(app, &ui, rt, active)
+			}
 		}
 		}
 		if pinned_side_open {
@@ -415,7 +314,7 @@ build_app :: proc(
 	}
 	alicorn.container_end(&ui)
 
-	if app.shutdown_intent == .None && app.close_document_id == "" && !app.save_as_confirmation_open && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.recent_workspaces_open && !app.command_palette_open && !app.quick_open_open {
+	if app.shutdown_intent == .None && app.close_document_id == "" && !app.save_as_confirmation_open && app.workspace_mutation_kind == .None && !app.settings_surface_open && !app.recent_workspaces_open && !app.command_palette_open && !app.quick_open_open && !app.symbol_picker_open {
 		pinned_context_menu_build(app,&ui,rt)
 		workspace_context_menu_build(app, &ui, rt)
 	}
@@ -514,6 +413,8 @@ build_app :: proc(
 		if app.editor_font_picker_open { scratchpad_editor_font_picker_build(app, &ui, rt) }
 	} else if app.quick_open_open {
 		quick_open_build(app, &ui, rt)
+	} else if app.symbol_picker_open {
+		symbol_picker_build(app, &ui, rt)
 	} else if app.command_palette_open {
 		command_palette_build(app, &ui, rt)
 	}
@@ -541,6 +442,7 @@ build_app :: proc(
 	frame_deferred_action_run(app, rt)
 	command_palette_restore_focus_after_frame(app, rt)
 	quick_open_restore_focus_after_frame(app, rt)
+	symbol_picker_restore_focus_after_frame(app, rt)
 	scratchpad_editor_font_picker_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
 	workspace_search_transition_after_frame(app, rt)
@@ -642,7 +544,8 @@ Workspace_Panel_Tabs_Nodes :: struct {
 	row:    alicorn.Node_ID,
 	files:  alicorn.Node_ID,
 	search: alicorn.Node_ID,
-	outline: alicorn.Node_ID,
+	tasks:  alicorn.Node_ID,
+	links:  alicorn.Node_ID,
 }
 
 scratchpad_workspace_panel_tabs_build :: proc(
@@ -673,7 +576,7 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		ui, "Files",
 		key=alicorn.key_string("workspace-panel-files"),
 		style=button_style,
-		state=alicorn.Button_State{selected=!app.workspace_search_mode && !app.workspace_outline_mode},
+		state=alicorn.Button_State{selected=!app.workspace_search_mode && !app.workspace_projection_mode},
 		text_style=button_text,
 		content_style=button_content,
 		variant=.Toolbar,
@@ -684,24 +587,10 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		alicorn.button_end(ui)
 	}
 	if files_clicked {
-		search_source_changed := app.workspace_search_edit_active && app.workspace_search_edit_source_changed
-		can_leave := true
-		if app.workspace_search_edit_active {
-			finished := workspace_search_edit_finish(app, app.ui_description_runtime, refresh=false)
-			can_leave = finished || app.workspace_search_edit_finish_pending
-		}
-		if can_leave {
-			workspace_search_cancel_active(app)
-			workspace_search_match_clear_all(app)
-			app.workspace_search_mode = false
-			app.workspace_outline_mode = false
-			app.workspace_search_query_node = 0
+		if workspace_search_deactivate(app, app.ui_description_runtime) {
+			app.workspace_projection_mode = false
 			app.editor_focus_pending = true
-			if search_source_changed {
-				workspace_search_restore_selection_clear(app)
-				find_set_message(&app.workspace_search_started_query, "")
-				find_set_message(&app.workspace_search_started_root, "")
-			}
+			alicorn.invalidate_root(app.ui_description_runtime, "Scratchpad Files surface selected")
 		}
 	}
 	search_id, search_clicked := alicorn.button_begin(
@@ -719,48 +608,53 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		alicorn.button_end(ui)
 	}
 	if search_clicked {
-		app.workspace_outline_mode = false
-		app.workspace_search_mode = true
-		app.workspace_search_focus_pending = true
+		workspace_search_open_surface(app, app.ui_description_runtime)
 	}
-	outline_id, outline_clicked := alicorn.button_begin(
-		ui, "Outline",
-		key=alicorn.key_string("workspace-panel-outline"),
+	tasks_id, tasks_clicked := alicorn.button_begin(
+		ui, "Tasks",
+		key=alicorn.key_string("workspace-panel-tasks"),
 		style=button_style,
-		state=alicorn.Button_State{selected=app.workspace_outline_mode},
+		state=alicorn.Button_State{selected=app.workspace_projection_mode && app.structural_projection_kind == "tasks"},
 		text_style=button_text,
 		content_style=button_content,
 		variant=.Toolbar,
 	)
-	result.outline = outline_id
-	if outline_id != 0 {
-		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, outline_id, .Interactive) }
+	result.tasks = tasks_id
+	if tasks_id != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, tasks_id, .Interactive) }
 		alicorn.button_end(ui)
 	}
-	if outline_clicked {
-		search_source_changed := app.workspace_search_edit_active && app.workspace_search_edit_source_changed
-		can_leave := true
-		if app.workspace_search_edit_active {
-			finished := workspace_search_edit_finish(app, app.ui_description_runtime, refresh=false)
-			can_leave = finished || app.workspace_search_edit_finish_pending
-		}
-		if can_leave {
-			workspace_search_cancel_active(app)
-			workspace_search_match_clear_all(app)
-			app.workspace_search_mode = false
-			app.workspace_outline_mode = true
-			app.structural_projection_kind = "symbols"
-			app.workspace_search_query_node = 0
-			app.workspace_search_focus_pending = false
-			if search_source_changed {
-				workspace_search_restore_selection_clear(app)
-				find_set_message(&app.workspace_search_started_query, "")
-				find_set_message(&app.workspace_search_started_root, "")
-			}
-		}
+	if tasks_clicked { workspace_projection_select(app, app.ui_description_runtime, "tasks") }
+	links_id, links_clicked := alicorn.button_begin(
+		ui, "Links",
+		key=alicorn.key_string("workspace-panel-links"),
+		style=button_style,
+		state=alicorn.Button_State{selected=app.workspace_projection_mode && app.structural_projection_kind == "links"},
+		text_style=button_text,
+		content_style=button_content,
+		variant=.Toolbar,
+	)
+	result.links = links_id
+	if links_id != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, links_id, .Interactive) }
+		alicorn.button_end(ui)
 	}
+	if links_clicked { workspace_projection_select(app, app.ui_description_runtime, "links") }
 	alicorn.container_end(ui)
 	return result
+}
+
+workspace_projection_select :: proc(app: ^App, rt: ^alicorn.Runtime, kind: string) {
+	if app == nil || rt == nil { return }
+	if !workspace_search_deactivate(app, rt) { return }
+	changed := !app.workspace_projection_mode || app.structural_projection_kind != kind
+	app.workspace_projection_mode = true
+	if changed {
+		app.structural_projection_kind = kind
+		app.structural_view_scroll_owner = 0
+		projection_sidebar_window_clear(app)
+	}
+	if changed { alicorn.invalidate_root(rt, "Scratchpad structural projection selected") }
 }
 
 scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
@@ -821,6 +715,7 @@ scratchpad_document_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alic
 		if app.floating_window != nil && document.id == app.floating_window.document_id { continue }
 		visible_tabs += 1
 	}
+	if app.workspace_search_tab_open { visible_tabs += 1 }
 	if visible_tabs > 0 {
 		tabs := alicorn.container_begin(ui, .Container,
 			label="scratchpad-titlebar-tabs-region",
@@ -882,6 +777,7 @@ scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alico
 		if app.floating_window != nil && document.id == app.floating_window.document_id { continue }
 		visible_tabs += 1
 	}
+	if app.workspace_search_tab_open { visible_tabs += 1 }
 	drag_reserve := min(160, available_width*0.2)
 	tab_width := min(f32(visible_tabs)*180, max(available_width-drag_reserve, 0))
 	if visible_tabs > 0 && tab_width > 0 {
@@ -928,14 +824,14 @@ scratchpad_document_tabs_build :: proc(
 	if app.floating_window != nil { detached_document_id = app.floating_window.document_id }
 	tab_document_indices := floating_window_tab_document_indices(state.documents, detached_document_id, context.temp_allocator)
 	defer delete(tab_document_indices)
-	if len(tab_document_indices) == 0 {
+	if len(tab_document_indices) == 0 && !app.workspace_search_tab_open {
 		if show_empty {
 			empty_label := "No documents open" if len(state.documents) == 0 else "No documents in this window"
 			gui.text(ui, empty_label, style=alicorn.layout_style(.Row, grow=1, height=height))
 		}
 		return
 	}
-	tab_items := make([dynamic]alicorn.Tab_Bar_Item, 0, len(tab_document_indices), allocator=context.temp_allocator)
+	tab_items := make([dynamic]alicorn.Tab_Bar_Item, 0, len(tab_document_indices)+1, allocator=context.temp_allocator)
 	defer delete(tab_items)
 	for index in tab_document_indices {
 		document := state.documents[index]
@@ -951,6 +847,17 @@ scratchpad_document_tabs_build :: proc(
 			closable=true,
 			dirty=document.dirty,
 			semantic_id=document_tab_semantic_id(document.id),
+		})
+	}
+	if app.workspace_search_tab_open {
+		search_tooltip := "Workspace Search"
+		if app.workspace_search_query != "" { search_tooltip = fmt.tprintf("Search: %s", app.workspace_search_query) }
+		append(&tab_items, alicorn.Tab_Bar_Item{
+			key=alicorn.key_string("scratchpad-workspace-search-tab"),
+			label="Search",
+			tooltip=search_tooltip,
+			selected=app.workspace_search_mode,
+			closable=true,
 		})
 	}
 	tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
@@ -987,11 +894,20 @@ scratchpad_document_tabs_build :: proc(
 		tab_style,
 	)
 	scratchpad_document_tabs_reorder_motion(
-		app, ui, rt, state.documents, tab_document_indices[:], tab_result.item_nodes,
+		app, ui, rt, state.documents, tab_document_indices[:], tab_result.item_nodes[:len(tab_document_indices)],
 		compact && app.floating_window == nil,
 	)
 	if compact && !app.find_open { app.document_connected_tab_node = tab_result.selected_tab }
-	if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(tab_document_indices) {
+	if tab_result.action != .None && tab_result.item_index == len(tab_document_indices) && app.workspace_search_tab_open {
+		if tab_result.action == .Select {
+			workspace_search_open_surface(app, rt)
+		} else {
+			_ = workspace_search_close_tab(app, rt)
+		}
+	} else if tab_result.action != .None && tab_result.item_index >= 0 && tab_result.item_index < len(tab_document_indices) {
+		if tab_result.action == .Select && app.workspace_search_mode {
+			if !workspace_search_deactivate(app, rt) { return }
+		}
 		document_id := state.documents[tab_document_indices[tab_result.item_index]].id
 		action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
 		if !frame_deferred_action_schedule(app, action, document_id) {

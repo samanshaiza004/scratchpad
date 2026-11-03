@@ -274,6 +274,8 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	case action_id_for(ACTION_VIEW_THEME_COOL_LIGHT): return ACTION_VIEW_THEME_COOL_LIGHT
 	case action_id_for(ACTION_VIEW_THEME_FLAT): return ACTION_VIEW_THEME_FLAT
 	case action_id_for(ACTION_VIEW_THEME_RELIEF): return ACTION_VIEW_THEME_RELIEF
+	case action_id_for(ACTION_WORKSPACE_GO_TO_SYMBOL): return ACTION_WORKSPACE_GO_TO_SYMBOL
+	case action_id_for(ACTION_WORKSPACE_SEARCH_OPEN): return ACTION_WORKSPACE_SEARCH_OPEN
 	case action_id_for(ACTION_WORKSPACE_SETTINGS): return ACTION_WORKSPACE_SETTINGS
 	case action_id_for(ACTION_EDIT_CUT): return ACTION_EDIT_CUT
 	case action_id_for(ACTION_EDIT_COPY): return ACTION_EDIT_COPY
@@ -451,6 +453,7 @@ command_palette_execute_selected :: proc(app: ^App, rt: ^alicorn.Runtime) -> boo
 command_palette_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
 	scratchpad_editor_font_picker_text_change(state, rt, change)
 	quick_open_text_change(state, rt, change)
+	symbol_picker_text_change(state, rt, change)
 	app := cast(^App)state
 	if app == nil || rt == nil || !app.command_palette_open || change.node != app.command_palette_node || !change.changed { return }
 	find_set_message(&app.command_palette_query, change.text)

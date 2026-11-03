@@ -45,7 +45,7 @@ projection_sidebar_set_identity :: proc(app: ^App, document_id, kind: string) {
 	}
 }
 
-projection_sidebar_prepare :: proc(app: ^App, rt: ^alicorn.Runtime) {
+projection_sidebar_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, requested_first: int = -1) {
 	if app == nil || rt == nil || !app.backend.started { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found || document.view_kind == "image" || document.view_kind == "unsupported" ||
@@ -67,8 +67,8 @@ projection_sidebar_prepare :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		find_set_message(&app.structural_view_error, "")
 	}
 
-	first_visible := 0
-	if !identity_changed && app.structural_view_scroll_owner != 0 {
+	first_visible := max(requested_first, 0) if requested_first >= 0 else 0
+	if requested_first < 0 && !identity_changed && app.structural_view_scroll_owner != 0 {
 		scroll := alicorn.scroll_region_state(rt, app.structural_view_scroll_owner)
 		if scroll.id != 0 {
 			first_visible = max(int(scroll.offset_y/STRUCTURAL_VIEW_ROW_HEIGHT), 0)
@@ -130,11 +130,11 @@ projection_sidebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtim
 		return
 	}
 
-	if gui.row(ui, label="scratchpad-structural-projection-kind", height=28, gap=3, align=.Center) {
-		projection_sidebar_kind_button(app, ui, rt, "Tasks", "tasks")
-		projection_sidebar_kind_button(app, ui, rt, "Outline", "symbols")
-		projection_sidebar_kind_button(app, ui, rt, "Links", "links")
-	}
+	gui.text(ui, projection_sidebar_title(app.structural_projection_kind),
+		style=alicorn.layout_style(.Row, height=STRUCTURAL_VIEW_HEADER_HEIGHT),
+		color=alicorn.style_color(ui, .Text),
+		text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_MEDIUM},
+	)
 	gui.text(ui, active.path,
 		style=alicorn.layout_style(.Row, height=STRUCTURAL_VIEW_HEADER_HEIGHT, clip=true),
 		color=alicorn.style_color(ui, .Muted_Text),
@@ -197,24 +197,6 @@ projection_sidebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtim
 		projection_sidebar_row(app, ui, rt, segment)
 	}
 	alicorn.virtual_list_end(ui, list)
-}
-
-projection_sidebar_kind_button :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, label, kind: string) {
-	if gui.button(ui, label,
-		key=alicorn.key_string(fmt.tprintf("scratchpad-structural-kind-%s", kind)),
-		grow=1,
-		height=26,
-		state=alicorn.Button_State{selected=app.structural_projection_kind == kind},
-		variant=.Toolbar,
-		text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
-	) {
-		if app.structural_projection_kind != kind {
-			app.structural_projection_kind = kind
-			app.structural_view_scroll_owner = 0
-			projection_sidebar_window_clear(app)
-			alicorn.invalidate_root(rt, "Scratchpad structural projection changed")
-		}
-	}
 }
 
 projection_sidebar_row :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, segment: bridge.Semantic_View_Segment) {
@@ -323,7 +305,7 @@ projection_sidebar_empty_message :: proc(kind: string) -> string {
 projection_sidebar_title :: proc(kind: string) -> string {
 	switch kind {
 	case "tasks": return "Tasks"
-	case "symbols": return "Outline"
+	case "symbols": return "Symbols"
 	case "links": return "Links"
 	}
 	return "Structure"

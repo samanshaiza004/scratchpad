@@ -318,6 +318,11 @@ editor_migrate_after_save_as :: proc(app: ^App, rt: ^alicorn.Runtime, old_id: st
 
 open_path_from_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 	defer delete(path, context.allocator)
+	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) {
+		set_error(app, "Finish the current Search edit before opening another file.")
+		alicorn.invalidate_root(rt, "Scratchpad could not leave Search before opening a file")
+		return
+	}
 	if action, found := find_action(&app.backend.state, app.dialog_action); found {
 		cause := alicorn.cause_begin(rt, .Application, "native file dialog selection", action_id_for(action.id))
 		alicorn.trace_action(rt, action_id_for(action.id), action.title)

@@ -782,6 +782,66 @@ workspace_search_cancel_active :: proc(app: ^App) {
 	find_set_message(&app.workspace_search_started_root, "")
 }
 
+workspace_search_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || app.shutdown_intent != .None ||
+	   app.close_document_id != "" || app.workspace_mutation_kind != .None ||
+	   app.settings_surface_open || app.recent_workspaces_open {
+		return
+	}
+	if app.find_open { find_close_surface(app) }
+	app.workspace_search_tab_open = true
+	app.workspace_search_mode = true
+	app.workspace_projection_mode = false
+	app.workspace_search_focus_pending = true
+	app.workspace_search_query_node = 0
+	app.editor_focus_pending = false
+	alicorn.invalidate_root(rt, "Scratchpad Workspace Search tab opened")
+}
+
+// Deactivating Search switches the visible editor surface but preserves its
+// query, result snapshot, and tab. Source edits are finished before switching
+// so the projection never hides an unacknowledged edit or IME composition.
+workspace_search_deactivate :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil { return true }
+	search_source_changed := app.workspace_search_edit_active && app.workspace_search_edit_source_changed
+	if app.workspace_search_edit_active {
+		finished := workspace_search_edit_finish(app, rt, refresh=false)
+		if !finished && !app.workspace_search_edit_finish_pending { return false }
+	}
+	app.workspace_search_mode = false
+	app.workspace_search_query_node = 0
+	app.workspace_search_focus_pending = false
+	app.editor_focus_pending = true
+	if search_source_changed {
+		workspace_search_restore_selection_clear(app)
+		find_set_message(&app.workspace_search_started_query, "")
+		find_set_message(&app.workspace_search_started_root, "")
+	}
+	return true
+}
+
+workspace_search_close_tab :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil { return false }
+	if app.workspace_search_edit_active && !workspace_search_edit_finish(app, rt, refresh=false) {
+		return false
+	}
+	workspace_search_cancel_active(app)
+	workspace_search_match_clear_all(app)
+	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
+	app.workspace_search_tab_open = false
+	app.workspace_search_mode = false
+	app.workspace_search_query_node = 0
+	app.workspace_search_focus_pending = false
+	app.workspace_search_selected = -1
+	find_set_message(&app.workspace_search_query, "")
+	find_set_message(&app.workspace_search_started_query, "")
+	find_set_message(&app.workspace_search_started_root, "")
+	find_set_message(&app.workspace_search_error, "")
+	app.editor_focus_pending = true
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad Workspace Search tab closed") }
+	return true
+}
+
 workspace_search_edit_has_pending_intents :: proc(app: ^App) -> bool {
 	if app == nil { return false }
 	for edit in app.editor_edits {
@@ -1675,6 +1735,7 @@ workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result
 		app.find_open = false
 		app.find_query_node = 0
 		find_discard_saved_selection(app)
+		if app.workspace_search_mode { _ = workspace_search_deactivate(app, rt) }
 		app.editor_focus_pending = true
 		handle_command_result(app, rt, &response)
 		if response.editor_selection.document_id != "" {

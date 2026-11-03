@@ -222,6 +222,10 @@ application_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.
 		_ = quick_open_pointer(app, rt, event, target)
 		return
 	}
+	if app.symbol_picker_open {
+		_ = symbol_picker_pointer(app, rt, event, target)
+		return
+	}
 	if app.command_palette_open {
 		_ = command_palette_pointer(app, rt, event, target)
 		return

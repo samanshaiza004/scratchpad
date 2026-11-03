@@ -12,6 +12,7 @@ ACTION_FILE_OPEN       :: "file.open"
 ACTION_FILE_QUICK_OPEN :: "file.quick-open"
 ACTION_WORKSPACE_OPEN  :: "workspace.open"
 ACTION_WORKSPACE_RECENT :: "workspace.open-recent"
+ACTION_WORKSPACE_SEARCH_OPEN :: "workspace.search"
 ACTION_FILE_SAVE       :: "file.save"
 ACTION_FILE_SAVE_AS    :: "file.save-as"
 ACTION_DOCUMENT_CLOSE  :: "document.close"
@@ -51,6 +52,7 @@ ACTION_WORKSPACE_RENAME :: "workspace.rename"
 ACTION_WORKSPACE_MOVE :: "workspace.move"
 ACTION_WORKSPACE_TRASH :: "workspace.trash"
 ACTION_WORKSPACE_SEARCH_GO_TO_SOURCE :: "workspace-search.go-to-source"
+ACTION_WORKSPACE_GO_TO_SYMBOL :: "workspace.go-to-symbol"
 ACTION_EDIT_UNDO       :: "edit.undo"
 ACTION_EDIT_REDO       :: "edit.redo"
 ACTION_EDIT_CUT        :: "edit.cut"
@@ -242,7 +244,20 @@ App :: struct {
 	settings_category: Settings_Category,
 	recent_workspaces_open: bool,
 	workspace_search_mode:  bool,
-	workspace_outline_mode: bool,
+	workspace_search_tab_open: bool,
+	workspace_projection_mode: bool,
+	symbol_picker_open: bool,
+	symbol_picker_query: string,
+	symbol_picker_query_node: alicorn.Node_ID,
+	symbol_picker_overlay_node: alicorn.Node_ID,
+	symbol_picker_panel_node: alicorn.Node_ID,
+	symbol_picker_results_owner: alicorn.Node_ID,
+	symbol_picker_focus_pending: bool,
+	symbol_picker_previous_focus: alicorn.Node_ID,
+	symbol_picker_previous_search_mode: bool,
+	symbol_picker_previous_projection_kind: string,
+	symbol_picker_page_first: int,
+	symbol_picker_selected_index: int,
 	structural_projection_kind: string,
 	structural_view_window: bridge.Semantic_View_Window,
 	structural_view_owned: bool,
@@ -357,7 +372,7 @@ App :: struct {
 	dialog_action:          string,
 	file_items:             [7]host.Application_Menu_Item,
 	edit_items:             [11]host.Application_Menu_Item,
-	workspace_items:        [7]host.Application_Menu_Item,
+	workspace_items:        [9]host.Application_Menu_Item,
 	document_items:         [12]host.Application_Menu_Item,
 	view_items:             [15]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
@@ -1009,6 +1024,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		}
 	}
 	if app.quick_open_open { return quick_open_handle_key(app, rt, key) }
+	if app.symbol_picker_open { return symbol_picker_handle_key(app, rt, key) }
 	if app.go_to_line_open {
 		if key == .Escape { go_to_line_close(app, rt, true); return true }
 		if key == .Return { return go_to_line_submit(app, rt) }
@@ -1078,11 +1094,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return true
 	}
 	if key == .Workspace_Search {
-		if app.find_open { find_close_surface(app) }
-		app.workspace_search_mode = true
-		app.workspace_search_focus_pending = true
-		app.editor_focus_pending = false
-		alicorn.invalidate_root(rt, "Scratchpad Workspace Search opened")
+		workspace_search_open_surface(app, rt)
 		return true
 	}
 	if key == .Escape && app.workspace_search_edit_active &&
@@ -1114,12 +1126,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return true
 	}
 	if key == .Escape && app.workspace_search_mode {
-		workspace_search_cancel_active(app)
-		workspace_search_match_clear_all(app)
-		app.workspace_search_mode = false
-		app.workspace_search_query_node = 0
-		app.editor_focus_pending = true
-		alicorn.invalidate_root(rt, "Scratchpad Workspace Search closed")
+		_ = workspace_search_close_tab(app, rt)
 		return true
 	}
 	if key == .Return && app.find_open && alicorn.focused_node(rt) == app.find_query_node {
@@ -3600,6 +3607,7 @@ application_stop :: proc(state: rawptr) {
 	quick_open_destroy(app)
 	scratchpad_editor_font_destroy(app)
 	find_set_message(&app.workspace_search_query, "")
+	find_set_message(&app.symbol_picker_query, "")
 	find_set_message(&app.workspace_search_started_query, "")
 	find_set_message(&app.workspace_search_started_root, "")
 	find_set_message(&app.workspace_search_error, "")
