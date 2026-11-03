@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"scratchpad/commands"
+	"scratchpad/document"
 	"scratchpad/editor"
 	"scratchpad/language"
 )
@@ -240,64 +241,12 @@ func (a *Application) Dispatch(command PresentationCommand) error {
 // the editor operation itself, so branched undo/redo history cannot make its
 // acknowledgement ambiguous.
 func (a *Application) ReplaceDocument(command PresentationCommand) (editor.AppliedEdit, error) {
-	if a == nil {
-		return editor.AppliedEdit{}, errors.New("nil application")
-	}
-	if command.Kind != PresentationReplaceDocument {
-		return editor.AppliedEdit{}, errors.New("not a document replacement command")
-	}
-	if _, readOnly := a.FileViews[command.DocumentID]; readOnly {
-		return editor.AppliedEdit{}, ErrReadOnlyFileView
-	}
-	doc := a.Documents[command.DocumentID]
-	if doc == nil {
-		return editor.AppliedEdit{}, errors.New("unknown document")
-	}
-	if doc.Revision() != command.EditorRevision {
-		return editor.AppliedEdit{}, fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, command.EditorRevision, doc.Revision())
-	}
-	if command.ActionID == string(commands.MarkdownEnter) {
-		if doc.RootLanguage != "markdown" || len(command.Replacement) != 1 || command.Replacement[0] != '\n' {
-			return editor.AppliedEdit{}, errors.New("markdown Enter intent requires a Markdown document and a single LF sentinel")
-		}
-		cursorByte := command.StartByte
-		selectionCollapsed := command.StartByte == command.EndByte
-		if command.HasSelectionState {
-			cursorByte = command.BeforeCursorByte
-			selectionCollapsed = command.BeforeAnchorByte == command.BeforeCursorByte
-		}
-		line, ok := doc.Editor.Buffer.LineAt(cursorByte)
-		if !ok {
-			return editor.AppliedEdit{}, errors.New("markdown Enter position is outside the document")
-		}
-		lineStart, lineEnd, ok := doc.Editor.Buffer.LineRange(line)
-		if !ok || cursorByte < lineStart || cursorByte > lineEnd {
-			return editor.AppliedEdit{}, errors.New("markdown Enter position is outside its logical line")
-		}
-		prefixEnd := min(cursorByte, lineStart+4096)
-		linePrefix, readErr := doc.Editor.Buffer.Bytes(lineStart, prefixEnd)
-		if readErr != nil {
-			return editor.AppliedEdit{}, readErr
-		}
-		atLineEnd := selectionCollapsed && cursorByte == lineEnd
-		projection := commands.MarkdownEnterPrefix(linePrefix, atLineEnd)
-		start := command.StartByte
-		if projection.Breakout {
-			start = lineStart + projection.RemoveFrom
-		}
-		replacement := make([]byte, 1, len(projection.Prefix)+1)
-		replacement[0] = '\n'
-		replacement = append(replacement, projection.Prefix...)
-		command.StartByte = start
-		command.Replacement = doc.Editor.NormalizeLineEndings(replacement)
-		if command.HasSelectionState {
-			cursor := start + len(command.Replacement)
-			command.AfterAnchorByte, command.AfterCursorByte = cursor, cursor
-		}
+	command, doc, err := a.prepareDocumentReplacement(command)
+	if err != nil {
+		return editor.AppliedEdit{}, err
 	}
 	before := doc.Revision()
 	var applied editor.AppliedEdit
-	var err error
 	if command.HasSelectionState && command.TypingGroupID != 0 {
 		applied, err = doc.ReplaceTypingWithSelectionStateResult(
 			command.StartByte, command.EndByte, command.Replacement,
@@ -321,6 +270,68 @@ func (a *Application) ReplaceDocument(command PresentationCommand) (editor.Appli
 		a.touchPresentation()
 	}
 	return applied, nil
+}
+
+// prepareDocumentReplacement resolves application-generated replacement text
+// before any mutation. Projection edits use the normalized range and bytes to
+// validate their source boundary before committing.
+func (a *Application) prepareDocumentReplacement(command PresentationCommand) (PresentationCommand, *document.Document, error) {
+	if a == nil {
+		return PresentationCommand{}, nil, errors.New("nil application")
+	}
+	if command.Kind != PresentationReplaceDocument {
+		return PresentationCommand{}, nil, errors.New("not a document replacement command")
+	}
+	if _, readOnly := a.FileViews[command.DocumentID]; readOnly {
+		return PresentationCommand{}, nil, ErrReadOnlyFileView
+	}
+	doc := a.Documents[command.DocumentID]
+	if doc == nil {
+		return PresentationCommand{}, nil, errors.New("unknown document")
+	}
+	if doc.Revision() != command.EditorRevision {
+		return PresentationCommand{}, nil, fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, command.EditorRevision, doc.Revision())
+	}
+	if command.ActionID == string(commands.MarkdownEnter) {
+		if doc.RootLanguage != "markdown" || len(command.Replacement) != 1 || command.Replacement[0] != '\n' {
+			return PresentationCommand{}, nil, errors.New("markdown Enter intent requires a Markdown document and a single LF sentinel")
+		}
+		cursorByte := command.StartByte
+		selectionCollapsed := command.StartByte == command.EndByte
+		if command.HasSelectionState {
+			cursorByte = command.BeforeCursorByte
+			selectionCollapsed = command.BeforeAnchorByte == command.BeforeCursorByte
+		}
+		line, ok := doc.Editor.Buffer.LineAt(cursorByte)
+		if !ok {
+			return PresentationCommand{}, nil, errors.New("markdown Enter position is outside the document")
+		}
+		lineStart, lineEnd, ok := doc.Editor.Buffer.LineRange(line)
+		if !ok || cursorByte < lineStart || cursorByte > lineEnd {
+			return PresentationCommand{}, nil, errors.New("markdown Enter position is outside its logical line")
+		}
+		prefixEnd := min(cursorByte, lineStart+4096)
+		linePrefix, readErr := doc.Editor.Buffer.Bytes(lineStart, prefixEnd)
+		if readErr != nil {
+			return PresentationCommand{}, nil, readErr
+		}
+		atLineEnd := selectionCollapsed && cursorByte == lineEnd
+		projection := commands.MarkdownEnterPrefix(linePrefix, atLineEnd)
+		start := command.StartByte
+		if projection.Breakout {
+			start = lineStart + projection.RemoveFrom
+		}
+		replacement := make([]byte, 1, len(projection.Prefix)+1)
+		replacement[0] = '\n'
+		replacement = append(replacement, projection.Prefix...)
+		command.StartByte = start
+		command.Replacement = doc.Editor.NormalizeLineEndings(replacement)
+		if command.HasSelectionState {
+			cursor := start + len(command.Replacement)
+			command.AfterAnchorByte, command.AfterCursorByte = cursor, cursor
+		}
+	}
+	return command, doc, nil
 }
 
 // UndoDocument applies one authoritative edit-history step. An empty ID

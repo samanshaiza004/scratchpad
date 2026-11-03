@@ -75,11 +75,12 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 	pinned_surface_test_frame(&f)
 	heading:=pinned_surface_test_control(&f.app,pin.id,"heading")
 	go_node:=pinned_surface_test_control(&f.app,pin.id,"go")
+	edit_node:=pinned_surface_test_control(&f.app,pin.id,"edit")
 	copy_node:=pinned_surface_test_control(&f.app,pin.id,"copy")
 	more:=pinned_surface_test_control(&f.app,pin.id,"more")
 	filename:=document_title(pin.path)
-	for check in ([4]struct {node: alicorn.Node_ID, label: string}{
-		{heading,filename},{go_node,"Go to source"},{copy_node,"Copy"},{more,"More actions"},
+	for check in ([5]struct {node: alicorn.Node_ID, label: string}{
+		{heading,filename},{go_node,"Go to source"},{edit_node,"Edit passage"},{copy_node,"Copy"},{more,"More actions"},
 	}) {
 		info,ok:=alicorn.node_info(&f.rt,check.node)
 		testing.expect(t,check.node!=0 && ok && info.bounds.w>0 && info.bounds.h>0,
@@ -87,9 +88,12 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 		if check.node!=0 {testing.expect(t,pinned_surface_test_button_semantics(&f.rt,check.node,check.label)==1,"each control should expose exactly one accessible button label")}
 	}
 	go_info,_:=alicorn.node_info(&f.rt,go_node)
+	edit_info,_:=alicorn.node_info(&f.rt,edit_node)
 	copy_info,_:=alicorn.node_info(&f.rt,copy_node)
 	more_info,_:=alicorn.node_info(&f.rt,more)
 	testing.expect(t,!pinned_surface_test_rects_overlap(go_info.bounds,copy_info.bounds) &&
+		!pinned_surface_test_rects_overlap(go_info.bounds,edit_info.bounds) &&
+		!pinned_surface_test_rects_overlap(edit_info.bounds,copy_info.bounds) &&
 		!pinned_surface_test_rects_overlap(go_info.bounds,more_info.bounds) &&
 		!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
 		"Go, Copy and overflow controls must not overlap in the source-card action row")
@@ -119,9 +123,12 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 		scratchpad_theme_apply_registered(&f.app)
 		pinned_surface_test_frame(&f)
 		go_info,go_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"go"))
+		edit_info,edit_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"edit"))
 		copy_info,copy_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"copy"))
 		more_info,more_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"more"))
-		testing.expect(t,go_ok && copy_ok && more_ok &&
+		testing.expect(t,go_ok && edit_ok && copy_ok && more_ok &&
+			!pinned_surface_test_rects_overlap(go_info.bounds,edit_info.bounds) &&
+			!pinned_surface_test_rects_overlap(edit_info.bounds,copy_info.bounds) &&
 			!pinned_surface_test_rects_overlap(go_info.bounds,copy_info.bounds) &&
 			!pinned_surface_test_rects_overlap(go_info.bounds,more_info.bounds) &&
 			!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
@@ -217,6 +224,71 @@ test_pinned_surface_focus_and_read_only_commands :: proc(t: ^testing.T) {
 		"rebuilding after keyboard navigation should keep focus on the same selected pin")
 	testing.expect(t,pinned_key(&f.app,&f.rt,.Escape) && f.app.pinned.narrow_source,
 		"Escape should return from the pane to the ordinary source view")
+}
+
+@(test)
+test_pinned_edit_validation_stays_inside_captured_segment :: proc(t: ^testing.T) {
+	f: Semantic_Zoom_Test_Editor
+	source:="package demo\nfunc passage() {}\n"
+	if !semantic_zoom_test_open(&f,t,"go",source) {semantic_zoom_test_destroy(&f,t);return}
+	defer {pinned_destroy(&f.app.pinned);semantic_zoom_test_destroy(&f,t)}
+	view_index:=editor_view_find(f.app.editor_views[:],f.document_id)
+	if view_index<0 {testing.expect(t,false,"fixture editor view should exist");return}
+	view:=&f.app.editor_views[view_index]
+	start:=u64(strings.index(source,"passage"))
+	end:=start+u64(len("passage"))
+	view.selection_anchor=start
+	view.caret_byte=end
+	_ = alicorn.focus(&f.rt,f.app.editor_scroll_owner)
+	pinned_command(&f.app,&f.rt,"add")
+	pinned_refresh(&f.app,&f.rt)
+	if len(f.app.pinned.snapshot.ranges)!=1 {testing.expect(t,false,"fixture pin should exist");return}
+	pin:=f.app.pinned.snapshot.ranges[0]
+	view.selection_anchor,view.caret_byte=1,2
+	view.scroll_x,view.scroll_y=13,27
+	view.preferred_x,view.preferred_x_set=42,true
+	pinned_edit_begin(&f.app,&f.rt,pin.id)
+	testing.expect(t,f.app.pinned.editing && view.selection_anchor==end && view.caret_byte==end,
+		"a new pin-edit session should start at the passage end")
+	testing.expect(t,f.app.pinned.edit_return_anchor==1 && f.app.pinned.edit_return_caret==2 &&
+		f.app.pinned.edit_return_scroll_x==13 && f.app.pinned.edit_return_scroll_y==27 &&
+		f.app.pinned.edit_return_preferred_x==42 && f.app.pinned.edit_return_preferred_x_set,
+		"the ordinary source view state should be saved separately from pin-local editing state")
+	close_handled:=pinned_edit_command(&f.app,&f.rt,action_id_for(ACTION_DOCUMENT_CLOSE))
+	testing.expect(t,close_handled && document_is_open(&f.app.backend.state,pin.document_id),
+		"closing the source document must be blocked until pin editing ends")
+	pinned_edit_finish(&f.app,&f.rt,false)
+	testing.expect(t,!f.app.pinned.editing && view.selection_anchor==1 && view.caret_byte==2 &&
+		view.scroll_x==13 && view.scroll_y==27 && view.preferred_x==42 && view.preferred_x_set,
+		"leaving pin editing should restore the source editor's prior caret, scroll, and preferred column")
+	f.app.pinned.edit_return_anchor=40
+	f.app.pinned.edit_return_caret=41
+	view.selection_anchor,view.caret_byte=40,41
+	pinned_edit_rebase_saved_selection(&f.app,pin.document_id,10,12,15)
+	testing.expect(t,view.selection_anchor==43 && view.caret_byte==44,
+		"an edit acknowledged after leaving pin mode should keep the saved source caret at the same logical position")
+	view.selection_anchor,view.caret_byte=5,6
+	pinned_edit_rebase_saved_selection(&f.app,pin.document_id,10,12,15)
+	testing.expect(t,view.selection_anchor==5 && view.caret_byte==6,
+		"a later explicit source selection must not be overwritten by an old pin edit acknowledgement")
+	owned_id,clone_err:=strings.clone(pin.document_id,context.allocator)
+	if clone_err!=nil {testing.expect(t,false,"test should retain pin document ID");return}
+	f.app.pinned.editing=true
+	f.app.pinned.edit_pin=pin.id
+	f.app.pinned.edit_document_id=owned_id
+	f.app.pinned.edit_start_byte=u64(pin.start_byte)
+	f.app.pinned.edit_end_byte=u64(pin.end_byte)
+	valid,new_end:=pinned_edit_validate_replacement(&f.app,pin.document_id,end,end,1,end,end,end+1,end+1)
+	testing.expect(t,valid && new_end==end+1,"insertion at the pin's trailing boundary should extend only the pin")
+	valid,_=pinned_edit_validate_replacement(&f.app,pin.document_id,start-1,start,1,start,start,start,start)
+	testing.expect(t,!valid,"replacement beginning before the pin must be refused")
+	valid,_=pinned_edit_validate_replacement(&f.app,pin.document_id,start,end,0,start,end,start-1,start-1)
+	testing.expect(t,!valid,"selection result outside the post-edit pin must be refused")
+	view.selection_anchor=start-1
+	view.caret_byte=end+3
+	pinned_edit_selection_sync(&f.app)
+	testing.expect(t,view.selection_anchor==start && view.caret_byte==end,
+		"pin-local source selection must be clamped to captured segment boundaries")
 }
 
 @(test)

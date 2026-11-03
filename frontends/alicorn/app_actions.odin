@@ -10,10 +10,11 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 	if command == action_id_for(ACTION_PIN_SELECTION) { pinned_command(app, rt, "add"); return }
 	if command == action_id_for(ACTION_PINNED_FOCUS) { pinned_focus_request(app, rt); return }
 	if command == action_id_for(ACTION_PINNED_TOGGLE) {
-		if app.pinned.visible { app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
+		if app.pinned.visible { if app.pinned.editing {pinned_edit_finish(app,rt)};app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
 		else { pinned_focus_request(app,rt) }
 		return
 	}
+	if pinned_edit_command(app,rt,command) { return }
 	zoom_actions := [3]string{ACTION_SEMANTIC_MORE, ACTION_SEMANTIC_LESS, ACTION_SEMANTIC_FULL}
 	for action in zoom_actions {
 		if command == action_id_for(action) { _ = semantic_zoom_action(app, rt, action); return }
@@ -42,7 +43,6 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FILE) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FILE); return }
 	if command == action_id_for(ACTION_WORKSPACE_NEW_FOLDER) { dispatch_action(app, rt, ACTION_WORKSPACE_NEW_FOLDER); return }
 	if command == action_id_for(ACTION_WORKSPACE_SETTINGS) { dispatch_action(app, rt, ACTION_WORKSPACE_SETTINGS); return }
-	if pinned_edit_command(app,rt,command) { return }
 	if command == action_id_for(ACTION_EDIT_UNDO) && find_text_field_history_command(app, rt, false) { return }
 	if command == action_id_for(ACTION_EDIT_REDO) && find_text_field_history_command(app, rt, true) { return }
 	if command == action_id_for(ACTION_EDIT_CUT) {
@@ -121,7 +121,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if action_id == ACTION_PIN_SELECTION { pinned_command(app,rt,"add"); return }
 	if action_id == ACTION_PINNED_FOCUS { pinned_focus_request(app,rt); return }
 	if action_id == ACTION_PINNED_TOGGLE {
-		if app.pinned.visible { app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
+		if app.pinned.visible { if app.pinned.editing {pinned_edit_finish(app,rt)};app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
 		else { pinned_focus_request(app,rt) }
 		return
 	}
@@ -473,6 +473,42 @@ string_for_action_id :: proc(id: host.Application_Command_ID) -> string {
 	if id == action_id_for(ACTION_EDIT_PASTE) { return ACTION_EDIT_PASTE }
 	if id == action_id_for(ACTION_EDIT_SELECT_ALL) { return ACTION_EDIT_SELECT_ALL }
 	if id == action_id_for(ACTION_EDIT_DELETE_LINE) { return ACTION_EDIT_DELETE_LINE }
+	if id == action_id_for(ACTION_EDIT_INDENT_LINES) { return ACTION_EDIT_INDENT_LINES }
+	if id == action_id_for(ACTION_EDIT_OUTDENT_LINES) { return ACTION_EDIT_OUTDENT_LINES }
+	if id == action_id_for(ACTION_EDIT_INSERT_LINE_ABOVE) { return ACTION_EDIT_INSERT_LINE_ABOVE }
+	if id == action_id_for(ACTION_EDIT_INSERT_LINE_BELOW) { return ACTION_EDIT_INSERT_LINE_BELOW }
+	if id == action_id_for(ACTION_EDIT_MOVE_LINE_UP) { return ACTION_EDIT_MOVE_LINE_UP }
+	if id == action_id_for(ACTION_EDIT_MOVE_LINE_DOWN) { return ACTION_EDIT_MOVE_LINE_DOWN }
+	if id == action_id_for(ACTION_EDIT_DUPLICATE_LINE) { return ACTION_EDIT_DUPLICATE_LINE }
+	if id == action_id_for(ACTION_EDIT_JOIN_LINES) { return ACTION_EDIT_JOIN_LINES }
+	if id == action_id_for(ACTION_DOCUMENT_CLOSE) { return ACTION_DOCUMENT_CLOSE }
+	if id == action_id_for(ACTION_DOCUMENT_FORMAT) { return ACTION_DOCUMENT_FORMAT }
+	if id == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { return ACTION_DOCUMENT_GO_TO_LINE }
+	if id == action_id_for(ACTION_MARKDOWN_TABLE_NEXT) { return ACTION_MARKDOWN_TABLE_NEXT }
+	if id == action_id_for(ACTION_MARKDOWN_TABLE_PREVIOUS) { return ACTION_MARKDOWN_TABLE_PREVIOUS }
+	if id == action_id_for(ACTION_MARKDOWN_TABLE_ENTER) { return ACTION_MARKDOWN_TABLE_ENTER }
+	if id == action_id_for(ACTION_MARKDOWN_ENTER) { return ACTION_MARKDOWN_ENTER }
+	if id == action_id_for(ACTION_MARKDOWN_TOGGLE_STRONG) { return ACTION_MARKDOWN_TOGGLE_STRONG }
+	if id == action_id_for(ACTION_MARKDOWN_TOGGLE_EMPHASIS) { return ACTION_MARKDOWN_TOGGLE_EMPHASIS }
+	if id == action_id_for(ACTION_MARKDOWN_TOGGLE_STRIKE) { return ACTION_MARKDOWN_TOGGLE_STRIKE }
+	if id == action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE) { return ACTION_MARKDOWN_TOGGLE_INLINE_CODE }
+	if id == action_id_for(ACTION_MARKDOWN_INSERT_LINK) { return ACTION_MARKDOWN_INSERT_LINK }
+	if id == action_id_for(ACTION_MARKDOWN_HEADING_1) { return ACTION_MARKDOWN_HEADING_1 }
+	if id == action_id_for(ACTION_MARKDOWN_HEADING_2) { return ACTION_MARKDOWN_HEADING_2 }
+	if id == action_id_for(ACTION_MARKDOWN_HEADING_3) { return ACTION_MARKDOWN_HEADING_3 }
+	if id == action_id_for(ACTION_MARKDOWN_TOGGLE_BULLETED_LIST) { return ACTION_MARKDOWN_TOGGLE_BULLETED_LIST }
+	if id == action_id_for(ACTION_MARKDOWN_TOGGLE_NUMBERED_LIST) { return ACTION_MARKDOWN_TOGGLE_NUMBERED_LIST }
+	if id == action_id_for(ACTION_MARKDOWN_TOGGLE_QUOTE) { return ACTION_MARKDOWN_TOGGLE_QUOTE }
+	if id == action_id_for(ACTION_MARKDOWN_INSERT_TASK) { return ACTION_MARKDOWN_INSERT_TASK }
+	if id == action_id_for(ACTION_MARKDOWN_INSERT_CODE_BLOCK) { return ACTION_MARKDOWN_INSERT_CODE_BLOCK }
+	if id == action_id_for(ACTION_MARKDOWN_SET_FENCE_LANGUAGE) { return ACTION_MARKDOWN_SET_FENCE_LANGUAGE }
+	if id == action_id_for(ACTION_MARKDOWN_INSERT_TABLE) { return ACTION_MARKDOWN_INSERT_TABLE }
+	if id == action_id_for(ACTION_MARKDOWN_INSERT_DIVIDER) { return ACTION_MARKDOWN_INSERT_DIVIDER }
+	if id == action_id_for(ACTION_MARKDOWN_SMART_PASTE) { return ACTION_MARKDOWN_SMART_PASTE }
+	if id == action_id_for(ACTION_COMMENT_TOGGLE) { return ACTION_COMMENT_TOGGLE }
+	if id == action_id_for(ACTION_WORKSPACE_RENAME) { return ACTION_WORKSPACE_RENAME }
+	if id == action_id_for(ACTION_WORKSPACE_MOVE) { return ACTION_WORKSPACE_MOVE }
+	if id == action_id_for(ACTION_WORKSPACE_TRASH) { return ACTION_WORKSPACE_TRASH }
 	if id == action_id_for(ACTION_SELECTION_EXPAND) { return ACTION_SELECTION_EXPAND }
 	return ""
 }

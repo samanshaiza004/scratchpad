@@ -246,10 +246,17 @@ build_app :: proc(
 				style=alicorn.layout_style(.Row,grow=1,gap=2,clip=true),label="document-source-and-pinned-references")
 			alicorn.split_first_begin(&ui,pinned_split)
 		}
-		if show_source && app.pinned.visible && app.pinned.narrow_source {
+		if show_source && app.pinned.visible && (app.pinned.narrow_source || app.pinned.editing) {
 			if gui.row(&ui,label="pinned-return-banner",height=30,gap=6,align=.Center) {
-				gui.text(&ui,fmt.tprintf("Pinned · %d ranges",len(app.pinned.snapshot.ranges)),style=alicorn.layout_style(.Row,grow=1))
-				if gui.button(&ui,"Show Pinned",key="pinned-show-from-source",width=112,height=26,variant=.Toolbar) { app.pinned.narrow_source=false;app.pinned.focus_pending=true;alicorn.invalidate_root(rt,"Opened Pinned beside source") }
+				label:=fmt.tprintf("Pinned · %d ranges",len(app.pinned.snapshot.ranges))
+				if app.pinned.editing {label="Editing pinned passage · Escape to finish"}
+				gui.text(&ui,label,style=alicorn.layout_style(.Row,grow=1))
+				button_label:="Show Pinned"
+				button_key:="pinned-show-from-source"
+				if app.pinned.editing {button_label="Done";button_key="pinned-edit-done"}
+				if gui.button(&ui,button_label,key=button_key,width=112,height=26,variant=.Toolbar) {
+					if app.pinned.editing {pinned_edit_finish(app,rt)} else {app.pinned.narrow_source=false;app.pinned.focus_pending=true;alicorn.invalidate_root(rt,"Opened Pinned beside source")}
+				}
 			}
 		}
 		if show_source {

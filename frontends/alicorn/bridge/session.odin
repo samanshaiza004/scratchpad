@@ -1397,8 +1397,8 @@ backend_command :: proc(
 		result.save_as_conflict.path, _ = strings.clone(response.save_as_conflict.path, allocator)
 		result.save_as_conflict_path_owned = len(result.save_as_conflict.path) > 0
 	}
-	if response.ok && response.command_outcome != "no_op" && (command == "replace_document" || command == "find_replace_current" || command == "paste_document") {
-		if response.edit.document_id == "" || response.edit.editor_revision == 0 {
+	if response.ok && response.command_outcome != "no_op" && (command == "replace_document" || command == "find_replace_current" || command == "paste_document" || command == "pinned_replace" || command == "pinned_undo" || command == "pinned_redo") {
+		if response.edit.document_id == "" || (response.edit.editor_revision == 0 && command != "pinned_undo" && command != "pinned_redo") {
 			backend_response_destroy(&response, allocator)
 			return Backend_Command_Result{code="malformed_edit_ack", message="Scratchpad returned a successful edit without a valid revision acknowledgement"}
 		}
@@ -1417,7 +1417,7 @@ backend_command :: proc(
 			result.edit_applied_replacement_owned = true
 		}
 	}
-	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command" || command == "open_path" || command == "find_replace_all" || command == "paste_document" || command == "pinned_go_to_source") && response.editor_selection.document_id != "" {
+	if response.ok && (command == "edit.undo" || command == "edit.redo" || command == "execute_command" || command == "open_path" || command == "find_replace_all" || command == "paste_document" || command == "pinned_go_to_source" || command == "pinned_replace" || command == "pinned_undo" || command == "pinned_redo") && response.editor_selection.document_id != "" {
 		result.editor_selection = response.editor_selection
 		result.editor_selection.document_id, _ = strings.clone(response.editor_selection.document_id, allocator)
 		result.editor_selection_document_id_owned = len(result.editor_selection.document_id) > 0
@@ -2140,8 +2140,12 @@ workspace_files_lane_stop :: proc(lane: ^Workspace_Files_Lane) -> bool {
 
 Editor_Edit_Request :: struct {
 	sequence:          u64,
+	command:           string,
 	document_id:       string,
 	action_id:         string,
+	pin_id:             u64,
+	pin_epoch:          u64,
+	pin_revision:       u64,
 	based_on_revision: u64,
 	editor_revision:   u64,
 	start_byte:        u64,
@@ -2224,7 +2228,7 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 			for value, index in request.replacement { replacement[index] = int(value) }
 			result = backend_command(
 				lane.backend,
-				"replace_document",
+				request.command,
 				action_id=request.action_id,
 				document_id=request.document_id,
 				editor_revision=request.editor_revision,
@@ -2238,6 +2242,9 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 				after_cursor_byte=request.after_cursor_byte,
 				typing_group_id=request.typing_group_id,
 				based_on_revision=request.based_on_revision,
+				pin_id=request.pin_id,
+				pin_epoch=request.pin_epoch,
+				pin_revision=request.pin_revision,
 				read_latest_after=false,
 				allocator=lane.allocator,
 			)
@@ -2305,6 +2312,10 @@ editor_edit_lane_submit :: proc(
 	before_anchor_byte, before_cursor_byte, after_anchor_byte, after_cursor_byte: u64,
 	typing_group_id: u64 = 0,
 	action_id := "",
+	command := "replace_document",
+	pin_id: u64 = 0,
+	pin_epoch: u64 = 0,
+	pin_revision: u64 = 0,
 ) -> (accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 || sequence == 0 {
 		return false, "editor edit lane is not running or request identity is invalid"
@@ -2337,8 +2348,12 @@ editor_edit_lane_submit :: proc(
 	if len(replacement) > 0 { copy(owned_bytes, replacement) }
 	lane.pending_request = Editor_Edit_Request{
 		sequence=sequence,
+		command=command,
 		document_id=owned_id,
 		action_id=owned_action_id,
+		pin_id=pin_id,
+		pin_epoch=pin_epoch,
+		pin_revision=pin_revision,
 		based_on_revision=based_on_revision,
 		editor_revision=editor_revision,
 		start_byte=start_byte,

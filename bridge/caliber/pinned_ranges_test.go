@@ -21,10 +21,53 @@ func TestPinnedWireRejectsMissingAndOverflowedCoordinates(t *testing.T) {
 		strings.Replace(valid, `"end_byte":4`, `"end_byte":18446744073709551615`, 1),
 		`{"version":1,"request_id":1,"command":"pinned_window","pin_epoch":1,"pin_revision":1,"projection_first":0,"projection_limit":257,"max_bytes":65536}`,
 		`{"version":1,"request_id":1,"command":"pinned_window","pin_epoch":1,"pin_revision":1,"projection_first":0,"projection_limit":256,"max_bytes":65537}`,
+		`{"version":1,"request_id":1,"command":"pinned_replace","pin_epoch":1,"pin_revision":1,"pin_id":2,"document_id":"doc","editor_revision":0,"start_byte":2,"end_byte":1}`,
+		`{"version":1,"request_id":1,"command":"pinned_replace","pin_epoch":1,"pin_revision":1,"pin_id":2,"document_id":"doc","editor_revision":0,"start_byte":0,"end_byte":1,"replacement":[256]}`,
 	} {
 		if _, r, ok := decodeCommandRequest([]byte(input), lifecycleRunning); ok || r.OK {
 			t.Fatal("bad pinned request accepted", input)
 		}
+	}
+}
+
+func TestPinnedReplaceBridgeReturnsExactEditAndCurrentPin(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.txt")
+	writeFile(t, path, "before segment after\n")
+	r := newStartedRuntime(t, root)
+	defer stopRuntime(t, r)
+	if response := pinnedBridgeCommand(t, r, CommandRequest{Command: "open_path", Path: path}); !response.OK {
+		t.Fatal(response)
+	}
+	doc := latestStateForTest(t, r).Documents[0]
+	response := pinnedBridgeCommand(t, r, CommandRequest{Command: "pinned_add", DocumentID: doc.ID,
+		SourceInstance: doc.InstanceID, EditorRevision: 0, StartByte: 7, EndByte: 14})
+	if !response.OK || response.Pinned == nil || len(response.Pinned.Ranges) != 1 {
+		t.Fatal(response)
+	}
+	pin := response.Pinned.Ranges[0]
+	response = pinnedBridgeCommand(t, r, CommandRequest{Command: "pinned_replace", PinEpoch: response.Pinned.Epoch,
+		PinRevision: response.Pinned.Revision, PinID: uint64(pin.ID), DocumentID: doc.ID, EditorRevision: 0,
+		StartByte: 7, EndByte: 14, Replacement: []int{'p', 'i', 'e', 'c', 'e'}, HasSelectionState: true,
+		BeforeAnchorByte: 7, BeforeCursorByte: 14, AfterAnchorByte: 12, AfterCursorByte: 12, TypingGroupID: 1})
+	if !response.OK || response.Edit == nil || response.Pinned == nil || len(response.Pinned.Ranges) != 1 {
+		t.Fatal(response)
+	}
+	updated := response.Pinned.Ranges[0]
+	if response.Edit.StartByte != 7 || response.Edit.OldEndByte != 14 || response.Edit.NewEndByte != 12 ||
+		updated.Status != application.ProjectionCurrent || updated.StartByte != 7 || updated.EndByte != 12 || updated.SourceRevision != response.Edit.EditorRevision {
+		t.Fatalf("edit ack and pin refresh disagree: ack=%+v pin=%+v", response.Edit, updated)
+	}
+	if got, _ := r.app.Documents[application.DocumentID(doc.ID)].Editor.Buffer.Bytes(0, r.app.Documents[application.DocumentID(doc.ID)].Editor.Buffer.ByteLen()); string(got) != "before piece after\n" {
+		t.Fatalf("source after bridge edit = %q", got)
+	}
+	response = pinnedBridgeCommand(t, r, CommandRequest{Command: "pinned_undo", PinEpoch: response.Pinned.Epoch,
+		PinRevision: response.Pinned.Revision, PinID: uint64(pin.ID)})
+	if !response.OK || response.Edit == nil || response.Pinned == nil || response.Pinned.Ranges[0].Status != application.ProjectionCurrent {
+		t.Fatal(response)
+	}
+	if got, _ := r.app.Documents[application.DocumentID(doc.ID)].Editor.Buffer.Bytes(0, r.app.Documents[application.DocumentID(doc.ID)].Editor.Buffer.ByteLen()); string(got) != "before segment after\n" {
+		t.Fatalf("source after bridge undo = %q", got)
 	}
 }
 

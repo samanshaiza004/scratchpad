@@ -514,9 +514,54 @@ func (e *ScratchEditor) Paste(text string) error {
 }
 
 func (e *ScratchEditor) Undo() error {
+	_, err := e.UndoResult()
+	return err
+}
+
+// PreviewUndoSourceEdit returns only the source range changed by the next
+// Undo. It avoids copying the replacement when a caller only needs to validate
+// the edit before deciding whether to apply it.
+func (e *ScratchEditor) PreviewUndoSourceEdit() (SourceEdit, bool) {
+	if e == nil {
+		return SourceEdit{}, false
+	}
 	e.BreakUndoGroup()
 	if len(e.undo) == 0 {
-		return nil
+		return SourceEdit{}, false
+	}
+	r := e.undo[len(e.undo)-1]
+	edit := e.sourceEdit(r.start, r.start+len(r.inserted), r.deleted, 0)
+	edit.BeforeRevision = e.revision
+	edit.AfterRevision = r.beforeRevision
+	return edit, true
+}
+
+// PreviewRedoSourceEdit returns only the source range changed by the next
+// Redo, without copying the replacement bytes.
+func (e *ScratchEditor) PreviewRedoSourceEdit() (SourceEdit, bool) {
+	if e == nil {
+		return SourceEdit{}, false
+	}
+	e.BreakUndoGroup()
+	if len(e.redo) == 0 {
+		return SourceEdit{}, false
+	}
+	r := e.redo[len(e.redo)-1]
+	edit := e.sourceEdit(r.start, r.start+len(r.deleted), r.inserted, 0)
+	edit.BeforeRevision = e.revision
+	edit.AfterRevision = r.afterRevision
+	return edit, true
+}
+
+// UndoResult applies one history step and returns the exact edit with an owned
+// copy of the canonical replacement bytes.
+func (e *ScratchEditor) UndoResult() (AppliedEdit, error) {
+	if e == nil {
+		return AppliedEdit{}, errors.New("nil editor")
+	}
+	e.BreakUndoGroup()
+	if len(e.undo) == 0 {
+		return AppliedEdit{}, nil
 	}
 	r := e.undo[len(e.undo)-1]
 	e.undo = e.undo[:len(e.undo)-1]
@@ -524,10 +569,10 @@ func (e *ScratchEditor) Undo() error {
 	edit.BeforeRevision = e.revision
 	edit.AfterRevision = r.beforeRevision
 	if err := e.Buffer.Delete(r.start, r.start+len(r.inserted)); err != nil {
-		return err
+		return AppliedEdit{}, err
 	}
 	if err := e.Buffer.Insert(r.start, r.deleted); err != nil {
-		return err
+		return AppliedEdit{}, err
 	}
 	e.Cursor, e.Anchor = r.beforeCursor, r.beforeAnchor
 	e.revision = r.beforeRevision
@@ -535,13 +580,23 @@ func (e *ScratchEditor) Undo() error {
 	e.Affinity = AffinityLeading
 	e.ClearPreferredVerticalX()
 	e.redo = append(e.redo, r)
-	return nil
+	return AppliedEdit{SourceEdit: edit, Replacement: append([]byte(nil), r.deleted...)}, nil
 }
 
 func (e *ScratchEditor) Redo() error {
+	_, err := e.RedoResult()
+	return err
+}
+
+// RedoResult applies one history step and returns the exact edit with an owned
+// copy of the canonical replacement bytes.
+func (e *ScratchEditor) RedoResult() (AppliedEdit, error) {
+	if e == nil {
+		return AppliedEdit{}, errors.New("nil editor")
+	}
 	e.BreakUndoGroup()
 	if len(e.redo) == 0 {
-		return nil
+		return AppliedEdit{}, nil
 	}
 	r := e.redo[len(e.redo)-1]
 	e.redo = e.redo[:len(e.redo)-1]
@@ -549,10 +604,10 @@ func (e *ScratchEditor) Redo() error {
 	edit.BeforeRevision = e.revision
 	edit.AfterRevision = r.afterRevision
 	if err := e.Buffer.Delete(r.start, r.start+len(r.deleted)); err != nil {
-		return err
+		return AppliedEdit{}, err
 	}
 	if err := e.Buffer.Insert(r.start, r.inserted); err != nil {
-		return err
+		return AppliedEdit{}, err
 	}
 	e.Cursor, e.Anchor = r.afterCursor, r.afterAnchor
 	e.revision = r.afterRevision
@@ -560,7 +615,7 @@ func (e *ScratchEditor) Redo() error {
 	e.Affinity = AffinityLeading
 	e.ClearPreferredVerticalX()
 	e.undo = append(e.undo, r)
-	return nil
+	return AppliedEdit{SourceEdit: edit, Replacement: append([]byte(nil), r.inserted...)}, nil
 }
 
 func (e *ScratchEditor) MoveLeft(extend bool) {

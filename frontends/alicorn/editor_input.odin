@@ -30,6 +30,8 @@ editor_edit_selection_snapshot :: proc(
 Editor_Edit_Intent :: struct {
 	sequence:          u64,
 	document_id:       string,
+	pinned_edit:       bool,
+	pin_id:             u64,
 	base_editor_revision: u64,
 	start_byte:        u64,
 	end_byte:          u64,

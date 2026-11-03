@@ -614,7 +614,7 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		if request.HasSourceAnchor && (request.SourceAnchorRevision == 0 || request.SourceAnchorByte > uint64(^uint(0)>>1) || request.SourceAnchorLine > uint64(^uint(0)>>1)) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_source_anchor", "source anchor revision, byte, or line is invalid", false), false
 		}
-	case "pinned_add", "pinned_read", "pinned_move", "pinned_remove", "pinned_window", "pinned_copy", "pinned_go_to_source":
+	case "pinned_add", "pinned_read", "pinned_move", "pinned_remove", "pinned_window", "pinned_copy", "pinned_go_to_source", "pinned_replace", "pinned_undo", "pinned_redo":
 		if err := validatePinnedRequest(input, request); err != nil {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_pinned_request", err.Error(), false), false
 		}

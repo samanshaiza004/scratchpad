@@ -4,6 +4,9 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 select_document :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
+	if app.pinned.editing && document_id!=app.pinned.edit_document_id {
+		pinned_edit_finish(app,rt,false)
+	}
 	if len(app.editor_edits) > 0 {
 		if !deferred_action_enqueue(app, .Select_Document, value=document_id) {
 			set_error(app, "Could not queue document selection behind pending edits.")

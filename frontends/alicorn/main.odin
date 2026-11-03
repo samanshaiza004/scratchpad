@@ -967,6 +967,10 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	if app.settings_surface_open {
 		return settings_surface_handle_key(app, rt, key)
 	}
+	if app.pinned.editing && key==.Escape {
+		pinned_edit_finish(app,rt)
+		return true
+	}
 	if pinned_key(app,rt,key) { return true }
 	if key == .Tab_Next {
 		navigate_tab(app, rt, 1)
@@ -1285,6 +1289,7 @@ editor_presentation_window :: proc(
 editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
 	app := cast(^App)state
 	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 { return }
+	defer pinned_edit_selection_sync(app)
 	if event.kind == .Move {
 		if captured, found := alicorn.node_info(rt, alicorn.captured_node(rt)); found &&
 		   captured.kind == .Split_Handle && captured.split_owner == app.workspace_editor_split_node {
@@ -1422,6 +1427,7 @@ editor_text_key :: proc(
 ) -> bool {
 	app := cast(^App)state
 	if app == nil || owner == 0 || owner != app.editor_scroll_owner || !app.backend.started { return false }
+	defer pinned_edit_selection_sync(app)
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return false }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
@@ -1931,6 +1937,11 @@ editor_apply_local_replace_with_wire :: proc(
 	if app == nil || rt == nil || !app.backend.started || end_byte < start_byte {
 		return false
 	}
+	if app.pinned.editing && pinned_edit_has_pending_paste(app) {
+		set_error(app,"Wait for the current pinned paste to finish before editing this passage again.")
+		alicorn.invalidate_root(rt,"Scratchpad serialized edits after a pinned paste")
+		return false
+	}
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return false }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
@@ -1940,17 +1951,30 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	view := &app.editor_views[view_index]
 	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
+	pinned_edit:=app.pinned.editing
+	pinned_end_after_edit:u64=0
+	if pinned_edit {
+		valid,new_end:=pinned_edit_validate_replacement(app,document.id,start_byte,end_byte,len(replacement),
+			selection_snapshot.before_anchor_byte,selection_snapshot.before_cursor_byte,
+			selection_snapshot.after_anchor_byte,selection_snapshot.after_cursor_byte)
+		if !valid {
+			set_error(app,"The edit would cross the selected pinned passage boundary; no source bytes were changed.")
+			alicorn.invalidate_root(rt,"Scratchpad refused a pinned edit outside its source segment")
+			return false
+		}
+		pinned_end_after_edit=new_end
+	}
 	semantic_zoom_reveal_input(app, rt, view)
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	window_end: u64 = 0
 	if window_matches { window_end = window.start_byte+u64(len(window.source)) }
 	optimistic_projection := window_matches && start_byte >= window.start_byte && end_byte <= window_end
-	if !optimistic_projection && !allow_offscreen_authoritative {
+	if !optimistic_projection && !allow_offscreen_authoritative && !pinned_edit {
 		set_error(app, "The bounded source window is not ready for local editing.")
 		alicorn.invalidate_root(rt, "Scratchpad local replacement waited for a source window")
 		return false
 	}
-	if allow_offscreen_authoritative && !optimistic_projection && end_byte > document.byte_length {
+	if (allow_offscreen_authoritative || pinned_edit) && !optimistic_projection && end_byte > document.byte_length {
 		set_error(app, "The replacement range is outside the authoritative document.")
 		alicorn.invalidate_root(rt, "Scratchpad rejected an out-of-document replacement")
 		return false
@@ -2060,6 +2084,8 @@ editor_apply_local_replace_with_wire :: proc(
 	append(&app.editor_edits, Editor_Edit_Intent{
 		sequence=app.editor_edit_sequence,
 		document_id=document_id,
+		pinned_edit=pinned_edit,
+		pin_id=u64(app.pinned.edit_pin) if pinned_edit else 0,
 		base_editor_revision=edit_base_revision,
 		start_byte=start_byte,
 		end_byte=end_byte,
@@ -2072,9 +2098,10 @@ editor_apply_local_replace_with_wire :: proc(
 		replacement=replacement_copy,
 		wire_replacement=wire_copy,
 		optimistic_projection=optimistic_projection,
-		reveal_after_ack=reveal_after_ack,
+		reveal_after_ack=reveal_after_ack || (pinned_edit && !optimistic_projection),
 		reveal_logical_line=reveal_logical_line,
 	})
+	if pinned_edit {app.pinned.edit_end_byte=pinned_end_after_edit}
 	view.selection_anchor = resulting_anchor
 	view.caret_byte = resulting_caret
 	view.anchor_affinity = .Trailing
@@ -2201,6 +2228,8 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
 	wire_replacement := edit.replacement
 	if len(edit.wire_replacement) > 0 { wire_replacement = edit.wire_replacement }
+	command:="replace_document"
+	if edit.pinned_edit {command="pinned_replace"}
 	return bridge.editor_edit_lane_submit(
 		&app.editor_edit_lane,
 		edit.sequence,
@@ -2216,6 +2245,10 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 		edit.after_cursor_byte,
 		edit.typing_group_id,
 		edit.action_id,
+		command=command,
+		pin_id=edit.pin_id,
+		pin_epoch=app.pinned.snapshot.epoch if edit.pinned_edit else 0,
+		pin_revision=app.pinned.snapshot.revision if edit.pinned_edit else 0,
 	)
 }
 
@@ -2269,10 +2302,12 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		return
 	}
 	if app.editor_edits[0].sequence != result.sequence {
+		was_pinned_edit:=app.editor_edits[0].pinned_edit
 		failed_document, _ := strings.clone(app.editor_edits[0].document_id, context.allocator)
 		shutdown_note_edit_failure(app)
 		set_error(app, "Scratchpad returned an out-of-order editor acknowledgement; reloading authoritative text.")
 		editor_discard_document_edits(app, failed_document)
+		if was_pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
 		delete(failed_document, context.allocator)
 		editor_views_prune(app)
 		sync_menu_states(app)
@@ -2282,6 +2317,25 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		return
 	}
 	intent := app.editor_edits[0]
+	if intent.pinned_edit && result.command.ok && result.command.command_outcome=="no_op" {
+		if result.command.pinned_owned {pinned_edit_snapshot_take(app,&result.command)} else {app.pinned.force_refresh=true}
+		if view_index:=editor_view_find(app.editor_views[:],intent.document_id);view_index>=0 {
+			view:=&app.editor_views[view_index]
+			if app.pinned.editing && result.command.editor_selection.document_id==intent.document_id {
+				view.selection_anchor=result.command.editor_selection.anchor_byte
+				view.caret_byte=result.command.editor_selection.cursor_byte
+				view.authoritative_revision=result.command.editor_selection.editor_revision
+			}
+			pinned_edit_selection_sync(app)
+		}
+		editor_remove_edit(app,0)
+		pinned_edit_recompute_optimistic_end(app)
+		sync_menu_states(app)
+		_,_ = editor_dispatch_next_edit(app)
+		if run_deferred && len(app.editor_edits)==0 {deferred_actions_run(app,rt)}
+		if rt!=nil {alicorn.invalidate_root(rt,"Scratchpad accepted a no-op pinned edit")}
+		return
+	}
 	if result.command.ok && result.command.edit.document_id == intent.document_id {
 		acknowledged_length := len(intent.replacement)
 		if len(result.command.edit.applied_replacement) > 0 {
@@ -2295,6 +2349,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			shutdown_note_edit_failure(app)
 			set_error(app, "Scratchpad returned an edit acknowledgement with inconsistent source ranges; reloading authoritative text.")
 			editor_discard_document_edits(app, failed_document)
+			if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
 			delete(failed_document, context.allocator)
 			editor_views_prune(app)
 			sync_menu_states(app)
@@ -2310,6 +2365,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				shutdown_note_edit_failure(app)
 				set_error(app, "Could not reconcile Scratchpad's canonical Enter text; reloading authoritative text.")
 				editor_discard_document_edits(app, failed_document)
+				if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
 				delete(failed_document, context.allocator)
 				editor_views_prune(app)
 				sync_menu_states(app)
@@ -2319,7 +2375,12 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			}
 			if intent.optimistic_projection && view.optimistic_pending_edits > 0 { view.optimistic_pending_edits -= 1 }
 			view.authoritative_revision = result.command.edit.editor_revision
-			if intent.reveal_after_ack {
+			if intent.pinned_edit && app.pinned.editing && result.command.editor_selection.document_id==intent.document_id {
+				view.selection_anchor=result.command.editor_selection.anchor_byte
+				view.caret_byte=result.command.editor_selection.cursor_byte
+				view.preferred_x_set=false
+			}
+			if intent.reveal_after_ack && (!intent.pinned_edit || app.pinned.editing) {
 				view.selection_anchor = result.command.edit.new_end_byte
 				view.caret_byte = result.command.edit.new_end_byte
 				_ = editor_reveal_request_set(
@@ -2338,7 +2399,20 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				view.optimistic_line_delta = 0
 			}
 		}
+		if intent.pinned_edit {
+			pinned_edit_rebase_saved_selection(app,intent.document_id,result.command.edit.start_byte,result.command.edit.old_end_byte,result.command.edit.new_end_byte)
+			if !pinned_edit_snapshot_take(app,&result.command) {app.pinned.force_refresh=true}
+			pinned_edit_selection_sync(app)
+			if view_index:=editor_view_find(app.editor_views[:],intent.document_id);view_index>=0 {
+				view:=&app.editor_views[view_index]
+				if app.pinned.editing && result.command.editor_selection.document_id==intent.document_id && intent.reveal_after_ack {
+					_ = editor_reveal_request_set(view,intent.document_id,result.command.edit.editor_revision,
+						view.selection_anchor,view.caret_byte,result.command.editor_selection.cursor_line,.Nearest)
+				}
+			}
+		}
 		editor_remove_edit(app, 0)
+		if intent.pinned_edit {pinned_edit_recompute_optimistic_end(app)}
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
 		if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
@@ -2366,6 +2440,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 	shutdown_note_edit_failure(app)
 	set_error(app, fmt.tprintf("Edit was not accepted; reloading authoritative text: %s", message))
 	editor_discard_document_edits(app, failed_document)
+	if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
 	if stale_revision && app.editor_window_ready && app.editor_window.document_id == failed_document {
 		// A rejected edit proves that matching revision numbers alone are not
 		// enough to trust this cached projection (Undo can reuse old revisions).
@@ -2423,6 +2498,7 @@ editor_text_input :: proc(
 ) {
 	app := cast(^App)state
 	if app == nil { return }
+	defer pinned_edit_selection_sync(app)
 	if event.kind == .Cancel {
 		cleared := false
 		for &view in app.editor_views {
@@ -2601,6 +2677,14 @@ handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.B
 		return
 	}
 	if result.state_changed {
+		// Commands that open, close, or switch documents can arrive through
+		// workspace/search flows that do not pass through the tab handler.
+		// End the pin-scoped edit session before reconciling that new state.
+		if app.pinned.editing &&
+		   (app.backend.state.active != app.pinned.edit_document_id ||
+		    !document_is_open(&app.backend.state, app.pinned.edit_document_id)) {
+			pinned_edit_finish(app, rt, false)
+		}
 		sync_runtime_actions(app, rt)
 		sync_menu_states(app)
 		tree_sync_workspace(app, rt)
@@ -2652,6 +2736,11 @@ active_editor_context :: proc(app: ^App) -> (document: bridge.State_Document, vi
 
 editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || rt == nil || !app.backend.started { return }
+	if action_id==ACTION_EDIT_CUT && app.pinned.editing && pinned_edit_has_pending_paste(app) {
+		set_error(app,"Wait for the current pinned paste to finish before using Cut.")
+		alicorn.invalidate_root(rt,"Scratchpad refused Cut while a pinned paste is pending")
+		return
+	}
 	if index := editor_view_find(app.editor_views[:], app.backend.state.active); index >= 0 {
 		view := &app.editor_views[index]
 		if action_id != ACTION_EDIT_COPY { semantic_zoom_reveal_input(app, rt, view) }
@@ -2734,6 +2823,14 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			alicorn.invalidate_root(rt, "Scratchpad refused Cut before clipboard write because the edit queue is full")
 			return
 		}
+		if action_id==ACTION_EDIT_CUT && app.pinned.editing {
+			if valid,_:=pinned_edit_validate_replacement(app,document.id,start_byte,end_byte,0,
+				view.selection_anchor,view.caret_byte,start_byte,start_byte);!valid {
+				set_error(app,"Cut would cross the selected pinned passage boundary; the clipboard and source were left unchanged.")
+				alicorn.invalidate_root(rt,"Scratchpad refused a pinned cut outside its source segment")
+				return
+			}
+		}
 		if !host.ClipboardSetText(app.services.clipboard, string(bytes)) {
 			set_error(app, "Could not copy text to the system clipboard.")
 			alicorn.invalidate_root(rt, "Scratchpad clipboard write failed")
@@ -2763,6 +2860,13 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 		if start_byte < window.start_byte || end_byte > window_end {
 			set_error(app, "The replacement range is outside the loaded source window; paste was not performed.")
 			alicorn.invalidate_root(rt, "Scratchpad refused a paste across the bounded source-window edge")
+			return
+		}
+		if app.pinned.editing {
+			if !editor_apply_local_replace_with_wire(app,rt,start_byte,end_byte,transmute([]u8)text,{},start_byte+u64(len(text)),start_byte+u64(len(text)),
+				action_id=PINNED_PASTE_ACTION_ID) {
+				set_error(app,"Paste was not applied inside the selected pinned passage.")
+			}
 			return
 		}
 		wire_replacement, conversion_ok := string_bytes_to_wire(text)
@@ -2879,6 +2983,16 @@ editor_apply_backend_selection :: proc(
 	if app == nil || selection.document_id == "" { return }
 	document, found := find_document(&app.backend.state, selection.document_id)
 	if !found || selection.anchor_byte > document.byte_length || selection.cursor_byte > document.byte_length { return }
+	if app.pinned.editing && selection.document_id == app.pinned.edit_document_id &&
+	   (selection.anchor_byte < app.pinned.edit_start_byte ||
+	    selection.anchor_byte > app.pinned.edit_end_byte ||
+	    selection.cursor_byte < app.pinned.edit_start_byte ||
+	    selection.cursor_byte > app.pinned.edit_end_byte) {
+		// Navigation results from workspace search or other source commands may
+		// target the same document but a different range. Leave the scoped edit
+		// mode before applying such a selection.
+		pinned_edit_finish(app, rt, false)
+	}
 	view_index, view_ok := editor_view_ensure(&app.editor_views, selection.document_id)
 	if !view_ok { set_error(app, "Could not restore the document selection after a command."); return }
 	view := &app.editor_views[view_index]
