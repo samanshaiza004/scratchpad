@@ -28,10 +28,15 @@ revision and make a range current again. No offsets are silently rebased.
 Projection creation and queries run on the application goroutine alongside
 source mutations. They do not change bytes, selection, save state, or file
 order. Rebuilding/reordering a projection produces a new generation and leaves
-its sources untouched. This slice provides the data model and tests only;
-reduced views, pinned-range UI, persistence, reanchoring, and write-through
-editing are later consumers. Any future edit must revalidate the source and
-reject stale or ambiguous mapping at the moment it applies.
+its sources untouched.
+
+The Caliber `read_view_window` command also exposes parser-owned tasks,
+symbols/headings, and links through bounded structural views. Scratchpad's
+Outline sidebar consumes these windows for the active document, navigates to
+exact source bytes, and routes task toggles through the existing command
+system. It does not persist a graph or copy authority into the sidebar. Any
+future write-through projection must revalidate the source and reject stale or
+ambiguous mapping at the moment it applies.
 
 Language-derived selection ranges remain separate disposable analysis. They
 provide meaningful candidate ranges for `selection.expand`; future projection

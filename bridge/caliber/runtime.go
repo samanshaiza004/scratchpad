@@ -1176,7 +1176,18 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if err := r.enablePresentationLocked(request.DocumentID); err != nil {
 			return commandError(request, "view_unavailable", err)
 		}
-		window, err := r.app.QueryView(application.DocumentID(request.DocumentID), int(request.ProjectionFirst), int(request.ProjectionLimit))
+		var window application.ViewWindow
+		var err error
+		if request.ProjectionKind == "" {
+			window, err = r.app.QueryView(application.DocumentID(request.DocumentID), int(request.ProjectionFirst), int(request.ProjectionLimit))
+		} else {
+			window, err = r.app.QueryStructuralView(
+				application.DocumentID(request.DocumentID),
+				application.StructuralProjectionKind(request.ProjectionKind),
+				int(request.ProjectionFirst),
+				int(request.ProjectionLimit),
+			)
+		}
 		if err != nil {
 			return commandError(request, "view_unavailable", err)
 		}

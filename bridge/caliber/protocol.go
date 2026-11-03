@@ -103,6 +103,7 @@ type CommandRequest struct {
 	ImageRevision        uint64   `json:"image_revision,omitempty"`
 	ViewDensity          string   `json:"view_density,omitempty"`
 	ZoomDepth            int      `json:"zoom_depth"`
+	ProjectionKind       string   `json:"projection_kind,omitempty"`
 	ProjectionFirst      uint64   `json:"projection_first"`
 	ProjectionLimit      uint64   `json:"projection_limit,omitempty"`
 }
@@ -651,6 +652,12 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	case "read_view_window":
 		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if request.ProjectionKind != "" &&
+			request.ProjectionKind != string(application.StructuralProjectionTasks) &&
+			request.ProjectionKind != string(application.StructuralProjectionSymbols) &&
+			request.ProjectionKind != string(application.StructuralProjectionLinks) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_projection_kind", "projection_kind must be tasks, symbols, or links", false), false
 		}
 		if request.ProjectionLimit == 0 || request.ProjectionLimit > application.MaxProjectionWindow {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_projection_window", fmt.Sprintf("projection_limit must be between 1 and %d", application.MaxProjectionWindow), false), false

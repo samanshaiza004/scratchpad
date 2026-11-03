@@ -7,7 +7,7 @@ Alicorn is the supported Scratchpad frontend for v0.1.0. The former Shirei workb
 | Capability in the retired Shirei workbench | Alicorn status | Notes for a future issue |
 |---|---|---|
 | Restore the last workspace and open-document session, including recent paths | Implemented; native restart verification pending | Clean shutdown stores a versioned session separately from crash recovery. Startup restores workspace, existing documents, active tab, per-document selection/scroll, sidebar width, and up to ten recent workspace paths. Missing paths are skipped with a notice; recent entries can be reopened or cleared. |
-| Outline sidebar for code symbols and Markdown headings, tasks, and links | Missing | Outline rows should navigate to source and retain the editor's source-byte ownership. |
+| Outline sidebar for code symbols and Markdown headings, tasks, and links | Implemented | Tasks, supported code symbols, Markdown headings, and Markdown links are bounded, revision-scoped views of the active document. Rows navigate to exact source ranges; task state changes use the existing command seam. |
 | Collapse/fold controls for Markdown sections and supported code blocks | Experimental semantic zoom | Four explicit depths fold source ranges, preserve an anchor, and expand clicked ranges in place. Independent manual collapse controls remain future work; see [semantic zoom](../../SEMANTIC_VIEWS.md). |
 | Selectable built-in/custom themes with persisted user settings | Missing | Alicorn currently uses a fixed palette and its Settings surface only exposes ignored-file visibility. |
 | Editor font increase/decrease/reset controls | Missing | Add frontend-local sizing with predictable per-session or persisted scope; do not alter source semantics. |

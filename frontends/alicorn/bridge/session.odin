@@ -37,6 +37,7 @@ MAX_FIND_QUERY_BYTES       :: 4096
 MAX_WORKSPACE_SEARCH_QUERY_BYTES :: 4096
 MAX_WORKSPACE_SEARCH_PAGE_SIZE :: 32
 MAX_WORKSPACE_SEARCH_RESULTS :: 5000
+MAX_PROJECTION_WINDOW :: 256
 
 // Mirrors .deps/caliber/include/caliber.h. That header remains authoritative;
 // these declarations bind only the ABI surface this frontend actually uses.
@@ -486,6 +487,7 @@ Backend_Command_Request :: struct {
 	source_anchor_byte: u64    `json:"source_anchor_byte,omitempty"`,
 	source_anchor_line: u64    `json:"source_anchor_line,omitempty"`,	image_revision: u64 `json:"image_revision,omitempty"`,
 	view_density: string `json:"view_density,omitempty"`,
+	projection_kind: string `json:"projection_kind,omitempty"`,
 	projection_first: u64 `json:"projection_first"`,
 	projection_limit: u64 `json:"projection_limit,omitempty"`,
 	zoom_depth: int `json:"zoom_depth"`,
@@ -1298,6 +1300,7 @@ backend_command :: proc(
 	allow_unversioned_read := false,
 	image_revision: u64 = 0,
 	view_density := "",
+	projection_kind := "",
 	projection_first: u64 = 0,
 	projection_limit: u64 = 0,
 	zoom_depth: int = 0,
@@ -1368,6 +1371,7 @@ backend_command :: proc(
 		search_generation=search_generation,
 		image_revision=image_revision,
 		view_density=view_density,
+		projection_kind=projection_kind,
 		projection_first=projection_first,
 		projection_limit=projection_limit,
 		zoom_depth=zoom_depth,

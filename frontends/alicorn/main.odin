@@ -242,6 +242,17 @@ App :: struct {
 	settings_category: Settings_Category,
 	recent_workspaces_open: bool,
 	workspace_search_mode:  bool,
+	workspace_outline_mode: bool,
+	structural_projection_kind: string,
+	structural_view_window: bridge.Semantic_View_Window,
+	structural_view_owned: bool,
+	structural_view_document_id: string,
+	structural_view_kind: string,
+	structural_view_revision: u64,
+	structural_view_first: int,
+	structural_view_waiting_presentation: u64,
+	structural_view_scroll_owner: alicorn.Node_ID,
+	structural_view_error: string,
 	workspace_search_query: string,
 	workspace_search_started_query: string,
 	workspace_search_started_root: string,
@@ -3525,6 +3536,7 @@ set_startup_error :: proc(app: ^App, message: string) {
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
 	pinned_destroy(&app.pinned)
+	projection_sidebar_destroy(app)
 	find_text_history_destroy(&app.find_query_edit_history)
 	find_text_history_destroy(&app.find_replace_edit_history)
 	image_preview_views_destroy(app)

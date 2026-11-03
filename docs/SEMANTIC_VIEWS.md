@@ -96,7 +96,9 @@ Wheel intent is latched until a 250 ms gap; fractional deltas accumulate before
 one depth change. Modifier changes during an ordinary scroll do not turn its
 tail into zoom. SDL wheel events do not carry a portable gesture-end phase, so
 the gap is a heuristic requiring physical wheel/trackpad testing. Pinch,
-animation, automatic fisheye refolding, and an Outline sidebar are separate work.
+animation, and automatic fisheye refolding remain separate work. The
+source-connected Tasks, Outline, and Links sidebar is a separate projection
+consumer documented in [Source projections](design/SOURCE-PROJECTIONS.md).
 
 See [research and original sources](research/semantic-zoom.md) and
 [the manual validation matrix](validation/semantic-zoom.md).

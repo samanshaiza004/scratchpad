@@ -53,6 +53,7 @@ build_app :: proc(
 	}
 	app.image_scroll_owner = 0
 	if app.workspace_search_mode { workspace_search_start_query(app, rt) }
+	if app.workspace_outline_mode { projection_sidebar_prepare(app, rt) }
 	clear(&app.editor_row_targets)
 	app.editor_input_anchor_node = 0
 	if !scratchpad_styles_ensure(app, rt) { set_error(app, "Could not initialize the warm style palette.") }
@@ -253,6 +254,8 @@ build_app :: proc(
 				}
 				alicorn.virtual_list_end(&ui, search_list)
 			}
+		} else if app.workspace_outline_mode {
+			projection_sidebar_build(app, &ui, rt)
 		} else {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center), shape=scratchpad_surface_shape(app, 4), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			gui.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
@@ -639,6 +642,7 @@ Workspace_Panel_Tabs_Nodes :: struct {
 	row:    alicorn.Node_ID,
 	files:  alicorn.Node_ID,
 	search: alicorn.Node_ID,
+	outline: alicorn.Node_ID,
 }
 
 scratchpad_workspace_panel_tabs_build :: proc(
@@ -669,7 +673,7 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		ui, "Files",
 		key=alicorn.key_string("workspace-panel-files"),
 		style=button_style,
-		state=alicorn.Button_State{selected=!app.workspace_search_mode},
+		state=alicorn.Button_State{selected=!app.workspace_search_mode && !app.workspace_outline_mode},
 		text_style=button_text,
 		content_style=button_content,
 		variant=.Toolbar,
@@ -690,6 +694,7 @@ scratchpad_workspace_panel_tabs_build :: proc(
 			workspace_search_cancel_active(app)
 			workspace_search_match_clear_all(app)
 			app.workspace_search_mode = false
+			app.workspace_outline_mode = false
 			app.workspace_search_query_node = 0
 			app.editor_focus_pending = true
 			if search_source_changed {
@@ -714,8 +719,45 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		alicorn.button_end(ui)
 	}
 	if search_clicked {
+		app.workspace_outline_mode = false
 		app.workspace_search_mode = true
 		app.workspace_search_focus_pending = true
+	}
+	outline_id, outline_clicked := alicorn.button_begin(
+		ui, "Outline",
+		key=alicorn.key_string("workspace-panel-outline"),
+		style=button_style,
+		state=alicorn.Button_State{selected=app.workspace_outline_mode},
+		text_style=button_text,
+		content_style=button_content,
+		variant=.Toolbar,
+	)
+	result.outline = outline_id
+	if outline_id != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, outline_id, .Interactive) }
+		alicorn.button_end(ui)
+	}
+	if outline_clicked {
+		search_source_changed := app.workspace_search_edit_active && app.workspace_search_edit_source_changed
+		can_leave := true
+		if app.workspace_search_edit_active {
+			finished := workspace_search_edit_finish(app, app.ui_description_runtime, refresh=false)
+			can_leave = finished || app.workspace_search_edit_finish_pending
+		}
+		if can_leave {
+			workspace_search_cancel_active(app)
+			workspace_search_match_clear_all(app)
+			app.workspace_search_mode = false
+			app.workspace_outline_mode = true
+			app.structural_projection_kind = "symbols"
+			app.workspace_search_query_node = 0
+			app.workspace_search_focus_pending = false
+			if search_source_changed {
+				workspace_search_restore_selection_clear(app)
+				find_set_message(&app.workspace_search_started_query, "")
+				find_set_message(&app.workspace_search_started_root, "")
+			}
+		}
 	}
 	alicorn.container_end(ui)
 	return result
