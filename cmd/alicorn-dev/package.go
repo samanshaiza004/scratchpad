@@ -900,13 +900,17 @@ func consumerPackageSmokeWithOptions(root, executable, tempParent string, isolat
 		env = setEnv(env, "HOME", smokeRoot)
 		env = setEnv(env, "XDG_CONFIG_HOME", configDir)
 	}
+	logRoot := filepath.Join(configDir, "Scratchpad", "logs")
+	if runtime.GOOS == "darwin" {
+		logRoot = filepath.Join(smokeRoot, "Library", "Application Support", "Scratchpad", "logs")
+	}
+	env = setEnv(env, "SCRATCHPAD_DIAGNOSTICS_DIR", logRoot)
 	if err := runCommandWithTimeout(workDir, env, 30*time.Second, executable); err != nil {
-		startupLog := filepath.Join(configDir, "Scratchpad", "startup.log")
-		if runtime.GOOS == "darwin" {
-			startupLog = filepath.Join(smokeRoot, "Library", "Application Support", "Scratchpad", "startup.log")
-		}
-		if data, readErr := os.ReadFile(startupLog); readErr == nil && len(data) != 0 {
-			return fmt.Errorf("consumer launch from unrelated directory: %w\nstartup log (%s):\n%s", err, startupLog, strings.TrimSpace(string(data)))
+		if logs, globErr := filepath.Glob(filepath.Join(logRoot, "session-*.log")); globErr == nil && len(logs) > 0 {
+			latest := logs[len(logs)-1] // Glob returns names in timestamp order.
+			if data, readErr := os.ReadFile(latest); readErr == nil && len(data) != 0 {
+				return fmt.Errorf("consumer launch from unrelated directory: %w\nsession log (%s):\n%s", err, latest, strings.TrimSpace(string(data)))
+			}
 		}
 		return fmt.Errorf("consumer launch from unrelated directory: %w", err)
 	}

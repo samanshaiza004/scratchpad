@@ -184,7 +184,7 @@ build_app :: proc(
 							_ = workspace_search_go_to_source(app, rt, position)
 						}
 						if gui.button(&ui, "Done", key=alicorn.key_string(fmt.tprintf("workspace-search-done-%d", result.projection_key)), height=24, variant=.Quiet) {
-							_ = workspace_search_edit_finish(app, rt, refresh=true)
+							workspace_search_transition_request(app, rt, .Finish, position)
 						}
 					}
 				} else {
@@ -497,8 +497,8 @@ build_app :: proc(
 	quick_open_restore_focus_after_frame(app, rt)
 	scratchpad_editor_font_picker_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
+	workspace_search_transition_after_frame(app, rt)
 	workspace_search_edit_focus_transition(app, rt)
-	workspace_search_edit_switch_after_frame(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
 		if alicorn.focus(rt, app.go_to_line_query_node) {

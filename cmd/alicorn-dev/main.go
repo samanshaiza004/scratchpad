@@ -240,6 +240,14 @@ func run(args []string) error {
 			}
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
+		probeExe := filepath.Join(out, "scratchpad-crash-probe"+exeSuffix())
+		probeArgs := []string{"build", filepath.Join(root, "tests", "fixtures", "crash_diagnostics"), "-debug", "-out:" + probeExe, collectionArg}
+		probeArgs = append(probeArgs, accessKitCompilerArgs...)
+		probeArgs = appendLinkerFlags(probeArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
+		if err := runCommand(root, testEnv, "odin", odinExe, probeArgs...); err != nil {
+			return fmt.Errorf("build diagnostic crash probe: %w", err)
+		}
+		testEnv = setEnv(testEnv, "SCRATCHPAD_DIAGNOSTIC_PROBE_EXE", probeExe)
 		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
 		testArgs = append(testArgs, accessKitCompilerArgs...)
 		testArgs = append(testArgs, appMutationDiagnosticCompilerArgs(*mutationDiagnostics)...)
@@ -623,8 +631,17 @@ func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags 
 	}
 	args = appendLinkerFlags(args, linkerFlags)
 	args = append(args, compilerArguments...)
+	if revision, revisionErr := gitOutput(root, "rev-parse", "HEAD"); revisionErr == nil {
+		buildRevision := strings.TrimSpace(revision)
+		if dirty, dirtyErr := gitOutput(root, "status", "--porcelain", "--untracked-files=no"); dirtyErr == nil && strings.TrimSpace(dirty) != "" {
+			buildRevision += "-dirty"
+		}
+		args = append(args, "-define:SCRATCHPAD_BUILD_REVISION="+buildRevision)
+	}
 	if release {
 		args = append(args, "-o:speed")
+	} else {
+		args = append(args, "-debug")
 	}
 	if consumerBuild {
 		args = append(args, "-define:SCRATCHPAD_CONSUMER_BUILD=true")

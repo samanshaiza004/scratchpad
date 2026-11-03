@@ -28,6 +28,32 @@ On macOS, Scratchpad's retained document tabs share the titlebar row with AppKit
 
 For development-only invalidation checks, pass `--app-mutation-diagnostics` to `build`, `test`, `smoke`, or `run`. For example, `.\tools\alicorn.ps1 test --app-mutation-diagnostics` compiles Alicorn with `-debug -define:ALICORN_APP_MUTATION_DIAGNOSTICS=true`; the option is rejected for optimized builds and packages. Scratchpad currently reports backend state/projection adoption and user selection updates; these checks verify that a changed revision schedules UI work, not that the exact affected subtree was invalidated. After building, launch `out\alicorn\scratchpad-alicorn.exe --inspector-open` to inspect the trace (F9 toggles the inspector).
 
+## Crash diagnostics
+
+Every build writes a separate session log under `%LOCALAPPDATA%\Scratchpad\logs`
+on Windows, `~/Library/Application Support/Scratchpad/logs` on macOS, or
+`$XDG_CONFIG_HOME/Scratchpad/logs` on Linux (falling back to `~/.config`). The
+eight most recent session logs are retained. `SCRATCHPAD_DIAGNOSTICS_DIR` can
+override the directory for an isolated reproduction. The console prints the
+exact log path at launch.
+
+Logs include the build commit, platform, process ID, stderr, and named search
+editing transitions. Breadcrumbs record identities rather than document text
+or search queries. A normal shutdown ends with `session.clean_exit`; a crash
+can leave a log without that marker. Reopening Scratchpad creates a new file.
+
+Odin panics and bounds failures record their location and a best-effort stack.
+Development builds include debug symbols; keep the matching executable and PDB
+when reporting a failure. Windows unhandled exceptions additionally record the
+exception code and fault address. This is a textual crash log, not a minidump;
+native macOS crash stacks remain in the operating system's DiagnosticReports.
+Nothing is uploaded. For deeper host event tracing, launch with
+`--diagnostic-events --capture-dir=out/diagnostics`.
+
+`tools/alicorn.ps1 test` / `tools/alicorn.sh test` build a standalone crash probe
+and verify actual panic/Windows exception termination in child processes, log
+survival, and stderr restoration. The probe is a test fixture, not an app flag.
+
 ## Theme authoring
 
 Scratchpad's Warm workbench and paper palettes are authored in `themes/scratchpad-workbench.json` and `themes/scratchpad-paper.json`; the contrasting Cool Light palette is authored in `themes/scratchpad-cool-light.json`. These themes extend `alicorn.base` and use semantic aliases. The paper theme defines app-specific paper-surface and editor-padding roles plus the analytic paper material, while the workbench theme authors the selected Tab underline role. The editor padding dimension flows through `style_metric` in the paper scope, so Alicorn environment density scales a real Scratchpad layout metric. The sRGB source values round-trip to the existing runtime colors exactly.

@@ -1238,8 +1238,10 @@ func TestFindCurrentAndSearchWorkspace(t *testing.T) {
 	for range a.SearchWorkspace(ctx, []byte("needle")) {
 		results++
 	}
-	if results != 2 {
-		t.Fatalf("workspace results = %d", results)
+	// Editable workspace results use the authoritative open buffer, including
+	// its third, unsaved match, rather than the two matches still on disk.
+	if results != 3 {
+		t.Fatalf("workspace results = %d, want 3 including the unsaved match", results)
 	}
 	before := append([]byte(nil), doc.Editor.Buffer.Text()...)
 	if empty := a.FindCurrent(a.Active, nil); len(empty) != 0 {

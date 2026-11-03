@@ -816,6 +816,7 @@ workspace_search_edit_clear :: proc(app: ^App) {
 	app.workspace_search_edit_generation = 0
 	app.workspace_search_edit_projection_key = 0
 	app.workspace_search_edit_document_id = ""
+	app.workspace_search_edit_source_text = ""
 	app.workspace_search_edit_instance_id = 0
 	app.workspace_search_edit_revision = 0
 	app.workspace_search_edit_context_start = 0
@@ -828,9 +829,12 @@ workspace_search_edit_clear :: proc(app: ^App) {
 
 workspace_search_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, refresh := true, preserve_selection := true) -> bool {
 	if app == nil || !app.workspace_search_edit_active { return true }
+	projection_key := app.workspace_search_edit_projection_key
+	scratchpad_diagnostic_event("search.edit.finish_requested", projection_key)
 	if app.workspace_search_edit_node != 0 && rt != nil {
 		interaction, found := alicorn.text_field_interaction(rt, app.workspace_search_edit_node)
 		if found && interaction.composition_active {
+			scratchpad_diagnostic_event("search.edit.waiting_for_composition", projection_key)
 			set_error(app, "Finish or cancel the active text composition before leaving this search result.")
 			_ = alicorn.focus(rt, app.workspace_search_edit_node)
 			alicorn.invalidate_root(rt, "Scratchpad kept a search projection active during IME composition")
@@ -838,6 +842,7 @@ workspace_search_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, refresh :=
 		}
 	}
 	if workspace_search_edit_has_pending_intents(app) {
+		scratchpad_diagnostic_event("search.edit.waiting_for_acknowledgement", projection_key)
 		app.workspace_search_edit_finish_pending = true
 		set_error(app, "Finishing the search-result edit after the source acknowledgement arrives.")
 		return false
@@ -856,6 +861,7 @@ workspace_search_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, refresh :=
 		}
 	}
 	workspace_search_edit_clear(app)
+	scratchpad_diagnostic_event("search.edit.finished", projection_key)
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad ended the active search-result edit") }
 	if refresh && changed {
 		if app.workspace_search_mode {
@@ -875,36 +881,43 @@ workspace_search_edit_focus_transition :: proc(app: ^App, rt: ^alicorn.Runtime) 
 	}
 }
 
-workspace_search_edit_switch_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || rt == nil || !app.workspace_search_edit_switch_pending { return }
-	generation := app.workspace_search_edit_switch_generation
-	projection_key := app.workspace_search_edit_switch_projection_key
-	app.workspace_search_edit_switch_pending = false
-	app.workspace_search_edit_switch_generation = 0
-	app.workspace_search_edit_switch_projection_key = 0
+Workspace_Search_Transition_Kind :: enum { None, Edit, Source, Finish }
+Workspace_Search_Transition :: struct {
+	kind: Workspace_Search_Transition_Kind,
+	generation: u64,
+	projection_key: u64,
+}
+
+workspace_search_transition_request :: proc(app: ^App, rt: ^alicorn.Runtime, kind: Workspace_Search_Transition_Kind, index: int) {
+	if app == nil || rt == nil || index < 0 || index >= len(app.workspace_search_view.results) { return }
+	app.workspace_search_transition = {kind, app.workspace_search_view.generation, app.workspace_search_view.results[index].projection_key}
+	scratchpad_diagnostic_event("search.transition.requested", app.workspace_search_transition.projection_key)
+	alicorn.invalidate_root(rt, "Scratchpad deferred a search-result transition until frame completion")
+}
+
+// Result actions may free the entire result array and the app-owned edit
+// buffer. Run them only after all pending descriptions have been retained and
+// the virtual-list loop has completed. Resolve identity again, never an index.
+workspace_search_transition_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || app.workspace_search_transition.kind == .None { return }
+	transition := app.workspace_search_transition
+	app.workspace_search_transition = {}
+	scratchpad_diagnostic_event("search.transition.dispatch", transition.projection_key)
 	if !app.workspace_search_mode { return }
-	if generation != app.workspace_search_view.generation {
-		find_set_message(&app.workspace_search_error, "Search results refreshed after the previous edit; select the updated result to continue.")
-		alicorn.invalidate_root(rt, "Scratchpad discarded a search-result switch to a stale projection")
-		return
-	}
-	if app.workspace_search_edit_active {
-		changed := app.workspace_search_edit_source_changed
-		if !workspace_search_edit_finish(app, rt, refresh=false) { return }
-		if changed {
-			workspace_search_start_query(app, rt, true)
-			find_set_message(&app.workspace_search_error, "Search results refreshed after the previous edit; select the updated result to continue.")
-			return
-		}
-	}
-	if generation != app.workspace_search_view.generation {
+	if transition.generation != app.workspace_search_view.generation {
 		find_set_message(&app.workspace_search_error, "Search results refreshed after the previous edit; select the updated result to continue.")
 		alicorn.invalidate_root(rt, "Scratchpad discarded a search-result switch to a stale projection")
 		return
 	}
 	for result, index in app.workspace_search_view.results {
-		if result.projection_key != projection_key { continue }
-		_ = workspace_search_edit_begin(app, rt, index)
+		if result.projection_key != transition.projection_key { continue }
+		switch transition.kind {
+		case .Edit: _ = workspace_search_edit_begin(app, rt, index)
+		case .Source: _ = workspace_search_go_to_source(app, rt, index)
+		case .Finish: _ = workspace_search_edit_finish(app, rt, refresh=true)
+		case .None:
+		}
+		scratchpad_diagnostic_event("search.transition.completed", transition.projection_key)
 		return
 	}
 	find_set_message(&app.workspace_search_error, "The selected search result is no longer available; select it again.")
@@ -914,6 +927,11 @@ workspace_search_edit_switch_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime
 workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int) -> bool {
 	if app == nil || rt == nil || !app.backend.started || !app.workspace_search_mode ||
 	   result_index < 0 || result_index >= len(app.workspace_search_view.results) { return false }
+	if app.ui_description_runtime != nil {
+		workspace_search_transition_request(app, rt, .Edit, result_index)
+		return true
+	}
+	scratchpad_diagnostic_event("search.edit.begin", app.workspace_search_view.results[result_index].projection_key)
 	if app.pinned.editing {
 		pinned_edit_finish(app, rt, false)
 		if app.pinned.editing { return true }
@@ -923,12 +941,13 @@ workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_inde
 		return true
 	}
 	if app.workspace_search_edit_active {
-		result := app.workspace_search_view.results[result_index]
-		app.workspace_search_edit_switch_pending = true
-		app.workspace_search_edit_switch_generation = app.workspace_search_view.generation
-		app.workspace_search_edit_switch_projection_key = result.projection_key
-		alicorn.invalidate_root(rt, "Scratchpad deferred a search-result edit switch until frame completion")
-		return true
+		changed := app.workspace_search_edit_source_changed
+		if !workspace_search_edit_finish(app, rt, refresh=false) { return true }
+		if changed {
+			workspace_search_start_query(app, rt, true)
+			find_set_message(&app.workspace_search_error, "Search results refreshed after the previous edit; select the updated result to continue.")
+			return true
+		}
 	}
 	workspace_search_restore_selection_clear(app)
 	result := app.workspace_search_view.results[result_index]
@@ -945,6 +964,7 @@ workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_inde
 		alicorn.invalidate_root(rt, "Scratchpad could not resolve a search projection source")
 		return true
 	}
+	scratchpad_diagnostic_event("search.edit.open_source", result.projection_key)
 	response := bridge.backend_command(
 		&app.backend,
 		"open_path",
@@ -1020,6 +1040,7 @@ workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_inde
 	app.workspace_search_focus_pending = false
 	app.workspace_search_edit_ready = false
 	find_set_message(&app.workspace_search_error, "Loading and validating the source context…")
+	scratchpad_diagnostic_event("search.edit.activated", result.projection_key)
 	bridge.backend_command_result_destroy(&response, context.allocator)
 	alicorn.invalidate_root(rt, "Scratchpad opened a bounded editable search projection")
 	return true
@@ -1345,6 +1366,7 @@ workspace_search_start_query :: proc(app: ^App, rt: ^alicorn.Runtime, force := f
 	next_generation := max(app.workspace_search_generation, app.backend.state.workspace_search_generation)+1
 	if next_generation == 0 { next_generation = 1 }
 	app.workspace_search_generation = next_generation
+	scratchpad_diagnostic_event("search.query.refresh", next_generation)
 	workspace_search_view_begin(&app.workspace_search_view, next_generation)
 	app.workspace_search_selected = -1
 	find_set_message(&app.workspace_search_error, "")
@@ -1407,6 +1429,10 @@ workspace_search_sync_wake :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 
 workspace_search_go_to_source :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int) -> bool {
 	if app == nil || rt == nil || result_index < 0 || result_index >= len(app.workspace_search_view.results) { return false }
+	if app.ui_description_runtime != nil {
+		workspace_search_transition_request(app, rt, .Source, result_index)
+		return true
+	}
 	refresh_after_navigation := app.workspace_search_edit_active && app.workspace_search_edit_source_changed
 	target_byte: i64 = -1
 	if app.workspace_search_edit_active && app.workspace_search_edit_source_changed &&

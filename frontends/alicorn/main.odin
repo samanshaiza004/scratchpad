@@ -257,9 +257,7 @@ App :: struct {
 	workspace_search_edit_focus_pending: bool,
 	workspace_search_edit_select_match_pending: bool,
 	workspace_search_edit_source_changed: bool,
-	workspace_search_edit_switch_pending: bool,
-	workspace_search_edit_switch_generation: u64,
-	workspace_search_edit_switch_projection_key: u64,
+	workspace_search_transition: Workspace_Search_Transition,
 	workspace_search_restore_selection_pending: bool,
 	workspace_search_edit_index: int,
 	workspace_search_restore_selection_index: int,
@@ -3582,7 +3580,7 @@ application_stop :: proc(state: rawptr) {
 }
 
 main :: proc() {
-	scratchpad_consumer_diagnostics_begin()
+	context.assertion_failure_proc = scratchpad_consumer_diagnostics_begin()
 	defer scratchpad_consumer_diagnostics_end()
 	app: App
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
