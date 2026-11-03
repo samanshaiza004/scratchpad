@@ -32,6 +32,8 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 		workspace_search_open_surface(app, rt)
 		return
 	}
+	if command == action_id_for(ACTION_DOCUMENT_SHOW_TASKS) { workspace_projection_select(app, rt, "tasks"); return }
+	if command == action_id_for(ACTION_DOCUMENT_SHOW_LINKS) { workspace_projection_select(app, rt, "links"); return }
 	if command == action_id_for(ACTION_DOCUMENT_CLOSE) && app.workspace_search_mode {
 		_ = workspace_search_close_tab(app, rt)
 		return
@@ -131,6 +133,8 @@ editor_resolve_conflict_now :: proc(app: ^App, rt: ^alicorn.Runtime, document_id
 
 dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || rt == nil { return }
+	if action_id == ACTION_DOCUMENT_SHOW_TASKS { workspace_projection_select(app, rt, "tasks"); return }
+	if action_id == ACTION_DOCUMENT_SHOW_LINKS { workspace_projection_select(app, rt, "links"); return }
 	if action_id == ACTION_PIN_SELECTION { pinned_command(app,rt,"add"); return }
 	if action_id == ACTION_PINNED_FOCUS { pinned_focus_request(app,rt); return }
 	if action_id == ACTION_PINNED_TOGGLE {
@@ -268,7 +272,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
 		}
 		bridge.backend_command_result_destroy(&response, context.allocator)
-	case ACTION_DOCUMENT_FORMAT, ACTION_MARKDOWN_TOGGLE_STRONG, ACTION_MARKDOWN_TOGGLE_EMPHASIS,
+	case ACTION_DOCUMENT_FORMAT, ACTION_ITEM_TOGGLE, ACTION_MARKDOWN_TOGGLE_STRONG, ACTION_MARKDOWN_TOGGLE_EMPHASIS,
 		 ACTION_MARKDOWN_TOGGLE_STRIKE, ACTION_MARKDOWN_TOGGLE_INLINE_CODE, ACTION_MARKDOWN_INSERT_LINK,
 		 ACTION_MARKDOWN_HEADING_1, ACTION_MARKDOWN_HEADING_2, ACTION_MARKDOWN_HEADING_3,
 		 ACTION_MARKDOWN_TOGGLE_BULLETED_LIST, ACTION_MARKDOWN_TOGGLE_NUMBERED_LIST, ACTION_MARKDOWN_TOGGLE_QUOTE,

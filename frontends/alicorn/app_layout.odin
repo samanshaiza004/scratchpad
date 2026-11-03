@@ -54,6 +54,13 @@ build_app :: proc(
 	}
 	app.image_scroll_owner = 0
 	if app.workspace_search_tab_open { workspace_search_start_query(app, rt) }
+	if app.workspace_projection_mode {
+		active, found := find_document(&app.backend.state, app.backend.state.active)
+		if !found || active.language != "markdown" {
+			app.workspace_projection_mode = false
+			projection_sidebar_window_clear(app)
+		}
+	}
 	if app.workspace_projection_mode || app.symbol_picker_open {
 		requested_first := app.symbol_picker_page_first if app.symbol_picker_open else -1
 		projection_sidebar_prepare(app, rt, requested_first)
@@ -150,10 +157,6 @@ build_app :: proc(
 		} else {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center), shape=scratchpad_surface_shape(app, 4), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			gui.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-			if gui.button(&ui, "Symbols…", key="workspace-go-to-symbol", width=82, height=23, variant=.Toolbar,
-				text_style=alicorn.Text_Style{font_size=11, overflow=.Ellipsis}) {
-				symbol_picker_open_surface(app, rt)
-			}
 			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
 		}
@@ -544,8 +547,6 @@ Workspace_Panel_Tabs_Nodes :: struct {
 	row:    alicorn.Node_ID,
 	files:  alicorn.Node_ID,
 	search: alicorn.Node_ID,
-	tasks:  alicorn.Node_ID,
-	links:  alicorn.Node_ID,
 }
 
 scratchpad_workspace_panel_tabs_build :: proc(
@@ -566,19 +567,17 @@ scratchpad_workspace_panel_tabs_build :: proc(
 	)
 	if result.row == 0 { return result }
 	button_text := alicorn.DEFAULT_BUTTON_TEXT_STYLE
-	button_content := alicorn.DEFAULT_BUTTON_CONTENT_STYLE
 	if compact {
 		button_text.font_size = 12
-		button_content = alicorn.button_content_style(.Center, padding_x=3, padding_y=2)
 	}
 	button_style := alicorn.layout_style(.Row, grow=1, height=button_height)
 	files_id, files_clicked := alicorn.button_begin(
-		ui, "Files",
+		ui, "Explorer",
 		key=alicorn.key_string("workspace-panel-files"),
 		style=button_style,
-		state=alicorn.Button_State{selected=!app.workspace_search_mode && !app.workspace_projection_mode},
+		state=alicorn.Button_State{selected=!app.workspace_projection_mode},
 		text_style=button_text,
-		content_style=button_content,
+		content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=2),
 		variant=.Toolbar,
 	)
 	result.files = files_id
@@ -587,65 +586,42 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		alicorn.button_end(ui)
 	}
 	if files_clicked {
-		if workspace_search_deactivate(app, app.ui_description_runtime) {
-			app.workspace_projection_mode = false
-			app.editor_focus_pending = true
-			alicorn.invalidate_root(app.ui_description_runtime, "Scratchpad Files surface selected")
-		}
+		app.workspace_projection_mode = false
+		alicorn.invalidate_root(app.ui_description_runtime, "Scratchpad Explorer selected")
 	}
-	search_id, search_clicked := alicorn.button_begin(
-		ui, "Search",
+	symbol_id, symbol_clicked := alicorn.button_begin(ui, "Symbols…", key=alicorn.key_string("workspace-go-to-symbol"),
+		style=alicorn.layout_style(.Row, width=72, height=button_height),
+		variant=.Quiet, text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
+	if symbol_id != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, symbol_id, .Interactive) }
+		alicorn.button_end(ui)
+	}
+	if symbol_clicked {
+		symbol_picker_open_surface(app, app.ui_description_runtime)
+	}
+	_ = alicorn.tooltip(ui, "Go to Symbol (Ctrl+Shift+O)")
+	search_id, search_clicked := alicorn.icon_button(
+		ui, "Search Workspace", .Search,
 		key=alicorn.key_string("workspace-panel-search"),
-		style=button_style,
-		state=alicorn.Button_State{selected=app.workspace_search_mode},
-		text_style=button_text,
-		content_style=button_content,
-		variant=.Toolbar,
+		style=alicorn.layout_style(.Row, width=30, height=button_height),
+		variant=.Quiet,
 	)
 	result.search = search_id
 	if search_id != 0 {
 		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, search_id, .Interactive) }
-		alicorn.button_end(ui)
 	}
+	_ = alicorn.tooltip(ui, "Search Workspace (Ctrl+Shift+F)")
 	if search_clicked {
 		workspace_search_open_surface(app, app.ui_description_runtime)
 	}
-	tasks_id, tasks_clicked := alicorn.button_begin(
-		ui, "Tasks",
-		key=alicorn.key_string("workspace-panel-tasks"),
-		style=button_style,
-		state=alicorn.Button_State{selected=app.workspace_projection_mode && app.structural_projection_kind == "tasks"},
-		text_style=button_text,
-		content_style=button_content,
-		variant=.Toolbar,
-	)
-	result.tasks = tasks_id
-	if tasks_id != 0 {
-		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, tasks_id, .Interactive) }
-		alicorn.button_end(ui)
-	}
-	if tasks_clicked { workspace_projection_select(app, app.ui_description_runtime, "tasks") }
-	links_id, links_clicked := alicorn.button_begin(
-		ui, "Links",
-		key=alicorn.key_string("workspace-panel-links"),
-		style=button_style,
-		state=alicorn.Button_State{selected=app.workspace_projection_mode && app.structural_projection_kind == "links"},
-		text_style=button_text,
-		content_style=button_content,
-		variant=.Toolbar,
-	)
-	result.links = links_id
-	if links_id != 0 {
-		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, links_id, .Interactive) }
-		alicorn.button_end(ui)
-	}
-	if links_clicked { workspace_projection_select(app, app.ui_description_runtime, "links") }
 	alicorn.container_end(ui)
 	return result
 }
 
 workspace_projection_select :: proc(app: ^App, rt: ^alicorn.Runtime, kind: string) {
 	if app == nil || rt == nil { return }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found || document.language != "markdown" { return }
 	if !workspace_search_deactivate(app, rt) { return }
 	changed := !app.workspace_projection_mode || app.structural_projection_kind != kind
 	app.workspace_projection_mode = true

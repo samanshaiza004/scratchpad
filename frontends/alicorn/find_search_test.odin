@@ -5,6 +5,23 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
+test_workspace_search_groups_keep_keyboard_result_indices :: proc(t: ^testing.T) {
+	results := [?]bridge.Workspace_Search_Result{
+		{path="first.md"}, {path="first.md"}, {path="second.md"},
+	}
+	rows := workspace_search_display_rows(results[:], context.temp_allocator)
+	defer delete(rows)
+	testing.expect(t, len(rows) == 5 && rows[0].file_header && rows[0].match_count == 2 &&
+		rows[3].file_header && rows[3].match_count == 1,
+		"Search should group matching lines under one header per file")
+	for result, index in results {
+		row := rows[workspace_search_display_index(results[:], index)]
+		testing.expect(t, !row.file_header && row.result_index == index,
+			"keyboard reveal must target the matching line rather than a file header")
+	}
+}
+
+@(test)
 test_workspace_search_preview_centers_long_match_and_maps_caret :: proc(t: ^testing.T) {
 	bytes := make([]u8, 180, allocator=context.temp_allocator)
 	for index in 0..<len(bytes) { bytes[index] = 'x' }

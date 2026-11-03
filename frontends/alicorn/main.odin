@@ -53,6 +53,8 @@ ACTION_WORKSPACE_MOVE :: "workspace.move"
 ACTION_WORKSPACE_TRASH :: "workspace.trash"
 ACTION_WORKSPACE_SEARCH_GO_TO_SOURCE :: "workspace-search.go-to-source"
 ACTION_WORKSPACE_GO_TO_SYMBOL :: "workspace.go-to-symbol"
+ACTION_DOCUMENT_SHOW_TASKS :: "document.show-tasks"
+ACTION_DOCUMENT_SHOW_LINKS :: "document.show-links"
 ACTION_EDIT_UNDO       :: "edit.undo"
 ACTION_EDIT_REDO       :: "edit.redo"
 ACTION_EDIT_CUT        :: "edit.cut"
@@ -1460,6 +1462,7 @@ editor_update_pinned_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, 
 editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
 	app := cast(^App)state
 	if app == nil || !app.backend.started || (app.editor_scroll_owner == 0 && (!app.pinned.editing || app.pinned.owner == 0)) { return }
+	editor_task_marker_pointer_finish(app, rt, event)
 	defer pinned_edit_selection_sync(app)
 	if event.kind == .Move {
 		if captured, found := alicorn.node_info(rt, alicorn.captured_node(rt)); found &&
@@ -1655,6 +1658,15 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 		if !editor_apply_pointer_selection(view, window, source_byte, affinity, event.click_count, event.modifiers.shift) {
 			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED { alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision) }
 			return
+		}
+		if !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.super &&
+		   event.click_count <= 1 && !view.preedit_active && len(app.editor_edits) == 0 {
+			if marker_start, marker_end, hit := editor_task_marker_at_pointer(app, rt, window, event.x, event.y); hit {
+				view.task_toggle_pending = true
+				view.task_toggle_start, view.task_toggle_end = marker_start, marker_end
+				view.task_toggle_revision = document.editor_revision
+				view.task_toggle_x, view.task_toggle_y = event.x, event.y
+			}
 		}
 		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED { application_selection_diagnostic_revision_advance(app) }
 		view.dragging_selection = true

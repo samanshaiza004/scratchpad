@@ -21,8 +21,36 @@ Find_Presentation :: struct {
 
 FIND_MAX_MATCHES :: 1000
 WORKSPACE_SEARCH_MAX_RESULTS :: 5000
-WORKSPACE_SEARCH_ROW_HEIGHT :: f32(62)
+WORKSPACE_SEARCH_ROW_HEIGHT :: f32(30)
 WORKSPACE_SEARCH_TEXT_HEIGHT :: f32(28)
+
+Workspace_Search_Display_Row :: struct {
+	result_index: int,
+	file_header: bool,
+	match_count: int,
+}
+
+workspace_search_display_rows :: proc(results: []bridge.Workspace_Search_Result, allocator := context.temp_allocator) -> [dynamic]Workspace_Search_Display_Row {
+	rows := make([dynamic]Workspace_Search_Display_Row, 0, len(results), allocator=allocator)
+	for result, index in results {
+		if index == 0 || result.path != results[index-1].path {
+			last := index+1
+			for last < len(results) && results[last].path == result.path { last += 1 }
+			append(&rows, Workspace_Search_Display_Row{result_index=index, file_header=true, match_count=last-index})
+		}
+		append(&rows, Workspace_Search_Display_Row{result_index=index})
+	}
+	return rows
+}
+
+workspace_search_display_index :: proc(results: []bridge.Workspace_Search_Result, result_index: int) -> int {
+	if result_index < 0 || result_index >= len(results) { return 0 }
+	row := result_index
+	for index in 0..=result_index {
+		if index == 0 || results[index].path != results[index-1].path { row += 1 }
+	}
+	return row
+}
 
 Workspace_Search_View :: struct {
 	generation:  u64,

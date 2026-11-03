@@ -275,6 +275,27 @@ func TestItemToggleUsesParserTaskProjection(t *testing.T) {
 	}
 }
 
+func TestItemToggleRejectsStaleOrInvalidTaskRanges(t *testing.T) {
+	for _, task := range []document.Task{
+		{StartByte: 0, EndByte: 50, MarkerStart: 2, MarkerEnd: 5},
+		{StartByte: 0, EndByte: 4, MarkerStart: -1, MarkerEnd: 2},
+		{StartByte: 0, EndByte: 4, MarkerStart: 2, MarkerEnd: 5},
+		{StartByte: 0, EndByte: 4, MarkerStart: 3, MarkerEnd: 2},
+	} {
+		request := Request{ID: ItemToggle, Source: []byte("- []"), RootLanguage: "markdown", Cursor: 2, Anchor: 2,
+			SourceRevision: 2, ProjectionsCurrent: true,
+			Projections: document.Projections{Revision: 2, Tasks: []document.Task{task}}}
+		if out := Execute(request); out.Status != ResultUnavailable {
+			t.Fatalf("invalid task range executed: %+v", out)
+		}
+	}
+	request := Request{ID: ItemToggle, Source: []byte("- [ ] task"), RootLanguage: "markdown", Cursor: 3, Anchor: 3,
+		SourceRevision: 2, ProjectionsCurrent: true, Projections: markdown.Project([]byte("- [ ] task"), 1)}
+	if out := Execute(request); out.Status != ResultUnavailable {
+		t.Fatalf("old parser revision executed: %+v", out)
+	}
+}
+
 func TestTableNavigationReturnsOneReplacementAndCaret(t *testing.T) {
 	source := []byte("| a | b |\n| --- | --- |\n| one | two |\n")
 	doc := document.New("notes.md", source, "markdown")

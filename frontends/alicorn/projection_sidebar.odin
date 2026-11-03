@@ -229,6 +229,7 @@ projection_sidebar_row :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 			height=29,
 			variant=.Quiet,
 			text_style=alicorn.Text_Style{font_size=13, overflow=.Ellipsis},
+			content_style=alicorn.button_content_style(.Start, padding_x=4, padding_y=2),
 		) {
 			_ = projection_sidebar_navigate(app, rt, segment, false)
 		}

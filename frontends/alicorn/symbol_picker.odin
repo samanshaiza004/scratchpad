@@ -6,7 +6,7 @@ import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
-SYMBOL_PICKER_ROW_HEIGHT :: f32(38)
+SYMBOL_PICKER_ROW_HEIGHT :: f32(34)
 
 symbol_picker_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil || !app.backend.started || app.shutdown_intent != .None ||
@@ -108,6 +108,7 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	defer delete(filtered)
 	if len(filtered) == 0 { app.symbol_picker_selected_index = 0
 	} else { app.symbol_picker_selected_index = clamp(app.symbol_picker_selected_index, 0, len(filtered)-1) }
+	panel_height := f32(140)+f32(clamp(len(filtered), 1, 10))*SYMBOL_PICKER_ROW_HEIGHT
 	app.symbol_picker_overlay_node = alicorn.modal_overlay_begin(
 		ui,
 		alicorn.key_string("scratchpad-symbol-picker-overlay"),
@@ -119,7 +120,7 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		alicorn.surface_core_color_role(.Surface),
 		label="scratchpad-symbol-picker-panel",
 		key=alicorn.key_string("scratchpad-symbol-picker-panel"),
-		style=alicorn.layout_style(.Column, width=760, max_width=900, max_height=700, height=560, padding=14, gap=8, clip=true),
+		style=alicorn.layout_style(.Column, width=760, max_width=760, max_height=520, height=panel_height, padding=14, gap=8, clip=true),
 		shape=scratchpad_surface_shape(app, 7),
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
@@ -174,7 +175,7 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 				label="symbol-picker-row", height=SYMBOL_PICKER_ROW_HEIGHT-2, gap=8, align=.Center) {
 				if gui.button(ui, label,
 					key=alicorn.key_pair(segment.generation, u64(segment.ordinal)+0x10000000),
-					grow=1, height=34,
+					grow=1, height=SYMBOL_PICKER_ROW_HEIGHT-2,
 					state=alicorn.Button_State{selected=result_index == app.symbol_picker_selected_index},
 					variant=.Quiet,
 					text_style=alicorn.Text_Style{overflow=.Ellipsis},
@@ -201,15 +202,17 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	page_count := bridge.MAX_PROJECTION_WINDOW
 	previous_enabled := window.first > 0
 	next_enabled := window.first+len(window.segments) < window.total
-	if gui.row(ui, label="symbol-picker-footer", height=34, gap=8, align=.Center) {
+	if gui.row(ui, label="symbol-picker-footer", height=24, gap=8, align=.Center) {
 		first := window.first+1
 		last := window.first+len(window.segments)
 		if len(window.segments) == 0 { first = 0; last = 0 }
-		gui.text(ui, fmt.tprintf("%d–%d of %d  ·  Filter the current %d-symbol page", first, last, window.total, page_count),
+		hint := fmt.tprintf("%d symbols  ·  ↑↓ select  ·  Enter open  ·  Esc close", len(filtered))
+		if window.total > page_count { hint = fmt.tprintf("%d–%d of %d  ·  PgUp/PgDn pages  ·  Esc close", first, last, window.total) }
+		gui.text(ui, hint,
 			style=alicorn.layout_style(.Row, grow=1),
 			color=alicorn.style_color(ui, .Muted_Text),
 			text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
-		if gui.button(ui, "Previous", key="symbol-picker-previous-page", width=80, height=28,
+		if window.total > page_count && gui.button(ui, "‹", key="symbol-picker-previous-page", width=28, height=24,
 			state=alicorn.Button_State{disabled=!previous_enabled}, variant=.Toolbar) {
 			app.symbol_picker_page_first = max(window.first-page_count, 0)
 			app.symbol_picker_selected_index = 0
@@ -217,16 +220,13 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			projection_sidebar_window_clear(app)
 			alicorn.invalidate_root(rt, "Scratchpad Go to Symbol previous page")
 		}
-		if gui.button(ui, "Next", key="symbol-picker-next-page", width=64, height=28,
+		if window.total > page_count && gui.button(ui, "›", key="symbol-picker-next-page", width=28, height=24,
 			state=alicorn.Button_State{disabled=!next_enabled}, variant=.Toolbar) {
 			app.symbol_picker_page_first = window.first+page_count
 			app.symbol_picker_selected_index = 0
 			app.structural_view_scroll_owner = 0
 			projection_sidebar_window_clear(app)
 			alicorn.invalidate_root(rt, "Scratchpad Go to Symbol next page")
-		}
-		if gui.button(ui, "Close", key="symbol-picker-close", width=70, height=28, variant=.Quiet) {
-			symbol_picker_close_surface(app, rt, true)
 		}
 	}
 	alicorn.surface_end(ui)

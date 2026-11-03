@@ -159,6 +159,10 @@ Editor_View_State :: struct {
 	drag_pointer_x: f32,
 	drag_pointer_y: f32,
 	drag_pointer_valid: bool,
+	task_toggle_pending: bool,
+	task_toggle_start, task_toggle_end: u64,
+	task_toggle_revision: u64,
+	task_toggle_x, task_toggle_y: f32,
 	wrap_height_index: alicorn.Virtual_List_Height_Index,
 	wrap_height_index_ready: bool,
 	wrap_measurement_width: f32,
@@ -821,6 +825,11 @@ editor_rebase_presentation_records :: proc(
 		record := original
 		start := i64(record.start_byte)
 		end := i64(record.end_byte)
+		// A task marker is syntax, not an inherited style. Retire a touched
+		// marker until the parser publishes the new exact source revision.
+		if record.kind == EDITOR_PRESENTATION_TASK_MARKER &&
+		   ((edit_start == edit_end && edit_start_i64 >= start && edit_start_i64 <= end) ||
+		    (edit_start_i64 < end && edit_end_i64 > start)) { continue }
 		if edit_start == edit_end {
 			if end < edit_start_i64 {
 				// Insertion after this record; retain its byte range.

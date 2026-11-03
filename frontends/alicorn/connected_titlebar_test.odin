@@ -59,6 +59,9 @@ connected_titlebar_test_expect_join :: proc(t: ^testing.T, app: ^App, rt: ^alico
 	switcher_id := connected_titlebar_test_node(rt, "workspace-panel-tabs")
 	files_id := connected_titlebar_test_key(rt, "workspace-panel-files")
 	search_id := connected_titlebar_test_key(rt, "workspace-panel-search")
+	testing.expect(t, connected_titlebar_test_key(rt, "workspace-panel-tasks") == 0 &&
+		connected_titlebar_test_key(rt, "workspace-panel-links") == 0,
+		"document projections should not occupy permanent titlebar modes")
 	drag_id := connected_titlebar_test_node(rt, "scratchpad-titlebar-sidebar-drag-space")
 	tabs, tabs_ok := alicorn.node_info(rt, tabs_id)
 	paper, paper_ok := alicorn.node_info(rt, paper_id)

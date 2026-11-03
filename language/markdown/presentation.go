@@ -359,7 +359,7 @@ func appendListPresentation(add func(int, int, document.PresentationKind), item 
 			add(start, at, document.PresentationListMarker)
 		}
 	}
-	if taskLine, markerStart, markerEnd, checked, ok := taskRange(item, source); ok && taskLine == start {
+	if taskLine, markerStart, markerEnd, checked, ok := taskRange(item, source); extension.IsTask(item) && ok && taskLine == start {
 		add(markerStart, markerEnd, document.PresentationTaskMarker)
 		if checked && markerEnd < end {
 			// A completed task remains ordinary editable Markdown source. Strike

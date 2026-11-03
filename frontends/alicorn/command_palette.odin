@@ -276,6 +276,8 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	case action_id_for(ACTION_VIEW_THEME_RELIEF): return ACTION_VIEW_THEME_RELIEF
 	case action_id_for(ACTION_WORKSPACE_GO_TO_SYMBOL): return ACTION_WORKSPACE_GO_TO_SYMBOL
 	case action_id_for(ACTION_WORKSPACE_SEARCH_OPEN): return ACTION_WORKSPACE_SEARCH_OPEN
+	case action_id_for(ACTION_DOCUMENT_SHOW_TASKS): return ACTION_DOCUMENT_SHOW_TASKS
+	case action_id_for(ACTION_DOCUMENT_SHOW_LINKS): return ACTION_DOCUMENT_SHOW_LINKS
 	case action_id_for(ACTION_WORKSPACE_SETTINGS): return ACTION_WORKSPACE_SETTINGS
 	case action_id_for(ACTION_EDIT_CUT): return ACTION_EDIT_CUT
 	case action_id_for(ACTION_EDIT_COPY): return ACTION_EDIT_COPY
@@ -303,6 +305,11 @@ command_palette_collect_results :: proc(app: ^App, allocator: mem.Allocator) -> 
 			binding := command_palette_menu_binding(item.shortcut)
 			command_palette_add_or_enrich(&results, action_id, item.label, menu.label, binding, item.state.enabled)
 		}
+	}
+	if document, found := find_document(&app.backend.state, app.backend.state.active); found &&
+	   document.language == "markdown" {
+		command_palette_add_or_enrich(&results, ACTION_DOCUMENT_SHOW_TASKS, "Show Tasks in File", "Markdown", "", app.backend.started)
+		command_palette_add_or_enrich(&results, ACTION_DOCUMENT_SHOW_LINKS, "Show Links in File", "Markdown", "", app.backend.started)
 	}
 	return results
 }

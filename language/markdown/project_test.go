@@ -1,10 +1,65 @@
 package markdown
 
 import (
+	"bytes"
+	"fmt"
 	"testing"
 
 	"scratchpad/document"
 )
+
+func TestProjectTaskSyntaxRemainsEditable(t *testing.T) {
+	for _, original := range []string{"- [ ] Task\nordinary text\n", "- [x] Task\r\nordinary text\r\n", "- [X] Task"} {
+		// Every selection includes single brackets, the state character, the
+		// entire marker/prefix, and ranges extending into ordinary source.
+		for start := 0; start < len(original); start++ {
+			for end := start + 1; end <= len(original); end++ {
+				t.Run(fmt.Sprintf("%q/%d:%d", original, start, end), func(t *testing.T) {
+					source := []byte(original[:start] + original[end:])
+					projection := Project(source, 2)
+					for _, task := range projection.Tasks {
+						if task.MarkerStart < 0 || task.MarkerEnd > len(source) || task.MarkerEnd-task.MarkerStart != 3 {
+							t.Fatalf("task range outside edited source: %+v", task)
+						}
+						marker := source[task.MarkerStart:task.MarkerEnd]
+						if !bytes.Equal(marker, []byte("[ ]")) && !bytes.Equal(marker, []byte("[x]")) && !bytes.Equal(marker, []byte("[X]")) {
+							t.Fatalf("task refers to deleted syntax: %q", marker)
+						}
+					}
+					// Pasting the cut bytes back / undoing the cut restores the task.
+					restored := append(append(append([]byte{}, source[:start]...), original[start:end]...), source[start:]...)
+					if got := Project(restored, 3); len(got.Tasks) != 1 {
+						t.Fatalf("restored task = %+v", got.Tasks)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestProjectRecognizesOnlyGFMTaskMarkers(t *testing.T) {
+	for _, source := range []string{"- [ ] task", "* [x] task", "+ [X] task", "1. [ ] task", "  - [ ] nested\r\n", "> - [ ] quoted"} {
+		t.Run(source, func(t *testing.T) {
+			projection := Project([]byte(source), 1)
+			if len(projection.Tasks) != 1 {
+				t.Fatalf("typed task not recognized: %+v", projection.Tasks)
+			}
+		})
+	}
+	for _, source := range []string{"plain [ ] text", "- plain [ ] text", "- [y] text", "```md\n- [ ] code\n```", "    - [ ] code"} {
+		t.Run(source, func(t *testing.T) {
+			projection := Project([]byte(source), 1)
+			if len(projection.Tasks) != 0 {
+				t.Fatalf("ordinary source recognized as a task: %+v", projection.Tasks)
+			}
+			for _, span := range projection.Markdown.Spans {
+				if span.Kind == document.PresentationTaskMarker {
+					t.Fatalf("non-task marker painted as interactive: %+v", span)
+				}
+			}
+		})
+	}
+}
 
 func TestProjectHeadingsAndRanges(t *testing.T) {
 	source := []byte("# One\n\ntext\n\nTitle\n-----\n\n```md\n# not a heading\n```\n\n    # also code\n")

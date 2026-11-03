@@ -54,9 +54,11 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 
 	_ = workspace_search_edit_validate_window(app, rt)
 	search_palette := editor_markdown_palette(rt, app.workbench_theme)
+	rows := workspace_search_display_rows(app.workspace_search_view.results[:], alicorn.runtime_scratch_allocator(rt))
+	defer delete(rows)
 	search_list := alicorn.virtual_list_begin(
 		ui,
-		len(app.workspace_search_view.results),
+		len(rows),
 		WORKSPACE_SEARCH_ROW_HEIGHT,
 		key=alicorn.key_string("scratchpad-workspace-search-results"),
 		style=alicorn.layout_style(grow=1, clip=true),
@@ -64,8 +66,27 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 		focusable=true,
 	)
 	app.workspace_search_results_owner = search_list.scroll.id
-	for position := search_list.first; position < search_list.last; position += 1 {
+	for display_index := search_list.first; display_index < search_list.last; display_index += 1 {
+		row := rows[display_index]
+		position := row.result_index
 		result := app.workspace_search_view.results[position]
+		if row.file_header {
+			if gui.row(ui, key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key),
+				label="workspace-search-file-header", height=WORKSPACE_SEARCH_ROW_HEIGHT, gap=8, align=.Center) {
+				heading_node := gui.text(ui, result.path,
+					style=alicorn.layout_style(.Row, height=24, grow=1, justify=.Start),
+					text_style=alicorn.Text_Style{font_size=13, font_weight=alicorn.FONT_WEIGHT_MEDIUM, overflow=.Ellipsis})
+				append(&app.workspace_search_pointer_targets, Workspace_Search_Pointer_Target{
+					node=heading_node, generation=app.workspace_search_view.generation,
+					projection_key=result.projection_key, kind=.Navigate_Source,
+				})
+				gui.text(ui, fmt.tprintf("%d matches", row.match_count),
+					style=alicorn.layout_style(.Row, width=100, height=24, justify=.End),
+					color=alicorn.style_color(ui, .Muted_Text),
+					text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
+			}
+			continue
+		}
 		active_edit := workspace_search_edit_session_matches(app, position)
 		selected := app.workspace_search_selected == position
 		row_color := alicorn.NO_BACKGROUND_COLOR
@@ -73,25 +94,14 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 		alicorn.container_begin(ui, .Container,
 			key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key),
 			label="workspace-search-result",
-			style=alicorn.layout_style(.Column, height=WORKSPACE_SEARCH_ROW_HEIGHT-4, padding=5, gap=3, clip=true),
+			style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_ROW_HEIGHT, gap=10, align=.Center, clip=true),
 			color=row_color,
 		)
-		file_boundary := position == 0
-		if position > 0 && app.workspace_search_view.results[position-1].path != result.path { file_boundary = true }
-		show_file_heading := file_boundary || position == search_list.first
-		heading := fmt.tprintf("Line %d", result.line+1)
-		if show_file_heading { heading = fmt.tprintf("%s  ·  %d", result.path, result.line+1) }
-		if !result.editable { heading = fmt.tprintf("%s  ·  read-only", heading) }
-		heading_color := alicorn.style_color(ui, .Muted_Text)
-		heading_weight := alicorn.FONT_WEIGHT_REGULAR
-		if file_boundary {
-			heading_color = alicorn.style_color(ui, .Text)
-			heading_weight = alicorn.FONT_WEIGHT_MEDIUM
-		}
-		heading_node := gui.text(ui, heading,
-			style=alicorn.layout_style(.Row, height=16),
-			color=heading_color,
-			text_style=alicorn.Text_Style{font_size=12, font_weight=heading_weight, overflow=.Ellipsis},
+		heading_node := gui.text(ui, fmt.tprintf("%d", result.line+1),
+			style=alicorn.layout_style(.Row, width=54, height=WORKSPACE_SEARCH_TEXT_HEIGHT, justify=.End),
+			font=.Monospace,
+			color=alicorn.style_color(ui, .Muted_Text),
+			text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
 		)
 		append(&app.workspace_search_pointer_targets, Workspace_Search_Pointer_Target{
 			node=heading_node,
@@ -103,7 +113,7 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 			if app.workspace_search_edit_ready {
 				edit_field := alicorn.text_field_controlled(ui, &app.workspace_search_edit_buffer,
 					key=alicorn.key_pair(app.workspace_search_edit_generation, app.workspace_search_edit_projection_key),
-					style=alicorn.layout_style(.Row, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true),
+					style=alicorn.layout_style(.Row, grow=1, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true, justify=.Start),
 					font=.Monospace,
 					text_style=alicorn.Text_Style{font_size=14, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
 				)
@@ -131,7 +141,7 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 		} else {
 			preview := workspace_search_result_preview(result)
 			preview_node := gui.text(ui, preview.text,
-				style=alicorn.layout_style(.Row, grow=1, clip=true),
+				style=alicorn.layout_style(.Row, grow=1, height=WORKSPACE_SEARCH_TEXT_HEIGHT, clip=true, justify=.Start),
 				font=.Monospace,
 				color=alicorn.style_color(ui, .Text) if result.editable else alicorn.style_color(ui, .Muted_Text),
 				text_style=alicorn.Text_Style{font_size=14, font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},

@@ -760,7 +760,7 @@ workspace_search_move_selection :: proc(app: ^App, rt: ^alicorn.Runtime, directi
 			_ = alicorn.virtual_list_ensure_visible(
 				rt,
 				app.workspace_search_results_owner,
-				selected,
+				workspace_search_display_index(app.workspace_search_view.results[:], selected),
 				"Scratchpad workspace search selection moved",
 			)
 		}
@@ -1031,7 +1031,8 @@ workspace_search_context_menu_open_selected :: proc(app: ^App, rt: ^alicorn.Runt
 	index := app.workspace_search_selected
 	if index < 0 || index >= len(app.workspace_search_view.results) { index = 0 }
 	if app.workspace_search_results_owner != 0 {
-		_ = alicorn.virtual_list_ensure_visible(rt, app.workspace_search_results_owner, index,
+		_ = alicorn.virtual_list_ensure_visible(rt, app.workspace_search_results_owner,
+			workspace_search_display_index(app.workspace_search_view.results[:], index),
 			"Scratchpad keyboard context menu selected a search result")
 	}
 	anchor := alicorn.Rect{}
@@ -1707,7 +1708,9 @@ workspace_search_go_to_source :: proc(app: ^App, rt: ^alicorn.Runtime, result_in
 	}
 	if app.workspace_search_edit_active && !workspace_search_edit_finish(app, rt, refresh=false) { return true }
 	activated := workspace_search_activate_result(app, rt, result_index, target_byte)
-	if refresh_after_navigation && app.workspace_search_mode { workspace_search_start_query(app, rt, true) }
+	// Source navigation leaves the Search tab open. Refresh changed excerpts
+	// even after activating the source editor, so returning cannot show old ranges.
+	if refresh_after_navigation { workspace_search_start_query(app, rt, true) }
 	return activated
 }
 

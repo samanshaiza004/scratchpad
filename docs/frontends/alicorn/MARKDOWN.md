@@ -40,6 +40,14 @@ After an optimistic edit, presentation ranges that were explicitly rebased with 
 
 The existing Markdown and soft-wrap coverage verifies exact-revision styling, source/display mapping, wrapped visual-row navigation and selection, no-wrap code and table-overflow policy, long-word wrapping, sparse height shifts, and resize anchoring. The cell-aware table path compiles and preserves source bytes, but still needs focused automated layout/hit-test coverage and native review of table selection, resize, scrolling, and IME on Windows and macOS. Alicorn is the supported frontend; the remaining differences from the retired Shirei workbench are tracked in [the coverage list](PARITY.md).
 
+## Tasks and source editing
+
+Typing GFM syntax such as `- [ ] Task` creates an ordinary parser-derived task; no creation command is required. The marker's `[ ]`, `[x]`, or `[X]` source characters remain visible and selectable. A plain click within the exact marker text toggles its source through `item.toggle` as one undoable edit. Dragging across the marker, Shift-click, and double-click retain normal text selection behavior.
+
+Marker actions require exact parser/source revisions and the original marker bytes. Editing a marker immediately drops its rebased task styling; a pending or stale presentation never authorizes a task action. Cutting or deleting task syntax can turn the line back into ordinary Markdown, and paste/Undo/Redo operate on those same source bytes.
+
+The permanent sidebar is Explorer with Search and Symbols tools. `Ctrl+Shift+F` opens the editable Search tab; `Ctrl+Shift+O` opens the content-sized Symbol picker. **Show Tasks in File** and **Show Links in File** remain available in the command palette for Markdown documents. Programming files do not advertise those Markdown views. Returning to Explorer or activating a programming file leaves the contextual projection.
+
 ## Validation limits
 
 Headless tests must cover exact/stale revision handling, metadata bounds and malformed payloads, source/display mapping, lease ownership, and unchanged caret/layout geometry under paint spans. Typography tests verify semantic ranges and source preservation; shaping changes are expected for those spans. Native startup smoke verifies publication, wake, presentation, and shutdown; it does not certify visual style or native IME. Windows/macOS visual checks and the remaining Phase 4 manual matrix must be recorded separately before release certification.

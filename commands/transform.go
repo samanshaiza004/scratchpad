@@ -825,12 +825,16 @@ func taskCommand(request Request, start, end int) Outcome {
 }
 
 func toggleProjectedTask(request Request) Outcome {
-	if !request.ProjectionsCurrent {
+	if !request.ProjectionsCurrent || request.Projections.Revision != request.SourceRevision {
 		return Outcome{Status: ResultUnavailable}
 	}
 	for _, task := range request.Projections.Tasks {
 		if request.Cursor < task.StartByte || request.Cursor > task.EndByte {
 			continue
+		}
+		if task.StartByte < 0 || task.EndByte > len(request.Source) || task.MarkerStart < task.StartByte ||
+			task.MarkerEnd > task.EndByte || task.MarkerEnd-task.MarkerStart != 3 {
+			return Outcome{Status: ResultUnavailable}
 		}
 		marker := string(request.Source[task.MarkerStart:task.MarkerEnd])
 		if marker != "[ ]" && marker != "[x]" && marker != "[X]" {
