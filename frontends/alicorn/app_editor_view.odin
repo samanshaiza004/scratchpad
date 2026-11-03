@@ -721,6 +721,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				alicorn.Text_Position{byte=anchor_display, affinity=view.anchor_affinity},
 				alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity},
 				show_caret,
+				selection_background=alicorn.Text_Selection_Background.Fill_Node_When_Single_Line,
 			)
 			if show_caret && !view.preedit_active && !view.preedit_recoverable {
 				caret_position := alicorn.Text_Position{byte=caret_display, affinity=view.caret_affinity}

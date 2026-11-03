@@ -1268,9 +1268,14 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 						cell_start=line.source_start,cell_end=line.source_end,is_segment=true})
 					show_caret := alicorn.focused_node(rt)==s.owner &&
 						((edit_view.caret_byte>=line.source_start && edit_view.caret_byte<=line.source_end) || composition_row)
-					_ = alicorn.text_interaction(ui,line_node,
+					_ = alicorn.text_interaction(
+						ui,
+						line_node,
 						alicorn.Text_Position{byte=interaction_anchor,affinity=edit_view.anchor_affinity},
-						alicorn.Text_Position{byte=interaction_caret,affinity=edit_view.caret_affinity},show_caret)
+						alicorn.Text_Position{byte=interaction_caret,affinity=edit_view.caret_affinity},
+						show_caret,
+						selection_background=alicorn.Text_Selection_Background.Fill_Node_When_Single_Line,
+					)
 					if show_caret && alicorn.focused_node(rt)==s.owner {
 						app.editor_input_anchor_node=line_node
 						app.editor_input_anchor_byte=interaction_caret
