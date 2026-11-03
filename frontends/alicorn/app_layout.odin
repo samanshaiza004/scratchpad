@@ -893,8 +893,12 @@ scratchpad_document_tabs_build :: proc(
 		tab_options,
 		tab_style,
 	)
+	tab_document_nodes := tab_result.item_nodes
+	if len(tab_document_nodes) >= len(tab_document_indices) {
+		tab_document_nodes = tab_document_nodes[:len(tab_document_indices)]
+	}
 	scratchpad_document_tabs_reorder_motion(
-		app, ui, rt, state.documents, tab_document_indices[:], tab_result.item_nodes[:len(tab_document_indices)],
+		app, ui, rt, state.documents, tab_document_indices[:], tab_document_nodes,
 		compact && app.floating_window == nil,
 	)
 	if compact && !app.find_open { app.document_connected_tab_node = tab_result.selected_tab }
