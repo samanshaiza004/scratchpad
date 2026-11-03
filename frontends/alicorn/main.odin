@@ -2166,7 +2166,7 @@ editor_apply_local_replace_with_wire :: proc(
 			return false
 		}
 	}
-	document_id, id_error := strings.clone(document.id, context.allocator)
+	owned_document_id, id_error := strings.clone(document.id, context.allocator)
 	if id_error != nil {
 		if optimistic_projection { editor_window_destroy(&new_window) }
 		set_error(app, "Could not retain the edit's document identity.")
@@ -2176,7 +2176,7 @@ editor_apply_local_replace_with_wire :: proc(
 	if action_id != "" {
 		owned_action_id, id_error = strings.clone(action_id, context.allocator)
 		if id_error != nil {
-			delete(document_id, context.allocator)
+			delete(owned_document_id, context.allocator)
 			if optimistic_projection { editor_window_destroy(&new_window) }
 			set_error(app, "Could not retain the semantic edit intent.")
 			return false
@@ -2184,7 +2184,7 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	replacement_copy, replacement_error := make([]u8, len(replacement), allocator=context.allocator)
 	if replacement_error != nil {
-		delete(document_id, context.allocator)
+		delete(owned_document_id, context.allocator)
 		if len(owned_action_id) > 0 { delete(owned_action_id, context.allocator) }
 		if optimistic_projection { editor_window_destroy(&new_window) }
 		set_error(app, "Could not retain replacement bytes for the serial edit queue.")
@@ -2195,7 +2195,7 @@ editor_apply_local_replace_with_wire :: proc(
 	if len(wire_replacement) > 0 && !editor_bytes_equal(replacement, wire_replacement) {
 		wire_copy, replacement_error = make([]u8, len(wire_replacement), allocator=context.allocator)
 		if replacement_error != nil {
-			delete(document_id, context.allocator)
+			delete(owned_document_id, context.allocator)
 			if len(owned_action_id) > 0 { delete(owned_action_id, context.allocator) }
 			delete(replacement_copy, context.allocator)
 			if optimistic_projection { editor_window_destroy(&new_window) }
@@ -2228,7 +2228,7 @@ editor_apply_local_replace_with_wire :: proc(
 	}
 	append(&app.editor_edits, Editor_Edit_Intent{
 		sequence=app.editor_edit_sequence,
-		document_id=document_id,
+		document_id=owned_document_id,
 		pinned_edit=pinned_edit,
 		pin_id=u64(app.pinned.edit_pin) if pinned_edit else 0,
 		base_editor_revision=edit_base_revision,

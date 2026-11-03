@@ -442,7 +442,8 @@ pinned_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, id: bridge.Pin_ID) {
 	previous_edit_pin := app.pinned.edit_pin
 	return_document_id, clone_error := strings.clone(app.backend.state.active, context.allocator)
 	if clone_error != nil { set_error(app, "Could not retain the current document identity."); return }
-	edit_document_id, clone_error := strings.clone(pin.document_id, context.allocator)
+	edit_document_id: string
+	edit_document_id, clone_error = strings.clone(pin.document_id, context.allocator)
 	if clone_error != nil {
 		if len(return_document_id) > 0 { delete(return_document_id, context.allocator) }
 		set_error(app, "Could not retain the pinned source identity.")
@@ -845,7 +846,7 @@ pinned_focus_request :: proc(app: ^App, rt: ^alicorn.Runtime) {
 pinned_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
 	if !pinned_focus_owned(app,rt) {return false}
 	if app.pinned.editing {
-		switch key {
+		#partial switch key {
 		case .Up,.Down,.Home,.End,.Return:
 			return false
 		case .Context_Menu:
