@@ -498,6 +498,7 @@ build_app :: proc(
 	scratchpad_editor_font_picker_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
 	workspace_search_edit_focus_transition(app, rt)
+	workspace_search_edit_switch_after_frame(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
 		if alicorn.focus(rt, app.go_to_line_query_node) {
