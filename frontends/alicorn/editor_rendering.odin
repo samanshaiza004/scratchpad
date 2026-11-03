@@ -13,6 +13,7 @@ Editor_Row_Target :: struct {
 	cell_width:   f32,
 	cell_origin_x: f32,
 	is_cell:      bool,
+	is_segment:   bool,
 }
 
 Editor_Table_Row_Layout :: struct {
@@ -53,7 +54,7 @@ editor_row_target_for_source :: proc(
 	best_distance := u64(0xFFFF_FFFF_FFFF_FFFF)
 	for row in rows {
 		if row.logical_line != logical_line { continue }
-		if !row.is_cell { return row, true }
+		if !row.is_cell && !row.is_segment { return row, true }
 		distance := u64(0)
 		if source_byte < row.cell_start { distance = row.cell_start-source_byte }
 		else if source_byte > row.cell_end { distance = source_byte-row.cell_end }
@@ -699,7 +700,7 @@ editor_display_line_for_target :: proc(
 	allocator := context.temp_allocator,
 ) -> (display_line: Editor_Display_Line, ok: bool) {
 	if line == nil { return }
-	if !target.is_cell { return line^, true }
+	if !target.is_cell && !target.is_segment { return line^, true }
 	return editor_project_source_segment(window, line, target.cell_start, target.cell_end, allocator)
 }
 

@@ -473,7 +473,11 @@ build_app :: proc(
 		app.editor_restore_vertical = false
 		app.editor_restore_horizontal = false
 	}
-	if app.editor_input_anchor_node != 0 && app.editor_scroll_owner != 0 {
+	input_area_owner := app.editor_scroll_owner
+	if app.pinned.editing && app.pinned.owner != 0 && alicorn.focused_node(rt) == app.pinned.owner {
+		input_area_owner = app.pinned.owner
+	}
+	if app.editor_input_anchor_node != 0 && input_area_owner != 0 {
 		geometry := alicorn.text_node_caret_geometry(
 			rt,
 			app.editor_input_anchor_node,
@@ -484,7 +488,7 @@ build_app :: proc(
 				rect=alicorn.Rect{geometry.rect.x, geometry.rect.y, 1, max(geometry.rect.h, EDITOR_ROW_HEIGHT*editor_text_scale_effective(app))},
 				cursor_x=0,
 			}
-			_ = alicorn.text_input_target_area_set(rt, app.editor_scroll_owner, area)
+			_ = alicorn.text_input_target_area_set(rt, input_area_owner, area)
 		}
 	}
 	editor_reveal_after_frame(app, rt)

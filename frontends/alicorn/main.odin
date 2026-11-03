@@ -802,6 +802,17 @@ application_scheduled_wake :: proc(state: rawptr, rt: ^alicorn.Runtime, class: h
 	if class != .Frequent { return }
 	app := cast(^App)state
 	if app == nil || !app.backend.started { return }
+	if app.pinned.editing {
+		if view_index := editor_view_find(app.editor_views[:], app.pinned.edit_document_id); view_index >= 0 {
+			view := &app.editor_views[view_index]
+			if view.dragging_selection && view.drag_pointer_valid {
+				_ = editor_update_pinned_pointer_selection(app, rt, view)
+				return
+			}
+		}
+		editor_schedule_selection_autoscroll(app, false)
+		return
+	}
 	if document, found := find_document(&app.backend.state, app.backend.state.active); found {
 		if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
 			view := &app.editor_views[view_index]
@@ -967,7 +978,23 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	if app.settings_surface_open {
 		return settings_surface_handle_key(app, rt, key)
 	}
-	if app.pinned.editing && key==.Escape {
+	if app.pinned.editing && key == .Escape {
+		if index := editor_view_find(app.editor_views[:], app.pinned.edit_document_id); index >= 0 {
+			view := &app.editor_views[index]
+			if view.preedit_active {
+				if view.preedit_recoverable {
+					set_error(app, "Copy or explicitly discard the committed IME recovery text before leaving pinned editing.")
+				} else {
+					editor_preedit_clear(view)
+					editor_resume_text_input_target(app, rt, app.pinned.edit_document_id)
+					set_error(app, "")
+				}
+				sync_menu_states(app)
+				sync_runtime_actions(app, rt)
+				alicorn.invalidate_root(rt, "Scratchpad handled Escape during pinned text composition")
+				return true
+			}
+		}
 		pinned_edit_finish(app,rt)
 		return true
 	}
@@ -1060,7 +1087,12 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		if !app.workspace_search_view.done { workspace_search_start_query(app, rt) }
 		return true
 	}
+	if key == .Return && app.pinned.editing && app.pinned.owner != 0 && alicorn.focused_node(rt) == app.pinned.owner {
+		if editor_active_preedit(app) { return false }
+		return editor_insert_newline(app, rt)
+	}
 	if key == .Return && app.editor_scroll_owner != 0 && alicorn.focused_node(rt) == app.editor_scroll_owner {
+		if editor_active_preedit(app) { return false }
 		if document, found := find_document(&app.backend.state, app.backend.state.active); found && document.language == "markdown" {
 			if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
 				view := &app.editor_views[view_index]
@@ -1087,14 +1119,20 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	return false
 }
 
-editor_source_at_pointer :: proc(
+editor_source_at_pointer_for_rows :: proc(
 	app: ^App,
 	rt: ^alicorn.Runtime,
+	owner_id: alicorn.Node_ID,
+	document_id: string,
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	rows: []Editor_Row_Target,
 	x, y: f32,
 	clamp_to_viewport := false,
 ) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
-	if app == nil || rt == nil || app.editor_scroll_owner == 0 { return }
-	owner, owner_found := alicorn.node_info(rt, app.editor_scroll_owner)
+	if app == nil || rt == nil || owner_id == 0 || view == nil || window == nil ||
+	   window.document_id != document_id || len(rows) == 0 { return }
+	owner, owner_found := alicorn.node_info(rt, owner_id)
 	if !owner_found || owner.scroll_viewport_width <= 0 || owner.scroll_viewport_height <= 0 { return }
 	left, top := owner.bounds.x, owner.bounds.y
 	right, bottom := left+owner.scroll_viewport_width, top+owner.scroll_viewport_height
@@ -1105,21 +1143,10 @@ editor_source_at_pointer :: proc(
 	} else if hit_x < left || hit_x >= right || hit_y < top || hit_y >= bottom {
 		return
 	}
-	document, found := find_document(&app.backend.state, app.backend.state.active)
-	if !found { return }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
-	if !view_ok { return }
-	view := &app.editor_views[view_index]
-	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
-	if !window_matches { return }
-	// Choose the realized row containing Y. During a captured drag, clamp into
-	// the nearest realized row so leaving the viewport selects its visible edge
-	// rather than dropping the interaction; scheduled autoscroll advances the
-	// viewport and retries from the retained pointer coordinates.
 	best_distance := f32(1e30)
 	best_line: u64
 	best_y := hit_y
-	for row_target in app.editor_row_targets {
+	for row_target in rows {
 		row_node, row_found := alicorn.node_info(rt, row_target.node)
 		if !row_found || row_node.bounds.h <= 0 { continue }
 		if hit_y >= row_node.bounds.y && hit_y < row_node.bounds.y+row_node.bounds.h {
@@ -1138,7 +1165,7 @@ editor_source_at_pointer :: proc(
 	best_target: Editor_Row_Target
 	best_x_distance := f32(1e30)
 	best_hit_x := hit_x
-	for target in app.editor_row_targets {
+	for target in rows {
 		if target.logical_line != best_line { continue }
 		node, node_found := alicorn.node_info(rt, target.node)
 		if !node_found { continue }
@@ -1159,6 +1186,26 @@ editor_source_at_pointer :: proc(
 	display_line, display_found := editor_display_line_for_target(window, line, best_target)
 	if !display_found { return }
 	return editor_normalize_source_position(&display_line, editor_display_to_source(&display_line, position.byte)), position.affinity, true
+}
+
+editor_source_at_pointer :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	x, y: f32,
+	clamp_to_viewport := false,
+) -> (source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
+	if app == nil || rt == nil || app.editor_scroll_owner == 0 { return }
+	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if !found { return }
+	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	if !view_ok { return }
+	view := &app.editor_views[view_index]
+	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches { return }
+	return editor_source_at_pointer_for_rows(
+		app, rt, app.editor_scroll_owner, document.id, view, window,
+		app.editor_row_targets[:], x, y, clamp_to_viewport,
+	)
 }
 
 editor_ensure_line_visible :: proc(
@@ -1286,17 +1333,45 @@ editor_presentation_window :: proc(
 // Editor-local pointer placement is owned by the durable scroll region. The
 // generic text-input owner captures the pointer; realized rows provide only
 // shaped geometry, and Scratchpad retains caret/selection as source bytes.
+editor_update_pinned_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State) -> bool {
+	if app == nil || rt == nil || view == nil || !app.pinned.editing ||
+	   !view.dragging_selection || !view.drag_pointer_valid || view.document_id != app.pinned.edit_document_id { return false }
+	document, document_found := find_document(&app.backend.state, app.pinned.edit_document_id)
+	if !document_found { return false }
+	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches { return false }
+	source_byte, affinity, hit := editor_source_at_pointer_for_rows(
+		app, rt, app.pinned.owner, document.id, view, window,
+		app.pinned.edit_row_targets[:], view.drag_pointer_x, view.drag_pointer_y, true,
+	)
+	old_anchor, old_caret := view.selection_anchor, view.caret_byte
+	old_anchor_affinity, old_caret_affinity := view.anchor_affinity, view.caret_affinity
+	if hit {
+		_ = editor_extend_pointer_selection(view, window, source_byte, affinity)
+		pinned_edit_selection_sync(app)
+	}
+	outside, dx, dy := editor_pointer_outside_viewport(rt, app.pinned.owner, view.drag_pointer_x, view.drag_pointer_y)
+	scrolled := false
+	if outside {
+		if owner, found := alicorn.node_info(rt, app.pinned.owner); found {
+			if dy != 0 { scrolled = alicorn.scroll_region_set_offset(rt, app.pinned.owner, owner.scroll_offset_y+dy, "Pinned text selection autoscrolled vertically") || scrolled }
+			if dx != 0 { scrolled = alicorn.scroll_region_set_offset_x(rt, app.pinned.owner, owner.scroll_offset_x+dx, "Pinned text selection autoscrolled horizontally") || scrolled }
+		}
+	}
+	editor_schedule_selection_autoscroll(app, outside && scrolled)
+	changed := old_anchor != view.selection_anchor || old_caret != view.caret_byte ||
+	           old_anchor_affinity != view.anchor_affinity || old_caret_affinity != view.caret_affinity
+	if changed || scrolled { alicorn.invalidate_root(rt, "Pinned source selection changed") }
+	return changed || scrolled
+}
+
 editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
 	app := cast(^App)state
-	if app == nil || !app.backend.started || app.editor_scroll_owner == 0 { return }
+	if app == nil || !app.backend.started || (app.editor_scroll_owner == 0 && (!app.pinned.editing || app.pinned.owner == 0)) { return }
 	defer pinned_edit_selection_sync(app)
 	if event.kind == .Move {
 		if captured, found := alicorn.node_info(rt, alicorn.captured_node(rt)); found &&
 		   captured.kind == .Split_Handle && captured.split_owner == app.workspace_editor_split_node {
-			// Alicorn marks retained layout dirty immediately, but Scratchpad's
-			// sparse wrapped-row heights are application-owned and must be
-			// remeasured for the new editor width. That measurement visits only
-			// the bounded visible source window.
 			alicorn.invalidate_root(rt, "Scratchpad editor width changed during split resize")
 			return
 		}
@@ -1311,8 +1386,20 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 			}
 		}
 		editor_schedule_selection_autoscroll(app, false)
-		if event.kind == .Up && drag_ended {
-			alicorn.invalidate_root(rt, "Scratchpad editor pointer selection ended")
+		if event.kind == .Up && drag_ended { alicorn.invalidate_root(rt, "Scratchpad text selection ended") }
+		return
+	}
+	pinned_capture := app.pinned.editing && app.pinned.owner != 0 &&
+	                  alicorn.captured_node(rt) == app.pinned.owner
+	if event.kind == .Move && pinned_capture {
+		if view_index := editor_view_find(app.editor_views[:], app.pinned.edit_document_id); view_index >= 0 {
+			view := &app.editor_views[view_index]
+			if view.dragging_selection {
+				view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
+				view.drag_pointer_valid = true
+				_ = editor_update_pinned_pointer_selection(app, rt, view)
+				_ = alicorn.focus(rt, app.pinned.owner)
+			}
 		}
 		return
 	}
@@ -1327,10 +1414,40 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 					_ = alicorn.focus(rt, app.editor_scroll_owner)
 				}
 			}
+			return
 		}
+	}
+	if event.kind != .Down || event.button != 1 { return }
+	pinned_down := app.pinned.editing && app.pinned.owner != 0 && target == app.pinned.owner
+	if pinned_down {
+		document, found := find_document(&app.backend.state, app.pinned.edit_document_id)
+		if !found { return }
+		view_index := editor_view_find(app.editor_views[:], document.id)
+		if view_index < 0 { return }
+		view := &app.editor_views[view_index]
+		window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+		if !window_matches { return }
+		source_byte, affinity, hit := editor_source_at_pointer_for_rows(
+			app, rt, app.pinned.owner, document.id, view, window,
+			app.pinned.edit_row_targets[:], event.x, event.y,
+		)
+		if !hit { return }
+		editor_undo_group_break(view)
+		view.pending_document_edge = .None
+		view.pending_document_edge_shift = false
+		if !editor_apply_pointer_selection(view, window, source_byte, affinity, event.click_count, event.modifiers.shift) { return }
+		pinned_edit_selection_sync(app)
+		view.dragging_selection = true
+		view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
+		view.drag_pointer_valid = true
+		if caret_line, caret_line_found := editor_line_for_source(window, view.caret_byte); caret_line_found {
+			_ = pinned_edit_ensure_line_visible(app, rt, caret_line.logical_line)
+		}
+		_ = alicorn.focus(rt, app.pinned.owner)
+		alicorn.invalidate_root(rt, "Scratchpad placed a selection in the pinned source passage")
 		return
 	}
-	if event.kind != .Down || event.button != 1 || target != app.editor_scroll_owner { return }
+	if app.editor_scroll_owner == 0 || target != app.editor_scroll_owner { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
@@ -1357,9 +1474,7 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 					view.anchor_affinity, view.caret_affinity = old_anchor_affinity, old_caret_affinity
 					set_error(app, "Expand collapsed content before selecting across it.")
 					alicorn.invalidate_root(rt, "Scratchpad refused a selection spanning hidden semantic content")
-					when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
-						alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
-					}
+					when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED { alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision) }
 					return
 				}
 				view.zoom.anchor_byte = view.caret_byte
@@ -1368,17 +1483,13 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 				view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
 				view.drag_pointer_valid = true
 				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
-					if old_anchor != view.selection_anchor || old_caret != view.caret_byte {
-						application_selection_diagnostic_revision_advance(app)
-					}
+					if old_anchor != view.selection_anchor || old_caret != view.caret_byte { application_selection_diagnostic_revision_advance(app) }
 					alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
 				}
 				_ = alicorn.focus(rt, app.editor_scroll_owner)
 				alicorn.invalidate_root(rt, "Scratchpad selected an authoritative source position in semantic zoom")
 			} else {
-				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
-					alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
-				}
+				when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED { alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision) }
 			}
 		}
 		return
@@ -1397,22 +1508,16 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 			)
 		}
 		if !editor_apply_pointer_selection(view, window, source_byte, affinity, event.click_count, event.modifiers.shift) {
-			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
-				alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
-			}
+			when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED { alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision) }
 			return
 		}
-		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
-			application_selection_diagnostic_revision_advance(app)
-		}
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED { application_selection_diagnostic_revision_advance(app) }
 		view.dragging_selection = true
 		view.drag_pointer_x, view.drag_pointer_y = event.x, event.y
 		view.drag_pointer_valid = true
 		_ = alicorn.focus(rt, app.editor_scroll_owner)
 		alicorn.invalidate_root(rt, "Scratchpad editor pointer selection placed")
-		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
-			alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision)
-		}
+		when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED { alicorn.application_mutation_end(rt, &selection_scope, app.selection_diagnostic_revision) }
 	}
 }
 
@@ -1426,15 +1531,23 @@ editor_text_key :: proc(
 	event: host.Application_Text_Key_Event,
 ) -> bool {
 	app := cast(^App)state
-	if app == nil || owner == 0 || owner != app.editor_scroll_owner || !app.backend.started { return false }
+	if app == nil || owner == 0 || !app.backend.started { return false }
+	pinned_owner := app.pinned.editing && owner == app.pinned.owner
+	if !pinned_owner && owner != app.editor_scroll_owner { return false }
 	defer pinned_edit_selection_sync(app)
-	document, found := find_document(&app.backend.state, app.backend.state.active)
+	document_id := app.backend.state.active
+	if pinned_owner { document_id = app.pinned.edit_document_id }
+	document, found := find_document(&app.backend.state, document_id)
 	if !found { return false }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
-	if semantic_zoom_navigation_key(app, rt, owner, document, view, event) { return true }
-	semantic_zoom_reveal_input(app, rt, view)
+	if !pinned_owner {
+		if semantic_zoom_navigation_key(app, rt, owner, document, view, event) { return true }
+		semantic_zoom_reveal_input(app, rt, view)
+	}
+	rows := app.editor_row_targets[:]
+	if pinned_owner { rows = app.pinned.edit_row_targets[:] }
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches { return false }
 	if view.preedit_active {
@@ -1452,7 +1565,7 @@ editor_text_key :: proc(
 		if event.control || event.alt || event.super { return false }
 		table_action := ACTION_MARKDOWN_TABLE_NEXT
 		if event.shift { table_action = ACTION_MARKDOWN_TABLE_PREVIOUS }
-		if document.language == "markdown" && editor_cursor_in_markdown_table(window, view.caret_byte) {
+		if !pinned_owner && document.language == "markdown" && editor_cursor_in_markdown_table(window, view.caret_byte) {
 			dispatch_action(app, rt, table_action)
 			return true
 		}
@@ -1659,37 +1772,56 @@ editor_text_key :: proc(
 			next_caret = editor_normalize_source_position(line, line.source_end)
 			next_affinity = .Trailing
 		case .Document_Start, .Document_End:
-			line_count := document.line_count
-			if view.optimistic_pending_edits > 0 {
-				if view.optimistic_line_delta < 0 {
-					removed := u64(-view.optimistic_line_delta)
-					line_count = line_count-removed if removed < line_count else 1
-				} else {
-					line_count += u64(view.optimistic_line_delta)
+			if pinned_owner {
+				target_byte := app.pinned.edit_start_byte if event.key == .Document_Start else app.pinned.edit_end_byte
+				pin, pin_found := pinned_edit_range(&app.pinned)
+				if !pin_found { return true }
+				target_line := u64(max(pin.first_line, 0))
+				if event.key == .Document_End && pin.line_count > 0 {
+					target_line = u64(max(pin.first_line+pin.line_count-1, 0))
 				}
-			}
-			target_line := u64(0) if event.key == .Document_Start else (line_count-1 if line_count > 0 else 0)
-			target, target_found := editor_window_line(window, target_line)
-			if !target_found {
-				view.pending_document_edge = .Start if event.key == .Document_Start else .End
-				view.pending_document_edge_shift = shift
-				_ = editor_ensure_line_visible(rt, view, owner, int(target_line), "Scratchpad editor moved to document edge")
-				view.preferred_x_set = false
-				alicorn.invalidate_root(rt, "Scratchpad editor requested a bounded document-edge window")
-				return true
-			}
-			if event.key == .Document_Start {
-				next_caret = editor_normalize_source_position(target, target.source_start)
-				next_affinity = .Leading
+				if _, target_found := editor_line_for_source(window, target_byte); !target_found {
+					_ = pinned_edit_window_load(app, target_line, target_byte)
+					_ = pinned_edit_ensure_line_visible(app, rt, target_line)
+					alicorn.invalidate_root(rt, "Pinned caret requested a bounded source window")
+					return true
+				}
+				next_caret = target_byte
+				next_affinity = .Leading if event.key == .Document_Start else .Trailing
 			} else {
-				next_caret = editor_normalize_source_position(target, target.source_end)
-				next_affinity = .Trailing
+				line_count := document.line_count
+				if view.optimistic_pending_edits > 0 {
+					if view.optimistic_line_delta < 0 {
+						removed := u64(-view.optimistic_line_delta)
+						line_count = line_count-removed if removed < line_count else 1
+					} else {
+						line_count += u64(view.optimistic_line_delta)
+					}
+				}
+				target_line := u64(0) if event.key == .Document_Start else (line_count-1 if line_count > 0 else 0)
+				target, target_found := editor_window_line(window, target_line)
+				if !target_found {
+					view.pending_document_edge = .Start if event.key == .Document_Start else .End
+					view.pending_document_edge_shift = shift
+					_ = editor_ensure_line_visible(rt, view, owner, int(target_line), "Scratchpad editor moved to document edge")
+					view.preferred_x_set = false
+					alicorn.invalidate_root(rt, "Scratchpad editor requested a bounded document-edge window")
+					return true
+				}
+				if event.key == .Document_Start {
+					next_caret = editor_normalize_source_position(target, target.source_start)
+					next_affinity = .Leading
+				} else {
+					next_caret = editor_normalize_source_position(target, target.source_end)
+					next_affinity = .Trailing
+				}
 			}
 		case .Up, .Down, .Page_Up, .Page_Down:
 			current_line := line.logical_line
 			owner_node, owner_found := alicorn.node_info(rt, owner)
 			text_scale := editor_text_scale_effective(app)
 			gutter_width := editor_line_number_gutter_width(document.line_count, text_scale)
+			if pinned_owner { gutter_width = 0 }
 			wrap_width := f32(0)
 			if owner_found { wrap_width = max(owner_node.scroll_viewport_width-gutter_width-16*text_scale, 80*text_scale) }
 			presentation_current := window.presentation_ready &&
@@ -1697,7 +1829,7 @@ editor_text_key :: proc(
 			                        (window.presentation_revision == window.editor_revision &&
 			                         document.presentation_ready &&
 			                         document.presentation_revision == window.presentation_revision))
-			current_target, current_target_found := editor_row_target_for_source(app.editor_row_targets[:], current_line, old_caret)
+			current_target, current_target_found := editor_row_target_for_source(rows, current_line, old_caret)
 			current_display_line := line^
 			current_node := alicorn.Node_ID(0)
 			current_width := wrap_width
@@ -1742,7 +1874,7 @@ editor_text_key :: proc(
 					target_line = min(current_line+1, last_line)
 				}
 			} else {
-				if view.wrap_height_index_ready && owner_found {
+				if !pinned_owner && view.wrap_height_index_ready && owner_found {
 					page := max(owner_node.scroll_viewport_height-current_geometry.rect.h, current_geometry.rect.h)
 					current_content_y := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, int(current_line)) +
 					                     current_geometry.rect.y + current_geometry.rect.h*0.5
@@ -1765,7 +1897,12 @@ editor_text_key :: proc(
 			}
 			target, target_found := editor_window_line(window, target_line)
 			if !target_found {
-				_ = editor_ensure_line_visible(rt, view, owner, int(target_line), "Scratchpad requested the bounded window for vertical editor navigation")
+				if pinned_owner {
+					_ = pinned_edit_window_load(app, target_line, view.caret_byte)
+					_ = pinned_edit_ensure_line_visible(app, rt, target_line)
+				} else {
+					_ = editor_ensure_line_visible(rt, view, owner, int(target_line), "Scratchpad requested the bounded window for vertical editor navigation")
+				}
 				alicorn.invalidate_root(rt, "Scratchpad vertical editor navigation reached the bounded source window edge")
 				return true
 			}
@@ -1775,7 +1912,7 @@ editor_text_key :: proc(
 			target_target: Editor_Row_Target
 			target_target_found := false
 			target_origin_x: f32 = 0
-			if editor_table_line_is_projected(window, target) && editor_table_line_fit(window, target, wrap_width, text_scale) {
+			if !pinned_owner && editor_table_line_is_projected(window, target) && editor_table_line_fit(window, target, wrap_width, text_scale) {
 				target_layout := editor_table_row_layout(window, target, wrap_width, text_scale=text_scale)
 				target_cell_index := editor_table_cell_for_x(target_layout, view.preferred_x)
 				if current_target_found && current_target.is_cell { target_cell_index = current_target.cell_index }
@@ -1791,8 +1928,8 @@ editor_text_key :: proc(
 					}
 				}
 			}
-			if !target_target_found && (!current_target_found || !current_target.is_cell || !editor_table_line_is_projected(window, target)) {
-				target_target, target_target_found = editor_row_target_for_source(app.editor_row_targets[:], target_line, target.source_start)
+			if !target_target_found && (pinned_owner || !current_target_found || !current_target.is_cell || !editor_table_line_is_projected(window, target)) {
+				target_target, target_target_found = editor_row_target_for_source(rows, target_line, target.source_start)
 				if target_target_found { target_display_line, _ = editor_display_line_for_target(window, target, target_target) }
 			}
 			if target_target_found {
@@ -1858,8 +1995,12 @@ editor_text_key :: proc(
 		application_selection_diagnostic_revision_advance(app)
 	}
 	if target_line, target_found := editor_line_for_source(window, next_caret); target_found {
-		_ = editor_ensure_line_visible(rt, view, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
-		if caret_target, target_available := editor_row_target_for_source(app.editor_row_targets[:], target_line.logical_line, next_caret); target_available {
+		if pinned_owner {
+			pinned_edit_ensure_line_visible(app, rt, target_line.logical_line)
+		} else {
+			_ = editor_ensure_line_visible(rt, view, owner, int(target_line.logical_line), "Scratchpad editor caret moved outside the viewport")
+		}
+		if caret_target, target_available := editor_row_target_for_source(rows, target_line.logical_line, next_caret); target_available {
 			if display_line, display_ok := editor_display_line_for_target(window, target_line, caret_target); display_ok {
 			if geometry := alicorn.text_node_caret_geometry(rt, caret_target.node, alicorn.Text_Position{byte=editor_source_to_display(&display_line, next_caret), affinity=next_affinity}); geometry.valid {
 				if owner_node, owner_found := alicorn.node_info(rt, owner); owner_found {
@@ -1912,7 +2053,9 @@ editor_apply_local_typing_replace :: proc(
 	resulting_anchor, resulting_caret: u64,
 ) -> bool {
 	if app == nil { return false }
-	document, found := find_document(&app.backend.state, app.backend.state.active)
+	document_id := app.backend.state.active
+	if app.pinned.editing { document_id = app.pinned.edit_document_id }
+	document, found := find_document(&app.backend.state, document_id)
 	if !found { return false }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return false }
@@ -1942,16 +2085,18 @@ editor_apply_local_replace_with_wire :: proc(
 		alicorn.invalidate_root(rt,"Scratchpad serialized edits after a pinned paste")
 		return false
 	}
-	document, found := find_document(&app.backend.state, app.backend.state.active)
+	pinned_edit := app.pinned.editing
+	document_id := app.backend.state.active
+	if pinned_edit { document_id = app.pinned.edit_document_id }
+	document, found := find_document(&app.backend.state, document_id)
 	if !found { return false }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok {
-		set_error(app, "Could not retain the active document's optimistic editor view.")
+		set_error(app, "Could not retain the source document's optimistic editor view.")
 		return false
 	}
 	view := &app.editor_views[view_index]
 	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
-	pinned_edit:=app.pinned.editing
 	pinned_end_after_edit:u64=0
 	if pinned_edit {
 		valid,new_end:=pinned_edit_validate_replacement(app,document.id,start_byte,end_byte,len(replacement),
@@ -1964,7 +2109,7 @@ editor_apply_local_replace_with_wire :: proc(
 		}
 		pinned_end_after_edit=new_end
 	}
-	semantic_zoom_reveal_input(app, rt, view)
+	if !pinned_edit { semantic_zoom_reveal_input(app, rt, view) }
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	window_end: u64 = 0
 	if window_matches { window_end = window.start_byte+u64(len(window.source)) }
@@ -2118,13 +2263,17 @@ editor_apply_local_replace_with_wire :: proc(
 }
 
 editor_insert_newline :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
-	if app == nil || rt == nil || app.editor_scroll_owner == 0 { return false }
-	document, found := find_document(&app.backend.state, app.backend.state.active)
+	if app == nil || rt == nil { return false }
+	pinned_owner := app.pinned.editing && app.pinned.owner != 0 && alicorn.focused_node(rt) == app.pinned.owner
+	if app.editor_scroll_owner == 0 && !pinned_owner { return false }
+	document_id := app.backend.state.active
+	if pinned_owner { document_id = app.pinned.edit_document_id }
+	document, found := find_document(&app.backend.state, document_id)
 	if !found { return true }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { return true }
 	view := &app.editor_views[view_index]
-	semantic_zoom_reveal_input(app, rt, view)
+	if !pinned_owner { semantic_zoom_reveal_input(app, rt, view) }
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	if !window_matches {
 		set_error(app, "The bounded source window is not ready for Enter.")
@@ -2139,7 +2288,7 @@ editor_insert_newline :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		return true
 	}
 	action_id := ""
-	if document.language == "markdown" && view.selection_anchor == view.caret_byte {
+	if !pinned_owner && document.language == "markdown" && view.selection_anchor == view.caret_byte {
 		projection, projection_ok := editor_markdown_enter_projection(window, line, view.caret_byte)
 		if !projection_ok {
 			set_error(app, "Could not project Markdown Enter into the bounded source window.")
@@ -2380,7 +2529,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				view.caret_byte=result.command.editor_selection.cursor_byte
 				view.preferred_x_set=false
 			}
-			if intent.reveal_after_ack && (!intent.pinned_edit || app.pinned.editing) {
+			if intent.reveal_after_ack && !intent.pinned_edit {
 				view.selection_anchor = result.command.edit.new_end_byte
 				view.caret_byte = result.command.edit.new_end_byte
 				_ = editor_reveal_request_set(
@@ -2393,7 +2542,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 					.Nearest,
 				)
 			}
-			if view.optimistic_pending_edits == 0 && view.optimistic_window_ready {
+			if intent.optimistic_projection && view.optimistic_pending_edits == 0 && view.optimistic_window_ready {
 				view.optimistic_window.editor_revision = result.command.edit.editor_revision
 				view.optimistic_window.application_rev = app.backend.state.application_rev
 				view.optimistic_line_delta = 0
@@ -2405,14 +2554,29 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			pinned_edit_selection_sync(app)
 			if view_index:=editor_view_find(app.editor_views[:],intent.document_id);view_index>=0 {
 				view:=&app.editor_views[view_index]
-				if app.pinned.editing && result.command.editor_selection.document_id==intent.document_id && intent.reveal_after_ack {
-					_ = editor_reveal_request_set(view,intent.document_id,result.command.edit.editor_revision,
-						view.selection_anchor,view.caret_byte,result.command.editor_selection.cursor_line,.Nearest)
+				if app.pinned.editing && result.command.editor_selection.document_id==intent.document_id && view.optimistic_window_ready {
+					if line,line_found:=editor_line_for_source(&view.optimistic_window,view.caret_byte);line_found {
+						_ = pinned_edit_ensure_line_visible(app,rt,line.logical_line)
+					}
 				}
 			}
 		}
 		editor_remove_edit(app, 0)
-		if intent.pinned_edit {pinned_edit_recompute_optimistic_end(app)}
+		if intent.pinned_edit {
+			pinned_edit_recompute_optimistic_end(app)
+			if !intent.optimistic_projection && len(app.editor_edits) == 0 && app.pinned.editing && rt != nil {
+				if view_index := editor_view_find(app.editor_views[:], intent.document_id); view_index >= 0 {
+					view := &app.editor_views[view_index]
+					if view.optimistic_window_ready {
+						editor_window_destroy(&view.optimistic_window)
+						view.optimistic_window_ready = false
+					}
+					if pinned_edit_window_load(app, result.command.editor_selection.cursor_line, result.command.editor_selection.cursor_byte) {
+						_ = pinned_edit_ensure_line_visible(app, rt, result.command.editor_selection.cursor_line)
+					}
+				}
+			}
+		}
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
 		if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
@@ -2519,13 +2683,16 @@ editor_text_input :: proc(
 		}
 		return
 	}
-	if !app.backend.started || owner == 0 || owner != app.editor_scroll_owner { return }
-	document, found := find_document(&app.backend.state, app.backend.state.active)
+	pinned_owner := app.pinned.editing && owner == app.pinned.owner
+	if !app.backend.started || owner == 0 || (!pinned_owner && owner != app.editor_scroll_owner) { return }
+	document_id := app.backend.state.active
+	if pinned_owner { document_id = app.pinned.edit_document_id }
+	document, found := find_document(&app.backend.state, document_id)
 	if !found { return }
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
-	if !view_ok { set_error(app, "Could not retain the active document's optimistic editor view."); return }
+	if !view_ok { set_error(app, "Could not retain the source document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
-	semantic_zoom_reveal_input(app, rt, view)
+	if !pinned_owner { semantic_zoom_reveal_input(app, rt, view) }
 	if event.kind == .Preedit {
 		if view.preedit_recoverable {
 			set_error(app, "A committed composition still needs recovery. Use Edit > Copy before starting another composition.")
@@ -2716,8 +2883,13 @@ editor_has_pending_active_document_edit :: proc(app: ^App) -> bool {
 }
 
 editor_active_preedit :: proc(app: ^App) -> bool {
-	if app == nil || app.backend.state.active == "" { return false }
-	if index := editor_view_find(app.editor_views[:], app.backend.state.active); index >= 0 {
+	if app == nil { return false }
+	document_id := app.backend.state.active
+	if app.pinned.editing && app.pinned.edit_document_id != "" {
+		document_id = app.pinned.edit_document_id
+	}
+	if document_id == "" { return false }
+	if index := editor_view_find(app.editor_views[:], document_id); index >= 0 {
 		return app.editor_views[index].preedit_active
 	}
 	return false
@@ -2736,19 +2908,22 @@ active_editor_context :: proc(app: ^App) -> (document: bridge.State_Document, vi
 
 editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if app == nil || rt == nil || !app.backend.started { return }
+	pinned_owner := app.pinned.editing && app.pinned.owner != 0 && alicorn.focused_node(rt) == app.pinned.owner
+	selection_document_id := app.backend.state.active
+	if pinned_owner { selection_document_id = app.pinned.edit_document_id }
 	if action_id==ACTION_EDIT_CUT && app.pinned.editing && pinned_edit_has_pending_paste(app) {
 		set_error(app,"Wait for the current pinned paste to finish before using Cut.")
 		alicorn.invalidate_root(rt,"Scratchpad refused Cut while a pinned paste is pending")
 		return
 	}
-	if index := editor_view_find(app.editor_views[:], app.backend.state.active); index >= 0 {
+	if index := editor_view_find(app.editor_views[:], selection_document_id); index >= 0 {
 		view := &app.editor_views[index]
-		if action_id != ACTION_EDIT_COPY { semantic_zoom_reveal_input(app, rt, view) }
+		if action_id != ACTION_EDIT_COPY && !pinned_owner { semantic_zoom_reveal_input(app, rt, view) }
 		if view.preedit_active {
 			switch action_id {
 			case ACTION_EDIT_COPY:
 				if view.preedit_recoverable {
-					_ = editor_copy_recoverable_preedit(app, rt, app.backend.state.active)
+					_ = editor_copy_recoverable_preedit(app, rt, selection_document_id)
 					return
 				}
 				if len(view.preedit_text) == 0 { return }
@@ -2770,7 +2945,7 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			}
 		}
 	}
-	if action_id == ACTION_EDIT_PASTE && len(app.editor_edits) > 0 {
+	if action_id == ACTION_EDIT_PASTE && len(app.editor_edits) > 0 && !pinned_owner {
 		if !deferred_action_enqueue(app, .Action, value=action_id) {
 			set_error(app, "Could not queue Paste behind pending editor edits.")
 		}
@@ -2778,7 +2953,16 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 		return
 	}
 	document, view, window, ready := active_editor_context(app)
-	semantic_copy := action_id == ACTION_EDIT_COPY && semantic_zoom_active(view)
+	if pinned_owner {
+		document, ready = find_document(&app.backend.state, app.pinned.edit_document_id)
+		if ready {
+			if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
+				view = &app.editor_views[view_index]
+				window, ready = editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+			} else { ready = false }
+		}
+	}
+	semantic_copy := !pinned_owner && action_id == ACTION_EDIT_COPY && semantic_zoom_active(view)
 	if view == nil || (!ready && !semantic_copy) || (ready && window == nil) {
 		set_error(app, "The active document's bounded source window is not ready for this Edit command.")
 		alicorn.invalidate_root(rt, "Scratchpad Edit command needs a bounded source window")
@@ -2786,7 +2970,16 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 	}
 	switch action_id {
 	case ACTION_EDIT_SELECT_ALL:
-		editor_select_all(view, editor_current_byte_length(app, document))
+		if pinned_owner {
+			view.selection_anchor = app.pinned.edit_start_byte
+			view.caret_byte = app.pinned.edit_end_byte
+			view.anchor_affinity = .Leading
+			view.caret_affinity = .Trailing
+			view.preferred_x_set = false
+			pinned_edit_selection_sync(app)
+		} else {
+			editor_select_all(view, editor_current_byte_length(app, document))
+		}
 		alicorn.invalidate_root(rt, "Scratchpad Select All updated the local editor selection")
 	case ACTION_EDIT_COPY, ACTION_EDIT_CUT:
 		start_byte := min(view.selection_anchor, view.caret_byte)
@@ -3106,7 +3299,12 @@ editor_register_text_input_target :: proc(ui: ^alicorn.UI, owner: alicorn.Node_I
 }
 
 editor_resume_text_input_target :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) {
-	if app == nil || rt == nil || !app.backend.started || app.backend.state.active != document_id || app.editor_scroll_owner == 0 { return }
+	if app == nil || rt == nil || !app.backend.started { return }
+	if app.pinned.editing && document_id == app.pinned.edit_document_id && app.pinned.owner != 0 {
+		_ = alicorn.text_input_target_set_suspended(rt, app.pinned.owner, false)
+		return
+	}
+	if app.backend.state.active != document_id || app.editor_scroll_owner == 0 { return }
 	_ = alicorn.text_input_target_set_suspended(rt, app.editor_scroll_owner, false)
 }
 

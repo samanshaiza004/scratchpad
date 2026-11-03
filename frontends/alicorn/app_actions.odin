@@ -10,7 +10,7 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 	if command == action_id_for(ACTION_PIN_SELECTION) { pinned_command(app, rt, "add"); return }
 	if command == action_id_for(ACTION_PINNED_FOCUS) { pinned_focus_request(app, rt); return }
 	if command == action_id_for(ACTION_PINNED_TOGGLE) {
-		if app.pinned.visible { if app.pinned.editing {pinned_edit_finish(app,rt)};app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
+		if app.pinned.visible { if app.pinned.editing {pinned_edit_finish(app,rt);if app.pinned.editing{return}};app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
 		else { pinned_focus_request(app,rt) }
 		return
 	}
@@ -73,8 +73,9 @@ application_clipboard_paste :: proc(app: ^App, rt: ^alicorn.Runtime) {
 }
 
 editor_command_focus_owned :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
-	return app != nil && rt != nil && app.editor_scroll_owner != 0 &&
-		alicorn.focused_node(rt) == app.editor_scroll_owner
+	if app == nil || rt == nil { return false }
+	if app.pinned.editing && app.pinned.owner != 0 && alicorn.focused_node(rt) == app.pinned.owner { return true }
+	return app.editor_scroll_owner != 0 && alicorn.focused_node(rt) == app.editor_scroll_owner
 }
 
 editor_toggle_wrap_mode :: proc(app: ^App, rt: ^alicorn.Runtime) {
@@ -121,7 +122,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if action_id == ACTION_PIN_SELECTION { pinned_command(app,rt,"add"); return }
 	if action_id == ACTION_PINNED_FOCUS { pinned_focus_request(app,rt); return }
 	if action_id == ACTION_PINNED_TOGGLE {
-		if app.pinned.visible { if app.pinned.editing {pinned_edit_finish(app,rt)};app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
+		if app.pinned.visible { if app.pinned.editing {pinned_edit_finish(app,rt);if app.pinned.editing{return}};app.pinned.visible=false; app.pinned.narrow_source=true; app.editor_focus_pending=true; alicorn.invalidate_root(rt,"Scratchpad hid Pinned references") }
 		else { pinned_focus_request(app,rt) }
 		return
 	}

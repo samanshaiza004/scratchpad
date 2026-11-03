@@ -46,6 +46,7 @@ Pinned_Surface :: struct {
 	snapshot: bridge.Pinned_Snapshot,
 	pages: [dynamic]Pinned_Page,
 	controls: [dynamic]Pinned_Control,
+	edit_row_targets: [dynamic]Editor_Row_Target,
 	selected: bridge.Pin_ID,
 	index: alicorn.Virtual_List_Height_Index,
 	index_ready, measurement_refresh_pending: bool,
@@ -62,7 +63,7 @@ pinned_pages_clear :: proc(surface: ^Pinned_Surface) {
 }
 
 pinned_destroy :: proc(surface: ^Pinned_Surface) {
-	pinned_pages_clear(surface); delete(surface.pages); delete(surface.controls)
+	pinned_pages_clear(surface); delete(surface.pages); delete(surface.controls); delete(surface.edit_row_targets)
 	if len(surface.edit_document_id)>0 {delete(surface.edit_document_id,context.allocator)}
 	if len(surface.edit_return_document_id)>0 {delete(surface.edit_return_document_id,context.allocator)}
 	bridge.Pinned_Snapshot_Destroy(&surface.snapshot)
@@ -137,6 +138,102 @@ pinned_edit_range :: proc(surface: ^Pinned_Surface) -> (pin: bridge.Pinned_Range
 		if candidate.id==surface.edit_pin { return candidate,true }
 	}
 	return
+}
+
+pinned_edit_window_load :: proc(app: ^App, line: u64, anchor_byte: u64) -> bool {
+	if app == nil || !app.pinned.editing || len(app.pinned.edit_document_id) == 0 || len(app.editor_edits) > 0 { return false }
+	document, found := find_document(&app.backend.state, app.pinned.edit_document_id)
+	if !found || document.view_kind == "image" || document.view_kind == "unsupported" { return false }
+	result := bridge.backend_command(
+		&app.backend,
+		"read_visible_lines",
+		document_id=document.id,
+		start_line=line,
+		anchor_byte=anchor_byte,
+		max_lines=bridge.MAX_VISIBLE_LINES,
+		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		editor_revision=document.editor_revision,
+		based_on_revision=app.backend.state.application_rev,
+	)
+	defer bridge.backend_command_result_destroy(&result, context.allocator)
+	if !result.ok || !result.visible_window_owned { return false }
+	window, converted, _ := editor_window_from_visible(&result.visible_window, context.allocator)
+	if !converted || window.document_id != document.id || window.editor_revision != document.editor_revision {
+		if converted { editor_window_destroy(&window) }
+		return false
+	}
+	view_index := editor_view_find(app.editor_views[:], document.id)
+	if view_index < 0 { editor_window_destroy(&window); return false }
+	view := &app.editor_views[view_index]
+	if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window) }
+	view.optimistic_window = window
+	view.optimistic_window_ready = true
+	view.optimistic_pending_edits = 0
+	view.optimistic_line_delta = 0
+	view.authoritative_revision = document.editor_revision
+	return true
+}
+
+pinned_edit_window_for_line :: proc(app: ^App, line: u64) -> (window: ^Editor_Window, view: ^Editor_View_State, document: bridge.State_Document, found: bool) {
+	if app == nil || !app.pinned.editing { return }
+	document, found = find_document(&app.backend.state, app.pinned.edit_document_id)
+	if !found { return }
+	view_index := editor_view_find(app.editor_views[:], document.id)
+	if view_index < 0 { return nil, nil, document, false }
+	view = &app.editor_views[view_index]
+	window, found = editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if found {
+		if _, has_line := editor_window_line(window, line); !has_line { found = false }
+	}
+	return
+}
+
+pinned_edit_ensure_line_visible :: proc(app: ^App, rt: ^alicorn.Runtime, logical_line: u64) -> bool {
+	if app == nil || rt == nil || !app.pinned.editing || app.pinned.owner == 0 || !app.pinned.index_ready { return false }
+	pin, found := pinned_edit_range(&app.pinned)
+	if !found || pin.line_count <= 0 { return false }
+	first_line := u64(max(pin.first_line, 0))
+	last_line := first_line+u64(pin.line_count-1)
+	line := min(max(logical_line, first_line), last_line)
+	row := pin.first_row+1+int(line-first_line)
+	return alicorn.virtual_list_variable_ensure_visible(rt, &app.pinned.index, app.pinned.owner, row,
+		"Pinned caret moved to a different source row")
+}
+
+pinned_edit_preedit_display_for_segment :: proc(
+	view: ^Editor_View_State,
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	pin_start, pin_end: u64,
+	allocator := context.temp_allocator,
+) -> (display: string, selection_start, selection_end: int, applies: bool) {
+	if view == nil || window == nil || line == nil || !view.preedit_active || len(view.preedit_text) == 0 { return }
+	start_line, start_found := editor_line_for_source(window, view.preedit_replace_start)
+	end_line, end_found := editor_line_for_source(window, view.preedit_replace_end)
+	if !start_found || !end_found || line.logical_line < start_line.logical_line || line.logical_line > end_line.logical_line { return }
+	if line.logical_line > start_line.logical_line { return "", 0, 0, true }
+	start_display := editor_source_to_display(line, view.preedit_replace_start)
+	if start_display < 0 || start_display > len(line.display) { return }
+	suffix := ""
+	if end_line.logical_line == line.logical_line {
+		end_display := editor_source_to_display(line, view.preedit_replace_end)
+		if end_display < start_display || end_display > len(line.display) { return }
+		suffix = line.display[end_display:]
+	} else {
+		segment_start := max(end_line.source_start, pin_start)
+		segment_end := min(end_line.source_end, pin_end)
+		end_segment, segment_ok := editor_project_source_segment(window, end_line, segment_start, segment_end, allocator)
+		if !segment_ok { return }
+		defer delete(end_segment.display, allocator)
+		defer delete(end_segment.display_bytes, allocator)
+		end_display := editor_source_to_display(&end_segment, view.preedit_replace_end)
+		if end_display < 0 || end_display > len(end_segment.display) { return }
+		suffix = end_segment.display[end_display:]
+	}
+	display = fmt.aprintf("%s%s%s", line.display[:start_display], string(view.preedit_text), suffix, allocator=allocator)
+	selection_start = start_display+min(max(view.preedit_selection_start, 0), len(view.preedit_text))
+	selection_end = start_display+min(max(view.preedit_selection_end, 0), len(view.preedit_text))
+	return display, selection_start, selection_end, true
 }
 
 pinned_edit_validate_replacement :: proc(
@@ -294,110 +391,130 @@ pinned_edit_history :: proc(app: ^App, rt: ^alicorn.Runtime, redo: bool) {
 					editor_window_destroy(&view.optimistic_window)
 					view.optimistic_window_ready=false
 				}
-				_ = editor_reveal_request_set(view,app.pinned.edit_document_id,result.edit.editor_revision,
-					view.selection_anchor,view.caret_byte,result.editor_selection.cursor_line,.Nearest)
 			}
 		}
 	}
 	pinned_edit_snapshot_take(app,&result)
 	pinned_edit_selection_sync(app)
-	app.pinned.focus_pending=false
-	app.editor_focus_pending=true
+	if view_index:=editor_view_find(app.editor_views[:],app.pinned.edit_document_id);view_index>=0 {
+		view:=&app.editor_views[view_index]
+		_ = pinned_edit_window_load(app,result.editor_selection.cursor_line,view.caret_byte)
+		_ = pinned_edit_ensure_line_visible(app,rt,result.editor_selection.cursor_line)
+	}
+	app.pinned.focus_pending=true
+	app.pinned.focus_target=app.pinned.owner
+	app.editor_focus_pending=false
 	set_error(app,"")
 	alicorn.invalidate_root(rt,"Scratchpad applied pinned source history")
 }
 
 pinned_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, id: bridge.Pin_ID) {
-	if app==nil || rt==nil || !app.backend.started || app.pinned.editing || len(app.editor_edits)>0 || editor_active_preedit(app) {
-		set_error(app,"Finish pending source edits and input composition before editing a pin.")
+	if app == nil || rt == nil || !app.backend.started || app.pinned.editing || len(app.editor_edits) > 0 || editor_active_preedit(app) {
+		set_error(app, "Finish pending source edits and input composition before editing a pin.")
 		return
 	}
 	pin: bridge.Pinned_Range
-	found:=false
-	for candidate in app.pinned.snapshot.ranges { if candidate.id==id {pin=candidate;found=true;break} }
-	if !found || pin.status!="current" || pin.end_byte<pin.start_byte {
-		set_error(app,"Only a current pinned passage can be edited.")
+	found := false
+	for candidate in app.pinned.snapshot.ranges {
+		if candidate.id == id { pin = candidate; found = true; break }
+	}
+	if !found || pin.status != "current" || pin.end_byte < pin.start_byte {
+		set_error(app, "Only a current pinned passage can be edited.")
 		return
 	}
-	if floating_window_contains(app,pin.document_id) {
-		set_error(app,"Close the detached editor before editing its pinned passage.")
+	if floating_window_contains(app, pin.document_id) {
+		set_error(app, "Close the detached editor before editing its pinned passage.")
 		return
 	}
-	if !document_is_open(&app.backend.state,pin.document_id) {
-		set_error(app,"The pinned source is no longer open.")
+	document, document_found := find_document(&app.backend.state, pin.document_id)
+	if !document_found || document.instance_id != pin.instance_id || document.editor_revision != pin.source_revision {
+		set_error(app, "The pinned source changed. Refresh the passage before editing it.")
+		app.pinned.force_refresh = true
 		return
 	}
-	view_index,view_ok:=editor_view_ensure(&app.editor_views,pin.document_id)
-	if !view_ok {set_error(app,"Could not retain the pinned source editor state.");return}
-	view:=&app.editor_views[view_index]
-	previous_edit_pin:=app.pinned.edit_pin
-	return_document_id,clone_error:=strings.clone(app.backend.state.active,context.allocator)
-	if clone_error!=nil {set_error(app,"Could not retain the current document identity.");return}
-	edit_document_id: string
-	edit_document_id,clone_error=strings.clone(pin.document_id,context.allocator)
-	if clone_error!=nil {if len(return_document_id)>0{delete(return_document_id,context.allocator)};set_error(app,"Could not retain the pinned source identity.");return}
-	result:=bridge.backend_command(&app.backend,"pinned_go_to_source",pin_id=u64(id),pin_epoch=app.pinned.snapshot.epoch,pin_revision=app.pinned.snapshot.revision)
-	defer bridge.backend_command_result_destroy(&result,context.allocator)
-	selection:=result.editor_selection
-	if !result.ok || selection.document_id=="" || selection.document_id!=pin.document_id || selection.editor_revision!=pin.source_revision {
-		delete(edit_document_id,context.allocator)
-		if len(return_document_id)>0{delete(return_document_id,context.allocator)}
-		set_error(app,result.message if result.message!="" else "Could not open the pinned source for editing.")
-		app.pinned.force_refresh=true
+	view_index, view_ok := editor_view_ensure(&app.editor_views, pin.document_id)
+	if !view_ok { set_error(app, "Could not retain the pinned source editor state."); return }
+	view := &app.editor_views[view_index]
+	if view.preedit_active {
+		set_error(app, "Finish the source document's active input composition before editing its pin.")
 		return
 	}
-	view_index,view_ok=editor_view_ensure(&app.editor_views,pin.document_id)
-	if !view_ok {
-		delete(edit_document_id,context.allocator)
-		if len(return_document_id)>0{delete(return_document_id,context.allocator)}
-		set_error(app,"Could not retain the pinned editor view.")
+	previous_edit_pin := app.pinned.edit_pin
+	return_document_id, clone_error := strings.clone(app.backend.state.active, context.allocator)
+	if clone_error != nil { set_error(app, "Could not retain the current document identity."); return }
+	edit_document_id, clone_error := strings.clone(pin.document_id, context.allocator)
+	if clone_error != nil {
+		if len(return_document_id) > 0 { delete(return_document_id, context.allocator) }
+		set_error(app, "Could not retain the pinned source identity.")
 		return
 	}
-	view=&app.editor_views[view_index]
-	app.pinned.editing=true
-	app.pinned.edit_document_id=edit_document_id
-	app.pinned.edit_return_document_id=return_document_id
-	pin_start:=u64(max(pin.start_byte,0))
-	pin_end:=u64(max(pin.end_byte,pin.start_byte))
-	resume_pin_selection:=previous_edit_pin==id && app.pinned.edit_anchor_byte>=pin_start && app.pinned.edit_anchor_byte<=pin_end && app.pinned.edit_caret_byte>=pin_start && app.pinned.edit_caret_byte<=pin_end
-	if !resume_pin_selection {app.pinned.edit_anchor_byte=pin_end;app.pinned.edit_caret_byte=pin_end}
-	app.pinned.edit_pin=id
-	app.pinned.edit_start_byte=pin_start
-	app.pinned.edit_end_byte=pin_end
-	app.pinned.edit_scroll_x=view.scroll_x
-	app.pinned.edit_scroll_y=view.scroll_y
-	app.pinned.edit_preferred_x=view.preferred_x
-	app.pinned.edit_preferred_x_set=view.preferred_x_set
-	app.pinned.edit_return_anchor=view.selection_anchor
-	app.pinned.edit_return_caret=view.caret_byte
-	app.pinned.edit_return_scroll_x=view.scroll_x
-	app.pinned.edit_return_scroll_y=view.scroll_y
-	app.pinned.edit_return_preferred_x=view.preferred_x
-	app.pinned.edit_return_preferred_x_set=view.preferred_x_set
-	view.selection_anchor=app.pinned.edit_anchor_byte
-	view.caret_byte=app.pinned.edit_caret_byte
-	view.scroll_x=app.pinned.edit_scroll_x
-	view.scroll_y=app.pinned.edit_scroll_y
-	view.preferred_x=app.pinned.edit_preferred_x
-	view.preferred_x_set=app.pinned.edit_preferred_x_set
-	view.authoritative_revision=selection.editor_revision
-	view.pending_document_edge=.None
-	view.pending_document_edge_shift=false
+	pin_start := u64(max(pin.start_byte, 0))
+	pin_end := u64(max(pin.end_byte, pin.start_byte))
+	resume_pin_selection := previous_edit_pin == id &&
+		app.pinned.edit_anchor_byte >= pin_start && app.pinned.edit_anchor_byte <= pin_end &&
+		app.pinned.edit_caret_byte >= pin_start && app.pinned.edit_caret_byte <= pin_end
+	if !resume_pin_selection {
+		app.pinned.edit_anchor_byte = pin_start
+		app.pinned.edit_caret_byte = pin_start
+	}
+	app.pinned.editing = true
+	app.pinned.edit_document_id = edit_document_id
+	app.pinned.edit_return_document_id = return_document_id
+	app.pinned.edit_pin = id
+	app.pinned.edit_start_byte = pin_start
+	app.pinned.edit_end_byte = pin_end
+	app.pinned.edit_scroll_x = view.scroll_x
+	app.pinned.edit_scroll_y = view.scroll_y
+	app.pinned.edit_preferred_x = view.preferred_x
+	app.pinned.edit_preferred_x_set = view.preferred_x_set
+	app.pinned.edit_return_anchor = view.selection_anchor
+	app.pinned.edit_return_caret = view.caret_byte
+	app.pinned.edit_return_scroll_x = view.scroll_x
+	app.pinned.edit_return_scroll_y = view.scroll_y
+	app.pinned.edit_return_preferred_x = view.preferred_x
+	app.pinned.edit_return_preferred_x_set = view.preferred_x_set
+	view.selection_anchor = app.pinned.edit_anchor_byte
+	view.caret_byte = app.pinned.edit_caret_byte
+	view.authoritative_revision = document.editor_revision
+	view.pending_document_edge = .None
+	view.pending_document_edge_shift = false
+	view.dragging_selection = false
+	view.preferred_x_set = false
 	editor_undo_group_break(view)
 	semantic_zoom_destroy(&view.zoom)
-	_ = editor_reveal_request_set(view,pin.document_id,selection.editor_revision,view.selection_anchor,view.caret_byte,selection.cursor_line,.Center_When_Needed)
-	app.pinned.selected=id
-	app.pinned.narrow_source=app.pinned.single_pane
-	app.pinned.focus_pending=false
-	app.editor_focus_pending=true
-	app.pinned.force_refresh=true
-	set_error(app,"")
-	alicorn.invalidate_root(rt,"Scratchpad entered bounded pinned-source editing")
+	window, _, _, window_ready := pinned_edit_window_for_line(app, u64(max(pin.first_line, 0)))
+	caret_in_window := false
+	if window_ready {
+		if _, caret_in_window = editor_line_for_source(window, view.caret_byte); !caret_in_window {
+			caret_in_window = view.caret_byte >= window.start_byte &&
+				view.caret_byte <= window.start_byte+u64(len(window.source))
+		}
+	}
+	if !caret_in_window && !pinned_edit_window_load(app, u64(max(pin.first_line, 0)), view.caret_byte) {
+		pinned_edit_finish(app, rt, false)
+		set_error(app, "Could not load a bounded source window for the pinned passage.")
+		return
+	}
+	pinned_edit_selection_sync(app)
+	app.pinned.selected = id
+	app.pinned.narrow_source = false
+	app.pinned.focus_pending = true
+	app.pinned.focus_target = app.pinned.owner
+	app.editor_focus_pending = false
+	app.pinned.force_refresh = true
+	set_error(app, "")
+	alicorn.invalidate_root(rt, "Scratchpad entered pin-local source editing")
 }
 
 pinned_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, restore_active_document:=true) {
 	if app==nil || !app.pinned.editing {return}
 	edit_document_id:=app.pinned.edit_document_id
+	if editor_document_has_recoverable_preedit(app, edit_document_id) &&
+	   document_is_open(&app.backend.state, edit_document_id) {
+		set_error(app, "Copy or explicitly discard the committed IME recovery text before leaving pinned editing.")
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad preserved recoverable pinned IME text") }
+		return
+	}
 	return_document_id:=app.pinned.edit_return_document_id
 	if index:=editor_view_find(app.editor_views[:],edit_document_id);index>=0 {
 		view:=&app.editor_views[index]
@@ -408,8 +525,7 @@ pinned_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, restore_active_docum
 		view.preferred_x=app.pinned.edit_return_preferred_x
 		view.preferred_x_set=app.pinned.edit_return_preferred_x_set
 		view.dragging_selection=false
-		view.preedit_active=false
-		view.preedit_recoverable=false
+		editor_preedit_clear(view)
 		editor_undo_group_break(view)
 	}
 	app.pinned.editing=false
@@ -448,10 +564,18 @@ pinned_edit_command :: proc(app: ^App, rt: ^alicorn.Runtime, command: host.Appli
 			pinned_command(app,rt,"redo",app.pinned.edit_pin)
 			return true
 		case ACTION_EDIT_SELECT_ALL:
+			if editor_active_preedit(app) {
+				set_error(app, "Finish or cancel the active input composition before selecting the pinned passage.")
+				alicorn.invalidate_root(rt, "Scratchpad refused Select All during pinned IME composition")
+				return true
+			}
 			if index:=editor_view_find(app.editor_views[:],app.pinned.edit_document_id);index>=0 {
 				view:=&app.editor_views[index]
 				view.selection_anchor=app.pinned.edit_start_byte
 				view.caret_byte=app.pinned.edit_end_byte
+				view.anchor_affinity=.Leading
+				view.caret_affinity=.Trailing
+				view.preferred_x_set=false
 				pinned_edit_selection_sync(app)
 				alicorn.invalidate_root(rt,"Selected the pinned source range")
 			}
@@ -721,9 +845,14 @@ pinned_focus_request :: proc(app: ^App, rt: ^alicorn.Runtime) {
 pinned_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
 	if !pinned_focus_owned(app,rt) {return false}
 	if app.pinned.editing {
-		#partial switch key {
-		case .Up,.Down,.Home,.End,.Context_Menu,.Return: return true
+		switch key {
+		case .Up,.Down,.Home,.End,.Return:
+			return false
+		case .Context_Menu:
+			if app.pinned.edit_pin!=0 {pinned_open_action_menu(app,rt,app.pinned.edit_pin)}
+			return true
 		case:
+			return false
 		}
 	}
 	#partial switch key {
@@ -779,7 +908,10 @@ pinned_hide_button :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	id,clicked:=alicorn.icon_button(ui,"Hide Pinned",.Close,key=alicorn.key_string("pinned-hide"),style=alicorn.layout_style(.Row,width=28,height=28),variant=.Quiet)
 	append(&app.pinned.controls,Pinned_Control{id,0,"hide"})
 	if clicked {
-		if app.pinned.editing {pinned_edit_finish(app,rt)}
+		if app.pinned.editing {
+			pinned_edit_finish(app,rt)
+			if app.pinned.editing { return }
+		}
 		app.pinned.visible=false;app.editor_focus_pending=true;alicorn.invalidate_root(rt,"Pinned hidden")
 	}
 	if len(app.pinned.snapshot.ranges)==0 {app.pinned.focus_target=id}
@@ -858,10 +990,11 @@ pinned_card_actions :: proc(app: ^App, ui: ^alicorn.UI, pin: bridge.Pinned_Range
 pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_scale: f32) {
 	s := &app.pinned
 	clear(&s.controls)
+	clear(&s.edit_row_targets)
 	s.focus_target = 0
 	s.runtime = rt
 	pane_label:="Pinned source references, read only"
-	if s.editing {pane_label="Pinned source references; selected passage is editable in the source editor"}
+	if s.editing {pane_label="Editing pinned source passage"}
 	if gui.layout(ui, alicorn.layout_style(.Column,grow=1,padding=10,gap=8,clip=true),
 		key="pinned-pane", label=pane_label) {
 		if gui.row(ui,label="pinned-pane-header",height=32,gap=6,align=.Center) {
@@ -871,7 +1004,9 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 			gui.text(ui,fmt.tprintf("%d %s",len(s.snapshot.ranges),reference_word),text_style=alicorn.Text_Style{font_size=12},color=alicorn.style_color(ui,.Muted_Text))
 			if s.single_pane && pinned_button(app,ui,"Back to source","source",width=112) {
 				if s.editing {pinned_edit_finish(app,rt,false)}
-				app.editor_focus_pending=true;s.narrow_source=true;alicorn.invalidate_root(rt,"Pinned returned source focus")
+				if !app.pinned.editing {
+					app.editor_focus_pending=true;s.narrow_source=true;alicorn.invalidate_root(rt,"Pinned returned source focus")
+				}
 			}
 			pinned_hide_button(app,ui,rt)
 		}
@@ -883,10 +1018,41 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 		if !s.index_ready || s.scale!=scale { pinned_index_reset(s,scale) }
 		list := alicorn.virtual_list_begin_variable(ui,&s.index,key="pinned-scroll",label="Pinned passages, use Up and Down to traverse headers",style=alicorn.layout_style(grow=1,clip=true),focusable=true)
 		s.owner = list.scroll.id
+		if s.editing { s.focus_target = s.owner }
 		// Shape against the actual paper width, including edges and insets.
 		width := max(80,list.scroll.viewport_width)
 		if s.width!=width { s.width=width; pinned_index_reset(s,scale); alicorn.invalidate_root(rt,"Pinned width measurement changed") }
 		content_width := max(width-4-2*PINNED_CARD_INSET,1)
+		edit_window: ^Editor_Window
+		edit_view: ^Editor_View_State
+		edit_document: bridge.State_Document
+		edit_window_ready := false
+		if s.editing {
+			if edit_pin, edit_pin_found := pinned_edit_range(s); edit_pin_found {
+				target_row := edit_pin.first_row+1
+				if edit_pin.line_count > 0 {
+					last_edit_row := edit_pin.first_row+edit_pin.line_count
+					target_row = min(max(list.first,target_row),last_edit_row)
+				}
+				target_line := u64(max(edit_pin.first_line,0))
+				anchor_byte := s.edit_start_byte
+				_, first_item, first_found := pinned_find_row(s,target_row)
+				if first_found && first_item.kind!="header" && first_item.kind!="status" {
+					target_line = u64(max(first_item.source_line,0))
+					anchor_byte = u64(max(first_item.start_byte,0))
+				}
+				edit_window,edit_view,edit_document,edit_window_ready = pinned_edit_window_for_line(app,target_line)
+				if edit_window_ready {
+					if _, line_found := editor_window_line(edit_window,target_line); !line_found {
+						edit_window_ready = false
+					}
+				}
+				if !edit_window_ready && pinned_edit_window_load(app,target_line,anchor_byte) {
+					edit_window,edit_view,edit_document,edit_window_ready = pinned_edit_window_for_line(app,target_line)
+				}
+				if edit_view!=nil { _ = editor_register_text_input_target(ui,s.owner,edit_view) }
+			}
+		}
 		loaded := false
 		for row:=list.first; row<list.last; row+=1 {
 			page,item,found := pinned_find_row(s,row)
@@ -941,20 +1107,58 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 			font := alicorn.Font_Role.UI if is_status else alicorn.Font_Role.Monospace
 			text_key := alicorn.key_pair(u64(pin.id),u64(item.start_byte))
 			line: Editor_Display_Line
+			display_text := text
+			interaction_anchor, interaction_caret := 0, 0
+			composition_row := false
+			row_editing := false
 			if is_status {
 				if pin.status=="missing" { text="Source closed. Open it and pin the current passage again." }
 			} else {
-				bytes := page.data[item.offset:item.offset+item.length]
-				ok: bool
-				line,ok = editor_project_line(bytes,u64(item.start_byte),u64(item.source_line),context.temp_allocator)
-				if !ok { continue }
-				text = line.display
+				if s.editing && pin.id==s.edit_pin && edit_window_ready && edit_view!=nil {
+					if source_line,line_found := editor_window_line(edit_window,u64(max(item.source_line,0))); line_found {
+						segment_start := max(source_line.source_start,s.edit_start_byte)
+						segment_end := min(source_line.source_end,s.edit_end_byte)
+						if edit_view.optimistic_pending_edits==0 && (item.has_before || item.has_more) {
+							segment_start = max(segment_start,u64(max(item.start_byte,0)))
+							segment_end = min(segment_end,u64(max(item.end_byte,item.start_byte)))
+						}
+						if segment_end>=segment_start {
+							line,row_editing = editor_project_source_segment(edit_window,source_line,segment_start,segment_end,context.temp_allocator)
+						}
+					}
+					if row_editing {
+						text=line.display
+						display_text=text
+						text_key=alicorn.key_pair(u64(pin.id),line.source_start)
+						anchor_source := min(max(edit_view.selection_anchor,line.source_start),line.source_end)
+						caret_source := min(max(edit_view.caret_byte,line.source_start),line.source_end)
+						interaction_anchor=editor_source_to_display(&line,anchor_source)
+						interaction_caret=editor_source_to_display(&line,caret_source)
+						if composition,composition_start,composition_end,applies := pinned_edit_preedit_display_for_segment(
+							edit_view,edit_window,&line,s.edit_start_byte,s.edit_end_byte,
+						); applies {
+							display_text=composition
+							interaction_anchor,interaction_caret=composition_start,composition_end
+							composition_row=composition!=""
+						}
+					}
+				}
+				if !row_editing {
+					bytes := page.data[item.offset:item.offset+item.length]
+					ok: bool
+					line,ok = editor_project_line(bytes,u64(item.start_byte),u64(item.source_line),context.temp_allocator)
+					if !ok { continue }
+					text = line.display
+				}
 			}
+			if !row_editing { display_text = text }
 			defer delete(line.display,context.temp_allocator)
 			defer delete(line.display_bytes,context.temp_allocator)
 			text_height := 20*scale
 			used_retained_measurement := false
-			if !s.measurement_refresh_pending {
+			edit_text_changed := row_editing && edit_view != nil &&
+			                      (edit_view.optimistic_pending_edits > 0 || edit_view.preedit_active)
+			if !s.measurement_refresh_pending && !edit_text_changed {
 				if text_node,exists := alicorn.node_by_key(rt,text_key,.Text); exists {
 					if info,valid := alicorn.node_info(rt,text_node); valid && info.text_geometry_available && abs(info.bounds.w-content_width)<0.5 {
 						text_height=pinned_text_allocation_height(info.text_content_height,text_height,dpi_scale)
@@ -965,7 +1169,7 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 			}
 			if !used_retained_measurement {
 				when ODIN_DEBUG { s.temporary_text_measurement_builds+=1 }
-				run,built := alicorn.runtime_text_run_build(rt,text,size=PINNED_TEXT_SIZE*scale,max_width=content_width,font=font,overflow=.Wrap,allocator=context.temp_allocator,scratch_allocator=alicorn.runtime_scratch_allocator(rt))
+				run,built := alicorn.runtime_text_run_build(rt,display_text,size=PINNED_TEXT_SIZE*scale,max_width=content_width,font=font,overflow=.Wrap,allocator=context.temp_allocator,scratch_allocator=alicorn.runtime_scratch_allocator(rt))
 				if built { text_height=pinned_text_allocation_height(run.height,text_height,dpi_scale); alicorn.text_run_destroy(&run) }
 			}
 			top := PINNED_CARD_INSET if first else 0
@@ -979,7 +1183,21 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 			if first { pinned_card_space(ui,top) }
 			if gui.row(ui,label="Pinned excerpt line",height=text_height) {
 				pinned_card_space(ui,PINNED_CARD_INSET)
-				gui.text(ui,text,key=text_key,style=alicorn.layout_style(grow=1,height=text_height,clip=true),font=font,text_style=alicorn.Text_Style{font_size=PINNED_TEXT_SIZE*scale,overflow=.Wrap})
+				line_node := gui.text(ui,display_text,key=text_key,style=alicorn.layout_style(grow=1,height=text_height,clip=true),font=font,text_style=alicorn.Text_Style{font_size=PINNED_TEXT_SIZE*scale,overflow=.Wrap})
+				if row_editing && edit_view!=nil {
+					append(&s.edit_row_targets,Editor_Row_Target{node=line_node,logical_line=line.logical_line,
+						cell_start=line.source_start,cell_end=line.source_end,is_segment=true})
+					show_caret := alicorn.focused_node(rt)==s.owner &&
+						((edit_view.caret_byte>=line.source_start && edit_view.caret_byte<=line.source_end) || composition_row)
+					_ = alicorn.text_interaction(ui,line_node,
+						alicorn.Text_Position{byte=interaction_anchor,affinity=edit_view.anchor_affinity},
+						alicorn.Text_Position{byte=interaction_caret,affinity=edit_view.caret_affinity},show_caret)
+					if show_caret && alicorn.focused_node(rt)==s.owner {
+						app.editor_input_anchor_node=line_node
+						app.editor_input_anchor_byte=interaction_caret
+						app.editor_input_anchor_affinity=edit_view.caret_affinity
+					}
+				}
 				pinned_card_space(ui,PINNED_CARD_INSET)
 			}
 			if continuation>0 {
@@ -1006,7 +1224,21 @@ pinned_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	s.measurement_refresh_pending=false
 	if s.restore_pending && s.owner!=0 {_=alicorn.scroll_region_set_offset(rt,s.owner,s.restore_y,"Pinned source anchor restored");s.restore_pending=false}
 	if s.focus_pending {
-		if s.focus_target!=0 {if alicorn.focus(rt,s.focus_target){s.focus_pending=false}} else {
+		if s.focus_target!=0 {
+			if alicorn.focus(rt,s.focus_target) {
+				s.focus_pending=false
+					if s.editing {
+						if index:=editor_view_find(app.editor_views[:],s.edit_document_id);index>=0 {
+							view:=&app.editor_views[index]
+							if view.optimistic_window_ready {
+								if line,line_found:=editor_line_for_source(&view.optimistic_window,view.caret_byte);line_found {
+									_ = pinned_edit_ensure_line_visible(app,rt,line.logical_line)
+								}
+							}
+						}
+					}
+			}
+		} else {
 			for pin in s.snapshot.ranges {if pin.id==s.selected && s.owner!=0 {_=alicorn.virtual_list_variable_ensure_visible(rt,&s.index,s.owner,pin.first_row);alicorn.invalidate_root(rt,"Pinned keyboard target revealed")}}
 			if len(s.snapshot.ranges)==0 {app.editor_focus_pending=true;s.focus_pending=false;alicorn.invalidate_root(rt,"Pinned collection is empty; source focus can resume")}
 		}
