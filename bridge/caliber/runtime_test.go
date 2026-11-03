@@ -415,6 +415,201 @@ func TestRuntimeExplicitWorkspaceTakesPrecedenceAndKeepsRecentList(t *testing.T)
 	}
 }
 
+func TestRecentWorkspacesPersistWithoutSessionAndSurviveSessionFailure(t *testing.T) {
+	t.Setenv("SCRATCHPAD_DISABLE_SESSION", "1")
+	t.Setenv("SCRATCHPAD_DISABLE_RECOVERY", "1")
+	root := t.TempDir()
+	firstWorkspace := filepath.Join(root, "first")
+	secondWorkspace := filepath.Join(root, "second")
+	for _, path := range []string{firstWorkspace, secondWorkspace} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stateDir := filepath.Join(root, "state")
+	recentPath := filepath.Join(stateDir, "recent-workspaces.json")
+	if err := application.SaveRecentWorkspaces(recentPath, []string{firstWorkspace}); err != nil {
+		t.Fatalf("seed recent workspace history: %v", err)
+	}
+
+	first := NewRuntime()
+	first.stateDirOverride = stateDir
+	started := decodeResponse(t, first.Start(mustJSON(t, StartRequest{Version: ProtocolVersion, RequestID: 1})))
+	if !started.OK {
+		t.Fatalf("start with session restoration disabled: %+v", started)
+	}
+	state := latestStateForTest(t, first)
+	if state.HasWorkspace || len(state.RecentWorkspaces) != 1 || state.RecentWorkspaces[0] != firstWorkspace {
+		t.Fatalf("session-disabled start state = workspace %q, recents %v", state.WorkspaceRoot, state.RecentWorkspaces)
+	}
+	dispatchForTest(t, first, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 2, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: secondWorkspace,
+	}))
+	opened := decodeResponse(t, first.Pump())
+	if !opened.OK {
+		t.Fatalf("open recent workspace path: %+v", opened)
+	}
+	persisted, err := application.LoadRecentWorkspaces(recentPath)
+	if err != nil || len(persisted) != 2 || persisted[0] != secondWorkspace || persisted[1] != firstWorkspace {
+		t.Fatalf("history immediately after workspace open = %v, %v", persisted, err)
+	}
+	stopRuntime(t, first)
+
+	// A damaged session must not erase the independently committed history.
+	if err := os.WriteFile(filepath.Join(stateDir, "session.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SCRATCHPAD_DISABLE_SESSION", "0")
+	second := NewRuntime()
+	second.stateDirOverride = stateDir
+	started = decodeResponse(t, second.Start(mustJSON(t, StartRequest{Version: ProtocolVersion, RequestID: 3})))
+	if !started.OK {
+		t.Fatalf("start with corrupt session: %+v", started)
+	}
+	state = latestStateForTest(t, second)
+	if state.HasWorkspace || len(state.RecentWorkspaces) != 2 || state.RecentWorkspaces[0] != secondWorkspace || state.RecentWorkspaces[1] != firstWorkspace {
+		t.Fatalf("corrupt-session fallback state = workspace %q, recents %v", state.WorkspaceRoot, state.RecentWorkspaces)
+	}
+	if !strings.Contains(state.StartupNotice, "Could not fully restore the previous session") {
+		t.Fatalf("corrupt session was not surfaced in startup notice: %q", state.StartupNotice)
+	}
+	dispatchForTest(t, second, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 4, BasedOnRevision: state.ApplicationRev,
+		Command: "clear_recent_workspaces",
+	}))
+	cleared := decodeResponse(t, second.Pump())
+	if !cleared.OK {
+		t.Fatalf("clear recent workspaces: %+v", cleared)
+	}
+	if paths, err := application.LoadRecentWorkspaces(recentPath); err != nil || len(paths) != 0 {
+		t.Fatalf("persisted history after clear = %v, %v", paths, err)
+	}
+	stopRuntime(t, second)
+
+	// Even if an older session copy reappears, the standalone cleared list wins.
+	legacy := application.New(nil)
+	legacy.SetRecentWorkspaces([]string{firstWorkspace})
+	if err := legacy.SaveSession(filepath.Join(stateDir, "session.json")); err != nil {
+		t.Fatalf("write legacy session history: %v", err)
+	}
+	third := NewRuntime()
+	third.stateDirOverride = stateDir
+	started = decodeResponse(t, third.Start(mustJSON(t, StartRequest{Version: ProtocolVersion, RequestID: 5})))
+	if !started.OK {
+		t.Fatalf("start after clearing history: %+v", started)
+	}
+	state = latestStateForTest(t, third)
+	if len(state.RecentWorkspaces) != 0 {
+		t.Fatalf("cleared history was resurrected from session: %v", state.RecentWorkspaces)
+	}
+	stopRuntime(t, third)
+}
+
+func TestRecentWorkspacesMigrateAndPreserveUnreadableHistory(t *testing.T) {
+	t.Setenv("SCRATCHPAD_DISABLE_SESSION", "0")
+	t.Setenv("SCRATCHPAD_DISABLE_RECOVERY", "1")
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "state")
+	legacy := application.New(nil)
+	legacy.SetRecentWorkspaces([]string{workspacePath})
+	if err := legacy.SaveSession(filepath.Join(stateDir, "session.json")); err != nil {
+		t.Fatalf("save legacy session: %v", err)
+	}
+
+	// When there is no standalone history, migrate the compatible session copy.
+	migrated := NewRuntime()
+	migrated.stateDirOverride = stateDir
+	started := decodeResponse(t, migrated.Start(mustJSON(t, StartRequest{Version: ProtocolVersion, RequestID: 1})))
+	if !started.OK {
+		t.Fatalf("start with legacy session history: %+v", started)
+	}
+	paths, err := application.LoadRecentWorkspaces(filepath.Join(stateDir, "recent-workspaces.json"))
+	if err != nil || len(paths) != 1 || paths[0] != workspacePath {
+		t.Fatalf("migrated recent workspace history = %v, %v", paths, err)
+	}
+	stopRuntime(t, migrated)
+
+	// An invalid standalone file is preserved; valid legacy history remains a
+	// fallback until the user explicitly chooses Clear Recent.
+	recentPath := filepath.Join(stateDir, "recent-workspaces.json")
+	corrupt := []byte(`{"version":99,"paths":[]}`)
+	if err := os.WriteFile(recentPath, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := NewRuntime()
+	blocked.stateDirOverride = stateDir
+	started = decodeResponse(t, blocked.Start(mustJSON(t, StartRequest{Version: ProtocolVersion, RequestID: 2})))
+	if !started.OK {
+		t.Fatalf("start with unsupported recent-history version: %+v", started)
+	}
+	state := latestStateForTest(t, blocked)
+	if len(state.RecentWorkspaces) != 1 || state.RecentWorkspaces[0] != workspacePath {
+		t.Fatalf("session fallback history = %v", state.RecentWorkspaces)
+	}
+	if !strings.Contains(state.StartupNotice, "Could not read recent workspace history") {
+		t.Fatalf("unsupported recent history was not surfaced: %q", state.StartupNotice)
+	}
+	unchanged, err := os.ReadFile(recentPath)
+	if err != nil || string(unchanged) != string(corrupt) {
+		t.Fatalf("unsupported file changed during startup: %q, %v", unchanged, err)
+	}
+	dispatchForTest(t, blocked, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 3, BasedOnRevision: state.ApplicationRev,
+		Command: "clear_recent_workspaces",
+	}))
+	cleared := decodeResponse(t, blocked.Pump())
+	if !cleared.OK {
+		t.Fatalf("clear unsupported recent history: %+v", cleared)
+	}
+	paths, err = application.LoadRecentWorkspaces(recentPath)
+	if err != nil || len(paths) != 0 {
+		t.Fatalf("explicit clear did not replace unsupported history: %v, %v", paths, err)
+	}
+	stopRuntime(t, blocked)
+}
+
+func TestRuntimeMissingSavedWorkspaceDoesNotAbortLaunch(t *testing.T) {
+	t.Setenv("SCRATCHPAD_DISABLE_SESSION", "0")
+	t.Setenv("SCRATCHPAD_DISABLE_RECOVERY", "1")
+	root := t.TempDir()
+	missingWorkspace := filepath.Join(root, "deleted-workspace")
+	stateDir := filepath.Join(root, "state")
+	legacy := application.New(nil)
+	legacy.SetRecentWorkspaces([]string{missingWorkspace})
+	legacy.Workspace.Root = missingWorkspace
+	legacy.HasWorkspace = true
+	if err := legacy.SaveSession(filepath.Join(stateDir, "session.json")); err != nil {
+		t.Fatalf("save session pointing to missing workspace: %v", err)
+	}
+	saved, err := application.LoadSession(filepath.Join(stateDir, "session.json"))
+	if err != nil || saved.Workspace != missingWorkspace {
+		t.Fatalf("saved missing-workspace fixture = %+v, %v", saved, err)
+	}
+
+	runtime := NewRuntime()
+	runtime.stateDirOverride = stateDir
+	started := decodeResponse(t, runtime.Start(mustJSON(t, StartRequest{Version: ProtocolVersion, RequestID: 1})))
+	if !started.OK || started.Lifecycle != lifecycleRunning {
+		t.Fatalf("missing workspace should not abort launch: %+v", started)
+	}
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+	if state.HasWorkspace {
+		t.Fatalf("missing workspace was restored as active: %q", state.WorkspaceRoot)
+	}
+	if len(state.RecentWorkspaces) != 1 || state.RecentWorkspaces[0] != missingWorkspace {
+		t.Fatalf("missing workspace should remain available as recent history: %v", state.RecentWorkspaces)
+	}
+	if !strings.Contains(state.StartupNotice, "Could not fully restore the previous session") {
+		t.Fatalf("missing workspace failure was not surfaced: state=%+v", state)
+	}
+}
+
 func TestLeaseAccountingRejectsCallAfterRelease(t *testing.T) {
 	runtime := newStartedRuntime(t, "")
 	defer stopRuntime(t, runtime)

@@ -92,7 +92,7 @@ recent_workspaces_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 		alicorn.virtual_list_end(ui, list)
 	}
 	if gui.row(ui, label="recent-workspaces-actions", height=38, gap=8, align=.End) {
-		if gui.button(ui, "Clear Recent", key="recent-workspaces-clear", width=120, height=34, state=alicorn.Button_State{disabled=len(app.backend.state.recent_workspaces) == 0}, variant=.Quiet) {
+		if gui.button(ui, "Clear Recent", key="recent-workspaces-clear", width=120, height=34, variant=.Quiet) {
 			recent_workspace_clear(app, rt)
 		}
 		if gui.button(ui, "Done", key="recent-workspaces-done", width=88, height=34) {

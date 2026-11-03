@@ -715,32 +715,11 @@ func (a *Application) SetRecentWorkspaces(paths []string) {
 	if a == nil {
 		return
 	}
-	cleanPaths := make([]string, 0, min(len(paths), maxRecentWorkspaces))
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			continue
-		}
-		clean := filepath.Clean(abs)
-		duplicate := false
-		for _, existing := range cleanPaths {
-			if workspacePathsEqual(existing, clean) {
-				duplicate = true
-				break
-			}
-		}
-		if duplicate {
-			continue
-		}
-		cleanPaths = append(cleanPaths, clean)
-		if len(cleanPaths) == maxRecentWorkspaces {
-			break
-		}
+	normalized := normalizeRecentWorkspacePaths(paths)
+	if sameRecentWorkspacePaths(a.recentWorkspaces, normalized) {
+		return
 	}
-	a.recentWorkspaces = cleanPaths
+	a.recentWorkspaces = normalized
 	a.touchPresentation()
 }
 
@@ -790,17 +769,48 @@ func (a *Application) recordRecent(path string) {
 const maxRecentWorkspaces = 10
 
 func (a *Application) recordRecentWorkspace(path string) {
-	path = filepath.Clean(path)
-	for i, existing := range a.recentWorkspaces {
-		if workspacePathsEqual(existing, path) {
-			a.recentWorkspaces = append(a.recentWorkspaces[:i], a.recentWorkspaces[i+1:]...)
+	a.recentWorkspaces = normalizeRecentWorkspacePaths(append([]string{path}, a.recentWorkspaces...))
+}
+
+func normalizeRecentWorkspacePaths(paths []string) []string {
+	cleanPaths := make([]string, 0, min(len(paths), maxRecentWorkspaces))
+	for _, path := range paths {
+		if path == "" || len(path) > 32*1024 {
+			continue
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			continue
+		}
+		clean := filepath.Clean(abs)
+		duplicate := false
+		for _, existing := range cleanPaths {
+			if workspacePathsEqual(existing, clean) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		cleanPaths = append(cleanPaths, clean)
+		if len(cleanPaths) == maxRecentWorkspaces {
 			break
 		}
 	}
-	a.recentWorkspaces = append([]string{path}, a.recentWorkspaces...)
-	if len(a.recentWorkspaces) > maxRecentWorkspaces {
-		a.recentWorkspaces = a.recentWorkspaces[:maxRecentWorkspaces]
+	return cleanPaths
+}
+
+func sameRecentWorkspacePaths(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
 	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func workspacePathsEqual(left, right string) bool {

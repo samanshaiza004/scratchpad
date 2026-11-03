@@ -28,27 +28,29 @@ const (
 )
 
 type Runtime struct {
-	mu                  sync.Mutex
-	lifecycle           string
-	caliber             *caliberRuntime
-	app                 *application.Application
-	revision            uint64
-	applicationRevision uint64
-	state               StateEnvelope
-	stateLeases         int
-	resourceLeases      int
-	presentationEnabled bool
-	generation          uint64
-	asyncError          string
-	workspaceSearch     *workspaceSearchSession
-	pendingSaveAs       *pendingSaveAsConfirmation
-	nextSaveAsToken     uint64
-	recoveryDir         string
-	sessionPath         string
-	recoveryTimer       *time.Timer
-	startupNotice       string
-	watcher             *workspace.OSWatcher
-	stateDirOverride    string
+	mu                            sync.Mutex
+	lifecycle                     string
+	caliber                       *caliberRuntime
+	app                           *application.Application
+	revision                      uint64
+	applicationRevision           uint64
+	state                         StateEnvelope
+	stateLeases                   int
+	resourceLeases                int
+	presentationEnabled           bool
+	generation                    uint64
+	asyncError                    string
+	workspaceSearch               *workspaceSearchSession
+	pendingSaveAs                 *pendingSaveAsConfirmation
+	nextSaveAsToken               uint64
+	recoveryDir                   string
+	sessionPath                   string
+	recentWorkspacesPath          string
+	recentWorkspacesWritesBlocked bool
+	recoveryTimer                 *time.Timer
+	startupNotice                 string
+	watcher                       *workspace.OSWatcher
+	stateDirOverride              string
 }
 
 type pendingSaveAsConfirmation struct {
@@ -176,20 +178,48 @@ func (r *Runtime) Start(input []byte) []byte {
 	}
 	recoveryDir := ""
 	sessionPath := ""
+	recentWorkspacesPath := ""
+	recentWorkspacesLoaded := false
+	recentWorkspacesWritesBlocked := false
+	var persistedRecentWorkspaces []string
 	startupNotice := ""
 	if stateDirErr != nil {
 		if !disableSession {
 			startupNotice = fmt.Sprintf("Saved session storage is unavailable: %v. The previous session cannot be restored or saved.", stateDirErr)
+		}
+		if !disableSession || !disableRecovery {
+			startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Recent workspace storage is unavailable: %v. Recent workspaces cannot be loaded or saved.", stateDirErr))
 		}
 		if !disableRecovery {
 			app.SetRecoveryWritesBlocked(true)
 			startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Recovery storage is unavailable: %v. Unsaved changes will not be recoverable after a crash.", stateDirErr))
 		}
 	} else {
+		if stateDir != "" {
+			recentWorkspacesPath = filepath.Join(stateDir, "recent-workspaces.json")
+			paths, err := application.LoadRecentWorkspaces(recentWorkspacesPath)
+			if err == nil {
+				persistedRecentWorkspaces = paths
+				recentWorkspacesLoaded = true
+			} else if !errors.Is(err, os.ErrNotExist) {
+				// Keep an unreadable or newer-version file intact. A later explicit
+				// Clear Recent command can replace it with a known empty version.
+				recentWorkspacesWritesBlocked = true
+				startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Could not read recent workspace history: %v. The original file was preserved. Use Clear Recent to replace it.", err))
+			}
+		}
 		if !disableSession {
 			sessionPath = filepath.Join(stateDir, "session.json")
 			if request.WorkspacePath == "" {
-				if err := app.RestoreSession(sessionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				if _, err := os.Stat(sessionPath); err != nil {
+					if !errors.Is(err, os.ErrNotExist) {
+						startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Could not inspect the previous session: %v. Available files and crash recovery remain accessible.", err))
+					}
+				} else if err := app.RestoreSession(sessionPath); err != nil {
+					// RestoreSession may return os.ErrNotExist for an individual
+					// workspace or document path. The session file itself exists, so
+					// surface those skipped entries instead of treating them as a
+					// normal first launch.
 					startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Could not fully restore the previous session: %v. Available files and crash recovery remain accessible.", err))
 				}
 			} else if session, err := application.LoadSession(sessionPath); err == nil {
@@ -198,11 +228,22 @@ func (r *Runtime) Start(input []byte) []byte {
 				startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Could not read the previous session history: %v.", err))
 			}
 		}
+		if recentWorkspacesLoaded {
+			// The standalone history is authoritative, including an explicitly
+			// empty list after Clear Recent. Session restoration may have loaded
+			// an older embedded copy for migration, so apply this after it.
+			app.SetRecentWorkspaces(persistedRecentWorkspaces)
+		}
 	}
 	if request.WorkspacePath != "" {
 		if err := app.OpenWorkspace(request.WorkspacePath); err != nil {
 			caliber.close()
 			return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "application_error", err.Error(), false))
+		}
+	}
+	if recentWorkspacesPath != "" && !recentWorkspacesWritesBlocked && (recentWorkspacesLoaded || len(app.RecentWorkspaces()) > 0) {
+		if err := application.SaveRecentWorkspaces(recentWorkspacesPath, app.RecentWorkspaces()); err != nil {
+			startupNotice = joinStartupNotice(startupNotice, fmt.Sprintf("Could not save recent workspace history: %v.", err))
 		}
 	}
 	if !disableRecovery && stateDirErr == nil {
@@ -226,6 +267,8 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.watcher = watcher
 	r.recoveryDir = recoveryDir
 	r.sessionPath = sessionPath
+	r.recentWorkspacesPath = recentWorkspacesPath
+	r.recentWorkspacesWritesBlocked = recentWorkspacesWritesBlocked
 	r.startupNotice = startupNotice
 	r.lifecycle = lifecycleRunning
 	r.revision = 0
@@ -282,6 +325,11 @@ func (r *Runtime) Stop(input []byte) []byte {
 			return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "recovery_flush_failed", fmt.Sprintf("could not preserve unsaved recovery data: %v", err), true))
 		}
 	}
+	if r.app != nil && r.recentWorkspacesPath != "" && !r.recentWorkspacesWritesBlocked {
+		if err := application.SaveRecentWorkspaces(r.recentWorkspacesPath, r.app.RecentWorkspaces()); err != nil {
+			return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "recent_workspaces_save_failed", fmt.Sprintf("could not save recent workspace history: %v", err), true))
+		}
+	}
 	if r.app != nil && r.sessionPath != "" {
 		if err := r.app.SaveSession(r.sessionPath); err != nil {
 			return marshalResponse(errorResponse(request.RequestID, r.lifecycle, "session_save_failed", fmt.Sprintf("could not save the current session: %v", err), true))
@@ -311,6 +359,8 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.pendingSaveAs = nil
 	r.recoveryDir = ""
 	r.sessionPath = ""
+	r.recentWorkspacesPath = ""
+	r.recentWorkspacesWritesBlocked = false
 	r.startupNotice = ""
 	return marshalResponse(Response{
 		Version:   ProtocolVersion,
@@ -446,7 +496,13 @@ func (r *Runtime) Pump() []byte {
 			return marshalResponse(commandError(request, "caliber_error", err))
 		}
 	}
+	recentWorkspacesBefore := r.app.RecentWorkspaces()
 	response = r.applyCommand(request)
+	if request.Command == "clear_recent_workspaces" || !sameWorkspacePathLists(recentWorkspacesBefore, r.app.RecentWorkspaces()) {
+		if err := r.persistRecentWorkspaces(request.Command == "clear_recent_workspaces"); err != nil {
+			r.asyncError = joinStartupNotice(r.asyncError, fmt.Sprintf("Could not save recent workspace history: %v.", err))
+		}
+	}
 	if r.recoveryDir != "" {
 		r.maybeWriteRecoveryLocked()
 	}
@@ -461,6 +517,32 @@ func (r *Runtime) Pump() []byte {
 		r.asyncError = ""
 	}
 	return marshalResponse(response)
+}
+
+func sameWorkspacePathLists(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Runtime) persistRecentWorkspaces(allowReplace bool) error {
+	if r == nil || r.app == nil || r.recentWorkspacesPath == "" {
+		return nil
+	}
+	if r.recentWorkspacesWritesBlocked && !allowReplace {
+		return nil
+	}
+	if err := application.SaveRecentWorkspaces(r.recentWorkspacesPath, r.app.RecentWorkspaces()); err != nil {
+		return err
+	}
+	r.recentWorkspacesWritesBlocked = false
+	return nil
 }
 
 // ReadImage is a dedicated readonly resource request. Its filesystem work runs

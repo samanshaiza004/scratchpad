@@ -726,6 +726,61 @@ func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
 	}
 }
 
+func TestSessionRoundTripRestoresTabOrderActiveDocumentAndPreview(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{
+		filepath.Join(root, "first.txt"),
+		filepath.Join(root, "preview.txt"),
+		filepath.Join(root, "last.txt"),
+	}
+	for index, path := range paths {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("document %d", index)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := New(nil)
+	if err := a.OpenWorkspace(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OpenDocument(paths[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OpenPreviewPath(paths[1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.OpenDocument(paths[2]); err != nil {
+		t.Fatal(err)
+	}
+	firstID, previewID, lastID := documentID(paths[0]), documentID(paths[1]), documentID(paths[2])
+	wantOrder := []DocumentID{lastID, previewID, firstID}
+	if err := a.Reorder(wantOrder); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Activate(lastID) {
+		t.Fatal("could not select active session tab")
+	}
+	sessionPath := filepath.Join(t.TempDir(), "session.json")
+	if err := a.SaveSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := New(nil)
+	if err := restored.RestoreSession(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Order) != len(wantOrder) {
+		t.Fatalf("restored tab count = %d, want %d", len(restored.Order), len(wantOrder))
+	}
+	for index, want := range wantOrder {
+		if restored.Order[index] != want {
+			t.Fatalf("restored tab order = %v, want %v", restored.Order, wantOrder)
+		}
+	}
+	if restored.Active != lastID || restored.Preview != previewID {
+		t.Fatalf("restored active=%q preview=%q, want active=%q preview=%q", restored.Active, restored.Preview, lastID, previewID)
+	}
+}
+
 func TestRecentWorkspacesAreBoundedAndClearable(t *testing.T) {
 	root := t.TempDir()
 	a := New(nil)
