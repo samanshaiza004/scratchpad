@@ -287,13 +287,20 @@ type CurrentMatch struct {
 }
 
 type WorkspaceSearchResult struct {
-	Path          string `json:"path"`
-	Line          int    `json:"line"`
-	Column        int    `json:"column"`
-	StartByte     int    `json:"start_byte"`
-	EndByte       int    `json:"end_byte"`
-	Text          string `json:"text"`
-	TextTruncated bool   `json:"text_truncated,omitempty"`
+	Path             string `json:"path"`
+	Line             int    `json:"line"`
+	Column           int    `json:"column"`
+	StartByte        int    `json:"start_byte"`
+	EndByte          int    `json:"end_byte"`
+	ContextStartByte int    `json:"context_start_byte"`
+	ContextEndByte   int    `json:"context_end_byte"`
+	ProjectionKey    uint64 `json:"projection_key"`
+	SourceDocumentID string `json:"source_document_id,omitempty"`
+	SourceInstanceID uint64 `json:"source_instance_id,omitempty"`
+	SourceRevision   uint64 `json:"source_revision,omitempty"`
+	Editable         bool   `json:"editable"`
+	Text             string `json:"text"`
+	TextTruncated    bool   `json:"text_truncated,omitempty"`
 }
 
 type WorkspaceSearchPage struct {

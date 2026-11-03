@@ -73,6 +73,23 @@ workspace_search_result_label :: proc(result: bridge.Workspace_Search_Result, ma
 	return fmt.tprintf("%s:%d\n%s", result.path, result.line+1, preview)
 }
 
+workspace_search_result_heading :: proc(result: bridge.Workspace_Search_Result) -> string {
+	return fmt.tprintf("%s:%d", result.path, result.line+1)
+}
+
+workspace_search_result_preview :: proc(result: bridge.Workspace_Search_Result, max_preview_bytes := 96) -> string {
+	preview := result.text
+	truncated := result.text_truncated
+	if len(preview) > max_preview_bytes {
+		end := max(max_preview_bytes, 0)
+		for end > 0 && end < len(preview) && (u8(preview[end]) & 0xC0) == 0x80 { end -= 1 }
+		preview = preview[:end]
+		truncated = true
+	}
+	if truncated { preview = fmt.tprintf("%s…", preview) }
+	return preview
+}
+
 find_presentation_install :: proc(
 	presentation: ^Find_Presentation,
 	document_id: string,
@@ -272,12 +289,26 @@ workspace_search_view_append :: proc(view: ^Workspace_Search_View, page: bridge.
 			workspace_search_page_destroy_slice(&copied, allocator)
 			return false
 		}
+		document_id_copy, id_err := strings.clone(result.source_document_id, allocator)
+		if id_err != nil {
+			delete(path_copy, allocator)
+			delete(text_copy, allocator)
+			workspace_search_page_destroy_slice(&copied, allocator)
+			return false
+		}
 		append(&copied, bridge.Workspace_Search_Result{
 			path=path_copy,
 			line=result.line,
 			column=result.column,
 			start_byte=result.start_byte,
 			end_byte=result.end_byte,
+			context_start_byte=result.context_start_byte,
+			context_end_byte=result.context_end_byte,
+			projection_key=result.projection_key,
+			source_document_id=document_id_copy,
+			source_instance_id=result.source_instance_id,
+			source_revision=result.source_revision,
+			editable=result.editable,
 			text=text_copy,
 			text_truncated=result.text_truncated,
 		})
@@ -295,6 +326,7 @@ workspace_search_view_destroy :: proc(view: ^Workspace_Search_View, allocator: m
 	if view == nil { return }
 	for &result in view.results {
 		delete(result.path, allocator)
+		delete(result.source_document_id, allocator)
 		delete(result.text, allocator)
 	}
 	delete(view.results)
@@ -305,6 +337,7 @@ workspace_search_page_destroy_slice :: proc(results: ^[dynamic]bridge.Workspace_
 	if results == nil { return }
 	for &result in results^ {
 		delete(result.path, allocator)
+		delete(result.source_document_id, allocator)
 		delete(result.text, allocator)
 	}
 	delete(results^)

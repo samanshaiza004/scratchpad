@@ -228,6 +228,23 @@ find_text_field_history_command :: proc(app: ^App, rt: ^alicorn.Runtime, redo: b
 	if !focused { return false }
 	is_find_query := app != nil && app.find_open && node_id == app.find_query_node
 	is_find_replace := app != nil && app.find_open && node_id == app.find_replace_node
+	is_search_result := app != nil && app.workspace_search_edit_active && node_id == app.workspace_search_edit_node
+	if is_search_result {
+		if interaction.composition_active {
+			set_error(app, "Finish or cancel the active text composition before undoing a source edit.")
+			alicorn.invalidate_root(rt, "Scratchpad refused source history during search-result IME composition")
+			return true
+		}
+		if workspace_search_edit_has_pending_intents(app) {
+			set_error(app, "Wait for the current source edit to finish before undoing or redoing.")
+			alicorn.invalidate_root(rt, "Scratchpad serialized source history after a search-result edit")
+			return true
+		}
+		if !workspace_search_edit_finish(app, rt, refresh=false) { return true }
+		dispatch_action(app, rt, ACTION_EDIT_REDO if redo else ACTION_EDIT_UNDO)
+		if app.workspace_search_mode { workspace_search_start_query(app, rt, true) }
+		return true
+	}
 	if !is_find_query && !is_find_replace { return true }
 	is_query := is_find_query
 	history := find_text_field_history_for(app, is_query)
@@ -765,6 +782,376 @@ workspace_search_cancel_active :: proc(app: ^App) {
 	find_set_message(&app.workspace_search_started_root, "")
 }
 
+workspace_search_edit_has_pending_intents :: proc(app: ^App) -> bool {
+	if app == nil { return false }
+	for edit in app.editor_edits {
+		if edit.workspace_search_edit { return true }
+	}
+	return false
+}
+
+workspace_search_edit_session_matches :: proc(app: ^App, result_index: int) -> bool {
+	if app == nil || !app.workspace_search_edit_active ||
+	   app.workspace_search_edit_generation != app.workspace_search_view.generation ||
+	   result_index != app.workspace_search_edit_index ||
+	   result_index < 0 || result_index >= len(app.workspace_search_view.results) { return false }
+	result := app.workspace_search_view.results[result_index]
+	return result.projection_key == app.workspace_search_edit_projection_key
+}
+
+workspace_search_edit_clear :: proc(app: ^App) {
+	if app == nil { return }
+	if app.workspace_search_edit_buffer.initialized {
+		alicorn.text_field_buffer_destroy(&app.workspace_search_edit_buffer)
+	}
+	if len(app.workspace_search_edit_document_id) > 0 { delete(app.workspace_search_edit_document_id, context.allocator) }
+	if len(app.workspace_search_edit_source_text) > 0 { delete(app.workspace_search_edit_source_text, context.allocator) }
+	app.workspace_search_edit_active = false
+	app.workspace_search_edit_ready = false
+	app.workspace_search_edit_finish_pending = false
+	app.workspace_search_edit_focus_pending = false
+	app.workspace_search_edit_select_match_pending = false
+	app.workspace_search_edit_source_changed = false
+	app.workspace_search_edit_index = -1
+	app.workspace_search_edit_generation = 0
+	app.workspace_search_edit_projection_key = 0
+	app.workspace_search_edit_document_id = ""
+	app.workspace_search_edit_instance_id = 0
+	app.workspace_search_edit_revision = 0
+	app.workspace_search_edit_context_start = 0
+	app.workspace_search_edit_context_end = 0
+	app.workspace_search_edit_caret_byte = 0
+	app.workspace_search_edit_match_start = 0
+	app.workspace_search_edit_match_end = 0
+	app.workspace_search_edit_node = 0
+}
+
+workspace_search_edit_finish :: proc(app: ^App, rt: ^alicorn.Runtime, refresh := true, preserve_selection := true) -> bool {
+	if app == nil || !app.workspace_search_edit_active { return true }
+	if app.workspace_search_edit_node != 0 && rt != nil {
+		interaction, found := alicorn.text_field_interaction(rt, app.workspace_search_edit_node)
+		if found && interaction.composition_active {
+			set_error(app, "Finish or cancel the active text composition before leaving this search result.")
+			_ = alicorn.focus(rt, app.workspace_search_edit_node)
+			alicorn.invalidate_root(rt, "Scratchpad kept a search projection active during IME composition")
+			return false
+		}
+	}
+	if workspace_search_edit_has_pending_intents(app) {
+		app.workspace_search_edit_finish_pending = true
+		set_error(app, "Finishing the search-result edit after the source acknowledgement arrives.")
+		return false
+	}
+	changed := app.workspace_search_edit_source_changed
+	if changed && preserve_selection && app.workspace_search_edit_index >= 0 &&
+	   app.workspace_search_edit_index < len(app.workspace_search_view.results) {
+		result := app.workspace_search_view.results[app.workspace_search_edit_index]
+		path_copy, clone_error := strings.clone(result.path, context.allocator)
+		if clone_error == nil {
+			workspace_search_restore_selection_clear(app)
+			app.workspace_search_restore_selection_pending = true
+			app.workspace_search_restore_selection_path = path_copy
+			app.workspace_search_restore_selection_byte = app.workspace_search_edit_caret_byte
+			app.workspace_search_restore_selection_index = app.workspace_search_selected
+		}
+	}
+	workspace_search_edit_clear(app)
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad ended the active search-result edit") }
+	if refresh && changed {
+		if app.workspace_search_mode {
+			workspace_search_start_query(app, rt, true)
+		} else {
+			find_set_message(&app.workspace_search_started_query, "")
+			find_set_message(&app.workspace_search_started_root, "")
+		}
+	}
+	return true
+}
+
+workspace_search_edit_focus_transition :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.workspace_search_edit_active || app.workspace_search_edit_focus_pending { return }
+	if !app.workspace_search_mode || alicorn.focused_node(rt) != app.workspace_search_edit_node {
+		_ = workspace_search_edit_finish(app, rt, refresh=app.workspace_search_mode)
+	}
+}
+
+workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int) -> bool {
+	if app == nil || rt == nil || !app.backend.started || !app.workspace_search_mode ||
+	   result_index < 0 || result_index >= len(app.workspace_search_view.results) { return false }
+	if app.pinned.editing {
+		pinned_edit_finish(app, rt, false)
+		if app.pinned.editing { return true }
+	}
+	if workspace_search_edit_session_matches(app, result_index) {
+		app.workspace_search_edit_focus_pending = true
+		return true
+	}
+	if app.workspace_search_edit_active {
+		changed := app.workspace_search_edit_source_changed
+		if !workspace_search_edit_finish(app, rt, refresh=false) { return true }
+		if changed {
+			workspace_search_start_query(app, rt, true)
+			find_set_message(&app.workspace_search_error, "Search results refreshed after the previous edit; select the updated result to continue.")
+			return true
+		}
+	}
+	workspace_search_restore_selection_clear(app)
+	result := app.workspace_search_view.results[result_index]
+	if !result.editable || result.context_start_byte < 0 || result.context_end_byte <= result.context_start_byte ||
+	   result.context_end_byte-result.context_start_byte != len(result.text) ||
+	   result.start_byte < result.context_start_byte || result.end_byte > result.context_end_byte || result.end_byte <= result.start_byte {
+		find_set_message(&app.workspace_search_error, "This result cannot be safely edited as UTF-8 source text.")
+		alicorn.invalidate_root(rt, "Scratchpad refused an uneditable workspace search result")
+		return true
+	}
+	path, path_error := os.join_path({app.backend.state.workspace_root, result.path}, context.temp_allocator)
+	if path_error != nil {
+		find_set_message(&app.workspace_search_error, "Could not resolve the selected workspace result path.")
+		alicorn.invalidate_root(rt, "Scratchpad could not resolve a search projection source")
+		return true
+	}
+	response := bridge.backend_command(
+		&app.backend,
+		"open_path",
+		path=path,
+		has_target_byte=true,
+		target_byte=u64(result.start_byte),
+	)
+	if !response.ok {
+		find_set_message(&app.workspace_search_error, response.message)
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		alicorn.invalidate_root(rt, "Scratchpad could not open a workspace search source")
+		return true
+	}
+	handle_command_result(app, rt, &response)
+	document_id := response.editor_selection.document_id
+	if document_id == "" { document_id = app.backend.state.active }
+	document, document_found := find_document(&app.backend.state, document_id)
+	if !document_found || document.instance_id == 0 || document.view_kind == "image" || document.view_kind == "unsupported" {
+		find_set_message(&app.workspace_search_error, "The search source is no longer an editable text document.")
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		alicorn.invalidate_root(rt, "Scratchpad rejected a non-text search projection source")
+		return true
+	}
+	if result.source_document_id != "" &&
+	   (document.id != result.source_document_id || document.instance_id != result.source_instance_id || document.editor_revision != result.source_revision) {
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		workspace_search_start_query(app, rt, true)
+		find_set_message(&app.workspace_search_error, "This result was stale because its open source changed; search results were refreshed.")
+		alicorn.invalidate_root(rt, "Scratchpad rejected a stale open-document search result")
+		return true
+	}
+	buffer, buffer_ok := alicorn.text_field_buffer_init(result.text, context.allocator)
+	if !buffer_ok {
+		find_set_message(&app.workspace_search_error, "Could not retain the bounded search-result text.")
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		return true
+	}
+	source_text, text_error := strings.clone(result.text, context.allocator)
+	if text_error != nil {
+		alicorn.text_field_buffer_destroy(&buffer)
+		find_set_message(&app.workspace_search_error, "Could not retain the source comparison for this result.")
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		return true
+	}
+	owned_document_id, id_error := strings.clone(document.id, context.allocator)
+	if id_error != nil {
+		alicorn.text_field_buffer_destroy(&buffer)
+		delete(source_text, context.allocator)
+		find_set_message(&app.workspace_search_error, "Could not retain the source identity for this result.")
+		bridge.backend_command_result_destroy(&response, context.allocator)
+		return true
+	}
+	workspace_search_edit_clear(app)
+	app.workspace_search_edit_active = true
+	app.workspace_search_edit_buffer = buffer
+	app.workspace_search_edit_source_text = source_text
+	app.workspace_search_edit_document_id = owned_document_id
+	app.workspace_search_edit_instance_id = document.instance_id
+	app.workspace_search_edit_revision = document.editor_revision
+	app.workspace_search_edit_context_start = u64(result.context_start_byte)
+	app.workspace_search_edit_context_end = u64(result.context_end_byte)
+	app.workspace_search_edit_match_start = result.start_byte-result.context_start_byte
+	app.workspace_search_edit_match_end = result.end_byte-result.context_start_byte
+	app.workspace_search_edit_caret_byte = u64(result.start_byte)
+	app.workspace_search_edit_generation = app.workspace_search_view.generation
+	app.workspace_search_edit_projection_key = result.projection_key
+	app.workspace_search_edit_index = result_index
+	app.workspace_search_selected = result_index
+	app.workspace_search_edit_focus_pending = true
+	app.workspace_search_edit_select_match_pending = true
+	app.editor_focus_pending = false
+	app.find_focus_pending = false
+	app.workspace_search_focus_pending = false
+	app.workspace_search_edit_ready = false
+	find_set_message(&app.workspace_search_error, "Loading and validating the source context…")
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad opened a bounded editable search projection")
+	return true
+}
+
+workspace_search_edit_validate_window :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || !app.workspace_search_edit_active { return false }
+	if !workspace_search_edit_session_matches(app, app.workspace_search_edit_index) { return false }
+	document, found := find_document(&app.backend.state, app.workspace_search_edit_document_id)
+	if !found || document.instance_id != app.workspace_search_edit_instance_id || document.editor_revision != app.workspace_search_edit_revision {
+		message := "The source changed before this result could be edited; search results were refreshed."
+		workspace_search_edit_clear(app)
+		if app.workspace_search_mode { workspace_search_start_query(app, rt, true) }
+		find_set_message(&app.workspace_search_error, message)
+		return false
+	}
+	if app.workspace_search_edit_ready { return true }
+	if view_index := editor_view_find(app.editor_views[:], document.id); view_index >= 0 {
+		view := &app.editor_views[view_index]
+		window, exact := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+		if !exact { return false }
+		window_end := window.start_byte+u64(len(window.source))
+		if app.workspace_search_edit_context_start < window.start_byte || app.workspace_search_edit_context_end > window_end {
+			find_set_message(&app.workspace_search_error, "The bounded source window does not contain the complete result context yet.")
+			return false
+		}
+		start := int(app.workspace_search_edit_context_start-window.start_byte)
+		end := int(app.workspace_search_edit_context_end-window.start_byte)
+		if end < start || string(window.source[start:end]) != app.workspace_search_edit_source_text {
+			message := "The source no longer matches this result; search results were refreshed."
+			workspace_search_edit_clear(app)
+			if app.workspace_search_mode { workspace_search_start_query(app, rt, true) }
+			find_set_message(&app.workspace_search_error, message)
+			return false
+		}
+		app.workspace_search_edit_ready = true
+		find_set_message(&app.workspace_search_error, "")
+		return true
+	}
+	return false
+}
+
+workspace_search_utf8_boundary :: proc(value: string, index: int) -> bool {
+	return index <= 0 || index >= len(value) || (u8(value[index]) & 0xC0) != 0x80
+}
+
+workspace_search_edit_apply_change :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || !app.workspace_search_edit_active || !app.workspace_search_edit_ready ||
+	   app.workspace_search_edit_node == 0 || !workspace_search_edit_session_matches(app, app.workspace_search_edit_index) { return false }
+	interaction, interaction_found := alicorn.text_field_interaction(rt, app.workspace_search_edit_node)
+	if !interaction_found || interaction.composition_active { return false }
+	old_text := app.workspace_search_edit_source_text
+	new_text := app.workspace_search_edit_buffer.text
+	new_bytes := transmute([]u8)new_text
+	if !editor_source_bytes_valid_utf8(new_bytes) || strings.contains(new_text, "\n") || strings.contains(new_text, "\r") {
+		_ = alicorn.text_field_buffer_set(&app.workspace_search_edit_buffer, old_text)
+		set_error(app, "A search-result edit must stay within its single UTF-8 source line.")
+		alicorn.invalidate_root(rt, "Scratchpad rejected a cross-line or invalid search projection edit")
+		return false
+	}
+	prefix := 0
+	for prefix < len(old_text) && prefix < len(new_text) && old_text[prefix] == new_text[prefix] { prefix += 1 }
+	for prefix > 0 && (!workspace_search_utf8_boundary(old_text, prefix) || !workspace_search_utf8_boundary(new_text, prefix)) { prefix -= 1 }
+	suffix := 0
+	for suffix < len(old_text)-prefix && suffix < len(new_text)-prefix &&
+	    old_text[len(old_text)-suffix-1] == new_text[len(new_text)-suffix-1] { suffix += 1 }
+	for suffix > 0 && (!workspace_search_utf8_boundary(old_text, len(old_text)-suffix) ||
+	                    !workspace_search_utf8_boundary(new_text, len(new_text)-suffix)) { suffix -= 1 }
+	if prefix == len(old_text) && prefix == len(new_text) { return true }
+	if app.workspace_search_edit_context_end-app.workspace_search_edit_context_start != u64(len(old_text)) {
+		set_error(app, "The search projection source range lost synchronization; no edit was sent.")
+		return false
+	}
+	start_byte := app.workspace_search_edit_context_start+u64(prefix)
+	end_byte := app.workspace_search_edit_context_start+u64(len(old_text)-suffix)
+	caret := min(max(interaction.caret, 0), len(new_text))
+	caret_byte := app.workspace_search_edit_context_start+u64(caret)
+	new_source_text, clone_error := strings.clone(new_text, context.allocator)
+	baseline_copy, baseline_error := strings.clone(new_text, context.allocator)
+	if clone_error != nil || baseline_error != nil {
+		if clone_error == nil { delete(new_source_text, context.allocator) }
+		if baseline_error == nil { delete(baseline_copy, context.allocator) }
+		_ = alicorn.text_field_buffer_set(&app.workspace_search_edit_buffer, old_text)
+		set_error(app, "Could not retain the updated search-result source text.")
+		return false
+	}
+	replacement := transmute([]u8)new_text[prefix:len(new_text)-suffix]
+	if !editor_apply_local_replace_with_wire(app, rt, start_byte, end_byte, replacement, {}, caret_byte, caret_byte) {
+		delete(new_source_text, context.allocator)
+		_ = alicorn.text_field_buffer_set(&app.workspace_search_edit_buffer, old_text)
+		return false
+	}
+	result := &app.workspace_search_view.results[app.workspace_search_edit_index]
+	if len(result.text) > 0 { delete(result.text, context.allocator) }
+	result.text = new_source_text
+	delta := i64(len(new_text))-i64(len(old_text))
+	result.context_end_byte = int(i64(result.context_end_byte)+delta)
+	app.workspace_search_edit_caret_byte = caret_byte
+	if len(old_text) > 0 { delete(app.workspace_search_edit_source_text, context.allocator) }
+	app.workspace_search_edit_source_text = baseline_copy
+	app.workspace_search_edit_context_end = u64(i64(app.workspace_search_edit_context_end)+delta)
+	app.workspace_search_edit_source_changed = true
+	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad queued an edit from a workspace search projection") }
+	return true
+}
+
+workspace_search_edit_acknowledged :: proc(app: ^App, rt: ^alicorn.Runtime, intent: Editor_Edit_Intent, revision: u64) {
+	if app == nil || !intent.workspace_search_edit || !app.workspace_search_edit_active ||
+	   app.workspace_search_edit_document_id != intent.document_id { return }
+	app.workspace_search_edit_revision = revision
+	_ = rt
+}
+
+workspace_search_edit_finish_if_ready :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || !app.workspace_search_edit_active || !app.workspace_search_edit_finish_pending ||
+	   workspace_search_edit_has_pending_intents(app) { return }
+	_ = workspace_search_edit_finish(app, rt, refresh=true)
+}
+
+workspace_search_edit_failed :: proc(app: ^App, rt: ^alicorn.Runtime, intent: Editor_Edit_Intent) {
+	if app == nil || !intent.workspace_search_edit { return }
+	message := "The source rejected this edit because the search projection was stale. Results were refreshed."
+	workspace_search_edit_clear(app)
+	if app.workspace_search_mode && rt != nil { workspace_search_start_query(app, rt, true) }
+	find_set_message(&app.workspace_search_error, message)
+}
+
+workspace_search_restore_selection_clear :: proc(app: ^App) {
+	if app == nil { return }
+	if len(app.workspace_search_restore_selection_path) > 0 {
+		delete(app.workspace_search_restore_selection_path, context.allocator)
+	}
+	app.workspace_search_restore_selection_path = ""
+	app.workspace_search_restore_selection_pending = false
+	app.workspace_search_restore_selection_byte = 0
+	app.workspace_search_restore_selection_index = -1
+}
+
+workspace_search_restore_selection_apply :: proc(app: ^App) -> bool {
+	if app == nil || !app.workspace_search_restore_selection_pending { return false }
+	best_index := -1
+	best_distance: u64 = 0xFFFF_FFFF_FFFF_FFFF
+	for result, index in app.workspace_search_view.results {
+		if result.path != app.workspace_search_restore_selection_path { continue }
+		result_byte := u64(max(result.start_byte, 0))
+		distance := result_byte-app.workspace_search_restore_selection_byte if result_byte >= app.workspace_search_restore_selection_byte else app.workspace_search_restore_selection_byte-result_byte
+		if best_index < 0 || distance < best_distance {
+			best_index = index
+			best_distance = distance
+		}
+	}
+	if best_index >= 0 {
+		selection_changed := app.workspace_search_selected != best_index
+		app.workspace_search_selected = best_index
+		if app.workspace_search_view.done { workspace_search_restore_selection_clear(app) }
+		return selection_changed
+	}
+	if !app.workspace_search_view.done { return false }
+	if len(app.workspace_search_view.results) > 0 {
+		fallback := app.workspace_search_restore_selection_index
+		if fallback < 0 { fallback = 0 }
+		app.workspace_search_selected = min(fallback, len(app.workspace_search_view.results)-1)
+	}
+	workspace_search_restore_selection_clear(app)
+	return true
+}
+
 find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || !app.backend.started { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
@@ -879,6 +1266,18 @@ find_restore_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		app.find_select_query_pending = false
 		app.workspace_search_focus_pending = false
 		app.editor_focus_pending = false
+	} else if app.workspace_search_edit_focus_pending && app.workspace_search_edit_node != 0 {
+		if alicorn.focus(rt, app.workspace_search_edit_node) {
+			if app.workspace_search_edit_select_match_pending {
+				_ = alicorn.set_text_selection(rt, app.workspace_search_edit_node,
+					app.workspace_search_edit_match_start, app.workspace_search_edit_match_end)
+				app.workspace_search_edit_select_match_pending = false
+			}
+			app.workspace_search_edit_focus_pending = false
+			app.workspace_search_focus_pending = false
+			app.find_focus_pending = false
+			app.editor_focus_pending = false
+		}
 	} else if app.workspace_search_focus_pending && app.workspace_search_query_node != 0 {
 		_ = alicorn.focus(rt, app.workspace_search_query_node)
 		app.workspace_search_focus_pending = false
@@ -899,6 +1298,11 @@ workspace_search_start_query :: proc(app: ^App, rt: ^alicorn.Runtime, force := f
 	if app == nil || !app.backend.started { return }
 	root := app.backend.state.workspace_root
 	if !app.backend.state.has_workspace { return }
+	query_changed := app.workspace_search_started_query != app.workspace_search_query || app.workspace_search_started_root != root
+	if app.workspace_search_edit_active && (force || query_changed) {
+		if !workspace_search_edit_finish(app, rt, refresh=false, preserve_selection=!query_changed) { return }
+	}
+	if query_changed { workspace_search_restore_selection_clear(app) }
 	if !force && app.workspace_search_started_query == app.workspace_search_query &&
 	   app.workspace_search_started_root == root { return }
 	workspace_search_match_clear_all(app)
@@ -943,7 +1347,10 @@ workspace_search_sync_wake :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	view.count = state.workspace_search_count
 	view.done = state.workspace_search_done
 	view.truncated = state.workspace_search_truncated || len(view.results) >= WORKSPACE_SEARCH_MAX_RESULTS
-	if !state.workspace_search_page_available || state.workspace_search_sequence <= view.last_sequence { return false }
+	if !state.workspace_search_page_available || state.workspace_search_sequence <= view.last_sequence {
+		if workspace_search_restore_selection_apply(app) { alicorn.invalidate_root(rt, "Scratchpad restored the active search result after a query refresh") }
+		return false
+	}
 	response := bridge.backend_command(
 		&app.backend,
 		"workspace_search_take_page",
@@ -959,13 +1366,30 @@ workspace_search_sync_wake :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	bridge.backend_command_result_destroy(&response, context.allocator)
 	if accepted { alicorn.invalidate_root(rt, "Scratchpad workspace search page arrived") }
 	if accepted && app.workspace_search_selected < 0 && len(view.results) > 0 { app.workspace_search_selected = 0 }
+	if workspace_search_restore_selection_apply(app) { alicorn.invalidate_root(rt, "Scratchpad restored the active search result after a query refresh") }
 	return accepted
 }
 
-workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int) -> bool {
+workspace_search_go_to_source :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int) -> bool {
+	if app == nil || rt == nil || result_index < 0 || result_index >= len(app.workspace_search_view.results) { return false }
+	refresh_after_navigation := app.workspace_search_edit_active && app.workspace_search_edit_source_changed
+	target_byte: i64 = -1
+	if app.workspace_search_edit_active && app.workspace_search_edit_source_changed &&
+	   result_index == app.workspace_search_edit_index {
+		target_byte = i64(app.workspace_search_edit_caret_byte)
+	}
+	if app.workspace_search_edit_active && !workspace_search_edit_finish(app, rt, refresh=false) { return true }
+	activated := workspace_search_activate_result(app, rt, result_index, target_byte)
+	if refresh_after_navigation && app.workspace_search_mode { workspace_search_start_query(app, rt, true) }
+	return activated
+}
+
+workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result_index: int, target_byte: i64 = -1) -> bool {
 	if app == nil || rt == nil || !app.backend.started || result_index < 0 ||
 	   result_index >= len(app.workspace_search_view.results) || !app.backend.state.has_workspace { return false }
 	result := app.workspace_search_view.results[result_index]
+	open_byte := u64(max(result.start_byte, 0))
+	if target_byte >= 0 { open_byte = u64(target_byte) }
 	path, path_error := os.join_path({app.backend.state.workspace_root, result.path}, context.temp_allocator)
 	if path_error != nil {
 		find_set_message(&app.workspace_search_error, "Could not resolve the selected workspace result path.")
@@ -978,7 +1402,7 @@ workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result
 		"open_path",
 		path=path,
 		has_target_byte=true,
-		target_byte=u64(max(result.start_byte, 0)),
+		target_byte=open_byte,
 	)
 	if response.ok {
 		app.find_open = false
@@ -988,7 +1412,7 @@ workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result
 		handle_command_result(app, rt, &response)
 		if response.editor_selection.document_id != "" {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
-			if result.start_byte >= 0 && result.end_byte > result.start_byte && result.line >= 0 {
+			if target_byte < 0 && result.start_byte >= 0 && result.end_byte > result.start_byte && result.line >= 0 {
 				view_index, view_ok := editor_view_ensure(&app.editor_views, response.editor_selection.document_id)
 				if view_ok {
 					view := &app.editor_views[view_index]

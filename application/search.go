@@ -6,6 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"scratchpad/document"
 	"scratchpad/workspace"
 )
 
@@ -213,9 +214,48 @@ func (a *Application) SearchWorkspace(ctx context.Context, query []byte) <-chan 
 	// different workspace may replace Application.Workspace while this
 	// cancellable search is still draining.
 	workspaceSnapshot := a.Workspace
+	type openDocumentSnapshot struct {
+		path       string
+		documentID DocumentID
+		instanceID uint64
+		snapshot   document.DocumentSnapshot
+	}
+	openDocuments := make([]openDocumentSnapshot, 0, len(a.Order))
+	for _, id := range a.Order {
+		doc := a.Documents[id]
+		if doc == nil || doc.Editor == nil || doc.Path == "" || doc.InstanceID() == 0 {
+			continue
+		}
+		if int64(doc.Editor.Buffer.ByteLen()) > workspace.MaxSearchFileBytes {
+			continue
+		}
+		if _, isNonTextView := a.FileViews[id]; isNonTextView {
+			continue
+		}
+		if _, err := workspaceSnapshot.RelativePath(doc.Path); err != nil {
+			continue
+		}
+		openDocuments = append(openDocuments, openDocumentSnapshot{
+			path: doc.Path, documentID: id, instanceID: doc.InstanceID(), snapshot: doc.Snapshot(),
+		})
+	}
 	go func() {
 		defer close(results)
-		_ = workspaceSnapshot.Search(ctx, query, func(result workspace.SearchResult) bool {
+		sources := make([]workspace.SearchSource, 0, len(openDocuments))
+		for _, captured := range openDocuments {
+			if ctx.Err() != nil {
+				return
+			}
+			snapshot := captured.snapshot
+			sources = append(sources, workspace.SearchSource{
+				Path:       captured.path,
+				Load:       snapshot.Materialize,
+				DocumentID: string(captured.documentID),
+				InstanceID: captured.instanceID,
+				Revision:   captured.snapshot.Revision,
+			})
+		}
+		_ = workspaceSnapshot.SearchWithSources(ctx, query, sources, func(result workspace.SearchResult) bool {
 			select {
 			case results <- result:
 				return true

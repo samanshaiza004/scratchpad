@@ -380,13 +380,20 @@ Current_Match :: struct {
 }
 
 Workspace_Search_Result :: struct {
-	path:           string `json:"path"`,
-	line:           int    `json:"line"`,
-	column:         int    `json:"column"`,
-	start_byte:     int    `json:"start_byte"`,
-	end_byte:       int    `json:"end_byte"`,
-	text:           string `json:"text"`,
-	text_truncated: bool   `json:"text_truncated"`,
+	path:              string `json:"path"`,
+	line:              int    `json:"line"`,
+	column:            int    `json:"column"`,
+	start_byte:        int    `json:"start_byte"`,
+	end_byte:          int    `json:"end_byte"`,
+	context_start_byte: int   `json:"context_start_byte"`,
+	context_end_byte:   int   `json:"context_end_byte"`,
+	projection_key:    u64    `json:"projection_key"`,
+	source_document_id: string `json:"source_document_id"`,
+	source_instance_id: u64    `json:"source_instance_id"`,
+	source_revision:    u64    `json:"source_revision"`,
+	editable:          bool   `json:"editable"`,
+	text:              string `json:"text"`,
+	text_truncated:    bool   `json:"text_truncated"`,
 }
 
 Workspace_Search_Page :: struct {
@@ -2462,9 +2469,15 @@ workspace_search_page_clone :: proc(source: Workspace_Search_Page, allocator: me
 	copy.results = make([]Workspace_Search_Result, len(source.results), allocator=allocator)
 	for result, index in source.results {
 		copy.results[index] = result
+		copy.results[index].path = ""
+		copy.results[index].source_document_id = ""
+		copy.results[index].text = ""
 		path_copy, err := strings.clone(result.path, allocator)
 		if err != nil { workspace_search_page_destroy(&copy, allocator); return {}, false }
 		copy.results[index].path = path_copy
+		document_id_copy, id_err := strings.clone(result.source_document_id, allocator)
+		if id_err != nil { workspace_search_page_destroy(&copy, allocator); return {}, false }
+		copy.results[index].source_document_id = document_id_copy
 		text_copy, text_err := strings.clone(result.text, allocator)
 		if text_err != nil { workspace_search_page_destroy(&copy, allocator); return {}, false }
 		copy.results[index].text = text_copy
@@ -2476,6 +2489,7 @@ workspace_search_page_destroy :: proc(page: ^Workspace_Search_Page, allocator: m
 	if page == nil { return }
 	for &result in page.results {
 		delete(result.path, allocator)
+		delete(result.source_document_id, allocator)
 		delete(result.text, allocator)
 	}
 	delete(page.results, allocator)

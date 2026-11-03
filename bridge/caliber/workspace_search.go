@@ -94,13 +94,20 @@ func (r *Runtime) runWorkspaceSearch(ctx context.Context, session *workspaceSear
 			continue
 		}
 		batch = append(batch, WorkspaceSearchResult{
-			Path:          filepath.ToSlash(relativePath),
-			Line:          result.Line,
-			Column:        result.Column,
-			StartByte:     result.StartByte,
-			EndByte:       result.EndByte,
-			Text:          result.Text,
-			TextTruncated: result.TextTruncated,
+			Path:             filepath.ToSlash(relativePath),
+			Line:             result.Line,
+			Column:           result.Column,
+			StartByte:        result.StartByte,
+			EndByte:          result.EndByte,
+			ContextStartByte: result.ContextStartByte,
+			ContextEndByte:   result.ContextEndByte,
+			ProjectionKey:    count,
+			SourceDocumentID: result.SourceDocumentID,
+			SourceInstanceID: result.SourceInstanceID,
+			SourceRevision:   result.SourceRevision,
+			Editable:         result.Editable,
+			Text:             result.Text,
+			TextTruncated:    result.TextTruncated,
 		})
 		count++
 

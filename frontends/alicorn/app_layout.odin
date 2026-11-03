@@ -129,6 +129,7 @@ build_app :: proc(
 		alicorn.split_first_begin(&ui, workspace_split)
 		when ODIN_OS == .Darwin || ODIN_OS == .Windows {
 			scratchpad_sidebar_titlebar_build(app, &ui)
+			app.workspace_search_edit_node = 0
 		}
 		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Recessed))
 		when ODIN_OS != .Darwin && ODIN_OS != .Windows {
@@ -136,6 +137,7 @@ build_app :: proc(
 				style=alicorn.layout_style(.Row, height=30, gap=4),
 				button_height=28,
 			)
+			app.workspace_search_edit_node = 0
 		}
 		if app.workspace_search_mode {
 			query_node := alicorn.text_field(&ui, app.workspace_search_query, key=alicorn.key_string(WORKSPACE_SEARCH_QUERY_KEY), style=alicorn.layout_style(.Row, height=32))
@@ -152,15 +154,59 @@ build_app :: proc(
 				gui.text(&ui, fmt.tprintf("Searching… %d matches", app.workspace_search_view.count))
 			}
 			if len(app.workspace_search_view.results) > 0 {
-				search_list := alicorn.virtual_list_begin(&ui, len(app.workspace_search_view.results), 72, key=alicorn.key_string("scratchpad-workspace-search-results"), style=alicorn.layout_style(grow=1, clip=true), label="scratchpad-workspace-search-results", focusable=true)
+				_ = workspace_search_edit_validate_window(app, rt)
+				search_list := alicorn.virtual_list_begin(&ui, len(app.workspace_search_view.results), 116, key=alicorn.key_string("scratchpad-workspace-search-results"), style=alicorn.layout_style(grow=1, clip=true), label="scratchpad-workspace-search-results", focusable=true)
 				app.workspace_search_results_owner = search_list.scroll.id
 				for position := search_list.first; position < search_list.last; position += 1 {
 					result := app.workspace_search_view.results[position]
-					label := workspace_search_result_label(result)
-					if gui.button(&ui, label, key=alicorn.key_pair(app.workspace_search_view.generation, u64(position)), height=68, state=alicorn.Button_State{selected=app.workspace_search_selected == position}, text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Wrap}, content_style=alicorn.button_content_style(.Start, padding_x=7, padding_y=5), variant=.Quiet) {
-						app.workspace_search_selected = position
-						_ = workspace_search_activate_result(app, rt, position)
+					active_edit := workspace_search_edit_session_matches(app, position)
+					alicorn.container_begin(&ui, .Container,
+						key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key),
+						label="workspace-search-result",
+						style=alicorn.layout_style(.Column, height=108, padding=5, gap=3, clip=true),
+						color=alicorn.style_color(&ui, .Surface),
+					)
+					gui.text(&ui, workspace_search_result_heading(result), style=alicorn.layout_style(.Row, height=18), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+					if active_edit {
+						if app.workspace_search_edit_ready {
+							edit_field := gui.text_field(&ui, "Editable search result", &app.workspace_search_edit_buffer,
+								key=alicorn.key_pair(app.workspace_search_edit_generation, app.workspace_search_edit_projection_key),
+								style=alicorn.layout_style(.Row, height=40),
+								text_style=alicorn.Text_Style{overflow=.Ellipsis},
+							)
+							app.workspace_search_edit_node = edit_field.node
+							if edit_field.changed { _ = workspace_search_edit_apply_change(app, rt) }
+						} else {
+						gui.text(&ui, "Validating source context…", style=alicorn.layout_style(.Row, height=36))
 					}
+					if gui.row(&ui, height=26, gap=4, align=.Center) {
+						if gui.button(&ui, "Go to source", key=alicorn.key_string(fmt.tprintf("workspace-search-source-%d", result.projection_key)), height=24, variant=.Quiet) {
+							_ = workspace_search_go_to_source(app, rt, position)
+						}
+						if gui.button(&ui, "Done", key=alicorn.key_string(fmt.tprintf("workspace-search-done-%d", result.projection_key)), height=24, variant=.Quiet) {
+							_ = workspace_search_edit_finish(app, rt, refresh=true)
+						}
+					}
+				} else {
+					preview := workspace_search_result_preview(result)
+					if gui.button(&ui, preview, key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key), height=42,
+						state=alicorn.Button_State{selected=app.workspace_search_selected == position, disabled=!result.editable},
+						text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=.Ellipsis},
+						content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=3), variant=.Quiet) {
+						app.workspace_search_selected = position
+						_ = workspace_search_edit_begin(app, rt, position)
+					}
+					if gui.row(&ui, height=26, gap=4, align=.Center) {
+						if gui.button(&ui, "Edit result", key=alicorn.key_string(fmt.tprintf("workspace-search-edit-%d", result.projection_key)), height=24, state=alicorn.Button_State{disabled=!result.editable}, variant=.Quiet) {
+							app.workspace_search_selected = position
+							_ = workspace_search_edit_begin(app, rt, position)
+						}
+						if gui.button(&ui, "Go to source", key=alicorn.key_string(fmt.tprintf("workspace-search-source-%d", result.projection_key)), height=24, variant=.Quiet) {
+							_ = workspace_search_go_to_source(app, rt, position)
+						}
+					}
+				}
+				alicorn.container_end(&ui)
 				}
 				alicorn.virtual_list_end(&ui, search_list)
 			}
@@ -451,6 +497,7 @@ build_app :: proc(
 	quick_open_restore_focus_after_frame(app, rt)
 	scratchpad_editor_font_picker_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
+	workspace_search_edit_focus_transition(app, rt)
 	workspace_mutation_focus_after_frame(app, rt)
 	if app.go_to_line_open && app.go_to_line_focus_pending && app.go_to_line_query_node != 0 {
 		if alicorn.focus(rt, app.go_to_line_query_node) {
@@ -589,11 +636,24 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		alicorn.button_end(ui)
 	}
 	if files_clicked {
-		workspace_search_cancel_active(app)
-		workspace_search_match_clear_all(app)
-		app.workspace_search_mode = false
-		app.workspace_search_query_node = 0
-		app.editor_focus_pending = true
+		search_source_changed := app.workspace_search_edit_active && app.workspace_search_edit_source_changed
+		can_leave := true
+		if app.workspace_search_edit_active {
+			finished := workspace_search_edit_finish(app, app.ui_description_runtime, refresh=false)
+			can_leave = finished || app.workspace_search_edit_finish_pending
+		}
+		if can_leave {
+			workspace_search_cancel_active(app)
+			workspace_search_match_clear_all(app)
+			app.workspace_search_mode = false
+			app.workspace_search_query_node = 0
+			app.editor_focus_pending = true
+			if search_source_changed {
+				workspace_search_restore_selection_clear(app)
+				find_set_message(&app.workspace_search_started_query, "")
+				find_set_message(&app.workspace_search_started_root, "")
+			}
+		}
 	}
 	search_id, search_clicked := alicorn.button_begin(
 		ui, "Search",

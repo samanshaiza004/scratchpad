@@ -251,6 +251,30 @@ App :: struct {
 	workspace_search_error: string,
 	workspace_search_selected: int,
 	workspace_search_results_owner: alicorn.Node_ID,
+	workspace_search_edit_active: bool,
+	workspace_search_edit_ready: bool,
+	workspace_search_edit_finish_pending: bool,
+	workspace_search_edit_focus_pending: bool,
+	workspace_search_edit_select_match_pending: bool,
+	workspace_search_edit_source_changed: bool,
+	workspace_search_restore_selection_pending: bool,
+	workspace_search_edit_index: int,
+	workspace_search_restore_selection_index: int,
+	workspace_search_edit_generation: u64,
+	workspace_search_edit_projection_key: u64,
+	workspace_search_edit_document_id: string,
+	workspace_search_edit_instance_id: u64,
+	workspace_search_edit_revision: u64,
+	workspace_search_edit_context_start: u64,
+	workspace_search_edit_context_end: u64,
+	workspace_search_edit_caret_byte: u64,
+	workspace_search_edit_match_start: int,
+	workspace_search_edit_match_end: int,
+	workspace_search_restore_selection_byte: u64,
+	workspace_search_edit_buffer: alicorn.Text_Field_Buffer,
+	workspace_search_edit_source_text: string,
+	workspace_search_restore_selection_path: string,
+	workspace_search_edit_node: alicorn.Node_ID,
 	find_open:              bool,
 	find_query:             alicorn.Text_Field_Buffer,
 	find_replace_text:      string,
@@ -1041,6 +1065,10 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		alicorn.invalidate_root(rt, "Scratchpad Workspace Search opened")
 		return true
 	}
+	if key == .Escape && app.workspace_search_edit_active &&
+	   alicorn.focused_node(rt) == app.workspace_search_edit_node {
+		return workspace_search_edit_finish(app, rt, refresh=true)
+	}
 	if app.workspace_search_mode && alicorn.focused_node(rt) == app.workspace_search_query_node {
 		#partial switch key {
 		case .Up:
@@ -1082,7 +1110,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		if len(app.workspace_search_view.results) > 0 {
 			index := app.workspace_search_selected
 			if index < 0 || index >= len(app.workspace_search_view.results) { index = 0 }
-			return workspace_search_activate_result(app, rt, index)
+			return workspace_search_edit_begin(app, rt, index)
 		}
 		if !app.workspace_search_view.done { workspace_search_start_query(app, rt) }
 		return true
@@ -2172,10 +2200,20 @@ editor_apply_local_replace_with_wire :: proc(
 		return false
 	}
 	pinned_edit := app.pinned.editing
+	workspace_search_edit := app.workspace_search_edit_active && !pinned_edit
 	document_id := app.backend.state.active
 	if pinned_edit { document_id = app.pinned.edit_document_id }
+	else if workspace_search_edit { document_id = app.workspace_search_edit_document_id }
 	document, found := find_document(&app.backend.state, document_id)
 	if !found { return false }
+	if workspace_search_edit && (!app.workspace_search_edit_ready ||
+	   document.instance_id != app.workspace_search_edit_instance_id ||
+	   document.editor_revision != app.workspace_search_edit_revision ||
+	   start_byte < app.workspace_search_edit_context_start || end_byte > app.workspace_search_edit_context_end) {
+		set_error(app, "The edit is outside the current validated search-result source segment.")
+		alicorn.invalidate_root(rt, "Scratchpad rejected a search projection edit outside its source segment")
+		return false
+	}
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok {
 		set_error(app, "Could not retain the source document's optimistic editor view.")
@@ -2195,11 +2233,16 @@ editor_apply_local_replace_with_wire :: proc(
 		}
 		pinned_end_after_edit=new_end
 	}
-	if !pinned_edit { semantic_zoom_reveal_input(app, rt, view) }
+	if !pinned_edit && !workspace_search_edit { semantic_zoom_reveal_input(app, rt, view) }
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
 	window_end: u64 = 0
 	if window_matches { window_end = window.start_byte+u64(len(window.source)) }
 	optimistic_projection := window_matches && start_byte >= window.start_byte && end_byte <= window_end
+	if workspace_search_edit && !optimistic_projection {
+		set_error(app, "The bounded source window is not ready for this search-result edit.")
+		alicorn.invalidate_root(rt, "Scratchpad deferred a search projection edit outside the validated source window")
+		return false
+	}
 	if !optimistic_projection && !allow_offscreen_authoritative && !pinned_edit {
 		set_error(app, "The bounded source window is not ready for local editing.")
 		alicorn.invalidate_root(rt, "Scratchpad local replacement waited for a source window")
@@ -2316,6 +2359,7 @@ editor_apply_local_replace_with_wire :: proc(
 		sequence=app.editor_edit_sequence,
 		document_id=owned_document_id,
 		pinned_edit=pinned_edit,
+		workspace_search_edit=workspace_search_edit,
 		pin_id=u64(app.pinned.edit_pin) if pinned_edit else 0,
 		base_editor_revision=edit_base_revision,
 		start_byte=start_byte,
@@ -2537,12 +2581,15 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		return
 	}
 	if app.editor_edits[0].sequence != result.sequence {
-		was_pinned_edit:=app.editor_edits[0].pinned_edit
+		failed_intent := app.editor_edits[0]
+		was_pinned_edit:=failed_intent.pinned_edit
+		was_search_edit := failed_intent.workspace_search_edit
 		failed_document, _ := strings.clone(app.editor_edits[0].document_id, context.allocator)
 		shutdown_note_edit_failure(app)
 		set_error(app, "Scratchpad returned an out-of-order editor acknowledgement; reloading authoritative text.")
 		editor_discard_document_edits(app, failed_document)
 		if was_pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
+		if was_search_edit { workspace_search_edit_failed(app, rt, failed_intent) }
 		delete(failed_document, context.allocator)
 		editor_views_prune(app)
 		sync_menu_states(app)
@@ -2585,6 +2632,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			set_error(app, "Scratchpad returned an edit acknowledgement with inconsistent source ranges; reloading authoritative text.")
 			editor_discard_document_edits(app, failed_document)
 			if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
+			if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, intent) }
 			delete(failed_document, context.allocator)
 			editor_views_prune(app)
 			sync_menu_states(app)
@@ -2601,6 +2649,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				set_error(app, "Could not reconcile Scratchpad's canonical Enter text; reloading authoritative text.")
 				editor_discard_document_edits(app, failed_document)
 				if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
+				if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, intent) }
 				delete(failed_document, context.allocator)
 				editor_views_prune(app)
 				sync_menu_states(app)
@@ -2647,7 +2696,9 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				}
 			}
 		}
+		workspace_search_edit_acknowledged(app, rt, intent, result.command.edit.editor_revision)
 		editor_remove_edit(app, 0)
+		workspace_search_edit_finish_if_ready(app, rt)
 		if intent.pinned_edit {
 			pinned_edit_recompute_optimistic_end(app)
 			if !intent.optimistic_projection && len(app.editor_edits) == 0 && app.pinned.editing && rt != nil {
@@ -2691,6 +2742,7 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 	set_error(app, fmt.tprintf("Edit was not accepted; reloading authoritative text: %s", message))
 	editor_discard_document_edits(app, failed_document)
 	if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
+	if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, intent) }
 	if stale_revision && app.editor_window_ready && app.editor_window.document_id == failed_document {
 		// A rejected edit proves that matching revision numbers alone are not
 		// enough to trust this cached projection (Undo can reuse old revisions).
@@ -3506,6 +3558,8 @@ application_stop :: proc(state: rawptr) {
 	workspace_context_menu_clear(app)
 	find_presentation_destroy(&app.find_presentation, context.allocator)
 	workspace_search_view_destroy(&app.workspace_search_view, app.workspace_search_view.allocator)
+	workspace_search_edit_clear(app)
+	workspace_search_restore_selection_clear(app)
 	find_discard_saved_selection(app)
 	alicorn.text_field_buffer_destroy(&app.find_query)
 	find_set_message(&app.find_replace_text, "")

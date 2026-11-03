@@ -6,6 +6,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"unicode/utf8"
 )
 
 const SearchContextMaxBytes = 512
@@ -15,13 +19,31 @@ const SearchContextMaxBytes = 512
 const MaxSearchFileBytes = maxTextFileBytes
 
 type SearchResult struct {
-	Path          string
-	Line          int
-	Column        int
-	StartByte     int
-	EndByte       int
-	Text          string
-	TextTruncated bool
+	Path             string
+	Line             int
+	Column           int
+	StartByte        int
+	EndByte          int
+	ContextStartByte int
+	ContextEndByte   int
+	SourceDocumentID string
+	SourceInstanceID uint64
+	SourceRevision   uint64
+	Editable         bool
+	Text             string
+	TextTruncated    bool
+}
+
+// SearchSource overlays an immutable open-document snapshot on its disk path.
+// It lets workspace search reflect unsaved edits without copying source bytes
+// on the application thread or retaining a second document authority.
+type SearchSource struct {
+	Path       string
+	Data       []byte
+	Load       func() []byte
+	DocumentID string
+	InstanceID uint64
+	Revision   uint64
 }
 
 // Search walks ordinary workspace files and emits raw-byte substring matches.
@@ -29,15 +51,34 @@ type SearchResult struct {
 // are presented or retained. Text is a bounded context line, while byte
 // offsets always address the original file contents.
 func (w Workspace) Search(ctx context.Context, query []byte, emit func(SearchResult) bool) error {
+	return w.SearchWithSources(ctx, query, nil, emit)
+}
+
+// SearchWithSources searches ordinary workspace files while preferring the
+// captured bytes of open documents. Context ranges are exact source-byte
+// intervals, independent of the bounded preview string.
+func (w Workspace) SearchWithSources(ctx context.Context, query []byte, sources []SearchSource, emit func(SearchResult) bool) error {
 	if len(query) == 0 {
 		return nil
 	}
-	return w.Walker().Walk(func(path string, entry fs.DirEntry) error {
+	byPath := make(map[string]SearchSource, len(sources))
+	for _, source := range sources {
+		if source.Path != "" {
+			byPath[searchPathKey(source.Path)] = source
+		}
+	}
+	visitedSources := make(map[string]bool, len(byPath))
+	err := w.Walker().Walk(func(path string, entry fs.DirEntry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
 			return nil
+		}
+		key := searchPathKey(path)
+		if source, found := byPath[key]; found {
+			visitedSources[key] = true
+			return searchData(ctx, source, query, emit)
 		}
 		data, searchable, err := readSearchableFile(ctx, path)
 		if err != nil {
@@ -49,60 +90,105 @@ func (w Workspace) Search(ctx context.Context, query []byte, emit func(SearchRes
 		if !searchable {
 			return nil
 		}
-		line, lineStart := 0, 0
-		lineEnd := bytes.IndexByte(data, '\n')
-		if lineEnd < 0 {
-			lineEnd = len(data)
-		}
-		consumed := 0
-		for offset := 0; offset <= len(data)-len(query); {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			at := bytes.Index(data[offset:], query)
-			if at < 0 {
-				break
-			}
-			at += offset
-			for i := consumed; i < at; i++ {
-				if data[i] == '\n' {
-					line++
-					lineStart = i + 1
-					nextLineEnd := bytes.IndexByte(data[lineStart:], '\n')
-					lineEnd = len(data)
-					if nextLineEnd >= 0 {
-						lineEnd = lineStart + nextLineEnd
-					}
-				}
-			}
-			resultText, resultTruncated := searchContextLine(data, lineStart, lineEnd, at, at+len(query))
-			if !emit(SearchResult{
-				Path:          path,
-				Line:          line,
-				Column:        at - lineStart,
-				StartByte:     at,
-				EndByte:       at + len(query),
-				Text:          resultText,
-				TextTruncated: resultTruncated,
-			}) {
-				return errSearchStopped
-			}
-			consumed = at + len(query)
-			for i := at; i < consumed; i++ {
-				if data[i] == '\n' {
-					line++
-					lineStart = i + 1
-					nextLineEnd := bytes.IndexByte(data[lineStart:], '\n')
-					lineEnd = len(data)
-					if nextLineEnd >= 0 {
-						lineEnd = lineStart + nextLineEnd
-					}
-				}
-			}
-			offset = consumed
-		}
-		return nil
+		return searchData(ctx, SearchSource{Path: path, Data: data}, query, emit)
 	})
+	if err != nil {
+		return err
+	}
+	for _, source := range sources {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if visitedSources[searchPathKey(source.Path)] {
+			continue
+		}
+		if err := searchData(ctx, source, query, emit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func searchPathKey(path string) string {
+	clean := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		clean = strings.ToLower(clean)
+	}
+	return clean
+}
+
+func searchData(ctx context.Context, source SearchSource, query []byte, emit func(SearchResult) bool) error {
+	data := source.Data
+	if source.Load != nil {
+		data = source.Load()
+	}
+	if int64(len(data)) > MaxSearchFileBytes || binaryTextProbeReason(data[:min(len(data), textProbeBytes)]) != "" {
+		return nil
+	}
+	line, lineStart := 0, 0
+	lineEnd := bytes.IndexByte(data, '\n')
+	if lineEnd < 0 {
+		lineEnd = len(data)
+	}
+	consumed := 0
+	for offset := 0; offset <= len(data)-len(query); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		at := bytes.Index(data[offset:], query)
+		if at < 0 {
+			break
+		}
+		at += offset
+		for i := consumed; i < at; i++ {
+			if data[i] == '\n' {
+				line++
+				lineStart = i + 1
+				lineEnd = len(data)
+				if next := bytes.IndexByte(data[lineStart:], '\n'); next >= 0 {
+					lineEnd = lineStart + next
+				}
+			}
+		}
+		text, truncated, contextStart, contextEnd := searchContextLine(data, lineStart, lineEnd, at, at+len(query))
+		if !emit(SearchResult{
+			Path: source.Path, Line: line, Column: at - lineStart,
+			StartByte: at, EndByte: at + len(query),
+			ContextStartByte: contextStart, ContextEndByte: contextEnd,
+			SourceDocumentID: source.DocumentID, SourceInstanceID: source.InstanceID,
+			SourceRevision: source.Revision,
+			Editable:       contextStart <= at && at+len(query) <= contextEnd && validEditableContext(data[contextStart:contextEnd]),
+			Text:           text,
+			TextTruncated:  truncated,
+		}) {
+			return errSearchStopped
+		}
+		consumed = at + len(query)
+		for i := at; i < consumed; i++ {
+			if data[i] == '\n' {
+				line++
+				lineStart = i + 1
+				lineEnd = len(data)
+				if next := bytes.IndexByte(data[lineStart:], '\n'); next >= 0 {
+					lineEnd = lineStart + next
+				}
+			}
+		}
+		offset = consumed
+	}
+	return nil
+}
+
+func validEditableContext(data []byte) bool {
+	if !utf8.Valid(data) {
+		return false
+	}
+	for _, value := range data {
+		if value == '\n' || value == '\r' {
+			return false
+		}
+	}
+	return true
 }
 
 func readSearchableFile(ctx context.Context, path string) ([]byte, bool, error) {
@@ -160,12 +246,12 @@ func readSearchableFile(ctx context.Context, path string) ([]byte, bool, error) 
 	return data, true, nil
 }
 
-func searchContextLine(data []byte, lineStart, lineEnd, matchStart, matchEnd int) (string, bool) {
+func searchContextLine(data []byte, lineStart, lineEnd, matchStart, matchEnd int) (string, bool, int, int) {
 	if lineEnd > lineStart && data[lineEnd-1] == '\r' {
 		lineEnd--
 	}
 	if lineEnd-lineStart <= SearchContextMaxBytes {
-		return string(data[lineStart:lineEnd]), false
+		return string(data[lineStart:lineEnd]), false, lineStart, lineEnd
 	}
 
 	visibleMatchEnd := min(matchEnd, lineEnd)
@@ -186,7 +272,7 @@ func searchContextLine(data []byte, lineStart, lineEnd, matchStart, matchEnd int
 			start = lineStart
 		}
 	}
-	return string(data[start:end]), true
+	return string(data[start:end]), true, start, end
 }
 
 var errSearchStopped = &searchStoppedError{}
