@@ -1333,6 +1333,39 @@ editor_presentation_window :: proc(
 // Editor-local pointer placement is owned by the durable scroll region. The
 // generic text-input owner captures the pointer; realized rows provide only
 // shaped geometry, and Scratchpad retains caret/selection as source bytes.
+pinned_source_at_pointer :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	x, y: f32,
+) -> (pin_id: bridge.Pin_ID, logical_line: int, source_byte: u64, affinity: alicorn.Text_Affinity, ok: bool) {
+	if app==nil || rt==nil || !app.pinned.visible {return}
+	for target in app.pinned.read_row_targets {
+		node,found:=alicorn.node_info(rt,target.node)
+		if !found || x<node.bounds.x || x>=node.bounds.x+node.bounds.w ||
+			y<node.bounds.y || y>=node.bounds.y+node.bounds.h {continue}
+		pin,pin_found:=pinned_pin_at_row(&app.pinned.snapshot,target.row)
+		if !pin_found || pin.id!=target.pin || pin.status!="current" {continue}
+		page,item,row_found:=pinned_find_row(&app.pinned,target.row)
+		if !row_found || page==nil || page.window.epoch!=app.pinned.snapshot.epoch ||
+			page.window.revision!=app.pinned.snapshot.revision || item.kind=="status" ||
+			item.offset<0 || item.length<0 || item.offset+item.length>len(page.data) {continue}
+		bytes:=page.data[item.offset:item.offset+item.length]
+		line,projected:=editor_project_line(bytes,u64(max(item.start_byte,0)),u64(max(item.source_line,0)),context.temp_allocator)
+		if !projected {continue}
+		defer delete(line.display,context.temp_allocator)
+		defer delete(line.display_bytes,context.temp_allocator)
+		position,hit:=alicorn.text_node_hit_test(rt,target.node,x,y)
+		if !hit {continue}
+		source_byte=editor_normalize_source_position(&line,editor_display_to_source(&line,position.byte))
+		first:=u64(max(pin.start_byte,item.start_byte))
+		last:=u64(max(pin.start_byte,min(pin.end_byte,item.end_byte)))
+		if last<first {continue}
+		source_byte=min(max(source_byte,first),last)
+		return pin.id,item.source_line,source_byte,position.affinity,true
+	}
+	return
+}
+
 editor_update_pinned_pointer_selection :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State) -> bool {
 	if app == nil || rt == nil || view == nil || !app.pinned.editing ||
 	   !view.dragging_selection || !view.drag_pointer_valid || view.document_id != app.pinned.edit_document_id { return false }
@@ -1389,8 +1422,14 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 		if event.kind == .Up && drag_ended { alicorn.invalidate_root(rt, "Scratchpad text selection ended") }
 		return
 	}
+	pinned_drag_active:=false
+	if app.pinned.editing {
+		if view_index:=editor_view_find(app.editor_views[:],app.pinned.edit_document_id);view_index>=0 {
+			pinned_drag_active=app.editor_views[view_index].dragging_selection
+		}
+	}
 	pinned_capture := app.pinned.editing && app.pinned.owner != 0 &&
-	                  alicorn.captured_node(rt) == app.pinned.owner
+	                  (alicorn.captured_node(rt) == app.pinned.owner || pinned_drag_active)
 	if event.kind == .Move && pinned_capture {
 		if view_index := editor_view_find(app.editor_views[:], app.pinned.edit_document_id); view_index >= 0 {
 			view := &app.editor_views[view_index]
@@ -1418,8 +1457,55 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 		}
 	}
 	if event.kind != .Down || event.button != 1 { return }
+	if app.pinned.editing && app.editor_scroll_owner!=0 && target==app.editor_scroll_owner {
+		pinned_edit_finish(app,rt,false)
+		if app.pinned.editing {return}
+	}
+	if app.pinned.owner!=0 && app.pinned.visible {
+		clicked_pin,clicked_line,clicked_byte,clicked_affinity,hit:=
+			pinned_source_at_pointer(app,rt,event.x,event.y)
+		if hit && (!app.pinned.editing || clicked_pin!=app.pinned.edit_pin) {
+			if app.pinned.editing {
+				pinned_edit_finish(app,rt,false)
+				if app.pinned.editing {return}
+			}
+			pinned_edit_begin(app,rt,clicked_pin,
+				initial_byte=clicked_byte,
+				initial_line=clicked_line,
+				initial_affinity=clicked_affinity,
+				place_initial_caret=true)
+			if app.pinned.editing && app.pinned.edit_pin==clicked_pin {
+				if view_index:=editor_view_find(app.editor_views[:],app.pinned.edit_document_id);view_index>=0 {
+					view:=&app.editor_views[view_index]
+					document,document_found:=find_document(&app.backend.state,app.pinned.edit_document_id)
+					if document_found {
+						window,window_matches:=editor_view_window(view,&app.editor_window,app.editor_window_ready,document.id,document.editor_revision)
+						if window_matches && editor_apply_pointer_selection(view,window,clicked_byte,clicked_affinity,event.click_count,event.modifiers.shift) {
+							pinned_edit_selection_sync(app)
+							view.dragging_selection=true
+							view.drag_pointer_x,view.drag_pointer_y=event.x,event.y
+							view.drag_pointer_valid=true
+						}
+					}
+				}
+				_ = alicorn.focus(rt,app.pinned.owner)
+				alicorn.invalidate_root(rt,"Scratchpad activated and placed the caret in a pinned passage")
+			}
+			return
+		}
+	}
 	pinned_down := app.pinned.editing && app.pinned.owner != 0 && target == app.pinned.owner
 	if pinned_down {
+		pointer_on_text:=false
+		for row_target in app.pinned.edit_row_targets {
+			if row_node,found:=alicorn.node_info(rt,row_target.node);found &&
+				event.x>=row_node.bounds.x && event.x<row_node.bounds.x+row_node.bounds.w &&
+				event.y>=row_node.bounds.y && event.y<row_node.bounds.y+row_node.bounds.h {
+				pointer_on_text=true
+				break
+			}
+		}
+		if !pointer_on_text {return}
 		document, found := find_document(&app.backend.state, app.pinned.edit_document_id)
 		if !found { return }
 		view_index := editor_view_find(app.editor_views[:], document.id)

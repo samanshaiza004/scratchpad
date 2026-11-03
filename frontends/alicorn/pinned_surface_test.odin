@@ -75,12 +75,11 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 	pinned_surface_test_frame(&f)
 	heading:=pinned_surface_test_control(&f.app,pin.id,"heading")
 	go_node:=pinned_surface_test_control(&f.app,pin.id,"go")
-	edit_node:=pinned_surface_test_control(&f.app,pin.id,"edit")
 	copy_node:=pinned_surface_test_control(&f.app,pin.id,"copy")
 	more:=pinned_surface_test_control(&f.app,pin.id,"more")
 	filename:=document_title(pin.path)
-	for check in ([5]struct {node: alicorn.Node_ID, label: string}{
-		{heading,filename},{go_node,"Go to source"},{edit_node,"Edit passage"},{copy_node,"Copy"},{more,"More actions"},
+	for check in ([4]struct {node: alicorn.Node_ID, label: string}{
+		{heading,filename},{go_node,"Go to source"},{copy_node,"Copy"},{more,"More actions"},
 	}) {
 		info,ok:=alicorn.node_info(&f.rt,check.node)
 		testing.expect(t,check.node!=0 && ok && info.bounds.w>0 && info.bounds.h>0,
@@ -88,12 +87,11 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 		if check.node!=0 {testing.expect(t,pinned_surface_test_button_semantics(&f.rt,check.node,check.label)==1,"each control should expose exactly one accessible button label")}
 	}
 	go_info,_:=alicorn.node_info(&f.rt,go_node)
-	edit_info,_:=alicorn.node_info(&f.rt,edit_node)
 	copy_info,_:=alicorn.node_info(&f.rt,copy_node)
 	more_info,_:=alicorn.node_info(&f.rt,more)
+	testing.expect(t,pinned_surface_test_control(&f.app,pin.id,"edit")==0,
+		"current passages should activate by clicking their text, without an Edit button")
 	testing.expect(t,!pinned_surface_test_rects_overlap(go_info.bounds,copy_info.bounds) &&
-		!pinned_surface_test_rects_overlap(go_info.bounds,edit_info.bounds) &&
-		!pinned_surface_test_rects_overlap(edit_info.bounds,copy_info.bounds) &&
 		!pinned_surface_test_rects_overlap(go_info.bounds,more_info.bounds) &&
 		!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
 		"Go, Copy and overflow controls must not overlap in the source-card action row")
@@ -123,16 +121,14 @@ test_pinned_source_card_labels_geometry_and_themes :: proc(t: ^testing.T) {
 		scratchpad_theme_apply_registered(&f.app)
 		pinned_surface_test_frame(&f)
 		go_info,go_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"go"))
-		edit_info,edit_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"edit"))
 		copy_info,copy_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"copy"))
 		more_info,more_ok:=alicorn.node_info(&f.rt,pinned_surface_test_control(&f.app,pin.id,"more"))
-		testing.expect(t,go_ok && edit_ok && copy_ok && more_ok &&
-			!pinned_surface_test_rects_overlap(go_info.bounds,edit_info.bounds) &&
-			!pinned_surface_test_rects_overlap(edit_info.bounds,copy_info.bounds) &&
+		testing.expect(t,go_ok && copy_ok && more_ok &&
+			pinned_surface_test_control(&f.app,pin.id,"edit")==0 &&
 			!pinned_surface_test_rects_overlap(go_info.bounds,copy_info.bounds) &&
 			!pinned_surface_test_rects_overlap(go_info.bounds,more_info.bounds) &&
 			!pinned_surface_test_rects_overlap(copy_info.bounds,more_info.bounds),
-			"source-card actions should retain nonoverlapping geometry across Workbench, Cool Light and Relief themes")
+			"source-card actions should remain compact and nonoverlapping across the supported themes")
 	}
 	for device_scale in ([4]f32{1,1.25,1.5,2}) {
 		_ = alicorn.set_presentation_scale(&f.rt,device_scale,device_scale)
