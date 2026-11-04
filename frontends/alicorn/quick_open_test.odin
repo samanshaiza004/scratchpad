@@ -2,6 +2,7 @@ package main
 
 import "core:testing"
 import "core:strings"
+import "core:fmt"
 import alicorn "alicorn:runtime"
 
 @(test)
@@ -97,8 +98,8 @@ quick_open_test_render :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -
 		return false
 	}
 	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("quick-open-content-root"), style=alicorn.layout_style(.Column, grow=1))
-	quick_open_build(app, &ui, rt)
 	alicorn.container_end(&ui)
+	quick_open_build(app, &ui, rt)
 	alicorn.end_frame(&ui)
 	quick_open_restore_focus_after_frame(app, rt)
 	return true
@@ -114,28 +115,75 @@ test_quick_open_comparison_keeps_a_stable_viewport_and_preserves_focus :: proc(t
 	app.quick_open_focus_pending = true
 	if !quick_open_test_render(t, &app, &rt) { return }
 	empty_panel, empty_panel_ok := alicorn.node_info(&rt, app.quick_open_panel_node)
-	testing.expect(t, empty_panel_ok && empty_panel.bounds.h == QUICK_OPEN_PANEL_HEIGHT,
+	testing.expect(t, empty_panel_ok && empty_panel.bounds.h == quick_open_panel_height(),
 		"Quick Open should keep a fixed panel size so query/results changes do not invalidate its backdrop region")
 	testing.expect(t, alicorn.focused_node(&rt) == app.quick_open_node,
 		"the query field should receive focus when Quick Open opens")
 	blur_style, blur_style_ok := rt.semantic_surfaces[app.quick_open_panel_node]
-	testing.expect(t, blur_style_ok && blur_style.backdrop_effect.kind == .Blur,
-		"the experimental dogfood build should open Quick Open with its retained blur boundary enabled")
+	when QUICK_OPEN_EFFECT_DOGFOOD {
+		overlay, overlay_ok := rt.nodes[app.quick_open_overlay_node]
+		testing.expect(t, overlay_ok && overlay != nil, "the modal overlay should be retained")
+		testing.expect(t, app.quick_open_backdrop_mode == .Blur && app.quick_open_blur_radius == 6 &&
+			app.quick_open_panel_opacity_percent == 70 && app.quick_open_backdrop_dim_percent == 50,
+			"the experimental build should start with the stronger 6 px / 70% / 50% comparison preset")
+		testing.expect(t, blur_style_ok && blur_style.backdrop_effect.kind == .Blur && blur_style.backdrop_effect.radius == 6,
+			"the blur preset should apply the selected blur radius")
+		testing.expect(t, blur_style_ok && blur_style.fill_override_set && blur_style.fill_override.a == 0.70,
+			"the blur preset should apply the selected panel opacity")
+		if overlay != nil {
+			testing.expect(t, overlay.color.a == 0.50,
+				fmt.tprintf("the blur preset should apply 50%% backdrop dimming (actual alpha %v)", overlay.color.a))
+		}
+	} else {
+		testing.expect(t, app.quick_open_backdrop_mode == .Flat && blur_style_ok && blur_style.backdrop_effect.kind == .None,
+			"ordinary builds should keep the opaque, direct-rendering Quick Open with no comparison controls")
+	}
 	app.quick_open_backdrop_mode = .Flat
 	alicorn.invalidate_root(&rt, "Quick Open flat comparison fixture")
 	if !quick_open_test_render(t, &app, &rt) { return }
 	flat_style, flat_style_ok := rt.semantic_surfaces[app.quick_open_panel_node]
 	testing.expect(t, flat_style_ok && flat_style.backdrop_effect.kind == .None,
 		"the flat control should preserve the opaque panel and bypass retained effects")
+	when QUICK_OPEN_EFFECT_DOGFOOD {
+		testing.expect(t, flat_style.fill_override.a == 1,
+			"Flat should remain an opaque panel while keeping the selected scrim value")
+	}
 	app.quick_open_backdrop_mode = .Tint
 	alicorn.invalidate_root(&rt, "Quick Open tint comparison fixture")
 	if !quick_open_test_render(t, &app, &rt) { return }
 	tint_style, tint_style_ok := rt.semantic_surfaces[app.quick_open_panel_node]
 	testing.expect(t, tint_style_ok && tint_style.backdrop_effect.kind == .None,
 		"the translucent tint control should not run or allocate a blur effect")
+	when QUICK_OPEN_EFFECT_DOGFOOD {
+		testing.expect(t, tint_style.fill_override.a == 0.70,
+			"Tint and Blur should use the same panel opacity for a controlled comparison")
+	}
 	app.quick_open_backdrop_mode = .Blur
 	alicorn.invalidate_root(&rt, "Quick Open blur comparison fixture")
 	if !quick_open_test_render(t, &app, &rt) { return }
+	when QUICK_OPEN_EFFECT_DOGFOOD {
+		app.quick_open_blur_radius = 4
+		app.quick_open_panel_opacity_percent = 88
+		app.quick_open_backdrop_dim_percent = 72
+		alicorn.invalidate_root(&rt, "Quick Open baseline tuning fixture")
+		if !quick_open_test_render(t, &app, &rt) { return }
+		baseline_style, baseline_ok := rt.semantic_surfaces[app.quick_open_panel_node]
+		baseline_overlay, baseline_overlay_ok := rt.nodes[app.quick_open_overlay_node]
+		testing.expect(t, baseline_overlay_ok && baseline_overlay != nil, "the baseline modal overlay should be retained")
+		testing.expect(t, baseline_ok && baseline_style.backdrop_effect.radius == 4,
+			"the tuning controls should reproduce the original blur radius")
+		testing.expect(t, baseline_ok && baseline_style.fill_override_set && baseline_style.fill_override.a == 0.88,
+			"the tuning controls should reproduce the original panel opacity")
+		if baseline_overlay != nil {
+			testing.expect(t, baseline_overlay.color.a == 0.72,
+				fmt.tprintf("the tuning controls should reproduce 72%% backdrop dimming (actual alpha %v)", baseline_overlay.color.a))
+		}
+		app.quick_open_blur_radius = 6
+		app.quick_open_panel_opacity_percent = 70
+		app.quick_open_backdrop_dim_percent = 50
+		alicorn.invalidate_root(&rt, "Quick Open restore stronger tuning fixture")
+		if !quick_open_test_render(t, &app, &rt) { return }
+	}
 
 	short_paths := [?]string{"README.md", "src/main.odin", "docs/guide.md"}
 	app.quick_open_paths = short_paths[:]

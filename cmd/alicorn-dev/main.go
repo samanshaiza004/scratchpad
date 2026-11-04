@@ -204,6 +204,7 @@ func run(args []string) error {
 	retainedEffectCompilerArgs := []string{}
 	if *experimentalRetainedEffects {
 		retainedEffectCompilerArgs = append(retainedEffectCompilerArgs, "-define:ALICORN_RETAINED_EFFECTS_EXPERIMENT=true")
+		retainedEffectCompilerArgs = append(retainedEffectCompilerArgs, "-define:SCRATCHPAD_QUICK_OPEN_EFFECT_DOGFOOD=true")
 	}
 
 	switch command {
