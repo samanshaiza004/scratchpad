@@ -363,7 +363,7 @@ App :: struct {
 	quick_open_restore_query_focus_pending: bool,
 	quick_open_backdrop_mode: Quick_Open_Backdrop_Mode,
 	quick_open_effect_controls_initialized: bool,
-	quick_open_blur_radius: int,
+	quick_open_blur_sigma: int,
 	quick_open_panel_opacity_percent: int,
 	quick_open_backdrop_dim_percent: int,
 	quick_open_previous_focus: alicorn.Node_ID,

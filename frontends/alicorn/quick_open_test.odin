@@ -123,11 +123,11 @@ test_quick_open_comparison_keeps_a_stable_viewport_and_preserves_focus :: proc(t
 	when QUICK_OPEN_EFFECT_DOGFOOD {
 		overlay, overlay_ok := rt.nodes[app.quick_open_overlay_node]
 		testing.expect(t, overlay_ok && overlay != nil, "the modal overlay should be retained")
-		testing.expect(t, app.quick_open_backdrop_mode == .Blur && app.quick_open_blur_radius == 6 &&
+		testing.expect(t, app.quick_open_backdrop_mode == .Blur && app.quick_open_blur_sigma == 6 &&
 			app.quick_open_panel_opacity_percent == 70 && app.quick_open_backdrop_dim_percent == 50,
 			"the experimental build should start with the stronger 6 px / 70% / 50% comparison preset")
-		testing.expect(t, blur_style_ok && blur_style.backdrop_effect.kind == .Blur && blur_style.backdrop_effect.radius == 6,
-			"the blur preset should apply the selected blur radius")
+		testing.expect(t, blur_style_ok && blur_style.backdrop_effect.kind == .Blur && blur_style.backdrop_effect.sigma == 6,
+			"the blur preset should apply the selected Gaussian sigma")
 		testing.expect(t, blur_style_ok && blur_style.fill_override_set && blur_style.fill_override.a == 0.70,
 			"the blur preset should apply the selected panel opacity")
 		if overlay != nil {
@@ -162,7 +162,7 @@ test_quick_open_comparison_keeps_a_stable_viewport_and_preserves_focus :: proc(t
 	alicorn.invalidate_root(&rt, "Quick Open blur comparison fixture")
 	if !quick_open_test_render(t, &app, &rt) { return }
 	when QUICK_OPEN_EFFECT_DOGFOOD {
-		app.quick_open_blur_radius = 4
+		app.quick_open_blur_sigma = 4
 		app.quick_open_panel_opacity_percent = 88
 		app.quick_open_backdrop_dim_percent = 72
 		alicorn.invalidate_root(&rt, "Quick Open baseline tuning fixture")
@@ -170,15 +170,15 @@ test_quick_open_comparison_keeps_a_stable_viewport_and_preserves_focus :: proc(t
 		baseline_style, baseline_ok := rt.semantic_surfaces[app.quick_open_panel_node]
 		baseline_overlay, baseline_overlay_ok := rt.nodes[app.quick_open_overlay_node]
 		testing.expect(t, baseline_overlay_ok && baseline_overlay != nil, "the baseline modal overlay should be retained")
-		testing.expect(t, baseline_ok && baseline_style.backdrop_effect.radius == 4,
-			"the tuning controls should reproduce the original blur radius")
+		testing.expect(t, baseline_ok && baseline_style.backdrop_effect.sigma == 4,
+			"the tuning controls should apply a four-pixel Gaussian sigma")
 		testing.expect(t, baseline_ok && baseline_style.fill_override_set && baseline_style.fill_override.a == 0.88,
 			"the tuning controls should reproduce the original panel opacity")
 		if baseline_overlay != nil {
 			testing.expect(t, baseline_overlay.color.a == 0.72,
 				fmt.tprintf("the tuning controls should reproduce 72%% backdrop dimming (actual alpha %v)", baseline_overlay.color.a))
 		}
-		app.quick_open_blur_radius = 6
+		app.quick_open_blur_sigma = 6
 		app.quick_open_panel_opacity_percent = 70
 		app.quick_open_backdrop_dim_percent = 50
 		alicorn.invalidate_root(&rt, "Quick Open restore stronger tuning fixture")
@@ -239,6 +239,75 @@ test_quick_open_comparison_keeps_a_stable_viewport_and_preserves_focus :: proc(t
 		"keyboard selection should scroll later results into the bounded viewport")
 	testing.expect(t, alicorn.focused_node(&rt) == app.quick_open_node,
 		"navigating and scrolling results should preserve query-field focus")
+}
+
+@(test)
+test_quick_open_effect_tuning_groups_do_not_overlap :: proc(t: ^testing.T) {
+	when QUICK_OPEN_EFFECT_DOGFOOD {
+		rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
+		defer alicorn.destroy_runtime(&rt)
+		app: App
+		app.quick_open_open = true
+		app.quick_open_ready = true
+		app.quick_open_focus_pending = true
+		if !quick_open_test_render(t, &app, &rt) { return }
+
+		prefixes := [?]string{
+			"quick-open-blur-sigma",
+			"quick-open-panel-opacity",
+			"quick-open-backdrop-dim",
+		}
+		first_values := [?]string{"4", "65", "45"}
+		all_values := [3][4]string{
+			{"4", "6", "8", ""},
+			{"65", "70", "88", ""},
+			{"45", "50", "55", "72"},
+		}
+		value_counts := [?]int{3, 3, 4}
+		bounds: [3]alicorn.Rect
+		label_bounds: [3]alicorn.Rect
+		last_button_right: [3]f32
+		for prefix, index in prefixes {
+			id, found := alicorn.node_by_key(&rt, alicorn.key_string(prefix), .Container)
+			info, info_ok := alicorn.node_info(&rt, id)
+			testing.expect(t, found && info_ok,
+				fmt.tprintf("Quick Open tuning group %s should have retained geometry", prefix))
+			if info_ok { bounds[index] = info.bounds }
+			label_id, label_found := alicorn.node_by_key(&rt, alicorn.key_string(fmt.tprintf("%s-label", prefix)), .Text)
+			label, label_ok := alicorn.node_info(&rt, label_id)
+			first_value := first_values[index]
+			button_id, button_found := alicorn.node_by_key(&rt, alicorn.key_string(fmt.tprintf("%s-%s", prefix, first_value)), .Button)
+			button, button_ok := alicorn.node_info(&rt, button_id)
+			testing.expect(t, label_found && label_ok && button_found && button_ok &&
+				label.bounds.x+label.text_content_width <= button.bounds.x,
+				fmt.tprintf("Quick Open tuning label %q must fit before its first button: label=%v width=%v button=%v", prefix, label.bounds, label.text_content_width, button.bounds))
+			if label_ok { label_bounds[index] = label.bounds }
+			previous_button_right := f32(0)
+			for value_index in 0..<value_counts[index] {
+				value := all_values[index][value_index]
+				id, found := alicorn.node_by_key(&rt, alicorn.key_string(fmt.tprintf("%s-%s", prefix, value)), .Button)
+				info, ok := alicorn.node_info(&rt, id)
+				testing.expect(t, found && ok && (value_index == 0 || previous_button_right <= info.bounds.x),
+					fmt.tprintf("Quick Open %s value buttons must not overlap at %q: previous_right=%v current=%v", prefix, value, previous_button_right, info.bounds))
+				if ok { previous_button_right = info.bounds.x+info.bounds.w }
+			}
+			last_button_right[index] = previous_button_right
+		}
+		testing.expect(t, bounds[0].x+bounds[0].w <= bounds[1].x,
+			fmt.tprintf("the blur-sigma controls must end before the panel-opacity controls begin: %v / %v", bounds[0], bounds[1]))
+		testing.expect(t, bounds[1].x+bounds[1].w <= bounds[2].x,
+			fmt.tprintf("the panel-opacity controls must end before the backdrop-dim controls begin: %v / %v", bounds[1], bounds[2]))
+		testing.expect(t, last_button_right[0] <= label_bounds[1].x,
+			fmt.tprintf("the blur-sigma buttons must end before the panel-opacity label begins: right=%v label_x=%v", last_button_right[0], label_bounds[1].x))
+		testing.expect(t, last_button_right[1] <= label_bounds[2].x,
+			fmt.tprintf("the panel-opacity buttons must end before the backdrop-dim label begins: right=%v label_x=%v", last_button_right[1], label_bounds[2].x))
+
+		tuning_id, tuning_found := alicorn.node_by_key(&rt, alicorn.key_string("quick-open-effect-tuning"), .Container)
+		tuning, tuning_ok := alicorn.node_info(&rt, tuning_id)
+		query, query_ok := alicorn.node_info(&rt, app.quick_open_node)
+		testing.expect(t, tuning_found && tuning_ok && query_ok && tuning.bounds.y+tuning.bounds.h <= query.bounds.y,
+			fmt.tprintf("the tuning row must not overlap the Quick Open query field: tuning=%v query=%v", tuning.bounds, query.bounds))
+	}
 }
 
 @(test)

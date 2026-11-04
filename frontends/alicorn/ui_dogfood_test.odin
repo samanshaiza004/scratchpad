@@ -139,7 +139,7 @@ ui_dogfood_scene_append_paint :: proc(
 			payload.shape, payload.fill, payload.stroke, u32(payload.material),
 			payload.physical_height, u32(payload.material_group))
 	case alicorn.Backdrop_Effect_Paint:
-		fmt.sbprintf(sb, "radius=%.3f fallback=%v\n", payload.radius, payload.fallback)
+		fmt.sbprintf(sb, "sigma=%.3f fallback=%v\n", payload.sigma, payload.fallback)
 	case alicorn.Icon_Paint:
 		fmt.sbprintf(sb, "icon=%v color=%v\n", payload.id, payload.color)
 	case alicorn.Image_Paint:
