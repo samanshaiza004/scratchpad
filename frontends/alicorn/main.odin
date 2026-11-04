@@ -360,6 +360,8 @@ App :: struct {
 	quick_open_results_scroll_node: alicorn.Node_ID,
 	quick_open_focus_pending: bool,
 	quick_open_restore_pending: bool,
+	quick_open_restore_query_focus_pending: bool,
+	quick_open_backdrop_mode: Quick_Open_Backdrop_Mode,
 	quick_open_previous_focus: alicorn.Node_ID,
 	quick_open_selected_index: int,
 	quick_open_generation: u64,

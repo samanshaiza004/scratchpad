@@ -114,6 +114,7 @@ ui_dogfood_scene_node_path :: proc(rt: ^alicorn.Runtime, node_id: alicorn.Node_I
 ui_dogfood_scene_payload_name :: proc(paint_payload: alicorn.Paint_Payload) -> string {
 	switch payload in paint_payload {
 	case alicorn.Surface_Paint: return "surface"
+	case alicorn.Backdrop_Effect_Paint: return "backdrop-effect"
 	case alicorn.Icon_Paint: return "icon"
 	case alicorn.Image_Paint: return "image"
 	case alicorn.Text_Paint: return "text"
@@ -137,6 +138,8 @@ ui_dogfood_scene_append_paint :: proc(
 		fmt.sbprintf(sb, "shape=%v fill=%v stroke=%v material=%d height=%.3f group=%d\n",
 			payload.shape, payload.fill, payload.stroke, u32(payload.material),
 			payload.physical_height, u32(payload.material_group))
+	case alicorn.Backdrop_Effect_Paint:
+		fmt.sbprintf(sb, "radius=%.3f fallback=%v\n", payload.radius, payload.fallback)
 	case alicorn.Icon_Paint:
 		fmt.sbprintf(sb, "icon=%v color=%v\n", payload.id, payload.color)
 	case alicorn.Image_Paint:

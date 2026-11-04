@@ -57,6 +57,7 @@ func run(args []string) error {
 	caliberRootArg := flags.String("caliber-root", os.Getenv("CALIBER_CANDIDATE_ROOT"), "Caliber checkout override for dependency validation")
 	allowCaliberRevision := flags.Bool("allow-caliber-revision", false, "allow a Caliber candidate different from the lock")
 	release := flags.Bool("release", false, "build optimized native artifacts")
+	experimentalRetainedEffects := flags.Bool("experimental-retained-effects", false, "compile the opt-in Alicorn Issue #111 retained backdrop effect dogfood path (not for packages)")
 	mutationDiagnostics := flags.Bool("app-mutation-diagnostics", false, "enable Alicorn's debug-only application mutation diagnostics")
 	version := flags.String("version", "", "consumer package version (required for package)")
 	outArg := flags.String("out", "", "artifact directory (package defaults under out/packages)")
@@ -79,6 +80,9 @@ func run(args []string) error {
 	}
 	if *staticSDL && runtime.GOOS != "windows" {
 		return errors.New("--static-sdl currently supports Windows x64 packages only")
+	}
+	if *experimentalRetainedEffects && command == "package" {
+		return errors.New("--experimental-retained-effects is for local dogfood builds and cannot be used for consumer packages")
 	}
 
 	root, err := repoRoot()
@@ -197,6 +201,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	retainedEffectCompilerArgs := []string{}
+	if *experimentalRetainedEffects {
+		retainedEffectCompilerArgs = append(retainedEffectCompilerArgs, "-define:ALICORN_RETAINED_EFFECTS_EXPERIMENT=true")
+	}
 
 	switch command {
 	case "build":
@@ -205,6 +213,7 @@ func run(args []string) error {
 			return err
 		}
 		compilerArgs := append(appMutationDiagnosticCompilerArgs(*mutationDiagnostics), accessKitCompilerArgs...)
+		compilerArgs = append(compilerArgs, retainedEffectCompilerArgs...)
 		exe, err := buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags,
 			compilerArgs, true, *release, false, frontendEnv)
 		if err != nil {
@@ -218,6 +227,7 @@ func run(args []string) error {
 		}
 		checkArgs := []string{"check", filepath.Join(root, "frontends", "alicorn"), collectionArg}
 		checkArgs = append(checkArgs, accessKitCompilerArgs...)
+		checkArgs = append(checkArgs, retainedEffectCompilerArgs...)
 		if err := runCommand(root, nil, "odin", odinExe, checkArgs...); err != nil {
 			return fmt.Errorf("Alicorn frontend type check: %w", err)
 		}
@@ -250,6 +260,7 @@ func run(args []string) error {
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DIAGNOSTIC_PROBE_EXE", probeExe)
 		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
 		testArgs = append(testArgs, accessKitCompilerArgs...)
+		testArgs = append(testArgs, retainedEffectCompilerArgs...)
 		testArgs = append(testArgs, appMutationDiagnosticCompilerArgs(*mutationDiagnostics)...)
 		testArgs = appendLinkerFlags(testArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
 		if err := runCommand(root, testEnv, "odin", odinExe, testArgs...); err != nil {
@@ -262,6 +273,7 @@ func run(args []string) error {
 			return err
 		}
 		compilerArgs := append(appMutationDiagnosticCompilerArgs(*mutationDiagnostics), accessKitCompilerArgs...)
+		compilerArgs = append(compilerArgs, retainedEffectCompilerArgs...)
 		exe, err := buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags,
 			compilerArgs, true, *release, false, frontendEnv)
 		if err != nil {
