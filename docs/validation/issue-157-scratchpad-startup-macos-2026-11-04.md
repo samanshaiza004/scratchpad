@@ -11,9 +11,9 @@ Seven measured launches per candidate, after one warm-up per candidate, on an Ap
 | Pre structured tracing | 3549.30 ms | 448.81 ms | 127.2 MiB | 13.774 ms | 3032.46 ms |
 | Structured tracing | 3536.19 ms | 447.87 ms | 119.2 MiB | 13.783 ms | 3029.55 ms |
 
-The paired median change in app-build maximum was -5.7%, but the candidate medians were effectively identical and individual samples varied substantially. Process CPU changed by +1.7%; elapsed time changed by +1.5%. These results do not show a reliable Scratchpad startup or app-construction improvement from structured tracing.
+The median of the seven paired app-build-maximum changes was -5.7%, while the separate candidate medians were effectively identical and individual samples varied substantially. The median of the seven paired CPU changes was +1.7%; comparing the separate CPU medians gives -0.2%. These are valid summaries of different quantities. Process elapsed changed by +1.5%. No result demonstrates a reliable Scratchpad startup or app-construction improvement from structured tracing.
 
-The process and host-loop durations include the smoke fixture's roughly three-second wait. They are not launch-to-first-visible-frame measurements. The host currently exposes the slowest individual app-build callback but not cumulative time across callbacks. Frame p95 and GPU-encode samples varied with desktop scheduling and are not evidence of a regression.
+The process and host-loop durations include the smoke fixture's roughly three-second wait. They are not launch-to-first-visible-frame measurements. The binaries used for this run exposed the slowest individual app-build callback but not cumulative time across callbacks. A separate Alicorn follow-up will expose the existing aggregate counter; these recorded samples do not include it. The seven-sample nearest-rank p95 equals the maximum observed sample and is not a reliable tail-latency estimate. Frame p95 and GPU-encode samples varied with desktop scheduling and are not evidence of a regression.
 
 Both candidates passed all smoke checks: native publication, a wake, ordered shutdown, and successful SDL host completion. The generated workspace contained eight folders, 192 source files, and a README.
 

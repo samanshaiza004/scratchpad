@@ -288,7 +288,7 @@ def paired_comparison(samples: list[dict[str, Any]], baseline: str, candidate: s
         for run_name in sorted(old.keys() & new.keys()):
             before = sample_metric(old[run_name], metric)
             after = sample_metric(new[run_name], metric)
-            if before:
+            if before is not None and after is not None and before != 0:
                 changes.append((after - before) * 100.0 / before)
         if changes:
             comparisons[metric] = {
@@ -331,6 +331,7 @@ def write_report(results_dir: Path, report: dict[str, Any]) -> None:
         ],
         "- Each sample is a fresh process using Scratchpad's native smoke path; smoke must report publication, wake, and ordered shutdown.",
         "- Elapsed time and CPU/RSS cover the full bounded smoke process. application_build_ns, when exposed by the host, is total app-description callback time; application_build_max_ns is the slowest callback. Host wall_ns includes the smoke wait and is not launch-to-first-frame time.",
+        f"- Percentiles use nearest-rank; at {report['runs_per_candidate']} measured runs, p95 is the {math.ceil(0.95 * report['runs_per_candidate'])}th ordered sample (the maximum with seven runs), not a stable tail-latency estimate.",
         "",
         "| Candidate | Process elapsed median | CPU median | Peak RSS median | Total app build median | Max app build median | Host loop median |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",

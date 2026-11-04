@@ -45,6 +45,20 @@ class MeasurementHelpersTest(unittest.TestCase):
         self.assertEqual(metrics["application_build_max_ns"], 250)
         self.assertNotIn("application_build_ns", metrics)
 
+    def test_paired_comparison_skips_optional_metrics_missing_from_either_candidate(self):
+        baseline_only = [
+            {"candidate": "baseline", "run": "run-01", "host": {"application_build_ns": 100}},
+            {"candidate": "candidate", "run": "run-01", "host": {}},
+        ]
+        candidate_only = [
+            {"candidate": "baseline", "run": "run-01", "host": {}},
+            {"candidate": "candidate", "run": "run-01", "host": {"application_build_ns": 125}},
+        ]
+        for samples in (baseline_only, candidate_only):
+            with self.subTest(samples=samples):
+                result = measurement.paired_comparison(samples, "baseline", "candidate")
+                self.assertNotIn("application_build_ns", result["metrics"])
+
     def test_summary_statistics(self):
         summary = measurement.summarize([10, 20, 30, 40, 50])
         self.assertEqual(summary["median"], 30)
