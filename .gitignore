@@ -8,6 +8,7 @@
 *.test
 *.out
 coverage.out
+__pycache__/
  
 # Local development state
 .scratchpad/
