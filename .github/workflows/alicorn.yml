@@ -64,24 +64,24 @@ jobs:
           version: 3.4.18
           add-to-environment: true
           token: ${{ github.token }}
-      - name: Headless Go, ABI, Odin, and lifecycle checks
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\tools\alicorn.ps1 test
-      - name: Headless Go, ABI, Odin, and lifecycle checks
-        if: runner.os == 'macOS'
-        env:
-          SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
-        run: ./tools/alicorn.sh test
       - name: Native window lifecycle smoke
-        if: ${{ always() && !cancelled() && runner.os == 'Windows' }}
+        if: runner.os == 'Windows'
         shell: pwsh
         run: .\tools\alicorn.ps1 smoke
       - name: Native window lifecycle smoke
-        if: ${{ always() && !cancelled() && runner.os == 'macOS' }}
+        if: runner.os == 'macOS'
         env:
           SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
         run: ./tools/alicorn.sh smoke
+      - name: Headless Go, ABI, Odin, and lifecycle checks
+        if: ${{ always() && !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: .\tools\alicorn.ps1 test
+      - name: Headless Go, ABI, Odin, and lifecycle checks
+        if: ${{ always() && !cancelled() && runner.os == 'macOS' }}
+        env:
+          SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
+        run: ./tools/alicorn.sh test
       - name: Build native release artifact
         if: runner.os == 'Windows'
         shell: pwsh
