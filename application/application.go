@@ -94,6 +94,7 @@ type Application struct {
 	Workspace             workspace.Workspace
 	HasWorkspace          bool
 	SidebarWidth          float32
+	PinnedPaneWidth       float32
 	SessionUI             SessionUI
 	Documents             map[DocumentID]*document.Document
 	FileViews             map[DocumentID]FileView
@@ -136,6 +137,7 @@ func New(store workspace.FileStore) *Application {
 	return &Application{
 		Store:                store,
 		SidebarWidth:         250,
+		PinnedPaneWidth:      360,
 		Documents:            make(map[DocumentID]*document.Document),
 		FileViews:            make(map[DocumentID]FileView),
 		Views:                make(map[DocumentID]ViewState),

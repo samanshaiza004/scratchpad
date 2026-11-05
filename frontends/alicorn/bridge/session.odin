@@ -250,6 +250,7 @@ State_Envelope :: struct {
 	workspace_root:  string           `json:"workspace_root"`,
 	recent_workspaces: []string       `json:"recent_workspaces"`,
 	sidebar_width: f32                `json:"sidebar_width"`,
+	pinned_pane_width: f32            `json:"pinned_pane_width"`,
 	active:          string           `json:"active"`,
 	startup_notice: string           `json:"startup_notice"`,
 	documents:       []State_Document `json:"documents"`,
@@ -420,6 +421,7 @@ Backend_Stop_Request :: struct {
 Backend_Stop_Session :: struct {
 	active:        string `json:"active,omitempty"`,
 	sidebar_width: f32    `json:"sidebar_width,omitempty"`,
+	pinned_pane_width: f32 `json:"pinned_pane_width,omitempty"`,
 	documents:     []Backend_Stop_Session_Document `json:"documents,omitempty"`,
 	ui: Session_UI `json:"ui"`,
 }

@@ -704,6 +704,7 @@ func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
 	a.ActiveDocument().Editor.SetSelection(1, 4)
 	a.Views[a.Active] = ViewState{ScrollY: 42, ScrollInitialized: true, ScrollX: 18, ScrollXInitialized: true}
 	a.SidebarWidth = 315
+	a.PinnedPaneWidth = 428
 	sessionPath := filepath.Join(t.TempDir(), "session.json")
 	if err := a.SaveSession(sessionPath); err != nil {
 		t.Fatal(err)
@@ -718,8 +719,8 @@ func TestSessionRoundTripRestoresDocumentsAndViewState(t *testing.T) {
 	if anchor != 1 || cursor != 4 || view.ScrollY != 42 || !view.ScrollInitialized || view.ScrollX != 18 || !view.ScrollXInitialized {
 		t.Fatalf("restored selection=%d:%d view=%+v", anchor, cursor, restored.Views[restored.Active])
 	}
-	if restored.Workspace.Root != dir || !restored.HasWorkspace || restored.Preview != restored.Active || restored.SidebarWidth != 315 {
-		t.Fatalf("restored workspace=%q active=%q preview=%q sidebar=%v", restored.Workspace.Root, restored.Active, restored.Preview, restored.SidebarWidth)
+	if restored.Workspace.Root != dir || !restored.HasWorkspace || restored.Preview != restored.Active || restored.SidebarWidth != 315 || restored.PinnedPaneWidth != 428 {
+		t.Fatalf("restored workspace=%q active=%q preview=%q sidebar=%v pinned=%v", restored.Workspace.Root, restored.Active, restored.Preview, restored.SidebarWidth, restored.PinnedPaneWidth)
 	}
 	if recent := restored.RecentWorkspaces(); len(recent) != 1 || recent[0] != dir {
 		t.Fatalf("recent workspaces=%v, want [%q]", recent, dir)

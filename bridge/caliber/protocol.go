@@ -332,6 +332,7 @@ type StateEnvelope struct {
 	WorkspaceRoot                string                `json:"workspace_root,omitempty"`
 	RecentWorkspaces             []string              `json:"recent_workspaces,omitempty"`
 	SidebarWidth                 float32               `json:"sidebar_width,omitempty"`
+	PinnedPaneWidth              float32               `json:"pinned_pane_width,omitempty"`
 	Active                       string                `json:"active,omitempty"`
 	StartupNotice                string                `json:"startup_notice,omitempty"`
 	Documents                    []StateDocument       `json:"documents"`
@@ -444,7 +445,8 @@ func decodeStopRequest(input []byte, lifecycle string) (StopRequest, Response, b
 		return request, response, false
 	}
 	if request.Session != nil {
-		if len(request.Session.Documents) > 4096 || request.Session.SidebarWidth < 0 || request.Session.SidebarWidth > 4096 {
+		if len(request.Session.Documents) > 4096 || request.Session.SidebarWidth < 0 || request.Session.SidebarWidth > 4096 ||
+			request.Session.PinnedPaneWidth < 0 || request.Session.PinnedPaneWidth > 4096 {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_session_view", "session view exceeds supported bounds", false), false
 		}
 		for _, document := range request.Session.Documents {
@@ -933,6 +935,7 @@ func stateFromApplication(revision uint64, snapshot application.PresentationStat
 		WorkspaceRoot:    snapshot.WorkspaceRoot,
 		RecentWorkspaces: snapshot.RecentWorkspaces,
 		SidebarWidth:     snapshot.SidebarWidth,
+		PinnedPaneWidth:  snapshot.PinnedPaneWidth,
 		SessionUI:        snapshot.SessionUI,
 		Active:           string(snapshot.Active),
 		Documents:        make([]StateDocument, 0, len(snapshot.Documents)),

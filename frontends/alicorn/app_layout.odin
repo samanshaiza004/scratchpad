@@ -231,9 +231,12 @@ build_app :: proc(
 		pinned_split: alicorn.Split_Handle
 		if pinned_side_open {
 			available := f32(logical_width)-app.workspace_sidebar_width
+			pinned_width := app.pinned_pane_width
+			if pinned_width < 280 || pinned_width > 2048 { pinned_width = 360 }
 			pinned_split=alicorn.split_begin(&ui,key=alicorn.key_string("scratchpad-document-pinned-split"),axis=.Horizontal,
-				initial=max(320,available-360),min_first=320,min_second=280,
+				initial=max(320,available-pinned_width),min_first=320,min_second=280,
 				style=alicorn.layout_style(.Row,grow=1,gap=2,clip=true),label="document-source-and-pinned-references")
+			app.pinned_pane_width=max(280,available-pinned_split.position)
 			alicorn.split_first_begin(&ui,pinned_split)
 		}
 		if show_source && app.pinned.visible && app.pinned.narrow_source {

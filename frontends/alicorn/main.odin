@@ -235,6 +235,7 @@ App :: struct {
 	session_ui_restore_pending: bool,
 	session_ui_restore_token: alicorn.Restore_Token,
 	workspace_sidebar_width: f32,
+	pinned_pane_width: f32,
 	workspace_split_restore_runtime: ^alicorn.Runtime,
 	workspace_split_restore_token: alicorn.Restore_Token,
 	workspace_split_restore_complete: bool,
@@ -388,6 +389,13 @@ App :: struct {
 	smoke_rendered:         bool,
 	smoke_wake_observed:    bool,
 	smoke_shutdown:         bool,
+	smoke_session_mode: string,
+	smoke_session_expected_workspace: string,
+	smoke_session_expected_active: string,
+	smoke_session_expected_first: string,
+	smoke_session_expected_second: string,
+	smoke_session_expected_preview: string,
+	smoke_session_passed: bool,
 }
 
 editor_window_request_is_rejected :: proc(app: ^App, request: bridge.Visible_Window_Request) -> bool {
@@ -532,6 +540,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	ui=app.session_ui,
 		active=app.backend.state.active,
 		sidebar_width=app.workspace_sidebar_width,
+		pinned_pane_width=app.pinned_pane_width,
 		documents=documents[:],
 	}
 	return bridge.backend_stop(&app.backend, session=&session)
@@ -3560,6 +3569,9 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	if len(app.smoke_session_mode) > 0 {
+		app.smoke_session_passed = smoke_session_validate(app)
+	}
 	pinned_destroy(&app.pinned)
 	projection_sidebar_destroy(app)
 	find_text_history_destroy(&app.find_query_edit_history)
@@ -3669,6 +3681,12 @@ main :: proc() {
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
 	if smoke, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE", context.allocator); found { app.smoke = smoke == "1" || smoke == "true" }
+	if mode, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE_SESSION_MODE", context.allocator); found { app.smoke_session_mode = mode }
+	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE_EXPECT_WORKSPACE", context.allocator); found { app.smoke_session_expected_workspace = workspace }
+	if active, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE_EXPECT_ACTIVE", context.allocator); found { app.smoke_session_expected_active = active }
+	if first, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE_EXPECT_FIRST", context.allocator); found { app.smoke_session_expected_first = first }
+	if second, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE_EXPECT_SECOND", context.allocator); found { app.smoke_session_expected_second = second }
+	if preview, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE_EXPECT_PREVIEW", context.allocator); found { app.smoke_session_expected_preview = preview }
 	// Reproducible appearance capture: select an in-memory theme and open the
 	// real Settings scene without writing a user preference.
 	if fixture, found := os.lookup_env("SCRATCHPAD_APPEARANCE_FIXTURE", context.allocator); found {
@@ -3750,8 +3768,12 @@ main :: proc() {
 		on_menu_command=application_menu_command,
 	}, app.smoke)
 	if app.smoke {
-		passed := app.smoke_rendered && app.smoke_wake_observed && app.smoke_shutdown
-		fmt.println("alicorn-smoke", "publication_rendered", app.smoke_rendered, "wake_observed", app.smoke_wake_observed, "ordered_shutdown", app.smoke_shutdown)
+		session_passed := len(app.smoke_session_mode) == 0 || app.smoke_session_passed
+		passed := app.smoke_rendered && app.smoke_wake_observed && app.smoke_shutdown && session_passed
+		fmt.println("alicorn-smoke", "publication_rendered", app.smoke_rendered, "wake_observed", app.smoke_wake_observed, "ordered_shutdown", app.smoke_shutdown, "session_restore", session_passed)
+		if len(app.smoke_session_mode) > 0 {
+			fmt.println("alicorn-smoke-session", app.smoke_session_mode, "passed", app.smoke_session_passed)
+		}
 		if !passed { os.exit(1) }
 	}
 }

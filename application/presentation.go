@@ -97,6 +97,7 @@ type PresentationState struct {
 	WorkspaceRoot               string
 	RecentWorkspaces            []string
 	SidebarWidth                float32
+	PinnedPaneWidth             float32
 	SessionUI                   SessionUI
 	Active                      DocumentID
 	Documents                   []PresentationDocument
@@ -134,6 +135,7 @@ func (a *Application) Snapshot() PresentationState {
 		WorkspaceRoot:    filepath.Clean(a.Workspace.Root),
 		RecentWorkspaces: a.RecentWorkspaces(),
 		SidebarWidth:     a.SidebarWidth,
+		PinnedPaneWidth:  a.PinnedPaneWidth,
 		SessionUI:        a.SessionUI,
 		Active:           a.Active,
 		Documents:        make([]PresentationDocument, 0, len(a.Order)),

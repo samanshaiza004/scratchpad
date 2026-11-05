@@ -31,3 +31,24 @@ func TestStaleSessionUIFallsBackWithoutDiscardingOtherSessionValues(t *testing.T
 		}
 	}
 }
+
+func TestVersionOneSessionMigratesWithDefaultPinnedPaneWidth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"sidebar_width":344}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session, err := LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Version != sessionVersion || session.SidebarWidth != 344 || session.PinnedPaneWidth != 0 {
+		t.Fatalf("migrated v1 session = %+v", session)
+	}
+	app := New(nil)
+	if err := app.RestoreSession(path); err != nil {
+		t.Fatal(err)
+	}
+	if app.SidebarWidth != 344 || app.PinnedPaneWidth != 360 {
+		t.Fatalf("v1 session fallback widths sidebar=%.1f pinned=%.1f", app.SidebarWidth, app.PinnedPaneWidth)
+	}
+}

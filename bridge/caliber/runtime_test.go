@@ -342,7 +342,7 @@ func TestRuntimeRestoresCleanSessionAndRecentWorkspaces(t *testing.T) {
 		Version:   ProtocolVersion,
 		RequestID: 3,
 		Session: &application.SessionView{
-			Active: documentID, SidebarWidth: 344,
+			Active: documentID, SidebarWidth: 344, PinnedPaneWidth: 416,
 			UI:        application.SessionUI{Focus: "tree", TreePath: "note.md", TreeScrollY: 312},
 			Documents: []application.SessionViewDocument{{ID: documentID, Anchor: 2, Cursor: 8, Affinity: 1, ScrollX: 12, ScrollY: 96}},
 		},
@@ -362,8 +362,8 @@ func TestRuntimeRestoresCleanSessionAndRecentWorkspaces(t *testing.T) {
 	if !state.HasWorkspace || state.WorkspaceRoot != workspacePath || state.Active != string(documentID) || len(state.Documents) != 1 {
 		t.Fatalf("restored runtime state = %+v", state)
 	}
-	if len(state.RecentWorkspaces) != 1 || state.RecentWorkspaces[0] != workspacePath || state.SidebarWidth != 344 {
-		t.Fatalf("restored workspace metadata = recent %v sidebar %.1f", state.RecentWorkspaces, state.SidebarWidth)
+	if len(state.RecentWorkspaces) != 1 || state.RecentWorkspaces[0] != workspacePath || state.SidebarWidth != 344 || state.PinnedPaneWidth != 416 {
+		t.Fatalf("restored workspace metadata = recent %v sidebar %.1f pinned %.1f", state.RecentWorkspaces, state.SidebarWidth, state.PinnedPaneWidth)
 	}
 	if state.SessionUI.Focus != "tree" || state.SessionUI.TreePath != "note.md" || state.SessionUI.TreeScrollY != 312 {
 		t.Fatalf("restored semantic focus = %+v", state.SessionUI)

@@ -20,6 +20,10 @@ session_ui_prepare :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	}
 	app.session_ui_initialized = true
 	saved := app.backend.state.session_ui
+	app.pinned_pane_width = app.backend.state.pinned_pane_width
+	if app.pinned_pane_width < 280 || app.pinned_pane_width > 2048 {
+		app.pinned_pane_width = 360
+	}
 	app.session_ui.focus = "editor"
 	if saved.focus == "tree" && app.backend.state.has_workspace { app.session_ui.focus = "tree" }
 	app.session_ui.tree_path, _ = strings.clone(saved.tree_path, context.allocator)

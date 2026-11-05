@@ -297,8 +297,7 @@ func run(args []string) error {
 			if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 				return errors.New("native smoke skipped: Linux has no DISPLAY/WAYLAND_DISPLAY; use `test` for headless foreign/type checks")
 			}
-			launchEnv = setEnv(launchEnv, "SCRATCHPAD_ALICORN_SMOKE", "1")
-			return runCommandWithTimeout(root, launchEnv, 15*time.Second, exe)
+			return runNativeSessionRestartSmoke(root, exe, launchEnv)
 		}
 		return runCommand(root, launchEnv, "Alicorn frontend", exe)
 	}

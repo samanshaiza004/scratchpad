@@ -45,6 +45,7 @@ type Session struct {
 	Recent           []string          `json:"recent,omitempty"`
 	RecentWorkspaces []string          `json:"recent_workspaces,omitempty"`
 	SidebarWidth     float32           `json:"sidebar_width,omitempty"`
+	PinnedPaneWidth  float32           `json:"pinned_pane_width,omitempty"`
 }
 
 type SessionDocument struct {
@@ -60,10 +61,11 @@ type SessionDocument struct {
 // SessionView is the bounded frontend-owned portion of the current view that
 // must be joined with application-owned document metadata before a clean save.
 type SessionView struct {
-	UI           SessionUI             `json:"ui,omitempty"`
-	Active       DocumentID            `json:"active,omitempty"`
-	SidebarWidth float32               `json:"sidebar_width,omitempty"`
-	Documents    []SessionViewDocument `json:"documents,omitempty"`
+	UI              SessionUI             `json:"ui,omitempty"`
+	Active          DocumentID            `json:"active,omitempty"`
+	SidebarWidth    float32               `json:"sidebar_width,omitempty"`
+	PinnedPaneWidth float32               `json:"pinned_pane_width,omitempty"`
+	Documents       []SessionViewDocument `json:"documents,omitempty"`
 }
 
 type SessionViewDocument struct {
@@ -76,7 +78,7 @@ type SessionViewDocument struct {
 }
 
 const (
-	sessionVersion  = 1
+	sessionVersion  = 2
 	maxSessionBytes = 1 << 20
 	maxSessionDocs  = 4096
 )
@@ -108,7 +110,7 @@ func DefaultStateDir() (string, error) {
 }
 
 func (a *Application) Session() Session {
-	session := Session{UI: a.SessionUI, Version: sessionVersion, Active: a.Active, Recent: a.RecentPaths(), RecentWorkspaces: a.RecentWorkspaces(), SidebarWidth: a.SidebarWidth}
+	session := Session{UI: a.SessionUI, Version: sessionVersion, Active: a.Active, Recent: a.RecentPaths(), RecentWorkspaces: a.RecentWorkspaces(), SidebarWidth: a.SidebarWidth, PinnedPaneWidth: a.PinnedPaneWidth}
 	if a.HasWorkspace {
 		session.Workspace = a.Workspace.Root
 	}
@@ -153,7 +155,7 @@ func LoadSession(path string) (Session, error) {
 	// Sessions written before schema versioning used the same document fields
 	// without a version. Their shape is compatible: new fields have safe zero
 	// values, so migrate those files in memory instead of discarding them.
-	if session.Version == 0 {
+	if session.Version == 0 || session.Version == 1 {
 		session.Version = sessionVersion
 	}
 	if session.Version != sessionVersion {
@@ -190,6 +192,10 @@ func (a *Application) RestoreSession(path string) error {
 	a.SetRecentWorkspaces(session.RecentWorkspaces)
 	if session.SidebarWidth >= 180 && session.SidebarWidth <= 2048 {
 		a.SidebarWidth = session.SidebarWidth
+	}
+	if session.PinnedPaneWidth >= 280 && session.PinnedPaneWidth <= 2048 &&
+		!math.IsNaN(float64(session.PinnedPaneWidth)) && !math.IsInf(float64(session.PinnedPaneWidth), 0) {
+		a.PinnedPaneWidth = session.PinnedPaneWidth
 	}
 	var restoreErrors []error
 	if session.Workspace != "" {
@@ -256,6 +262,10 @@ func (a *Application) ApplySessionView(view SessionView) {
 	}
 	if view.SidebarWidth >= 180 && view.SidebarWidth <= 2048 {
 		a.SidebarWidth = view.SidebarWidth
+	}
+	if view.PinnedPaneWidth >= 280 && view.PinnedPaneWidth <= 2048 &&
+		!math.IsNaN(float64(view.PinnedPaneWidth)) && !math.IsInf(float64(view.PinnedPaneWidth), 0) {
+		a.PinnedPaneWidth = view.PinnedPaneWidth
 	}
 	a.touchPresentation()
 }
