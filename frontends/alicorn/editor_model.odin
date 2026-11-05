@@ -93,6 +93,14 @@ Editor_Window :: struct {
 	table_plan_cache_wraps: bool,
 	table_plan_cache_width_count: int,
 	table_plan_cache_widths: [255]f32,
+	layout_measurement_ready: bool,
+	layout_measurement_width: f32,
+	layout_measurement_text_scale: f32,
+	layout_measurement_revision: u64,
+	layout_measurement_presentation_revision: u64,
+	layout_measurement_language_hash: u64,
+	layout_measurement_mode: Editor_Wrap_Mode,
+	layout_measurement_presentation_current: bool,
 	lines:           [dynamic]Editor_Display_Line,
 }
 
@@ -115,6 +123,7 @@ Editor_Reveal_Request :: struct {
 
 Editor_View_State :: struct {
 	document_id:       string,
+	document_instance_id: u64,
 	scroll_y:          f32,
 	scroll_x:          f32,
 	horizontal_extent: f32,
@@ -122,6 +131,7 @@ Editor_View_State :: struct {
 	horizontal_scroll_suspended: bool,
 	wrap_mode: Editor_Wrap_Mode,
 	zoom: Editor_Semantic_Zoom,
+	manual_folding: Editor_Manual_Folding,
 	restore_y_pending: bool,
 	restore_x_pending: bool,
 	restore_runtime: ^alicorn.Runtime,
@@ -319,6 +329,7 @@ editor_view_remove :: proc(views: ^[dynamic]Editor_View_State, index: int, alloc
 		alicorn.virtual_list_height_index_destroy(&views[index].wrap_height_index)
 	}
 	semantic_zoom_destroy(&views[index].zoom, allocator)
+	manual_folding_destroy(&views[index].manual_folding, allocator)
 	delete(views[index].document_id, allocator)
 	ordered_remove(views, index)
 }
@@ -331,6 +342,7 @@ editor_views_destroy :: proc(views: ^[dynamic]Editor_View_State, allocator := co
 		if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window, allocator) }
 		if view.wrap_height_index_ready { alicorn.virtual_list_height_index_destroy(&view.wrap_height_index) }
 		semantic_zoom_destroy(&view.zoom, allocator)
+		manual_folding_destroy(&view.manual_folding, allocator)
 		if len(view.document_id) > 0 { delete(view.document_id, allocator) }
 	}
 	delete(views^)

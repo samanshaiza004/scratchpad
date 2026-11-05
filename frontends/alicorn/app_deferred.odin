@@ -18,6 +18,7 @@ Deferred_Action_Kind :: enum {
 	Conflict_Reload,
 	Conflict_Keep_Mine,
 	Toggle_Semantic_Fold,
+	Toggle_Manual_Fold,
 	Pinned_Action,
 }
 
@@ -34,6 +35,7 @@ Deferred_Action :: struct {
 	source_is_dir: bool,
 	discard:     bool,
 	editor_revision: u64,
+	source_instance_id: u64,
 	source_start: u64,
 	source_end: u64,
 	source_line: u64,
@@ -57,6 +59,7 @@ deferred_action_enqueue :: proc(
 	source_start: u64 = 0,
 	source_end: u64 = 0,
 	source_line: u64 = 0,
+	source_instance_id: u64 = 0,
 ) -> bool {
 	if app == nil || len(app.deferred_actions) >= MAX_DEFERRED_ACTIONS { return false }
 	action := Deferred_Action{kind=kind}
@@ -92,6 +95,7 @@ deferred_action_enqueue :: proc(
 	}
 	action.workspace_mutation_kind = workspace_mutation_kind
 	action.editor_revision = editor_revision
+	action.source_instance_id = source_instance_id
 	action.source_start = source_start
 	action.source_end = source_end
 	action.source_line = source_line
@@ -124,6 +128,7 @@ frame_deferred_action_schedule :: proc(
 	value: string = "",
 	document_id: string = "",
 	editor_revision: u64 = 0,
+	source_instance_id: u64 = 0,
 	source_start: u64 = 0,
 	source_end: u64 = 0,
 	source_line: u64 = 0,
@@ -141,6 +146,7 @@ frame_deferred_action_schedule :: proc(
 		action.document_id = copy
 	}
 	action.editor_revision = editor_revision
+	action.source_instance_id = source_instance_id
 	action.source_start = source_start
 	action.source_end = source_end
 	action.source_line = source_line
@@ -165,6 +171,8 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		save_as_to_path(app, rt, action.value, action.path)
 	case .Toggle_Semantic_Fold:
 		semantic_zoom_toggle_fold(app, rt, action.document_id, action.editor_revision, action.source_start)
+	case .Toggle_Manual_Fold:
+		manual_folding_toggle(app, rt, action.document_id, action.source_instance_id, action.editor_revision, action.source_start)
 	case .Pinned_Action:
 		pinned_apply_deferred(app, rt, action)
 	case .Close_After_Save:
@@ -175,8 +183,11 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		clear_close_prompt(app)
 		deferred_actions_run(app, rt)
 		alicorn.invalidate_root(rt, "dirty close cancelled")
-		case .Action:
+	case .Action:
+		if !manual_folding_run_action(app, rt, action.value, action.document_id,
+			action.source_instance_id, action.editor_revision) {
 			application_menu_command(rawptr(app), rt, action_id_for(action.value))
+		}
 	case:
 		set_error(app, "Scratchpad received an unsupported deferred frame action.")
 		alicorn.invalidate_root(rt, "Scratchpad rejected an unsupported deferred frame action")
@@ -253,6 +264,8 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			editor_resolve_conflict_now(app, rt, action.value, true)
 		case .Toggle_Semantic_Fold:
 			semantic_zoom_toggle_fold(app, rt, action.document_id, action.editor_revision, action.source_start)
+		case .Toggle_Manual_Fold:
+			manual_folding_toggle(app, rt, action.document_id, action.source_instance_id, action.editor_revision, action.source_start)
 		case .Pinned_Action:
 			pinned_apply_deferred(app, rt, action)
 		case .Workspace_Mutation:

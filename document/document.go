@@ -187,8 +187,9 @@ type Symbol struct {
 }
 
 type LanguageFold struct {
-	StartByte int
-	EndByte   int
+	StartByte     int
+	BodyStartByte int
+	EndByte       int
 }
 
 // BlockKind identifies a disposable source block that may receive a row-level

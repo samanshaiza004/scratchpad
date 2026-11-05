@@ -168,7 +168,7 @@ func collectSyntaxRanges(root *ts.Node, source []byte) ([]document.LanguageFold,
 			selections = append(selections, document.SelectionRange{StartByte: start, EndByte: end})
 		}
 		if start >= 0 && end <= len(source) && end-start > 1 && isFoldNode(node.Kind()) && bytesContainNewline(source[start:end]) {
-			folds = append(folds, document.LanguageFold{StartByte: start, EndByte: end})
+			folds = append(folds, document.LanguageFold{StartByte: start, BodyStartByte: foldBodyStartCGo(node), EndByte: end})
 		}
 		if cursor.GotoFirstChild() {
 			continue
@@ -179,4 +179,22 @@ func collectSyntaxRanges(root *ts.Node, source []byte) ([]document.LanguageFold,
 			}
 		}
 	}
+}
+
+func foldBodyStartCGo(node *ts.Node) int {
+	if node == nil {
+		return 0
+	}
+	if isFoldBodyNode(node.Kind()) {
+		return int(node.StartByte())
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		child := node.Child(i)
+		if child != nil && isFoldBodyNode(child.Kind()) {
+			return int(child.StartByte())
+		}
+	}
+	// Some language grammars wrap the body in a declaration-specific node.
+	// Keeping the declaration's first line visible is still a safe fallback.
+	return int(node.StartByte())
 }
