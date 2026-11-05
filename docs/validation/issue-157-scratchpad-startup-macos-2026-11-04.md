@@ -1,56 +1,89 @@
-# Issue #157: Scratchpad startup and construction smoke on macOS
+# Issue #157: Scratchpad startup and interaction measurements on macOS
 
-This is a first application-level comparison of Alicorn's structured layout-trace change. It measures Scratchpad's bounded native smoke path in fresh processes and records the Alicorn application-build timing emitted by the host.
+This report completes the Scratchpad application-level comparison for Alicorn's structured layout-trace change. It covers a normal generated-workspace smoke and a bounded interaction sequence that opens a 5,002-line source file.
 
 ## Result
 
-Seven measured launches per candidate, after one warm-up per candidate, on an Apple M1 MacBook Air (`MacBookAir10,1`), macOS 27.2, arm64. Both candidates used the same Scratchpad source, Odin compiler, Caliber revision, generated workspace, and pending retained-effects API changes.
+The tracing change did not produce a measurable improvement in end-to-end startup or first application-frame submission. In the large-document interaction, cumulative application-description callback time improved by a median 8.0% across paired runs, while whole-process CPU, elapsed time, and memory stayed effectively flat. This is a small application-level benefit, not an overall startup speedup.
 
-| Candidate | Process elapsed median | Process CPU median | Peak RSS median | Slowest app-build callback median | Host loop median |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Pre structured tracing | 3549.30 ms | 448.81 ms | 127.2 MiB | 13.774 ms | 3032.46 ms |
-| Structured tracing | 3536.19 ms | 447.87 ms | 119.2 MiB | 13.783 ms | 3029.55 ms |
+All values below are seven-run medians after one warm-up per candidate. Percent change is the median of the seven paired run changes (structured versus baseline). RSS is binary MiB.
 
-The median of the seven paired app-build-maximum changes was -5.7%, while the separate candidate medians were effectively identical and individual samples varied substantially. The median of the seven paired CPU changes was +1.7%; comparing the separate CPU medians gives -0.2%. These are valid summaries of different quantities. Process elapsed changed by +1.5%. No result demonstrates a reliable Scratchpad startup or app-construction improvement from structured tracing.
+### Initial startup smoke
 
-The process and host-loop durations include the smoke fixture's roughly three-second wait. They are not launch-to-first-visible-frame measurements. The binaries used for this run exposed the slowest individual app-build callback but not cumulative time across callbacks. A separate Alicorn follow-up will expose the existing aggregate counter; these recorded samples do not include it. The seven-sample nearest-rank p95 equals the maximum observed sample and is not a reliable tail-latency estimate. Frame p95 and GPU-encode samples varied with desktop scheduling and are not evidence of a regression.
+| Metric | Baseline | Structured | Paired median change |
+| --- | ---: | ---: | ---: |
+| Process elapsed | 3,322.05 ms | 3,322.02 ms | -0.7% |
+| Process CPU | 381.47 ms | 369.30 ms | +0.5% |
+| Peak RSS | 122.4 MiB | 122.1 MiB | -0.9% |
+| Cumulative application-build callbacks | 7.02 ms | 7.09 ms | -1.2% |
+| Slowest application-build callback | 6.84 ms | 6.92 ms | -1.1% |
+| First application-frame submission | 354.01 ms | 354.84 ms | -0.7% |
+| Host loop | 3,028.08 ms | 3,027.64 ms | +0.02% |
 
-Both candidates passed all smoke checks: native publication, a wake, ordered shutdown, and successful SDL host completion. The generated workspace contained eight folders, 192 source files, and a README.
+The paired CPU change differs from the change between the two separate medians because it summarizes run-by-run differences. Both summaries indicate no dependable startup win at this workload size.
 
-## Compared source states
+### Large-document interaction
 
-- Scratchpad: `eeb7930500be000b94487040e53dbed190bf25eb`
-- Alicorn pre-trace experiment: `ffc492546d8888d89a7496544551c06dc5a02040`
-- Alicorn structured-trace experiment: `b739e22f1600f5d7cead161042cb905eb1065b54`
-- Caliber: `197cd964cc7265bc60df599a6b8562eac7c75f3a`
-- Odin: `odin-dev-2026-11` toolchain
+| Metric | Baseline | Structured | Paired median change |
+| --- | ---: | ---: | ---: |
+| Process elapsed | 3,350.79 ms | 3,347.67 ms | -0.02% |
+| Process CPU | 672.00 ms | 674.87 ms | +0.9% |
+| Peak RSS | 154.3 MiB | 153.4 MiB | -0.5% |
+| Cumulative application-build callbacks | 41.51 ms | 36.73 ms | -8.0% |
+| Slowest application-build callback | 12.01 ms | 9.42 ms | -22.5% |
+| First application-frame submission | 354.35 ms | 355.07 ms | +0.3% |
+| Host loop | 3,028.70 ms | 3,024.09 ms | -0.2% |
 
-The two Alicorn experiment trees included the same local copy of the pending retained-effects API changes, so the tracing implementation was the A/B difference. The experiment commit IDs are local measurement inputs, not published upstream revisions. The Scratchpad measurement worktree also carried two compile-compatibility edits: the current Odin CoreFoundation string cast and the test fixture's `radius` to `sigma` field rename for the pending API. Neither changed the measured runtime scenario.
+The interaction run's lower callback time is measurable, but it did not reduce total process CPU or first-frame submission time. The process elapsed and host-loop totals include the smoke harness's roughly three-second wait.
+
+## Method
+
+- Machine: Apple M1 MacBook Air (`MacBookAir10,1`), macOS 27.2, arm64.
+- Build profile: release (`-o:speed`); SDL 3.4.18 shared/Homebrew.
+- Odin: `dev-2026-11-nightly:9a69916` (binary SHA-256 `c0b4d3cf313c78e488b56e9d8b2f1753b8c959c8cf96208335367d93b38d9126`).
+- Caliber: `197cd964cc7265bc60df599a6b8562eac7c75f3a`.
+- Scratchpad source revision: `eae5556e8a01214a0b42a5bc8d33161b5048e041`; tree SHA-256 `452fde68efd2696760e758947942a7e8527193fd8419a66c7131321235b5baa9`.
+- Alicorn A/B base: the Scratchpad lockfile's `4375e64642570d93c180244fb6c6f665bf8e679f`. The baseline has structured-tracing commit `067ff0c73551821474c30fc12d0eea2dea4a3009` reverted; the candidate includes it. Their runtime tree SHA-256 values are `3b8a860f101a9d3755af4f1508e025fd1c8f232c8ca7d1a5567b62bc5931e6a9` (baseline) and `124676ae1db1dec57adebc1ef5538e0bbfb57fa36ae83f9fbf1cd23bf0d410c9` (structured).
+- Both candidates used the same host-timing overlay (SHA-256 `498790ffd4a3643a47a21f455dcef9c40f714544df34e9559b38613246b7e188`) to expose cumulative application-build time and first successful application-frame submission. The overlay is identical across candidates and is not part of the tracing comparison.
+- Executable SHA-256: baseline `f39a913569a122cd89c05b139cd5988b529047c22da58e83213587c80ec4817d`; structured `4532100f66c76179be68802613f3777bb1b567525106b8da9fd0ef4b02bbf7c0`.
+- Both candidates used the same font files and generated workspace: eight folders, 192 source files, and a README. The interaction workspace's `application/sample_00.go` contained 5,002 lines: a package declaration, a blank line, and 5,000 generated functions.
+- Each scenario ran one fresh-process warm-up and seven measured fresh processes per candidate, alternating candidate order. All 28 measured runs and four warm-ups passed host publication, wake, and ordered-shutdown checks. Each interaction run also completed all nine fixture actions and verified the documents and temporary surfaces were closed.
+
+The nine interaction actions use Scratchpad's existing UI and command paths: open `README.md`, open the large Go document, switch back to the README, open and close Quick Open after its worker is ready, open and close Settings, then close both documents. The fixture reports failure if any step fails or cleanup is incomplete.
+
+### Local build compatibility note
+
+The current Odin compiler required a local CoreFoundation string cast adjustment in `frontends/alicorn/system_fonts_darwin.odin` (`transmute(CF.StringRef)value`). The same compile-only adjustment was present in both candidate builds. It is unrelated to this measurement and is intentionally excluded from this commit.
+
+## Interpretation and limits
+
+`application_build_ns` is cumulative wall time spent in application-description callbacks, not exclusive CPU time. `application_build_max_ns` is the longest such callback. The first-submit metric is the first successful application-frame GPU submission; it does not measure when pixels became visible on screen. Process RSS is the high-water mark across the entire bounded process, not memory attributable to a single action.
+
+At seven samples, nearest-rank p95 is the maximum observed sample and is not a stable tail-latency estimate. GPU/frame timing varied between runs and should not be interpreted as a tracing regression. This is a generated-workspace smoke, not a measurement on the maintainer's personal workspace or a physical interaction-latency study.
+
+Raw logs and JSON summaries are retained locally under `/private/tmp/scratchpad-issue157-clean/results/current-startup` and `/private/tmp/scratchpad-issue157-clean/results/current-large-interaction`; the checked-in CSV contains every measured sample.
+
+## Disposition for Issue #157
+
+The Scratchpad application comparison is complete. It finds no meaningful end-to-end startup or first-submit improvement from structured tracing, and a modest reduction in application callback time when opening and closing a large document. The synthetic Alicorn construction benchmarks remain the evidence for the trace optimization's direct benefit.
+
+This report does not close Issue #157. The remaining work is to finish the bounded historical attribution of construction costs and explicitly accept the retained-feature tradeoffs. There is no evidence here that justifies another Scratchpad startup optimization by itself.
 
 ## Reproduction
 
-Build one optimized Scratchpad executable for each Alicorn source tree into separate output directories, using the same Scratchpad checkout, Odin, Caliber, and build flags:
-
-```sh
-go run ./cmd/alicorn-dev build --release \
-  --odin "$ODIN" \
-  --alicorn-root "$ALICORN_ROOT" --allow-alicorn-revision \
-  --caliber-root "$CALIBER_ROOT" \
-  --out "$OUT_DIR"
-```
-
-Then run the paired fresh-process measurement:
+Build baseline and structured candidates from the exact runtime trees above, applying the identical host-timing overlay and Scratchpad source to both. Then run the two scenarios with the same compiler and generated workspace settings:
 
 ```sh
 python3 tools/measure_startup_macos.py \
-  --candidate pre_trace=/path/to/pre-trace/scratchpad-alicorn \
-  --candidate structured_trace=/path/to/structured-trace/scratchpad-alicorn \
+  --candidate baseline=/path/to/baseline/scratchpad-alicorn \
+  --candidate structured=/path/to/structured/scratchpad-alicorn \
   --runs 7 --warmups 1 \
-  --results-dir out/benchmarks/issue-157-macos
+  --results-dir out/benchmarks/issue-157-startup
+
+python3 tools/measure_startup_macos.py \
+  --candidate baseline=/path/to/baseline/scratchpad-alicorn \
+  --candidate structured=/path/to/structured/scratchpad-alicorn \
+  --scenario interaction --large-document-lines 5000 \
+  --runs 7 --warmups 1 \
+  --results-dir out/benchmarks/issue-157-large-interaction
 ```
-
-The runner alternates candidate order, creates a disposable workspace, launches each executable outside the repository working directory, captures per-process elapsed/CPU/peak-RSS and Alicorn host timings, and rejects runs that fail the Scratchpad smoke markers. Its JSON summary and raw logs are local measurement artifacts and should be retained with any future comparison.
-
-## Disposition
-
-The synthetic retained-locality benchmark demonstrates a large Alicorn-level improvement, but this representative Scratchpad smoke does not reveal a corresponding application-construction win. Keep Issue #157 open for a true launch-to-first-frame measurement, cumulative app-build instrumentation, and a larger real workspace / document interaction profile.

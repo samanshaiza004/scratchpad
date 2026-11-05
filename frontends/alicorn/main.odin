@@ -388,6 +388,12 @@ App :: struct {
 	smoke_rendered:         bool,
 	smoke_wake_observed:    bool,
 	smoke_shutdown:         bool,
+	performance_sequence:   bool,
+	performance_sequence_steps: int,
+	performance_sequence_complete: bool,
+	performance_sequence_failed: bool,
+	performance_first_document_id: string,
+	performance_second_document_id: string,
 }
 
 editor_window_request_is_rejected :: proc(app: ^App, request: bridge.Visible_Window_Request) -> bool {
@@ -541,11 +547,118 @@ application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	app := cast(^App)state
 	app.waker = waker
 	start_backend(app)
+	if app.performance_sequence {
+		_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 250_000_000)
+	}
 	if app.appearance_fixture_workbench {
 		// One fixture-only deadline lets document loading settle before the host
 		// captures at one second. It adds no periodic wake to ordinary operation.
 		_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 1_200_000_000)
 	}
+}
+
+performance_sequence_next :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.performance_sequence || app.performance_sequence_complete ||
+	   app.performance_sequence_failed {
+		return
+	}
+	if !app.backend.started {
+		_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 100_000_000)
+		return
+	}
+	if !app.backend.state.has_workspace {
+		app.performance_sequence_failed = true
+		fmt.eprintln("scratchpad-performance-sequence failure workspace_not_open")
+		return
+	}
+
+	step_ok := true
+	switch app.performance_sequence_steps {
+	case 0:
+		path := fmt.tprintf("%s/README.md", app.backend.state.workspace_root)
+		result := bridge.backend_command(&app.backend, "open_path", path=path)
+		step_ok = result.ok
+		if step_ok {
+			handle_command_result(app, rt, &result)
+			id, clone_error := strings.clone(app.backend.state.active, context.allocator)
+			if clone_error != nil { step_ok = false } else { app.performance_first_document_id = id }
+		}
+		bridge.backend_command_result_destroy(&result, context.allocator)
+	case 1:
+		path := fmt.tprintf("%s/application/sample_00.go", app.backend.state.workspace_root)
+		result := bridge.backend_command(&app.backend, "open_path", path=path)
+		step_ok = result.ok
+		if step_ok {
+			handle_command_result(app, rt, &result)
+			id, clone_error := strings.clone(app.backend.state.active, context.allocator)
+			if clone_error != nil { step_ok = false } else { app.performance_second_document_id = id }
+		}
+		bridge.backend_command_result_destroy(&result, context.allocator)
+	case 2:
+		if app.performance_first_document_id == "" {
+			step_ok = false
+		} else {
+			result := bridge.backend_command(&app.backend, "select_document", document_id=app.performance_first_document_id)
+			step_ok = result.ok
+			if step_ok { handle_command_result(app, rt, &result) }
+			bridge.backend_command_result_destroy(&result, context.allocator)
+		}
+	case 3:
+		quick_open_open_surface(app, rt)
+	case 4:
+		if !app.quick_open_ready {
+			_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 100_000_000)
+			return
+		}
+		quick_open_close_surface(app, rt, false)
+	case 5:
+		app.settings_surface_open = true
+		app.settings_category = .Editor
+		alicorn.invalidate_root(rt, "Scratchpad performance fixture opened Settings")
+	case 6:
+		app.settings_surface_open = false
+		alicorn.invalidate_root(rt, "Scratchpad performance fixture closed Settings")
+	case 7:
+		if app.performance_second_document_id == "" {
+			step_ok = false
+		} else {
+			result := bridge.backend_command(&app.backend, "close_document", document_id=app.performance_second_document_id)
+			step_ok = result.ok
+			if step_ok { handle_command_result(app, rt, &result) }
+			bridge.backend_command_result_destroy(&result, context.allocator)
+		}
+	case 8:
+		if app.performance_first_document_id == "" {
+			step_ok = false
+		} else {
+			result := bridge.backend_command(&app.backend, "close_document", document_id=app.performance_first_document_id)
+			step_ok = result.ok
+			if step_ok { handle_command_result(app, rt, &result) }
+			bridge.backend_command_result_destroy(&result, context.allocator)
+		}
+	case:
+		step_ok = false
+	}
+
+	if !step_ok {
+		app.performance_sequence_failed = true
+		fmt.eprintln("scratchpad-performance-sequence failure step", app.performance_sequence_steps)
+		return
+	}
+	app.performance_sequence_steps += 1
+	if app.performance_sequence_steps == 9 {
+		app.performance_sequence_complete = !app.settings_surface_open &&
+			!app.quick_open_open && len(app.backend.state.documents) == 0
+		app.performance_sequence_failed = !app.performance_sequence_complete
+		fmt.println(
+			"alicorn-performance-sequence",
+			"steps", app.performance_sequence_steps,
+			"complete", app.performance_sequence_complete,
+			"passed", !app.performance_sequence_failed,
+		)
+		return
+	}
+	_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 150_000_000)
 }
 
 application_services :: proc(state: rawptr, services: host.Application_Services) {
@@ -865,8 +978,13 @@ editor_window_chase_pending_edits :: proc(
 }
 
 application_scheduled_wake :: proc(state: rawptr, rt: ^alicorn.Runtime, class: host.Scheduled_Wake_Class) {
-	if class != .Frequent { return }
 	app := cast(^App)state
+	if app == nil { return }
+	if class == .Opportunistic {
+		performance_sequence_next(app, rt)
+		return
+	}
+	if class != .Frequent { return }
 	if app == nil || !app.backend.started { return }
 	if app.pinned.editing {
 		if view_index := editor_view_find(app.editor_views[:], app.pinned.edit_document_id); view_index >= 0 {
@@ -3582,6 +3700,10 @@ application_stop :: proc(state: rawptr) {
 	app.accessibility_source_error = ""
 	app.accessibility_source_error_document_id = ""
 	app.accessibility_source_error_revision = 0
+	if len(app.performance_first_document_id) > 0 { delete(app.performance_first_document_id, context.allocator) }
+	if len(app.performance_second_document_id) > 0 { delete(app.performance_second_document_id, context.allocator) }
+	app.performance_first_document_id = ""
+	app.performance_second_document_id = ""
 	tree_clear_directories(app)
 	if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }
 	app.tree_root_path = ""
@@ -3669,6 +3791,11 @@ main :: proc() {
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
 	if smoke, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE", context.allocator); found { app.smoke = smoke == "1" || smoke == "true" }
+	if sequence, found := os.lookup_env("SCRATCHPAD_ALICORN_PERF_SEQUENCE", context.allocator); found {
+		defer delete(sequence, context.allocator)
+		app.performance_sequence = sequence == "1" || sequence == "true"
+		if app.performance_sequence { app.smoke = true }
+	}
 	// Reproducible appearance capture: select an in-memory theme and open the
 	// real Settings scene without writing a user preference.
 	if fixture, found := os.lookup_env("SCRATCHPAD_APPEARANCE_FIXTURE", context.allocator); found {
@@ -3750,8 +3877,12 @@ main :: proc() {
 		on_menu_command=application_menu_command,
 	}, app.smoke)
 	if app.smoke {
-		passed := app.smoke_rendered && app.smoke_wake_observed && app.smoke_shutdown
+		passed := app.smoke_rendered && app.smoke_wake_observed && app.smoke_shutdown &&
+			(!app.performance_sequence || (app.performance_sequence_complete && !app.performance_sequence_failed))
 		fmt.println("alicorn-smoke", "publication_rendered", app.smoke_rendered, "wake_observed", app.smoke_wake_observed, "ordered_shutdown", app.smoke_shutdown)
+		if app.performance_sequence && !app.performance_sequence_complete {
+			fmt.println("alicorn-performance-sequence", "steps", app.performance_sequence_steps, "complete", false, "passed", false)
+		}
 		if !passed { os.exit(1) }
 	}
 }
