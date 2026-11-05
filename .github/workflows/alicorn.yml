@@ -74,11 +74,11 @@ jobs:
           SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
         run: ./tools/alicorn.sh test
       - name: Native window lifecycle smoke
-        if: runner.os == 'Windows'
+        if: ${{ always() && !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: .\tools\alicorn.ps1 smoke
       - name: Native window lifecycle smoke
-        if: runner.os == 'macOS'
+        if: ${{ always() && !cancelled() && runner.os == 'macOS' }}
         env:
           SDL3_PREFIX: ${{ steps.sdl_macos.outputs.prefix }}
         run: ./tools/alicorn.sh smoke
