@@ -50,7 +50,7 @@ darwin_cf_release :: proc(value: Darwin_CF_Ref) {
 
 darwin_cf_string_to_string :: proc(value: Darwin_CF_Ref, allocator: mem.Allocator) -> string {
 	if value == nil { return "" }
-	result, ok := CF.StringCopyToOdinString(CF.String(value), allocator)
+	result, ok := CF.StringCopyToOdinString(transmute(CF.StringRef)value, allocator)
 	if !ok { return "" }
 	return result
 }
