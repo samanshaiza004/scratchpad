@@ -265,6 +265,9 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	case action_id_for(ACTION_SEMANTIC_MORE): return ACTION_SEMANTIC_MORE
 	case action_id_for(ACTION_SEMANTIC_LESS): return ACTION_SEMANTIC_LESS
 	case action_id_for(ACTION_SEMANTIC_FULL): return ACTION_SEMANTIC_FULL
+	case action_id_for(ACTION_EDITOR_TOGGLE_FOLD): return ACTION_EDITOR_TOGGLE_FOLD
+	case action_id_for(ACTION_EDITOR_FOLD_ALL): return ACTION_EDITOR_FOLD_ALL
+	case action_id_for(ACTION_EDITOR_UNFOLD_ALL): return ACTION_EDITOR_UNFOLD_ALL
 	case action_id_for(ACTION_DOCUMENT_GO_TO_LINE): return ACTION_DOCUMENT_GO_TO_LINE
 	case action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP): return ACTION_DOCUMENT_TOGGLE_WRAP
 	case action_id_for(ACTION_PIN_SELECTION): return ACTION_PIN_SELECTION

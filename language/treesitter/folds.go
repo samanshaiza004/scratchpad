@@ -12,3 +12,16 @@ func isFoldNode(kind string) bool {
 		return false
 	}
 }
+
+// isFoldBodyNode identifies the syntax node whose opening delimiter begins a
+// block's contents. The line containing that delimiter stays visible when a
+// manual fold is collapsed.
+func isFoldBodyNode(kind string) bool {
+	switch kind {
+	case "block", "statement_block", "class_body", "interface_body",
+		"literal_value", "object", "object_type", "field_declaration_list":
+		return true
+	default:
+		return false
+	}
+}

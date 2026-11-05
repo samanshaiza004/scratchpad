@@ -178,6 +178,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		return
 	}
 	view := &app.editor_views[view_index]
+	if view.document_instance_id != 0 && view.document_instance_id != document.instance_id {
+		manual_folding_destroy(&view.manual_folding)
+		semantic_zoom_destroy(&view.zoom)
+		view.zoom.depth = 0
+	}
+	view.document_instance_id = document.instance_id
 	if view_created {
 		view.selection_anchor = document.anchor_byte
 		view.caret_byte = document.cursor_byte
@@ -239,7 +245,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 
 	semantic_zoom_prepare(app, rt, document, view)
+	manual_folding_prepare(app, rt, document, view)
 	if view.reveal_request.pending { semantic_zoom_reveal_input(app, rt, view) }
+	manual_folding_reveal_pending(app, rt, document, view)
 
 	window, window_matches := editor_presentation_window(
 		view,
@@ -283,6 +291,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		_ = alicorn.virtual_list_height_index_set_count(&view.wrap_height_index, line_count)
 	}
 	semantic_zoom_sync_geometry(view, window, text_scale)
+	manual_folding_sync_geometry(view, window, text_scale)
 	previous_scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
 	viewport_width, viewport_height := editor_wrap_viewport_size(app, rt, view, previous_scroll)
 	wrap_width := max(viewport_width-gutter_width-16*text_scale, 80*text_scale)
@@ -344,6 +353,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				presentation_visual, text_scale,
 			)
 			semantic_zoom_sync_geometry(view, window, text_scale)
+			manual_folding_sync_geometry(view, window, text_scale)
 			new_anchor_line := anchor_line
 			if mapped_line, mapped := editor_line_for_source(window, anchor_byte); mapped {
 				new_anchor_line = int(mapped_line.logical_line)
@@ -407,7 +417,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	visible_intrinsic_width: f32 = 0
 	if semantic_zoom_active(view) {
 		visible_intrinsic_width = semantic_zoom_frontier_width(app, rt, view, document, scroll_y, viewport_height, gutter_width, wrap_width, text_scale)
-	} else if window_matches {
+	} else if window_matches && !manual_folding_projection_active(view) {
 		visible_intrinsic_width = editor_visible_window_content_width(
 			window,
 			&view.wrap_height_index,
@@ -420,6 +430,23 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			view.wrap_mode,
 			text_scale,
 		)
+	} else if manual_folding_projection_active(view) {
+		metrics := alicorn.virtual_list_variable_metrics(geometry_index, scroll_y, viewport_height)
+		for row := metrics.first; row < metrics.last; row += 1 {
+			source_line, fold_index, mapped := semantic_zoom_rows_source_at(&view.manual_folding.rows, row)
+			if !mapped || fold_index >= 0 { continue }
+			line_number := u64(source_line)
+			row_window := manual_folding_source_window(app, view, document, line_number, window)
+			if row_window == nil { continue }
+			row_presentation_current := row_window.presentation_ready && !row_window.presentation_stale &&
+				row_window.presentation_revision == document.presentation_revision &&
+				row_window.presentation_revision == document.editor_revision
+			if line, found := editor_window_line(row_window, line_number); found &&
+			   !editor_line_should_wrap_for_view(document.language, row_window, line, row_presentation_current, wrap_width, view.wrap_mode, text_scale) {
+				visible_intrinsic_width = max(visible_intrinsic_width,
+					f32(len(line.display))*10*text_scale+gutter_width+16*text_scale)
+			}
+		}
 	}
 	content_width := max(viewport_width, visible_intrinsic_width)
 	// Keep editor rows in a fixed horizontal viewport. The scroll region still
@@ -537,6 +564,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				continue
 			}
 		}
+		if manual_folding_projection_active(view) {
+			_, fold_index, mapped := semantic_zoom_rows_source_at(&view.manual_folding.rows, position)
+			if mapped && fold_index >= 0 {
+				manual_folding_render_marker(app, ui, document, view.manual_folding.rows.folds[fold_index],
+					alicorn.virtual_list_height_index_item_height(geometry_index, position))
+				continue
+			}
+		}
 		window := base_window
 		if semantic_zoom_active(view) {
 			window = semantic_zoom_source_window(app, view, document, line_number)
@@ -546,23 +581,38 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 					alicorn.invalidate_root(rt, "Scratchpad measured visible folded source rows")
 				}
 			}
+		} else if manual_folding_projection_active(view) {
+			window = manual_folding_source_window(app, view, document, line_number, base_window)
+			if window != nil {
+				if manual_folding_measure_window(rt, view, document, window, wrap_width, text_scale) {
+					manual_folding_sync_geometry(view, window, text_scale)
+					alicorn.invalidate_root(rt, "Scratchpad measured visible manually folded source rows")
+				}
+			}
 		}
 		row_height := alicorn.virtual_list_height_index_item_height(geometry_index, position)
 		if row_height <= 0 { row_height = EDITOR_ROW_HEIGHT*text_scale }
 		window_available := window != nil
-		window_matches, window_covers_view := base_window_matches, base_window_covers_view
-		presentation_visual := base_presentation_visual
+		row_window_matches, row_window_covers_view := base_window_matches, base_window_covers_view
+		row_presentation_visual := base_presentation_visual
 		if semantic_zoom_active(view) {
-			window_matches = window_available && window.document_id == document.id && window.editor_revision == document.editor_revision
-			window_covers_view = window_matches
-			presentation_visual = window_matches && window.presentation_ready && !window.presentation_stale
+			row_window_matches = window_available && window.document_id == document.id && window.editor_revision == document.editor_revision
+			row_window_covers_view = row_window_matches
+			row_presentation_visual = row_window_matches && window.presentation_ready && !window.presentation_stale
+		} else if manual_folding_projection_active(view) {
+			row_window_matches = window_available && window.document_id == document.id && window.editor_revision == document.editor_revision
+			row_window_covers_view = row_window_matches && line_number >= window.start_line && line_number < window.end_line
+			row_presentation_visual = row_window_matches && window.presentation_ready &&
+				((!window.presentation_stale && window.presentation_revision == document.presentation_revision &&
+				  window.presentation_revision == document.editor_revision) ||
+				 (request_presentation && window.presentation_stale))
 		}
 		if line, found := editor_window_line(window, line_number); window_available && found {
 			table_row := editor_table_row_layout(window, line, wrap_width, text_scale=text_scale)
 			table_wrap_active := table_row.ok && table_row.wraps && !view.preedit_active && !view.preedit_recoverable
-			line_wraps := editor_line_should_wrap_for_view(document.language, window, line, presentation_visual, wrap_width, view.wrap_mode, text_scale)
+			line_wraps := editor_line_should_wrap_for_view(document.language, window, line, row_presentation_visual, wrap_width, view.wrap_mode, text_scale)
 			if editor_table_line_is_projected(window, line) && !table_wrap_active { line_wraps = false }
-			row_presentation_current := document.language == "markdown" && presentation_visual &&
+			row_presentation_current := document.language == "markdown" && row_presentation_visual &&
 			                           !view.preedit_active && !view.preedit_recoverable
 			markdown_row := editor_markdown_row_presentation(window, line, row_presentation_current)
 			row_background := editor_markdown_row_background(markdown_row)
@@ -585,6 +635,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center, clip=true),
 				color=alicorn.style_color(ui, .Subtle_Surface),
 			)
+			manual_folding_header_button(app, ui, document, view, line.logical_line)
 			if gui.row(ui, label="scratchpad-editor-line-number-spacer", height=-1, grow=1) {
 			}
 			line_number_text := editor_line_number_text(line.logical_line+1)
@@ -594,7 +645,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				key=alicorn.key_u64(line.logical_line),
 				font=.Monospace,
 			)
-			if editor_table_line_is_projected(window, line) && window_matches && alicorn.focused_node(rt) == list.scroll.id &&
+			if editor_table_line_is_projected(window, line) && row_window_matches && alicorn.focused_node(rt) == list.scroll.id &&
 			   view.caret_byte >= line.source_start && view.caret_byte <= line.source_end &&
 			   !view.preedit_active && !view.preedit_recoverable {
 				gutter_paint := [?]alicorn.Text_Paint_Span{{
@@ -616,11 +667,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				layout_scroll_offset_x=list.scroll.offset_x if !line_wraps else 0,
 			)
 			if table_wrap_active {
-				paint_table := window_covers_view && presentation_visual &&
+				paint_table := row_window_covers_view && row_presentation_visual &&
 				               window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 				editor_render_table_cells(
 					ui, app, rt, view, window, line, table_row, markdown_palette,
-					row_height, wrap_width, list.scroll.id, window_matches, paint_table,
+					row_height, wrap_width, list.scroll.id, row_window_matches, paint_table,
 				)
 			} else {
 			anchor_source := min(max(view.selection_anchor, line.source_start), line.source_end)
@@ -630,8 +681,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			caret_display := editor_source_to_display(line, caret_source)
 			caret_area_byte := caret_display
 			caret_area_affinity := view.caret_affinity
-			show_caret := window_matches && alicorn.focused_node(rt) == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
-			if window_matches {
+			show_caret := row_window_matches && alicorn.focused_node(rt) == list.scroll.id && view.caret_byte >= line.source_start && view.caret_byte <= line.source_end
+			if row_window_matches {
 				if composition_display, composition_start, composition_end, applies := editor_preedit_display_for_line(view, window, line); applies {
 				display_text = composition_display
 				anchor_display, caret_display = composition_start, composition_end
@@ -655,7 +706,11 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				anchor_display = caret_display
 			}
 			line_text_style := alicorn.layout_style(.Row, height=row_height)
-			if semantic_zoom_active(view) { display_text = semantic_zoom_frame_text(rt, display_text) }
+			if semantic_zoom_active(view) || manual_folding_projection_active(view) {
+				// Cached windows may be evicted while later visible rows are emitted;
+				// frame descriptions retain text through end_frame.
+				display_text = semantic_zoom_frame_text(rt, display_text)
+			}
 			text_overflow := alicorn.Text_Overflow.Clip
 			if line_wraps {
 				line_text_style.width = wrap_width
@@ -670,14 +725,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=text_overflow},
 			)
 			paint_spans: []alicorn.Text_Paint_Span
-			paint_current := window_covers_view && presentation_visual &&
+			paint_current := row_window_covers_view && row_presentation_visual &&
 			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current {
 				paint_spans = editor_presentation_spans_for_line(window, line, markdown_palette, alicorn.runtime_scratch_allocator(rt))
 			}
 			text_style_spans: []alicorn.Text_Style_Span
 			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, alicorn.runtime_scratch_allocator(rt)) }
-			decoration_current := window_covers_view && window.document_id == document.id &&
+			decoration_current := row_window_covers_view && window.document_id == document.id &&
 			                      !view.preedit_active && !view.preedit_recoverable
 			if decoration_current {
 				search_spans := workspace_search_match_paint_spans_for_line(window, line, view, markdown_palette, alicorn.runtime_scratch_allocator(rt))
@@ -705,12 +760,12 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			_ = alicorn.text_style_spans(ui, line_node, text_style_spans)
 			append(&app.editor_row_targets, Editor_Row_Target{node=line_node, logical_line=line.logical_line})
 			composition_row := false
-			if window_matches && view.preedit_active {
+			if row_window_matches && view.preedit_active {
 				if composition_line, composition_found := editor_line_for_source(window, view.preedit_replace_start); composition_found {
 					composition_row = composition_line.logical_line == line.logical_line
 				}
 			}
-			if window_matches && alicorn.focused_node(rt) == list.scroll.id && ((view.caret_byte >= line.source_start && view.caret_byte <= line.source_end) || composition_row) {
+			if row_window_matches && alicorn.focused_node(rt) == list.scroll.id && ((view.caret_byte >= line.source_start && view.caret_byte <= line.source_end) || composition_row) {
 				app.editor_input_anchor_node = line_node
 				app.editor_input_anchor_byte = caret_area_byte
 				app.editor_input_anchor_affinity = caret_area_affinity
@@ -731,7 +786,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			}
 			alicorn.container_end(ui)
 			alicorn.container_end(ui)
-		} else if window_matches || !window_available {
+		} else if row_window_matches || !window_available {
 			label := fmt.tprintf("Loading line %d…", line_number+1)
 			gui.text(
 				ui,
@@ -754,6 +809,14 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	alicorn.virtual_list_end(ui, list)
 	alicorn.style_environment_pop(ui, style_scope)
 	if semantic_zoom_active(view) { return }
+	if manual_folding_projection_active(view) {
+		window_covers_view, presentation_current := manual_folding_visible_windows_ready(
+			view, document, list.first, list.last, base_window,
+		)
+		if request_presentation && document.presentation_ready {
+			metadata_refresh_needed = !presentation_current
+		}
+	}
 
 	request_start := visible_start
 	if request_start > 64 { request_start -= 64 } else { request_start = 0 }

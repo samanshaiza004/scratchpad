@@ -134,7 +134,44 @@ type Response struct {
 	SaveAsConflict      *SaveAsConflict             `json:"save_as_conflict,omitempty"`
 	SemanticViewWindow  *SemanticViewWindow         `json:"semantic_view_window,omitempty"`
 	SemanticZoom        *SemanticZoomPlan           `json:"semantic_zoom,omitempty"`
+	EditorFolds         *EditorFoldPlan             `json:"editor_folds,omitempty"`
 	Diagnostic          string                      `json:"diagnostic,omitempty"`
+}
+
+// EditorFoldPlan is detached, parser-derived folding metadata for one source
+// instance and revision. Byte ranges remain source coordinates; BodyStartByte
+// is the first byte of the hidden body, while the header line stays visible.
+type EditorFoldPlan struct {
+	DocumentID string       `json:"document_id"`
+	Revision   uint64       `json:"revision"`
+	InstanceID uint64       `json:"instance_id"`
+	Ready      bool         `json:"ready"`
+	Supported  bool         `json:"supported"`
+	Reason     string       `json:"reason,omitempty"`
+	LineCount  int          `json:"line_count"`
+	Folds      []EditorFold `json:"folds"`
+}
+
+type EditorFold struct {
+	StartLine     int    `json:"start_line"`
+	BodyStartLine int    `json:"body_start_line"`
+	EndLine       int    `json:"end_line"`
+	StartByte     int    `json:"start_byte"`
+	BodyStartByte int    `json:"body_start_byte"`
+	EndByte       int    `json:"end_byte"`
+	Label         string `json:"label"`
+}
+
+func editorFoldsFromApplication(plan application.EditorFoldPlan) *EditorFoldPlan {
+	result := &EditorFoldPlan{DocumentID: string(plan.DocumentID), Revision: plan.Revision,
+		InstanceID: plan.InstanceID, Ready: plan.Ready, Supported: plan.Supported,
+		Reason: plan.Reason, LineCount: plan.LineCount, Folds: make([]EditorFold, len(plan.Folds))}
+	for i, fold := range plan.Folds {
+		result.Folds[i] = EditorFold{StartLine: fold.StartLine, BodyStartLine: fold.BodyStartLine,
+			EndLine: fold.EndLine, StartByte: fold.StartByte, BodyStartByte: fold.BodyStartByte,
+			EndByte: fold.EndByte, Label: fold.Label}
+	}
+	return result
 }
 
 // SemanticZoomPlan is detached, revision/instance-tagged source-line folding
@@ -643,6 +680,13 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.AnchorByte > uint64(^uint(0)>>1) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_zoom_anchor", "anchor_byte does not fit the host word size", false), false
+		}
+	case "read_editor_folds":
+		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_document_id", "a valid document_id is required", false), false
+		}
+		if !jsonNonNullFieldPresent(input, "editor_revision") {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_editor_revision", "editor_revision is required", false), false
 		}
 	case "set_view_density":
 		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {
