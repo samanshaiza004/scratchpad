@@ -636,6 +636,12 @@ func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags 
 		}
 	}
 	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
+	if runtime.GOOS == "windows" {
+		// Odin compiles this resource script and links the ICO into the PE
+		// executable. runCommand uses root as the working directory, which is
+		// also the base for the icon path inside Scratchpad.rc.
+		args = append(args, "-resource:"+filepath.Join(root, "assets", "branding", "Scratchpad.rc"))
+	}
 	args = appendDarwinMinimumOSVersion(args, runtime.GOOS)
 	linkerFlags := nativeFrontendLinkerFlagsFor(runtime.GOOS, env, accessKitFlags)
 	if runtime.GOOS == "darwin" {

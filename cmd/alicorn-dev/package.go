@@ -228,10 +228,16 @@ func packageScratchpad(root, alicornRoot, caliberRoot, goExe, odinExe, output, v
 	if err != nil {
 		return err
 	}
+	iconName := nativePackageIconName(runtime.GOOS)
+	if iconName != "" {
+		if err := copyPackageFile(filepath.Join(root, "assets", "branding", iconName), filepath.Join(buildDir, iconName)); err != nil {
+			return fmt.Errorf("stage %s package icon: %w", runtime.GOOS, err)
+		}
+	}
 	metadata := packageMetadata{
 		Name: "Scratchpad", Version: version,
 		BundleIdentifier: "com.samanshaiza004.scratchpad",
-		ExecutableName:   "Scratchpad", MinimumMacOSVersion: "13.0",
+		ExecutableName:   "Scratchpad", MinimumMacOSVersion: "13.0", Icon: iconName,
 		Resources:        nativePackageResources(runtime.GOOS, licenseNames),
 		PrivateLibraries: []string{backendLibraryName(), filepath.Base(caliberLibrary)},
 	}
@@ -448,6 +454,17 @@ func publishPackageDirectory(output, staging string) error {
 	}
 	fmt.Println("Verified consumer package:", output)
 	return nil
+}
+
+func nativePackageIconName(goos string) string {
+	switch goos {
+	case "windows":
+		return "Scratchpad.ico"
+	case "darwin":
+		return "Scratchpad.icns"
+	default:
+		return ""
+	}
 }
 
 func packageSource(root, alicornRoot, caliberRoot string) (releaseSource, error) {

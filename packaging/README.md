@@ -17,8 +17,10 @@ only an output directory carrying Scratchpad's package marker. It never
 overwrites an unrelated directory.
 
 The Windows x64 artifact is a portable ZIP containing a GUI-subsystem
-`Scratchpad.exe`, the Go backend, Caliber, SDL3, and license files. The macOS
-arm64 artifact is a Finder-launchable `Scratchpad.app` in a ZIP. Alicorn's
+`Scratchpad.exe` with the Scratchpad ICO embedded as a PE icon resource, the Go
+backend, Caliber, SDL3, and license files. The macOS arm64 artifact is a
+Finder-launchable `Scratchpad.app` in a ZIP, with `Scratchpad.icns` in
+`Contents/Resources` and `CFBundleIconFile` set in `Info.plist`. Alicorn's
 platform packagers audit native imports/load paths before the ZIP is created.
 The command then extracts the ZIP into a temporary unrelated directory and
 smokes that copy with a clean working directory.
@@ -51,3 +53,7 @@ the check for that case.
 
 These commands build candidate packages only. They do not tag a version,
 publish a GitHub Release, notarize, or install the application.
+
+The source icon artwork and wordmarks are in `assets/branding/`. Windows
+frontend builds use `assets/branding/Scratchpad.rc` to embed the icon resource;
+the Windows build needs Odin's normal resource-compiler toolchain available.
