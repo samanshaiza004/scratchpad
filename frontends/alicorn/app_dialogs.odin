@@ -117,8 +117,8 @@ shutdown_discard_all :: proc(app: ^App, rt: ^alicorn.Runtime) {
 
 build_shutdown_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil { return }
-	alicorn.modal_overlay_begin(ui, alicorn.key_string("shutdown-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
-	alicorn.container_begin(ui, .Container, label="shutdown-dialog", style=alicorn.layout_style(.Column, width=540, height=320, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("shutdown-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+	scratchpad_modal_surface_begin(ui, app, rt, alicorn.key_string("shutdown-dialog"), "shutdown-dialog", alicorn.layout_style(.Column, width=540, height=320, padding=22, gap=12, align=.Start, clip=true))
 	gui.text(ui, "Save changes before closing Scratchpad?")
 	if len(app.editor_edits) > 0 {
 		gui.text(ui, fmt.tprintf("Waiting for %d pending editor change(s) to finish.", len(app.editor_edits)))
@@ -169,7 +169,7 @@ build_shutdown_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 			shutdown_cancel(app, rt)
 		}
 	}
-	alicorn.container_end(ui)
+	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }
 

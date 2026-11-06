@@ -113,7 +113,7 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		ui,
 		alicorn.key_string("scratchpad-symbol-picker-overlay"),
 		style=alicorn.layout_style(.Column, grow=1, padding=32, align=.Center, justify=.Center, clip=true),
-		backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme),
+		backdrop_color=scratchpad_modal_overlay_color(app, rt),
 	)
 	app.symbol_picker_panel_node = alicorn.surface_begin(
 		ui,
@@ -124,6 +124,8 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		shape=scratchpad_surface_shape(app, 7),
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
+		fill=scratchpad_modal_panel_fill(app, rt),
+		backdrop_effect=scratchpad_modal_backdrop_effect(app),
 	)
 	gui.text(ui, "Go to Symbol", style=alicorn.layout_style(.Row, height=24),
 		text_style=alicorn.Text_Style{font_size=17, font_weight=alicorn.FONT_WEIGHT_MEDIUM})

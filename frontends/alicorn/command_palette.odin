@@ -480,7 +480,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		ui,
 		alicorn.key_string("scratchpad-command-palette-overlay"),
 		style=alicorn.layout_style(.Column, grow=1, padding=48, align=.Center, clip=true),
-		backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme),
+		backdrop_color=scratchpad_modal_overlay_color(app, rt),
 	)
 	app.command_palette_panel_node = alicorn.surface_begin(
 		ui,
@@ -491,6 +491,8 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		shape=scratchpad_surface_shape(app, 7),
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
+		fill=scratchpad_modal_panel_fill(app, rt),
+		backdrop_effect=scratchpad_modal_backdrop_effect(app),
 	)
 	if gui.row(ui, label="scratchpad-command-palette-query-row", height=44, gap=4, align=.Center) {
 		app.command_palette_motion_accent_node = alicorn.surface_begin(

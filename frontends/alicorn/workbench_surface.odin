@@ -69,8 +69,8 @@ recent_workspace_clear :: proc(app: ^App, rt: ^alicorn.Runtime) {
 
 recent_workspaces_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil || !app.recent_workspaces_open { return }
-	alicorn.modal_overlay_begin(ui, alicorn.key_string("recent-workspaces-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
-	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("recent-workspaces-panel"), label="recent-workspaces-panel", style=alicorn.layout_style(.Column, max_width=680, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=560, padding=18, gap=8, clip=true), shape=scratchpad_surface_shape(app, 7), material=scratchpad_surface_material(app, app.floating_surface_material), physical_height=scratchpad_surface_height(app, 1))
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("recent-workspaces-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center, justify=.Center), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("recent-workspaces-panel"), label="recent-workspaces-panel", style=alicorn.layout_style(.Column, max_width=680, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=560, padding=18, gap=8, clip=true), shape=scratchpad_surface_shape(app, 7), material=scratchpad_surface_material(app, app.floating_surface_material), physical_height=scratchpad_surface_height(app, 1), fill=scratchpad_modal_panel_fill(app, rt), backdrop_effect=scratchpad_modal_backdrop_effect(app))
 	gui.text(ui, "Recent Workspaces")
 	if len(app.backend.state.recent_workspaces) == 0 {
 		gui.text(ui, "No workspaces have been opened yet.")

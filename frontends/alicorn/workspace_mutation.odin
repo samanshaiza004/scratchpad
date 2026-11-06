@@ -154,8 +154,8 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 	if app.workspace_mutation_kind == .Move { label = "Move" }
 	if app.workspace_mutation_kind == .Trash { label = "Move to Trash" }
 	if app.workspace_mutation_kind == .Trash {
-		alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-trash-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
-		alicorn.container_begin(ui, .Container, label="workspace-trash-dialog", style=alicorn.layout_style(.Column, width=500, height=220, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
+		alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-trash-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+		scratchpad_modal_surface_begin(ui, app, rt, alicorn.key_string("workspace-trash-dialog"), "workspace-trash-dialog", alicorn.layout_style(.Column, width=500, height=220, padding=22, gap=12, align=.Start, clip=true))
 		gui.text(ui, "Move this workspace item to the operating system Trash?")
 		gui.text(ui, app.workspace_mutation_source)
 		if app.workspace_mutation_queued {
@@ -189,13 +189,13 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 				}
 			}
 		}
-		alicorn.container_end(ui)
+		alicorn.surface_end(ui)
 		alicorn.modal_overlay_end(ui)
 		return
 	}
 
-	alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-mutation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
-	alicorn.container_begin(ui, .Container, label="workspace-mutation-dialog", style=alicorn.layout_style(.Column, width=500, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=320, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(ui, .Surface))
+	alicorn.modal_overlay_begin(ui, alicorn.key_string("workspace-mutation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+	scratchpad_modal_surface_begin(ui, app, rt, alicorn.key_string("workspace-mutation-dialog"), "workspace-mutation-dialog", alicorn.layout_style(.Column, width=500, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=320, padding=22, gap=12, align=.Start, clip=true))
 	gui.text(ui, label)
 	if app.workspace_mutation_queued {
 		gui.text(ui, "Waiting for pending editor changes to finish…")
@@ -215,7 +215,7 @@ workspace_mutation_build_dialog :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn
 			workspace_mutation_submit(app, rt, false)
 		}
 	}
-	alicorn.container_end(ui)
+	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
 }
 

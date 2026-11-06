@@ -864,6 +864,10 @@ editor_wrap_fingerprint_bool :: proc(hash: u64, value: bool) -> u64 {
 	return editor_wrap_fingerprint_mix(hash, 1 if value else 0)
 }
 
+editor_wrap_fingerprint_f32 :: proc(hash: u64, value: f32) -> u64 {
+	return editor_wrap_fingerprint_mix(hash, u64(transmute(u32)value))
+}
+
 editor_wrap_fingerprint_bytes :: proc(hash: u64, value: string) -> u64 {
 	result := hash
 	for index := 0; index < len(value); index += 1 {
@@ -886,20 +890,20 @@ editor_wrap_line_measurement_fingerprint :: proc(
 	hash = editor_wrap_fingerprint_bytes(hash, line.display)
 	hash = editor_wrap_fingerprint_bool(hash, wrap)
 	hash = editor_wrap_fingerprint_bool(hash, presentation_current)
-	hash = editor_wrap_fingerprint_mix(hash, u64(max(int(width*100), 0)))
-	hash = editor_wrap_fingerprint_mix(hash, u64(max(int(text_scale*1000), 0)))
+	hash = editor_wrap_fingerprint_f32(hash, width)
+	hash = editor_wrap_fingerprint_f32(hash, text_scale)
 	style_spans := editor_presentation_text_styles_for_line(window, line, context.temp_allocator) if presentation_current else nil
 	hash = editor_wrap_fingerprint_mix(hash, u64(len(style_spans)))
 	for span in style_spans {
 		hash = editor_wrap_fingerprint_mix(hash, u64(max(span.start, 0)))
 		hash = editor_wrap_fingerprint_mix(hash, u64(max(span.end, 0)))
-		hash = editor_wrap_fingerprint_mix(hash, u64(max(int(span.font_weight*1000), 0)))
+		hash = editor_wrap_fingerprint_f32(hash, span.font_weight)
 		hash = editor_wrap_fingerprint_bool(hash, span.font_weight_set)
 		hash = editor_wrap_fingerprint_bool(hash, span.italic)
 		hash = editor_wrap_fingerprint_bool(hash, span.italic_set)
 	}
 	row := editor_markdown_row_presentation(window, line, presentation_current)
-	hash = editor_wrap_fingerprint_mix(hash, u64(max(int(editor_markdown_row_extra_height(row)*100), 0)))
+	hash = editor_wrap_fingerprint_f32(hash, editor_markdown_row_extra_height(row))
 	if editor_table_line_is_projected(window, line) {
 		// Table row heights depend on a shared column-width plan. Include that
 		// plan so a cell edit invalidates every affected row, while unrelated
@@ -911,10 +915,7 @@ editor_wrap_line_measurement_fingerprint :: proc(
 		hash = editor_wrap_fingerprint_bool(hash, window.table_plan_cache_wraps)
 		hash = editor_wrap_fingerprint_mix(hash, u64(window.table_plan_cache_width_count))
 		for column in 0..<window.table_plan_cache_width_count {
-			hash = editor_wrap_fingerprint_mix(
-				hash,
-				u64(max(int(window.table_plan_cache_widths[column]*100), 0)),
-			)
+			hash = editor_wrap_fingerprint_f32(hash, window.table_plan_cache_widths[column])
 		}
 	}
 	return hash

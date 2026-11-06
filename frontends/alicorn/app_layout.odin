@@ -328,8 +328,8 @@ build_app :: proc(
 	if app.shutdown_intent != .None {
 		build_shutdown_dialog(app, &ui, rt)
 	} else if app.close_document_id != "" {
-		alicorn.modal_overlay_begin(&ui, alicorn.key_string("dirty-close-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
-		alicorn.container_begin(&ui, .Container, label="dirty-close-dialog", style=alicorn.layout_style(.Column, width=440, height=190, padding=22, gap=14, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
+		alicorn.modal_overlay_begin(&ui, alicorn.key_string("dirty-close-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+		scratchpad_modal_surface_begin(&ui, app, rt, alicorn.key_string("dirty-close-dialog"), "dirty-close-dialog", alicorn.layout_style(.Column, width=440, height=190, padding=22, gap=14, align=.Start, clip=true))
 		recovery_pending := editor_document_has_recoverable_preedit(app, app.close_document_id)
 		if recovery_pending {
 			gui.text(&ui, "A committed text composition is waiting for recovery.")
@@ -381,11 +381,11 @@ build_app :: proc(
 				}
 			}
 		}
-		alicorn.container_end(&ui)
+		alicorn.surface_end(&ui)
 		alicorn.modal_overlay_end(&ui)
 	} else if app.save_as_confirmation_open {
-		alicorn.modal_overlay_begin(&ui, alicorn.key_string("save-as-confirmation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
-		alicorn.container_begin(&ui, .Container, label="save-as-confirmation-dialog", style=alicorn.layout_style(.Column, width=480, height=176, padding=22, gap=12, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
+		alicorn.modal_overlay_begin(&ui, alicorn.key_string("save-as-confirmation-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+		scratchpad_modal_surface_begin(&ui, app, rt, alicorn.key_string("save-as-confirmation-dialog"), "save-as-confirmation-dialog", alicorn.layout_style(.Column, width=480, height=176, padding=22, gap=12, align=.Start, clip=true))
 		gui.text(&ui, "Replace the existing file?")
 		gui.text(&ui, app.save_as_confirmation_path, style=alicorn.layout_style(.Row, height=52), text_style=alicorn.Text_Style{overflow=.Wrap})
 		if gui.row(&ui, label="save-as-confirmation-actions", height=38, gap=8, align=.Center) {
@@ -396,13 +396,13 @@ build_app :: proc(
 				save_as_cancel_overwrite(app, rt)
 			}
 		}
-		alicorn.container_end(&ui)
+		alicorn.surface_end(&ui)
 		alicorn.modal_overlay_end(&ui)
 	} else if app.workspace_mutation_kind != .None {
 		workspace_mutation_build_dialog(app, &ui, rt)
 	} else if app.go_to_line_open {
-		alicorn.modal_overlay_begin(&ui, alicorn.key_string("go-to-line-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_backdrop_color(rt, app.workbench_theme))
-		alicorn.container_begin(&ui, .Container, label="go-to-line-dialog", style=alicorn.layout_style(.Column, width=420, height=150, padding=20, gap=10, align=.Start, clip=true), color=alicorn.style_color(&ui, .Surface))
+		alicorn.modal_overlay_begin(&ui, alicorn.key_string("go-to-line-overlay"), style=alicorn.layout_style(.Column, grow=1, align=.Center), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+		scratchpad_modal_surface_begin(&ui, app, rt, alicorn.key_string("go-to-line-dialog"), "go-to-line-dialog", alicorn.layout_style(.Column, width=420, height=150, padding=20, gap=10, align=.Start, clip=true))
 		gui.text(&ui, "Go to Line")
 		app.go_to_line_query_node = alicorn.text_field(&ui, app.go_to_line_query, key=alicorn.key_string("go-to-line-query"), style=alicorn.layout_style(.Row, height=34))
 		if app.go_to_line_error != "" { gui.text(&ui, app.go_to_line_error) }
@@ -410,7 +410,7 @@ build_app :: proc(
 			if gui.button(&ui, "Go", key="go-to-line-submit", width=80, height=32, variant=.Primary) { _ = go_to_line_submit(app, rt) }
 			if gui.button(&ui, "Cancel", key="go-to-line-cancel", width=88, height=32, variant=.Quiet) { go_to_line_close(app, rt, true) }
 		}
-		alicorn.container_end(&ui)
+		alicorn.surface_end(&ui)
 		alicorn.modal_overlay_end(&ui)
 	} else if app.recent_workspaces_open {
 		recent_workspaces_surface_build(app, &ui, rt)
@@ -427,6 +427,16 @@ build_app :: proc(
 	alicorn.style_environment_pop(&ui, workbench_style_scope)
 
 	alicorn.end_frame(&ui)
+	if app.editor_row_trace.path != "" && app.editor_window_ready && len(app.editor_row_targets) > 0 {
+		editor_row_trace_capture(
+			&app.editor_row_trace,
+			rt,
+			app.editor_row_targets[:],
+			app.editor_window.document_id,
+			app.editor_window.editor_revision,
+			app.editor_window.presentation_revision,
+		)
+	}
 	app.ui_description_runtime = previous_ui_description_runtime
 	image_preview_after_frame(app, rt)
 	if !app.workspace_split_restore_complete &&
