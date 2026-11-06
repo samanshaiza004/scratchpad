@@ -547,9 +547,10 @@ scratchpad_content_titlebar_region_add :: proc(
 }
 
 Workspace_Panel_Tabs_Nodes :: struct {
-	row:    alicorn.Node_ID,
-	files:  alicorn.Node_ID,
-	search: alicorn.Node_ID,
+	row:     alicorn.Node_ID,
+	spacer:  alicorn.Node_ID,
+	symbols: alicorn.Node_ID,
+	search:  alicorn.Node_ID,
 }
 
 scratchpad_workspace_panel_tabs_build :: proc(
@@ -557,7 +558,6 @@ scratchpad_workspace_panel_tabs_build :: proc(
 	ui: ^alicorn.UI,
 	style: alicorn.Layout_Style,
 	button_height: f32,
-	compact := false,
 	register_chrome_regions := false,
 ) -> Workspace_Panel_Tabs_Nodes {
 	result := Workspace_Panel_Tabs_Nodes{}
@@ -569,32 +569,23 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		style=style,
 	)
 	if result.row == 0 { return result }
-	button_text := alicorn.DEFAULT_BUTTON_TEXT_STYLE
-	if compact {
-		button_text.font_size = 12
-	}
-	button_style := alicorn.layout_style(.Row, grow=1, height=button_height)
-	files_id, files_clicked := alicorn.button_begin(
-		ui, "Explorer",
-		key=alicorn.key_string("workspace-panel-files"),
-		style=button_style,
-		state=alicorn.Button_State{selected=!app.workspace_projection_mode},
-		text_style=button_text,
-		content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=2),
-		variant=.Toolbar,
+	// Keep the remaining tools aligned at the trailing edge, while letting
+	// blank titlebar space continue to initiate a native window drag.
+	result.spacer = alicorn.container_begin(
+		ui, .Container,
+		label="workspace-panel-drag-space",
+		key=alicorn.key_string("workspace-panel-drag-space"),
+		style=alicorn.layout_style(.Row, grow=1, height=button_height),
 	)
-	result.files = files_id
-	if files_id != 0 {
-		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, files_id, .Interactive) }
-		alicorn.button_end(ui)
-	}
-	if files_clicked {
-		app.workspace_projection_mode = false
-		alicorn.invalidate_root(app.ui_description_runtime, "Scratchpad Explorer selected")
+	if result.spacer != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, result.spacer, .Window_Drag) }
+		alicorn.container_end(ui)
 	}
 	symbol_id, symbol_clicked := alicorn.button_begin(ui, "Symbols…", key=alicorn.key_string("workspace-go-to-symbol"),
-		style=alicorn.layout_style(.Row, width=72, height=button_height),
+		style=alicorn.layout_style(.Row, width=72, height=button_height, compress_weight=1),
+		content_style=alicorn.button_content_style(padding_x=4, padding_y=0),
 		variant=.Quiet, text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
+	result.symbols = symbol_id
 	if symbol_id != 0 {
 		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, symbol_id, .Interactive) }
 		alicorn.button_end(ui)
@@ -667,7 +658,6 @@ scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
 		ui,
 		style=alicorn.layout_style(.Row, grow=1, height=32, gap=2, align=.Center, clip=true),
 		button_height=30,
-		compact=true,
 		register_chrome_regions=true,
 	)
 	_ = tabs

@@ -867,55 +867,98 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			line_count = line_count-removed if removed < line_count else 1
 		} else { line_count += u64(view.optimistic_line_delta) }
 	}
-	location := "Ln —  Col —"
+	location := "Ln —, Col —"
 	if view.pending_goto_line {
-		location = fmt.tprintf("Ln %d  Col %d", view.pending_goto_target_line+1, view.pending_goto_column)
+		location = fmt.tprintf("Ln %d, Col %d", view.pending_goto_target_line+1, view.pending_goto_column)
 	} else if line, found := editor_line_for_source(window, view.caret_byte); found {
 		column := editor_column_for_source(line, view.caret_byte)
-		location = fmt.tprintf("Ln %d  Col %d", line.logical_line+1, column)
+		location = fmt.tprintf("Ln %d, Col %d", line.logical_line+1, column)
 		if editor_window_is_long_line_chunk(window) { location = fmt.tprintf("%s  (chunk)", location) }
 	}
-	modified := ""
-	if document.dirty || view.optimistic_pending_edits > 0 { modified = "  • Modified" }
-	document_info := fmt.tprintf("%s%s  ·  %d lines", document.language, modified, line_count)
+	language_separator := " · " if document.language != "" else ""
+	modified := " · Modified" if document.dirty || view.optimistic_pending_edits > 0 else ""
+	document_info := fmt.tprintf("%s%s%d %s%s", document.language, language_separator, line_count,
+		"line" if line_count == 1 else "lines", modified)
+	detail := fmt.tprintf("Detail: %s", semantic_zoom_title(view.zoom.depth))
+	detail_label := "Preparing detail…" if view.zoom.waiting else detail
+	detail_tooltip := fmt.tprintf("%s · preparing", detail) if view.zoom.waiting else detail
 	wrap_label := "Auto"
 	switch view.wrap_mode {
 	case .On: wrap_label = "On"
 	case .Off: wrap_label = "Off"
 	case .Auto: wrap_label = "Auto"
 	}
-	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), label="document-status-bar", key=alicorn.key_string("document-status-bar"), style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=40, gap=10, padding=8, align=.Center), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
-	if editor_focus_needs_status_cue(app,rt) {
-		gui.text(ui,"Editor focused",key="document-editor-focus-cue",style=alicorn.layout_style(width=100,height=24),
-			text_style=alicorn.Text_Style{font_size=12,overflow=.Ellipsis},color=alicorn.style_color(ui,.Muted_Text))
-	}
+	wrap := fmt.tprintf("Wrap: %s", wrap_label)
+	focused := editor_focus_needs_status_cue(app, rt)
+	muted := alicorn.style_color(ui, .Muted_Text)
+	text_style := alicorn.Text_Style{font_size=13, overflow=.Ellipsis}
+	text_slot := alicorn.layout_style(.Row, compress_weight=1)
+	control_height :: f32(28)
+	padding :: f32(6)
+	metadata_width :: f32(184)
+	metadata_min_width :: f32(120)
+	wide_side_min_width :: f32(248)
+	compact_controls_width :: f32(184)
+	group_gap :: f32(8)
+	wide_min_width :: metadata_min_width + 2*(wide_side_min_width+group_gap)
+	button_content := alicorn.button_content_style(padding_x=4, padding_y=0)
+	row_style := alicorn.layout_style(.Row, grow=1, height=control_height, gap=group_gap, align=.Center)
+	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), label="document-status-bar", key=alicorn.key_string("document-status-bar"),
+		style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=control_height+2*padding, padding=padding, align=.Center, clip=true),
+		material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 	alicorn.adaptive_begin(ui, alicorn.key_string("document-status-responsive"),
-		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center),
+		style=alicorn.layout_style(.Row, grow=1, height=control_height),
 		label="document-status-responsive")
-	alicorn.adaptive_alternative_begin(ui, alicorn.key_string("document-status-wide"), "Wide", minimum_width=600,
-		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center))
-	if gui.layout(ui, style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=188, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=12, align=.Center), label="document-status-information") {
-		gui.text(ui, location, key="document-status-location", style=alicorn.layout_style(.Row, width=176, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-		gui.text(ui, document_info, key="document-status-document-info", style=alicorn.layout_style(.Row, grow=1, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	}
-	gui.text(ui, fmt.tprintf("Detail: %s%s", semantic_zoom_title(view.zoom.depth), " · preparing" if view.zoom.waiting else ""),
-		key="document-semantic-detail", style=alicorn.layout_style(.Row, width=120, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
-	if gui.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key="document-wrap", width=88, height=24, content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
-		editor_toggle_wrap_mode(app, rt)
-	}
-	if gui.button(ui, "Go to Line…", key="document-goto-line", width=100, height=24, content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
-		go_to_line_open_surface(app, rt)
-	}
-	alicorn.adaptive_alternative_end(ui)
+	for wide in ([2]bool{true, false}) {
+		alicorn.adaptive_alternative_begin(ui,
+			alicorn.key_string("document-status-wide" if wide else "document-status-compact"),
+			"Wide" if wide else "Compact", minimum_width=wide_min_width if wide else 0,
+			style=row_style)
 
-	alicorn.adaptive_alternative_begin(ui, alicorn.key_string("document-status-compact"), "Compact",
-		style=alicorn.layout_style(.Row, grow=1, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=24, gap=10, align=.Center))
-	gui.text(ui, location, key="document-status-compact-location", style=alicorn.layout_style(.Row, grow=1, compress_weight=1, min_width=96, height=24), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-	gui.text(ui, semantic_zoom_title(view.zoom.depth), key="document-semantic-detail-compact", style=alicorn.layout_style(.Row, width=68, height=24), text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
-	if gui.button(ui, fmt.tprintf("Wrap: %s", wrap_label), key="document-wrap-compact", width=88, height=24, content_style=alicorn.button_content_style(padding_x=0, padding_y=0), variant=.Quiet) {
-		editor_toggle_wrap_mode(app, rt)
+		// Both outer groups take the same share of the wide row. The center
+		// stays put as the cursor position and button labels change.
+		side_min_width := wide_side_min_width if wide else 0
+		position_style := alicorn.layout_style(.Row, min_width=side_min_width, grow=1,
+			height=alicorn.LAYOUT_SIZE_FIT_CONTENT, gap=group_gap, align=.Center, clip=true)
+		if gui.layout(ui, style=position_style, label="document-status-position") {
+			gui.text(ui, location, key="document-status-location" if wide else "document-status-compact-location",
+				style=text_slot, text_style=text_style)
+			if focused {
+				gui.text(ui, "Editor focused", key="document-editor-focus-cue", text_style=text_style, color=muted)
+			}
+		}
+		if wide {
+			metadata_style := alicorn.layout_style(.Row, width=metadata_width, min_width=metadata_min_width, compress_weight=1,
+				height=alicorn.LAYOUT_SIZE_FIT_CONTENT, justify=.Center, align=.Center, clip=true)
+			if gui.layout(ui, style=metadata_style, label="document-status-information") {
+				gui.text(ui, document_info, key="document-status-document-info", style=text_slot, text_style=text_style, color=muted)
+				_ = alicorn.tooltip(ui, document_info)
+			}
+		}
+		controls_style := alicorn.layout_style(.Row, height=control_height, min_width=side_min_width, grow=1,
+			gap=4, align=.Baseline, justify=.End, clip=true)
+		if !wide {
+			controls_style.grow = 0
+			controls_style.width = compact_controls_width
+			controls_style.min_width = 80
+			controls_style.compress_weight = 1
+		}
+		if gui.layout(ui, style=controls_style, label="document-status-controls") {
+			gui.text(ui, detail_label, key="document-semantic-detail" if wide else "document-semantic-detail-compact",
+				style=text_slot, text_style=text_style, color=muted)
+			_ = alicorn.tooltip(ui, detail_tooltip)
+			if gui.button(ui, wrap, key="document-wrap" if wide else "document-wrap-compact",
+				style=alicorn.layout_style(.Row, min_width=71, height=control_height),
+				text_style=text_style, content_style=button_content, variant=.Quiet) {
+				editor_toggle_wrap_mode(app, rt)
+			}
+			if wide && gui.button(ui, "Go to Line…", key="document-goto-line", height=control_height,
+				text_style=text_style, content_style=button_content, variant=.Quiet) {
+				go_to_line_open_surface(app, rt)
+			}
+		}
+		alicorn.adaptive_alternative_end(ui)
 	}
-	alicorn.adaptive_alternative_end(ui)
 	alicorn.adaptive_end(ui)
-	alicorn.container_end(ui)
+	alicorn.surface_end(ui)
 }
