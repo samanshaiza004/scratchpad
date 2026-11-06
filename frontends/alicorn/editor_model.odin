@@ -113,6 +113,13 @@ Editor_Reveal_Request :: struct {
 	pending: bool,
 }
 
+EDITOR_WRAP_LINE_CACHE_LIMIT :: 512
+
+Editor_Wrap_Line_Cache_Entry :: struct {
+	logical_line: u64,
+	fingerprint: u64,
+}
+
 Editor_View_State :: struct {
 	document_id:       string,
 	scroll_y:          f32,
@@ -165,6 +172,7 @@ Editor_View_State :: struct {
 	task_toggle_x, task_toggle_y: f32,
 	wrap_height_index: alicorn.Virtual_List_Height_Index,
 	wrap_height_index_ready: bool,
+	wrap_line_cache: [dynamic]Editor_Wrap_Line_Cache_Entry,
 	wrap_measurement_width: f32,
 	wrap_measurement_revision: u64,
 	wrap_measurement_presentation_revision: u64,
@@ -318,6 +326,7 @@ editor_view_remove :: proc(views: ^[dynamic]Editor_View_State, index: int, alloc
 	if views[index].wrap_height_index_ready {
 		alicorn.virtual_list_height_index_destroy(&views[index].wrap_height_index)
 	}
+	editor_wrap_line_cache_clear(&views[index])
 	semantic_zoom_destroy(&views[index].zoom, allocator)
 	delete(views[index].document_id, allocator)
 	ordered_remove(views, index)
@@ -330,6 +339,7 @@ editor_views_destroy :: proc(views: ^[dynamic]Editor_View_State, allocator := co
 		editor_reveal_request_clear(&view.reveal_request, allocator)
 		if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window, allocator) }
 		if view.wrap_height_index_ready { alicorn.virtual_list_height_index_destroy(&view.wrap_height_index) }
+		editor_wrap_line_cache_clear(&view)
 		semantic_zoom_destroy(&view.zoom, allocator)
 		if len(view.document_id) > 0 { delete(view.document_id, allocator) }
 	}
@@ -872,6 +882,97 @@ editor_count_line_breaks :: proc(source: []u8) -> u64 {
 // measurements. Retire measurements for touched lines and shift only the
 // unaffected suffix; if a bounded-range edge cannot be mapped, discard the
 // measurements safely and let visible rows be remeasured.
+editor_wrap_line_cache_find :: proc(
+	view: ^Editor_View_State,
+	logical_line: u64,
+) -> (index: int, found: bool) {
+	if view == nil { return }
+	low, high := 0, len(view.wrap_line_cache)
+	for low < high {
+		mid := (low+high)/2
+		if view.wrap_line_cache[mid].logical_line < logical_line { low = mid+1 } else { high = mid }
+	}
+	return low, low < len(view.wrap_line_cache) && view.wrap_line_cache[low].logical_line == logical_line
+}
+
+editor_wrap_line_cache_matches :: proc(
+	view: ^Editor_View_State,
+	logical_line: u64,
+	fingerprint: u64,
+) -> bool {
+	index, found := editor_wrap_line_cache_find(view, logical_line)
+	return found && view.wrap_line_cache[index].fingerprint == fingerprint
+}
+
+editor_wrap_line_cache_store :: proc(
+	view: ^Editor_View_State,
+	logical_line: u64,
+	fingerprint: u64,
+) {
+	if view == nil { return }
+	index, found := editor_wrap_line_cache_find(view, logical_line)
+	if found {
+		view.wrap_line_cache[index].fingerprint = fingerprint
+		return
+	}
+	append(&view.wrap_line_cache, Editor_Wrap_Line_Cache_Entry{})
+	for move := len(view.wrap_line_cache)-1; move > index; move -= 1 {
+		view.wrap_line_cache[move] = view.wrap_line_cache[move-1]
+	}
+	view.wrap_line_cache[index] = Editor_Wrap_Line_Cache_Entry{
+		logical_line=logical_line,
+		fingerprint=fingerprint,
+	}
+	if len(view.wrap_line_cache) <= EDITOR_WRAP_LINE_CACHE_LIMIT { return }
+	first_distance := logical_line-view.wrap_line_cache[0].logical_line
+	last_distance := view.wrap_line_cache[len(view.wrap_line_cache)-1].logical_line-logical_line
+	if first_distance > last_distance {
+		ordered_remove(&view.wrap_line_cache, 0)
+	} else {
+		_ = pop(&view.wrap_line_cache)
+	}
+}
+
+editor_wrap_line_cache_clear :: proc(view: ^Editor_View_State) {
+	if view == nil { return }
+	delete(view.wrap_line_cache)
+	view.wrap_line_cache = {}
+}
+
+editor_wrap_line_cache_set_count :: proc(view: ^Editor_View_State, item_count: int) {
+	if view == nil || item_count < 0 { return }
+	for index := len(view.wrap_line_cache)-1; index >= 0; index -= 1 {
+		if view.wrap_line_cache[index].logical_line < u64(item_count) { break }
+		ordered_remove(&view.wrap_line_cache, index)
+	}
+}
+
+editor_wrap_line_cache_apply_edit :: proc(
+	view: ^Editor_View_State,
+	first_item, removed_count, inserted_count, resulting_item_count: int,
+) {
+	if view == nil { return }
+	old_end := first_item+removed_count
+	delta := inserted_count-removed_count
+	write := 0
+	for read in 0..<len(view.wrap_line_cache) {
+		entry := view.wrap_line_cache[read]
+		index := int(entry.logical_line)
+		if index < first_item {
+			view.wrap_line_cache[write] = entry
+			write += 1
+			continue
+		}
+		if index < old_end { continue }
+		index += delta
+		if index < 0 || index >= resulting_item_count { continue }
+		entry.logical_line = u64(index)
+		view.wrap_line_cache[write] = entry
+		write += 1
+	}
+	for len(view.wrap_line_cache) > write { _ = pop(&view.wrap_line_cache) }
+}
+
 editor_wrap_heights_apply_edit :: proc(
 	view: ^Editor_View_State,
 	window: ^Editor_Window,
@@ -897,6 +998,9 @@ editor_wrap_heights_apply_edit :: proc(
 			inserted_count,
 			result_count,
 		)
+		if valid {
+			editor_wrap_line_cache_apply_edit(view, first_index, removed_count, inserted_count, result_count)
+		}
 	}
 	if !valid {
 		alicorn.virtual_list_height_index_destroy(&view.wrap_height_index)
@@ -906,6 +1010,7 @@ editor_wrap_heights_apply_edit :: proc(
 			EDITOR_ROW_HEIGHT*text_scale,
 			context.allocator,
 		)
+		editor_wrap_line_cache_clear(view)
 	}
 	view.wrap_measurement_revision = 0
 }
@@ -919,6 +1024,7 @@ editor_wrap_heights_reset :: proc(view: ^Editor_View_State, item_count: int, tex
 		EDITOR_ROW_HEIGHT*text_scale,
 		context.allocator,
 	)
+	editor_wrap_line_cache_clear(view)
 	view.wrap_measurement_width = -1
 	view.wrap_measurement_revision = 0
 	view.wrap_measurement_presentation_revision = 0

@@ -281,6 +281,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	if view.wrap_height_index_ready {
 		_ = alicorn.virtual_list_height_index_set_count(&view.wrap_height_index, line_count)
+		editor_wrap_line_cache_set_count(view, line_count)
 	}
 	semantic_zoom_sync_geometry(view, window, text_scale)
 	previous_scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
