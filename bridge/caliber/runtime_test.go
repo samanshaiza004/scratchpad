@@ -1375,7 +1375,7 @@ func TestReplaceDocumentAckUsesAppliedSpliceWhenCaretIsAfterDeletion(t *testing.
 	if len(state.Documents) != 1 {
 		t.Fatalf("opened documents = %+v", state.Documents)
 	}
-	start := uint64(len([]byte(" worXldsecondthird\r\n  \r\n  \r\n")))
+	start := uint64(len([]byte("hello worXldsecondthird\r\n  \r\n  \r\n")))
 	end := start + 4
 	caretBefore := start + 6
 	caretAfter := start + 2

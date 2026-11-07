@@ -194,7 +194,7 @@ scratchpad_editor_font_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^ali
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
 		fill=scratchpad_modal_panel_fill(app, rt),
-		backdrop_effect=scratchpad_modal_backdrop_effect(app),
+		backdrop_effect=scratchpad_modal_backdrop_effect(app, rt),
 		label="scratchpad-editor-font-picker-panel",
 	) {
 		gui.text(ui, "Choose editor font", style=alicorn.layout_style(.Row, height=28), text_style=alicorn.Text_Style{font_size=20, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
