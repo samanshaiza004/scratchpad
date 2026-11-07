@@ -30,6 +30,7 @@ editor_edit_selection_snapshot :: proc(
 Editor_Edit_Intent :: struct {
 	sequence:          u64,
 	document_id:       string,
+	document_instance_id: u64,
 	pinned_edit:       bool,
 	workspace_search_edit: bool,
 	pin_id:             u64,
@@ -47,6 +48,7 @@ Editor_Edit_Intent :: struct {
 	optimistic_projection: bool,
 	reveal_after_ack: bool,
 	reveal_logical_line: u64,
+	recoverable_ime_commit: bool,
 }
 
 EDITOR_TYPING_GROUP_PAUSE_NS :: i64(900_000_000)
@@ -83,6 +85,7 @@ editor_preedit_update :: proc(
 	}
 	if !editor_preedit_replace_text(view, text, selection_start, selection_end, allocator) { return false }
 	view.preedit_recoverable = false
+	view.preedit_document_instance_id = view.document_instance_id
 	return true
 }
 
@@ -118,6 +121,7 @@ editor_preedit_make_recoverable :: proc(
 	text: string,
 	start_byte, end_byte: u64,
 	allocator := context.allocator,
+	document_instance_id: u64 = 0,
 ) -> bool {
 	if view == nil || len(text) == 0 { return false }
 	capacity := max(len(text), EDITOR_IME_RECOVERY_MAX_BYTES)
@@ -133,6 +137,8 @@ editor_preedit_make_recoverable :: proc(
 	view.preedit_text = storage[:len(text)]
 	view.preedit_active = true
 	view.preedit_recoverable = true
+	view.preedit_document_instance_id = document_instance_id if document_instance_id != 0 else view.document_instance_id
+	view.preedit_recovery_copy_only = false
 	view.preedit_replace_start = start_byte
 	view.preedit_replace_end = end_byte
 	view.preedit_selection_start = 0
@@ -169,6 +175,50 @@ editor_preedit_append_recovery :: proc(
 	return true
 }
 
+// Replays a later optimistic edit inside the replacement currently held for
+// recovery. End-of-buffer insertions stay O(1); less common edits inside an
+// auto-pair or selected replacement rebuild the bounded recovery buffer.
+editor_preedit_apply_recovery_edit :: proc(
+	view: ^Editor_View_State,
+	start_byte, end_byte: u64,
+	replacement: []u8,
+	allocator := context.allocator,
+) -> bool {
+	if view == nil || !view.preedit_recoverable || end_byte < start_byte { return false }
+	span_start := view.preedit_replace_start
+	span_end := span_start+u64(len(view.preedit_text))
+	if start_byte < span_start || end_byte > span_end { return false }
+	if start_byte == span_end && end_byte == span_end {
+		return editor_preedit_append_recovery(view, string(replacement), allocator)
+	}
+	local_start, local_end := int(start_byte-span_start), int(end_byte-span_start)
+	new_length := len(view.preedit_text)-(local_end-local_start)+len(replacement)
+	if new_length < 0 { return false }
+	capacity := max(EDITOR_IME_RECOVERY_MAX_BYTES, new_length)
+	storage, allocation_error := make([]u8, capacity, allocator=allocator)
+	if allocation_error != nil { return false }
+	if local_start > 0 {
+		mem.copy(rawptr(&storage[0]), rawptr(&view.preedit_text[0]), local_start)
+	}
+	if len(replacement) > 0 {
+		mem.copy(rawptr(&storage[local_start]), rawptr(&replacement[0]), len(replacement))
+	}
+	suffix_length := len(view.preedit_text)-local_end
+	if suffix_length > 0 {
+		mem.copy(
+			rawptr(&storage[local_start+len(replacement)]),
+			rawptr(&view.preedit_text[local_end]),
+			suffix_length,
+		)
+	}
+	delete(view.preedit_recovery_storage, allocator)
+	view.preedit_recovery_storage = storage
+	view.preedit_text = storage[:new_length]
+	view.preedit_selection_start = 0
+	view.preedit_selection_end = new_length
+	return true
+}
+
 editor_preedit_recovery_is_full :: proc(view: ^Editor_View_State) -> bool {
 	return view != nil && view.preedit_recoverable && len(view.preedit_text) >= EDITOR_IME_RECOVERY_MAX_BYTES
 }
@@ -191,6 +241,8 @@ editor_preedit_clear :: proc(view: ^Editor_View_State, allocator := context.allo
 	view.preedit_text = {}
 	view.preedit_active = false
 	view.preedit_recoverable = false
+	view.preedit_document_instance_id = 0
+	view.preedit_recovery_copy_only = false
 	view.preedit_recovery_storage = {}
 	view.preedit_replace_start = 0
 	view.preedit_replace_end = 0
@@ -217,7 +269,9 @@ editor_preedit_display_for_line :: proc(
 	line: ^Editor_Display_Line,
 	allocator := context.temp_allocator,
 ) -> (display: string, selection_start, selection_end: int, applies: bool) {
-	if view == nil || !view.preedit_active || window == nil || line == nil || len(view.preedit_text) == 0 {
+	if view == nil || !view.preedit_active || window == nil || line == nil || len(view.preedit_text) == 0 ||
+	   (view.preedit_document_instance_id != 0 && view.document_instance_id != 0 &&
+	    view.preedit_document_instance_id != view.document_instance_id) {
 		return
 	}
 	start_line, start_found := editor_line_for_source(window, view.preedit_replace_start)

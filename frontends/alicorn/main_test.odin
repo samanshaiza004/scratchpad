@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -110,6 +111,171 @@ test_recoverable_ime_text_survives_document_switch_and_blocks_close :: proc(t: ^
 		!view.preedit_recoverable && len(view.preedit_text) == 0 &&
 		strings.contains(app.error_message, "explicitly discarded"),
 		"the recovery prompt's explicit discard choice should clear only the held composition, not edit source bytes")
+}
+
+@(test)
+test_edit_ack_identity_includes_document_instance :: proc(t: ^testing.T) {
+	intent := Editor_Edit_Intent{sequence=12, document_id="same-id", document_instance_id=91}
+	result := bridge.Editor_Edit_Lane_Result{sequence=12, document_id="same-id", source_instance=91}
+	testing.expect(t, editor_edit_ack_identity_matches(&intent, &result),
+		"an acknowledgement must match sequence, document ID, and source instance")
+	result.source_instance = 92
+	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
+		"an acknowledgement from a reopened document instance must not match an older edit")
+	result.source_instance = 91
+	result.document_id = "other-id"
+	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
+		"an acknowledgement for another document must not match even when sequence and instance agree")
+}
+
+@(test)
+test_editor_window_rejects_same_revision_from_another_document_instance :: proc(t: ^testing.T) {
+	view := Editor_View_State{document_id="same-id", document_instance_id=92}
+	base := Editor_Window{document_id="same-id", document_instance_id=91, editor_revision=7}
+	_, matches := editor_view_window(&view, &base, true, "same-id", 7)
+	testing.expect(t, !matches,
+		"a cached visible projection from a prior document instance must not be reused at the same revision")
+	base.document_instance_id = 92
+	_, matches = editor_view_window(&view, &base, true, "same-id", 7)
+	testing.expect(t, matches, "the matching document instance should keep using its authoritative projection")
+}
+
+@(test)
+test_uncommitted_ime_preedit_clears_on_document_switch :: proc(t: ^testing.T) {
+	view := Editor_View_State{document_instance_id=17}
+	defer editor_preedit_clear(&view)
+	retained := editor_preedit_update(&view, "composing", 0, len("composing"))
+	editor_preedit_clear_for_document_switch(&view)
+	testing.expect(t, retained && !view.preedit_active && len(view.preedit_text) == 0 && !view.preedit_recoverable,
+		"switching away should clear uncommitted platform composition")
+}
+
+@(test)
+test_ime_cancel_clears_only_the_native_owner_preedit :: proc(t: ^testing.T) {
+	app: App
+	app.backend.started = true
+	app.backend.state.active = "main-doc"
+	app.editor_scroll_owner = 101
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	defer editor_views_destroy(&app.editor_views)
+	main_index, main_ok := editor_view_ensure(&app.editor_views, "main-doc")
+	other_index, other_ok := editor_view_ensure(&app.editor_views, "other-doc")
+	if !main_ok || !other_ok {
+		testing.expect(t, false, "both editor views should be retained")
+		return
+	}
+	_ = editor_preedit_update(&app.editor_views[main_index], "main composition", 0, len("main composition"))
+	_ = editor_preedit_update(&app.editor_views[other_index], "other composition", 0, len("other composition"))
+	cleared := editor_preedit_cancel_for_owner(&app, 101)
+	testing.expect(t, cleared && !app.editor_views[main_index].preedit_active,
+		"a native cancel should clear the preedit owned by its active editor field")
+	testing.expect(t, app.editor_views[other_index].preedit_active && string(app.editor_views[other_index].preedit_text) == "other composition",
+		"a native cancel must not erase composition in another retained document view")
+	testing.expect(t, !editor_preedit_cancel_for_owner(&app, 999),
+		"an unrelated native owner must not clear any editor composition")
+}
+
+@(test)
+test_rejected_ime_edit_chain_remains_recoverable_after_prune :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "ime-doc")
+	if !view_ok { testing.expect(t, false, "IME editor view should be retained"); return }
+	app.editor_views[view_index].document_instance_id = 44
+	first_id, _ := strings.clone("ime-doc", context.allocator)
+	second_id, _ := strings.clone("ime-doc", context.allocator)
+	first_bytes := []u8{'\xe3', '\x81', '\xab'}
+	second_bytes := []u8{'\xe3', '\x81', '\xbb', '\xe3', '\x82', '\x93'}
+	first_owned, _ := make([]u8, len(first_bytes), allocator=context.allocator)
+	second_owned, _ := make([]u8, len(second_bytes), allocator=context.allocator)
+	copy(first_owned, first_bytes)
+	copy(second_owned, second_bytes)
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=1, document_id=first_id, document_instance_id=44,
+		start_byte=5, end_byte=5, replacement=first_owned, recoverable_ime_commit=true,
+	})
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=2, document_id=second_id, document_instance_id=44,
+		start_byte=8, end_byte=8, replacement=second_owned, recoverable_ime_commit=true,
+	})
+	preserved := editor_recover_failed_edit_chain(&app, &app.editor_edits[0])
+	view := &app.editor_views[view_index]
+	testing.expect(t, preserved && len(app.editor_edits) == 0 && view.preedit_recoverable &&
+		string(view.preedit_text) == "にほん" && view.preedit_replace_start == 5 &&
+		view.preedit_document_instance_id == 44,
+		"a rejected serial IME chain should retain committed text once, with its original source instance and range")
+	editor_views_prune(&app)
+	testing.expect(t, len(app.editor_views) == 1 && app.editor_views[0].preedit_recoverable,
+		"pruning a closed document must not release its only recoverable committed text")
+}
+
+@(test)
+test_rejected_edit_chain_replays_caret_inserts_and_marks_unmappable_text_copy_only :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "chain-doc")
+	if !view_ok { testing.expect(t, false, "recovery view should be retained"); return }
+	app.editor_views[view_index].document_instance_id = 18
+	texts := [3]string{"()", "x", "y"}
+	starts := [3]u64{20, 21, 90}
+	for index in 0..<len(texts) {
+		document_id, _ := strings.clone("chain-doc", context.allocator)
+		bytes, _ := make([]u8, len(texts[index]), allocator=context.allocator)
+		if len(bytes) > 0 { mem.copy(rawptr(&bytes[0]), rawptr(raw_data(texts[index])), len(bytes)) }
+		append(&app.editor_edits, Editor_Edit_Intent{
+			sequence=u64(index+1), document_id=document_id, document_instance_id=18,
+			start_byte=starts[index], end_byte=starts[index], replacement=bytes,
+			recoverable_ime_commit=true,
+		})
+	}
+	preserved := editor_recover_failed_edit_chain(&app, &app.editor_edits[0])
+	view := &app.editor_views[view_index]
+	testing.expect(t, preserved && string(view.preedit_text) == "(x)y" && view.preedit_recovery_copy_only,
+		"the failed replacement and an interior caret insertion should replay in order, then unmappable text should be retained as copy-only")
+	editor_preedit_clear(view)
+}
+
+@(test)
+test_copy_only_ime_recovery_accumulates_manual_payload :: proc(t: ^testing.T) {
+	view := Editor_View_State{document_instance_id=18}
+	defer editor_preedit_clear(&view)
+	retained := editor_preedit_make_recoverable(&view, "first", 20, 20, context.allocator, 18)
+	view.preedit_recovery_copy_only = true
+	text := []u8{'s', 'e', 'c', 'o', 'n', 'd'}
+	updated := editor_preedit_append_recovery(&view, string(text))
+	testing.expect(t, retained && updated && view.preedit_recoverable && view.preedit_recovery_copy_only &&
+		string(view.preedit_text) == "firstsecond",
+		"copy-only recovery should continue retaining committed text without offering it as an automatic source replacement")
+}
+
+@(test)
+test_discard_document_intents_keeps_a_borrowed_middle_id_alive :: proc(t: ^testing.T) {
+	app: App
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+	}
+	for sequence in 0..<3 {
+		document_id, _ := strings.clone("borrowed-id", context.allocator)
+		append(&app.editor_edits, Editor_Edit_Intent{
+			sequence=u64(sequence+1), document_id=document_id, document_instance_id=44,
+		})
+	}
+	borrowed_id := app.editor_edits[1].document_id
+	editor_discard_matching_document_intents(&app, borrowed_id, 44, match_instance=true)
+	testing.expect(t, len(app.editor_edits) == 0,
+		"discarding a queue through a middle intent's borrowed ID must not invalidate comparisons for earlier matching intents")
 }
 
 
