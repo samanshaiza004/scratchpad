@@ -1105,10 +1105,3 @@ func marshalResponse(response Response) []byte {
 	}
 	return append(data, '\n')
 }
-
-func appError(code string, err error) Response {
-	if err == nil {
-		err = errors.New("unknown error")
-	}
-	return errorResponse(0, "running", code, err.Error(), false)
-}
