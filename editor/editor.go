@@ -156,19 +156,6 @@ func mapPositionThroughEdit(position int, edit SourceEdit) int {
 	}
 }
 
-func commonSplice(before, after []byte) (start, oldEnd, newEnd int) {
-	limit := min(len(before), len(after))
-	for start < limit && before[start] == after[start] {
-		start++
-	}
-	suffix := 0
-	for suffix < len(before)-start && suffix < len(after)-start &&
-		before[len(before)-1-suffix] == after[len(after)-1-suffix] {
-		suffix++
-	}
-	return start, len(before) - suffix, len(after) - suffix
-}
-
 // EditsSince returns the contiguous edit chain from revision to the current
 // editor state. The journal is intentionally bounded; callers must fall back
 // to a fresh parse when the requested chain has been evicted or is ambiguous.
