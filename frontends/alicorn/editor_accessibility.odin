@@ -46,6 +46,7 @@ editor_accessibility_projection_matches_document :: proc(
 ) -> bool {
 	return projection != nil && projection.complete &&
 	       projection.document_id == document.id &&
+	       projection.document_instance_id == document.instance_id &&
 	       projection.editor_revision == document.editor_revision
 }
 
@@ -55,6 +56,7 @@ editor_accessibility_clear_source_error :: proc(app: ^App) {
 	if len(app.accessibility_source_error_document_id) > 0 { delete(app.accessibility_source_error_document_id, context.allocator) }
 	app.accessibility_source_error = ""
 	app.accessibility_source_error_document_id = ""
+	app.accessibility_source_error_instance_id = 0
 	app.accessibility_source_error_revision = 0
 }
 
@@ -66,6 +68,7 @@ editor_accessibility_take_completion :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if !app.backend.started { return }
 	document, document_found := find_document(&app.backend.state, app.backend.state.active)
 	if !document_found || result.request.document_id != document.id ||
+	   result.request.document_instance_id != document.instance_id ||
 	   result.request.editor_revision != document.editor_revision ||
 	   result.request.byte_length != document.byte_length || result.request.line_count != document.line_count {
 		return
@@ -80,6 +83,7 @@ editor_accessibility_take_completion :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		editor_accessibility_clear_source_error(app)
 		app.accessibility_source_error, _ = strings.clone(result.error, context.allocator)
 		app.accessibility_source_error_document_id, _ = strings.clone(document.id, context.allocator)
+		app.accessibility_source_error_instance_id = document.instance_id
 		app.accessibility_source_error_revision = document.editor_revision
 	}
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad accessible document projection completed") }
@@ -105,7 +109,7 @@ editor_accessibility_build_semantics :: proc(
 	if view.authoritative_revision == 0 && len(app.editor_edits) == 0 {
 		view.authoritative_revision = document.editor_revision
 	}
-	area_id := editor_accessibility_area_id(document.id)
+	area_id := editor_accessibility_area_id(document.id, document.instance_id)
 	area_changed := app.accessibility_semantic_area_id != area_id
 	revision_changed := app.accessibility_semantic_revision != document.editor_revision
 	semantic_identity_changed := area_changed || revision_changed
@@ -137,12 +141,14 @@ editor_accessibility_build_semantics :: proc(
 	}
 
 	error_matches := app.accessibility_source_error_document_id == document.id &&
+	                 app.accessibility_source_error_instance_id == document.instance_id &&
 	                 app.accessibility_source_error_revision == document.editor_revision
 	lane_available := editor_accessibility_lane(app).thread != nil
 	if !projection_matches && !error_matches && lane_available {
 		_, requested := accessibility_source_lane_request(
 			editor_accessibility_lane(app),
 			document.id,
+			document.instance_id,
 			document.editor_revision,
 			document.byte_length,
 			document.line_count,
@@ -151,6 +157,7 @@ editor_accessibility_build_semantics :: proc(
 			editor_accessibility_clear_source_error(app)
 			app.accessibility_source_error, _ = strings.clone("Could not start the accessible source-text read.", context.allocator)
 			app.accessibility_source_error_document_id, _ = strings.clone(document.id, context.allocator)
+			app.accessibility_source_error_instance_id = document.instance_id
 			app.accessibility_source_error_revision = document.editor_revision
 			error_matches = true
 		}
@@ -181,7 +188,7 @@ editor_accessibility_build_semantics :: proc(
 	}
 	area_label := document_title(document.path)
 	if area_label == "" { area_label = "Document editor" }
-	if !alicorn.semantic_describe_as(ui, editor_accessibility_area_id(document.id), .Text_Area, area_label,
+	if !alicorn.semantic_describe_as(ui, editor_accessibility_area_id(document.id, document.instance_id), .Text_Area, area_label,
 	                                 description=description, states=area_states, actions=area_actions) {
 		return
 	}

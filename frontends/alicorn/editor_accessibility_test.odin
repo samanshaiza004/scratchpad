@@ -2,6 +2,21 @@ package main
 
 import "core:testing"
 import alicorn "alicorn:runtime"
+import bridge "./bridge"
+
+@(test)
+test_editor_accessibility_projection_is_bound_to_document_instance :: proc(t: ^testing.T) {
+	projection := editor_accessibility_projection_build(
+		"same-path", "text", 7, context.temp_allocator, document_instance_id=31,
+	)
+	defer editor_accessibility_projection_destroy(&projection)
+	document := bridge.State_Document{id="same-path", instance_id=31, editor_revision=7}
+	testing.expect(t, editor_accessibility_projection_matches_document(&projection, document),
+		"a projection should match its source document instance and revision")
+	document.instance_id = 32
+	testing.expect(t, !editor_accessibility_projection_matches_document(&projection, document),
+		"reopening the same path at the same revision must not reuse the prior accessibility projection")
+}
 
 @(test)
 test_editor_accessibility_retire_removes_area_and_projection :: proc(t: ^testing.T) {

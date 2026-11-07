@@ -179,6 +179,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	}
 	view := &app.editor_views[view_index]
 	if view_created {
+		view.document_instance_id = document.instance_id
 		view.selection_anchor = document.anchor_byte
 		view.caret_byte = document.cursor_byte
 		view.caret_affinity = alicorn.Text_Affinity(document.affinity)
@@ -186,6 +187,35 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		view.scroll_y = document.scroll_y
 		view.restore_x_pending = document.scroll_x_initialized
 		view.restore_y_pending = document.scroll_y_initialized
+	} else if view.document_instance_id == 0 {
+		// Views created by a direct input or projection path are bound when the
+		// authoritative document description first reaches the editor.
+		view.document_instance_id = document.instance_id
+	} else if view.document_instance_id != 0 && view.document_instance_id != document.instance_id {
+		// A stable document ID can be reopened as a new source instance with the
+		// same revision. Drop instance-scoped presentation and composition state
+		// before reusing this view; committed recovery text remains available.
+		editor_preedit_clear_for_document_switch(view)
+		if view.optimistic_window_ready {
+			editor_window_destroy(&view.optimistic_window)
+			view.optimistic_window_ready = false
+		}
+		view.optimistic_pending_edits = 0
+		view.optimistic_line_delta = 0
+		view.authoritative_revision = document.editor_revision
+		view.selection_anchor = document.anchor_byte
+		view.caret_byte = document.cursor_byte
+		view.caret_affinity = alicorn.Text_Affinity(document.affinity)
+		view.auto_pair_valid = false
+		view.preferred_x_set = false
+		view.position_reconcile_pending = true
+		editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
+		view.document_instance_id = document.instance_id
+		if app.editor_window_ready && app.editor_window.document_id == document.id {
+			editor_window_destroy(&app.editor_window)
+			app.editor_window_ready = false
+		}
+		editor_window_rejection_clear(app)
 	}
 	markdown_palette := editor_markdown_palette(rt, app.editor_theme)
 	text_scale := editor_text_scale_effective(app)
@@ -783,6 +813,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		}
 		request := bridge.Visible_Window_Request{
 			document_id=document.id,
+			document_instance_id=document.instance_id,
 			application_rev=app.backend.state.application_rev,
 			editor_revision=document.editor_revision,
 			start_line=request_start,
@@ -814,6 +845,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				view.viewport_anchor_revision,
 				view.viewport_anchor_byte,
 				view.viewport_anchor_line,
+				document.instance_id,
 			)
 			if accepted {
 				app.editor_request_generation = generation

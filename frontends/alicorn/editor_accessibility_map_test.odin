@@ -141,17 +141,27 @@ test_editor_accessibility_map_empty_document_has_caret_run :: proc(t: ^testing.T
 
 @(test)
 test_editor_accessibility_map_stable_area_and_run_ids :: proc(t: ^testing.T) {
-	first := editor_accessibility_projection_build("stable-document", "one\ntwo", 1, context.temp_allocator)
+	first := editor_accessibility_projection_build(
+		"stable-document", "one\ntwo", 1, context.temp_allocator, document_instance_id=17,
+	)
 	defer editor_accessibility_projection_destroy(&first)
-	second := editor_accessibility_projection_build("stable-document", "changed", 9, context.temp_allocator)
+	second := editor_accessibility_projection_build(
+		"stable-document", "changed", 9, context.temp_allocator, document_instance_id=17,
+	)
 	defer editor_accessibility_projection_destroy(&second)
 	other := editor_accessibility_projection_build("other-document", "one\ntwo", 1, context.temp_allocator)
 	defer editor_accessibility_projection_destroy(&other)
+	reopened := editor_accessibility_projection_build(
+		"stable-document", "one\ntwo", 1, context.temp_allocator, document_instance_id=18,
+	)
+	defer editor_accessibility_projection_destroy(&reopened)
 
-	testing.expect(t, first.area_id == second.area_id && first.area_id == editor_accessibility_area_id("stable-document"),
-		"a document's Text_Area identity should survive source and revision changes")
+	testing.expect(t, first.area_id == second.area_id && first.area_id == editor_accessibility_area_id("stable-document", 17),
+		"a document instance's Text_Area identity should survive source and revision changes")
 	testing.expect(t, first.area_id != other.area_id,
 		"different document identities should produce different Text_Area identities")
+	testing.expect(t, first.area_id != reopened.area_id && reopened.document_instance_id == 18,
+		"reopening the same document ID must create a distinct semantic identity even at the same revision")
 	if len(first.runs) > 0 && len(second.runs) > 0 && len(other.runs) > 0 {
 		testing.expect(t, first.runs[0].id == editor_accessibility_run_id(first.area_id, first.editor_revision, 0) &&
 			first.runs[0].id != second.runs[0].id && first.runs[0].id != other.runs[0].id,

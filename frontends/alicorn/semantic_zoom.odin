@@ -66,11 +66,13 @@ semantic_zoom_source_window :: proc(app: ^App, view: ^Editor_View_State, documen
 	if !semantic_zoom_plan_matches(view, document) { return nil }
 	if cached := semantic_zoom_find_window(view, line); cached != nil { return cached }
 	result := bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id,
-		start_line=line, max_lines=8, max_bytes=16*1024, include_presentation=true, read_latest_after=false)
+		start_line=line, max_lines=8, max_bytes=16*1024, include_presentation=true,
+		source_instance=document.instance_id, read_latest_after=false)
 	defer bridge.backend_command_result_destroy(&result, context.allocator)
 	if !result.ok || !result.visible_window_owned || result.visible_window.editor_revision != document.editor_revision { return nil }
 	window, ok, _ := editor_window_from_visible(&result.visible_window)
 	if !ok { return nil }
+	window.document_instance_id = document.instance_id
 	if editor_window_is_long_line_chunk(&window) {
 		// The ordinary source lane already implements chunked horizontal travel.
 		// Return to it rather than displaying an unreachable truncated line.
@@ -287,6 +289,7 @@ semantic_zoom_reveal_input :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Edito
 		view.selection_anchor = min(document.anchor_byte, document.byte_length)
 		view.caret_byte = min(document.cursor_byte, document.byte_length)
 		view.anchor_affinity, view.caret_affinity = .Leading, alicorn.Text_Affinity(document.affinity)
+		view.document_instance_id = document.instance_id
 		semantic_zoom_destroy(&view.zoom)
 		view.zoom.anchor_byte, view.zoom.anchor_line = view.caret_byte, 0
 		view.authoritative_revision = document.editor_revision
@@ -308,10 +311,12 @@ semantic_zoom_reveal_input :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Edito
 		if !exact || !caret_loaded {
 			result := bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id,
 				start_line=view.zoom.anchor_line, anchor_byte=view.caret_byte, max_lines=bridge.MAX_VISIBLE_LINES,
-				max_bytes=bridge.MAX_VISIBLE_BYTES, include_presentation=true, read_latest_after=false)
+				max_bytes=bridge.MAX_VISIBLE_BYTES, include_presentation=true,
+				source_instance=document.instance_id, read_latest_after=false)
 			if result.ok && result.visible_window_owned && result.visible_window.editor_revision == document.editor_revision {
 				fresh, ok, _ := editor_window_from_visible(&result.visible_window)
 				if ok {
+					fresh.document_instance_id = document.instance_id
 					if view.optimistic_window_ready && view.optimistic_pending_edits == 0 {
 						editor_window_destroy(&view.optimistic_window)
 						view.optimistic_window_ready = false
@@ -489,11 +494,13 @@ semantic_zoom_source_window_at_byte :: proc(app: ^App, view: ^Editor_View_State,
 	}
 	if !line_found { return nil }
 	result := bridge.backend_command(&app.backend, "read_visible_lines", document_id=document.id,
-		start_line=start_line, max_lines=8, max_bytes=16*1024, include_presentation=true, read_latest_after=false)
+		start_line=start_line, max_lines=8, max_bytes=16*1024, include_presentation=true,
+		source_instance=document.instance_id, read_latest_after=false)
 	defer bridge.backend_command_result_destroy(&result, context.allocator)
 	if !result.ok || !result.visible_window_owned || result.visible_window.editor_revision != document.editor_revision { return nil }
 	window, ok, _ := editor_window_from_visible(&result.visible_window)
 	if !ok { return nil }
+	window.document_instance_id = document.instance_id
 	if editor_window_is_long_line_chunk(&window) {
 		editor_window_destroy(&window)
 		_ = frame_deferred_action_schedule(app, .Action, ACTION_SEMANTIC_FULL)
