@@ -204,6 +204,7 @@ Presentation_Record :: struct {
 
 Visible_Window :: struct {
 	document_id:     string,
+	document_instance_id: u64,
 	application_rev: u64,
 	editor_revision: u64,
 	start_line:      u64,
@@ -1674,6 +1675,7 @@ Semantic_View_Window_Destroy :: proc(window: ^Semantic_View_Window, allocator: m
 
 Visible_Window_Request :: struct {
 	document_id:       string,
+	document_instance_id: u64,
 	application_rev:   u64,
 	editor_revision:   u64,
 	start_line:        u64,
@@ -1723,6 +1725,7 @@ Visible_Window_Lane :: struct {
 
 visible_window_request_equal :: proc(a, b: Visible_Window_Request) -> bool {
 	return a.document_id == b.document_id &&
+	       a.document_instance_id == b.document_instance_id &&
 	       a.application_rev == b.application_rev &&
 	       a.editor_revision == b.editor_revision &&
 	       a.start_line == b.start_line &&
@@ -1778,6 +1781,7 @@ visible_window_lane_worker :: proc(t: ^thread.Thread) {
 			source_anchor_byte=request.source_anchor_byte,
 			source_anchor_line=request.source_anchor_line,
 			based_on_revision=request.application_rev,
+			source_instance=request.document_instance_id,
 			allocator=lane.allocator,
 		)
 
@@ -1796,6 +1800,7 @@ visible_window_lane_worker :: proc(t: ^thread.Thread) {
 			request.document_id = ""
 			if result.ok && result.visible_window_owned {
 				lane.completed.window = result.visible_window
+				lane.completed.window.document_instance_id = request.document_instance_id
 				lane.completed.window_owned = true
 				result.visible_window_owned = false
 			} else {
@@ -1860,6 +1865,7 @@ visible_window_lane_request :: proc(
 	source_anchor_revision: u64 = 0,
 	source_anchor_byte: u64 = 0,
 	source_anchor_line: u64 = 0,
+	document_instance_id: u64 = 0,
 ) -> (generation: u64, accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 {
 		return 0, false, "visible-window lane is not running or document identity is empty"
@@ -1874,7 +1880,8 @@ visible_window_lane_request :: proc(
 		return 0, false, "visible-window lane is stopping"
 	}
 	if lane.pending && visible_window_request_equal(lane.pending_request, Visible_Window_Request{
-		document_id=document_id, application_rev=application_rev, editor_revision=editor_revision,
+		document_id=document_id, document_instance_id=document_instance_id,
+		application_rev=application_rev, editor_revision=editor_revision,
 		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
 		include_presentation=include_presentation, presentation_revision=presentation_revision,
 		presentation_ready=presentation_ready,
@@ -1886,7 +1893,8 @@ visible_window_lane_request :: proc(
 		return generation, true, ""
 	}
 	if lane.active && !lane.pending && visible_window_request_equal(lane.active_request, Visible_Window_Request{
-		document_id=document_id, application_rev=application_rev, editor_revision=editor_revision,
+		document_id=document_id, document_instance_id=document_instance_id,
+		application_rev=application_rev, editor_revision=editor_revision,
 		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
 		include_presentation=include_presentation, presentation_revision=presentation_revision,
 		presentation_ready=presentation_ready,
@@ -1913,6 +1921,7 @@ visible_window_lane_request :: proc(
 	}
 	lane.pending_request = Visible_Window_Request{
 		document_id=owned_document_id,
+		document_instance_id=document_instance_id,
 		application_rev=application_rev,
 		editor_revision=editor_revision,
 		start_line=start_line,
@@ -2155,6 +2164,7 @@ Editor_Edit_Request :: struct {
 	sequence:          u64,
 	command:           string,
 	document_id:       string,
+	source_instance:   u64,
 	action_id:         string,
 	pin_id:             u64,
 	pin_epoch:          u64,
@@ -2175,6 +2185,7 @@ Editor_Edit_Request :: struct {
 Editor_Edit_Lane_Result :: struct {
 	sequence:    u64,
 	document_id: string,
+	source_instance: u64,
 	command:     Backend_Command_Result,
 }
 
@@ -2258,6 +2269,7 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 				pin_id=request.pin_id,
 				pin_epoch=request.pin_epoch,
 				pin_revision=request.pin_revision,
+				source_instance=request.source_instance,
 				read_latest_after=false,
 				allocator=lane.allocator,
 			)
@@ -2268,6 +2280,7 @@ editor_edit_lane_worker :: proc(t: ^thread.Thread) {
 		lane.completed = Editor_Edit_Lane_Result{
 			sequence=request.sequence,
 			document_id=request.document_id,
+			source_instance=request.source_instance,
 			command=result,
 		}
 		request.document_id = ""
@@ -2320,6 +2333,7 @@ editor_edit_lane_submit :: proc(
 	lane: ^Editor_Edit_Lane,
 	sequence: u64,
 	document_id: string,
+	source_instance: u64,
 	based_on_revision, editor_revision, start_byte, end_byte: u64,
 	replacement: []u8,
 	before_anchor_byte, before_cursor_byte, after_anchor_byte, after_cursor_byte: u64,
@@ -2363,6 +2377,7 @@ editor_edit_lane_submit :: proc(
 		sequence=sequence,
 		command=command,
 		document_id=owned_id,
+		source_instance=source_instance,
 		action_id=owned_action_id,
 		pin_id=pin_id,
 		pin_epoch=pin_epoch,

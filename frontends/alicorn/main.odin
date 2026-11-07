@@ -429,6 +429,7 @@ editor_metadata_result_should_suppress_retry :: proc(
 	window: bridge.Visible_Window,
 ) -> bool {
 	return request.include_presentation &&
+	       (request.document_instance_id == 0 || request.document_instance_id == document.instance_id) &&
 	       request.editor_revision == document.editor_revision &&
 	       request.presentation_revision == document.presentation_revision &&
 	       request.presentation_ready == document.presentation_ready &&
@@ -606,7 +607,9 @@ application_visible_window_wake :: proc(app: ^App, rt: ^alicorn.Runtime, lane: ^
 		visible_error_changed := false
 		active, active_found := find_document(&app.backend.state, app.backend.state.active)
 		if window_result.generation == app.editor_request_generation && window_result.window_owned {
-			if active_found && window_result.window.document_id == active.id && window_result.window.editor_revision == active.editor_revision {
+			if active_found && window_result.window.document_id == active.id &&
+			   (window_result.request.document_instance_id == 0 || window_result.request.document_instance_id == active.instance_id) &&
+			   window_result.window.editor_revision == active.editor_revision {
 				view_index := editor_view_find(app.editor_views[:], active.id)
 				pending_edits := view_index >= 0 && app.editor_views[view_index].optimistic_pending_edits > 0
 				window, converted, conversion_error := editor_window_from_visible(&window_result.window)
@@ -624,6 +627,7 @@ application_visible_window_wake :: proc(app: ^App, rt: ^alicorn.Runtime, lane: ^
 				}
 				if converted && pending_edits {
 					view := &app.editor_views[view_index]
+					window.document_instance_id = active.instance_id
 					if editor_window_chase_pending_edits(app, &window, view) {
 						editor_window_destroy(&view.optimistic_window)
 						view.optimistic_window = window
@@ -640,6 +644,7 @@ application_visible_window_wake :: proc(app: ^App, rt: ^alicorn.Runtime, lane: ^
 						editor_window_destroy(&window)
 					}
 				} else if converted {
+					window.document_instance_id = active.instance_id
 						if view_index >= 0 && app.editor_views[view_index].optimistic_window_ready {
 							editor_window_destroy(&app.editor_views[view_index].optimistic_window)
 							app.editor_views[view_index].optimistic_window_ready = false
@@ -850,7 +855,9 @@ editor_window_chase_pending_edits :: proc(
 	}
 	base_revision := window.editor_revision
 	for intent in app.editor_edits {
-		if intent.document_id != window.document_id || intent.base_editor_revision < base_revision { continue }
+		if intent.document_id != window.document_id ||
+		   (window.document_instance_id != 0 && intent.document_instance_id != window.document_instance_id) ||
+		   intent.base_editor_revision < base_revision { continue }
 		next, replaced, _ := editor_window_replace_bytes(
 			window,
 			intent.start_byte,
@@ -2223,6 +2230,7 @@ editor_apply_local_typing_replace :: proc(
 	start_byte, end_byte: u64,
 	replacement: []u8,
 	resulting_anchor, resulting_caret: u64,
+	recoverable_ime_commit := false,
 ) -> bool {
 	if app == nil { return false }
 	document_id := app.backend.state.active
@@ -2234,6 +2242,7 @@ editor_apply_local_typing_replace :: proc(
 	group_id := editor_typing_group_id(&app.editor_views[view_index])
 	return editor_apply_local_replace_with_wire(
 		app, rt, start_byte, end_byte, replacement, {}, resulting_anchor, resulting_caret, group_id,
+		recoverable_ime_commit=recoverable_ime_commit,
 	)
 }
 
@@ -2248,6 +2257,7 @@ editor_apply_local_replace_with_wire :: proc(
 	allow_offscreen_authoritative := false,
 	reveal_after_ack := false,
 	reveal_logical_line: u64 = 0,
+	recoverable_ime_commit := false,
 ) -> bool {
 	if app == nil || rt == nil || !app.backend.started || end_byte < start_byte {
 		return false
@@ -2278,6 +2288,12 @@ editor_apply_local_replace_with_wire :: proc(
 		return false
 	}
 	view := &app.editor_views[view_index]
+	if view.document_instance_id != 0 && view.document_instance_id != document.instance_id {
+		set_error(app, "The document was reopened while an edit was pending; wait for the authoritative source to reload.")
+		alicorn.invalidate_root(rt, "Scratchpad deferred an edit from an older document instance")
+		return false
+	}
+	view.document_instance_id = document.instance_id
 	selection_snapshot := editor_edit_selection_snapshot(view, resulting_anchor, resulting_caret)
 	if workspace_search_edit {
 		selection_snapshot.after_anchor_byte = view.selection_anchor
@@ -2415,6 +2431,7 @@ editor_apply_local_replace_with_wire :: proc(
 	append(&app.editor_edits, Editor_Edit_Intent{
 		sequence=app.editor_edit_sequence,
 		document_id=owned_document_id,
+		document_instance_id=document.instance_id,
 		pinned_edit=pinned_edit,
 		workspace_search_edit=workspace_search_edit,
 		pin_id=u64(app.pinned.edit_pin) if pinned_edit else 0,
@@ -2432,6 +2449,7 @@ editor_apply_local_replace_with_wire :: proc(
 		optimistic_projection=optimistic_projection,
 		reveal_after_ack=reveal_after_ack || (pinned_edit && !optimistic_projection),
 		reveal_logical_line=reveal_logical_line,
+		recoverable_ime_commit=recoverable_ime_commit,
 	})
 	if pinned_edit {app.pinned.edit_end_byte=pinned_end_after_edit}
 	if !workspace_search_edit {
@@ -2518,11 +2536,44 @@ editor_remove_edit :: proc(app: ^App, index: int) {
 	ordered_remove(&app.editor_edits, index)
 }
 
+editor_discard_matching_document_intents :: proc(
+	app: ^App,
+	document_id: string,
+	instance_id: u64 = 0,
+	match_instance := false,
+) {
+	if app == nil { return }
+	borrowed_id := rawptr(raw_data(document_id))
+	borrowed_intent_index := -1
+	for edit, index in app.editor_edits {
+		instance_matches := !match_instance || edit.document_instance_id == instance_id
+		if edit.document_id == document_id && instance_matches && rawptr(raw_data(edit.document_id)) == borrowed_id {
+			borrowed_intent_index = index
+			break
+		}
+	}
+	for index := len(app.editor_edits)-1; index >= 0; index -= 1 {
+		edit := &app.editor_edits[index]
+		instance_matches := !match_instance || edit.document_instance_id == instance_id
+		is_borrowed_id := borrowed_intent_index >= 0 && rawptr(raw_data(edit.document_id)) == borrowed_id
+		if edit.document_id == document_id && instance_matches && !is_borrowed_id {
+			editor_remove_edit(app, index)
+		}
+	}
+	if borrowed_intent_index >= 0 {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 {
+			edit := &app.editor_edits[index]
+			instance_matches := !match_instance || edit.document_instance_id == instance_id
+			if edit.document_id == document_id && instance_matches && rawptr(raw_data(edit.document_id)) == borrowed_id {
+				editor_remove_edit(app, index)
+				break
+			}
+		}
+	}
+}
+
 editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 	if app == nil { return }
-	for index := len(app.editor_edits)-1; index >= 0; index -= 1 {
-		if app.editor_edits[index].document_id == document_id { editor_remove_edit(app, index) }
-	}
 	view_index := editor_view_find(app.editor_views[:], document_id)
 	if view_index >= 0 {
 		view := &app.editor_views[view_index]
@@ -2546,6 +2597,100 @@ editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 			_ = editor_view_reconcile_positions(&app.editor_views[view_index], &app.editor_window)
 		}
 	}
+	// Callers may pass an ID borrowed from an intent. Keep that owned string
+	// until every matching intent has been removed.
+	editor_discard_matching_document_intents(app, document_id)
+}
+
+editor_discard_document_instance_edits :: proc(app: ^App, document_id: string, instance_id: u64) {
+	if app == nil { return }
+	if view_index := editor_view_find(app.editor_views[:], document_id); view_index >= 0 {
+		view := &app.editor_views[view_index]
+		if view.document_instance_id == 0 || view.document_instance_id == instance_id {
+			view.optimistic_pending_edits = 0
+			view.optimistic_line_delta = 0
+			view.position_reconcile_pending = true
+			if view.optimistic_window_ready {
+				editor_window_destroy(&view.optimistic_window)
+				view.optimistic_window_ready = false
+			}
+			if document, found := find_document(&app.backend.state, document_id); found && document.instance_id == instance_id {
+				view.authoritative_revision = document.editor_revision
+				editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
+			}
+		}
+	}
+	if app.editor_window_ready && app.editor_window.document_id == document_id &&
+	   (app.editor_window.document_instance_id == 0 || app.editor_window.document_instance_id == instance_id) {
+		editor_window_destroy(&app.editor_window)
+		app.editor_window_ready = false
+	}
+	if app.editor_window_request_rejected && app.editor_window_rejected_request.document_id == document_id &&
+	   (app.editor_window_rejected_request.document_instance_id == 0 ||
+	    app.editor_window_rejected_request.document_instance_id == instance_id) {
+		editor_window_rejection_clear(app)
+	}
+	// Deleting an intent can free the argument's storage, so release queue-owned
+	// IDs only after all instance-scoped cleanup is complete.
+	editor_discard_matching_document_intents(app, document_id, instance_id, match_instance=true)
+}
+
+editor_preserve_rejected_ime_chain :: proc(app: ^App, failed: ^Editor_Edit_Intent) -> bool {
+	if app == nil || failed == nil || !failed.recoverable_ime_commit || len(failed.replacement) == 0 { return false }
+	view_index := editor_view_find(app.editor_views[:], failed.document_id)
+	if view_index < 0 { return false }
+	view := &app.editor_views[view_index]
+	if view.preedit_recoverable {
+		if view.preedit_document_instance_id != 0 && view.preedit_document_instance_id != failed.document_instance_id {
+			return false
+		}
+		if !editor_preedit_append_recovery(view, string(failed.replacement)) { return false }
+	} else if !editor_preedit_make_recoverable(
+		view,
+		string(failed.replacement),
+		failed.start_byte,
+		failed.end_byte,
+		document_instance_id=failed.document_instance_id,
+	) {
+		return false
+	}
+	failed_index := -1
+	for edit, index in app.editor_edits {
+		if edit.sequence == failed.sequence { failed_index = index; break }
+	}
+	if failed_index < 0 { return true }
+	for index in failed_index+1..<len(app.editor_edits) {
+		next := &app.editor_edits[index]
+		if next.document_id != failed.document_id || next.document_instance_id != failed.document_instance_id { break }
+		if view.preedit_recovery_copy_only {
+			if len(next.replacement) > 0 && !editor_preedit_append_recovery(view, string(next.replacement)) { return false }
+			continue
+		}
+		if !editor_preedit_apply_recovery_edit(view, next.start_byte, next.end_byte, next.replacement) {
+			// Preserve the payload for explicit manual copy, but do not offer to
+			// replay a flattened string at a source range it no longer represents.
+			view.preedit_recovery_copy_only = true
+			if len(next.replacement) > 0 && !editor_preedit_append_recovery(view, string(next.replacement)) { return false }
+		}
+	}
+	return true
+}
+
+editor_edit_ack_identity_matches :: proc(intent: ^Editor_Edit_Intent, result: ^bridge.Editor_Edit_Lane_Result) -> bool {
+	return intent != nil && result != nil && intent.sequence == result.sequence &&
+	       intent.document_id == result.document_id &&
+	       (intent.document_instance_id == 0 || intent.document_instance_id == result.source_instance)
+}
+
+editor_recover_failed_edit_chain :: proc(app: ^App, intent: ^Editor_Edit_Intent) -> bool {
+	if app == nil || intent == nil { return false }
+	preserved_ime := editor_preserve_rejected_ime_chain(app, intent)
+	if intent.document_instance_id != 0 {
+		editor_discard_document_instance_edits(app, intent.document_id, intent.document_instance_id)
+	} else {
+		editor_discard_document_edits(app, intent.document_id)
+	}
+	return preserved_ime
 }
 
 editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string) {
@@ -2555,10 +2700,30 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 	edit := &app.editor_edits[0]
 	document, found := find_document(&app.backend.state, edit.document_id)
 	if !found {
-		missing_id, _ := strings.clone(edit.document_id, context.allocator)
-		editor_discard_document_edits(app, missing_id)
-		delete(missing_id, context.allocator)
+		missing_instance := edit.document_instance_id
+		preserved_ime := editor_preserve_rejected_ime_chain(app, edit)
+		if missing_instance != 0 {
+			editor_discard_document_instance_edits(app, edit.document_id, missing_instance)
+		} else {
+			editor_discard_document_edits(app, edit.document_id)
+		}
+		if preserved_ime {
+			set_error(app, "The edited document was closed before its input was accepted; committed text remains available for recovery.")
+		} else {
+			set_error(app, "The edited document is no longer open.")
+		}
+		// Removing a stale head must not strand unrelated edits behind it.
+		_, _ = editor_dispatch_next_edit(app)
+		if preserved_ime {
+			return false, "the edited document closed before input was accepted; committed text remains available for recovery"
+		}
 		return false, "the edited document is no longer open"
+	}
+	if edit.document_instance_id != 0 && document.instance_id != edit.document_instance_id {
+		_ = editor_preserve_rejected_ime_chain(app, edit)
+		editor_discard_document_instance_edits(app, edit.document_id, edit.document_instance_id)
+		set_error(app, "The document was reopened before its queued edit could be applied; committed text was kept for recovery when possible.")
+		return editor_dispatch_next_edit(app)
 	}
 	view_index, view_ok := editor_view_ensure(&app.editor_views, edit.document_id)
 	if !view_ok { return false, "could not retain the document's authoritative editor revision" }
@@ -2572,6 +2737,7 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 		&app.editor_edit_lane,
 		edit.sequence,
 		edit.document_id,
+		edit.document_instance_id,
 		app.backend.state.application_rev,
 		view.authoritative_revision,
 		edit.start_byte,
@@ -2639,17 +2805,15 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		set_error(app, "Scratchpad returned an editor acknowledgement that did not match the queued edit.")
 		return
 	}
-	if app.editor_edits[0].sequence != result.sequence {
+	if !editor_edit_ack_identity_matches(&app.editor_edits[0], result) {
 		failed_intent := app.editor_edits[0]
 		was_pinned_edit:=failed_intent.pinned_edit
 		was_search_edit := failed_intent.workspace_search_edit
-		failed_document, _ := strings.clone(app.editor_edits[0].document_id, context.allocator)
 		shutdown_note_edit_failure(app)
-		set_error(app, "Scratchpad returned an out-of-order editor acknowledgement; reloading authoritative text.")
-		editor_discard_document_edits(app, failed_document)
+		set_error(app, "Scratchpad returned an acknowledgement for a different edit identity; reloading authoritative text.")
+		editor_recover_failed_edit_chain(app, &failed_intent)
 		if was_pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
-		if was_search_edit { workspace_search_edit_failed(app, rt, failed_intent) }
-		delete(failed_document, context.allocator)
+		if was_search_edit { workspace_search_edit_failed(app, rt, Editor_Edit_Intent{workspace_search_edit=true}) }
 		editor_views_prune(app)
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
@@ -2658,6 +2822,24 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		return
 	}
 	intent := app.editor_edits[0]
+	if intent.document_instance_id != 0 {
+		current_document, current_document_found := find_document(&app.backend.state, intent.document_id)
+		if !current_document_found || current_document.instance_id != intent.document_instance_id {
+			was_pinned_edit := intent.pinned_edit
+			was_search_edit := intent.workspace_search_edit
+			shutdown_note_edit_failure(app)
+			set_error(app, "The edit acknowledgement belongs to a document that was closed or reopened; committed input was retained for recovery when possible.")
+			editor_recover_failed_edit_chain(app, &app.editor_edits[0])
+			if was_pinned_edit { pinned_edit_finish(app, rt); app.pinned.force_refresh = true }
+			if was_search_edit { workspace_search_edit_failed(app, rt, Editor_Edit_Intent{workspace_search_edit=true}) }
+			editor_views_prune(app)
+			sync_menu_states(app)
+			_, _ = editor_dispatch_next_edit(app)
+			if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
+			if rt != nil { alicorn.invalidate_root(rt, "Scratchpad ignored an acknowledgement from an older document instance") }
+			return
+		}
+	}
 	if intent.pinned_edit && result.command.ok && result.command.command_outcome=="no_op" {
 		if result.command.pinned_owned {pinned_edit_snapshot_take(app,&result.command)} else {app.pinned.force_refresh=true}
 		if view_index:=editor_view_find(app.editor_views[:],intent.document_id);view_index>=0 {
@@ -2686,13 +2868,13 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		               result.command.edit.old_end_byte == intent.end_byte &&
 		               result.command.edit.new_end_byte == result.command.edit.start_byte+u64(acknowledged_length)
 		if !ack_matches {
-			failed_document, _ := strings.clone(intent.document_id, context.allocator)
 			shutdown_note_edit_failure(app)
 			set_error(app, "Scratchpad returned an edit acknowledgement with inconsistent source ranges; reloading authoritative text.")
-			editor_discard_document_edits(app, failed_document)
+			if intent.document_instance_id != 0 {
+				editor_discard_document_instance_edits(app, intent.document_id, intent.document_instance_id)
+			} else { editor_discard_document_edits(app, intent.document_id) }
 			if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
-			if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, intent) }
-			delete(failed_document, context.allocator)
+			if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, Editor_Edit_Intent{workspace_search_edit=true}) }
 			editor_views_prune(app)
 			sync_menu_states(app)
 			if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
@@ -2703,13 +2885,13 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			view := &app.editor_views[view_index]
 			if intent.optimistic_projection && len(result.command.edit.applied_replacement) > 0 &&
 			   !editor_reconcile_applied_replacement(app, view, &app.editor_edits[0], result.command.edit.applied_replacement) {
-				failed_document, _ := strings.clone(intent.document_id, context.allocator)
 				shutdown_note_edit_failure(app)
 				set_error(app, "Could not reconcile Scratchpad's canonical Enter text; reloading authoritative text.")
-				editor_discard_document_edits(app, failed_document)
+				if intent.document_instance_id != 0 {
+					editor_discard_document_instance_edits(app, intent.document_id, intent.document_instance_id)
+				} else { editor_discard_document_edits(app, intent.document_id) }
 				if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
-				if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, intent) }
-				delete(failed_document, context.allocator)
+				if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, Editor_Edit_Intent{workspace_search_edit=true}) }
 				editor_views_prune(app)
 				sync_menu_states(app)
 				if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
@@ -2756,12 +2938,23 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 			}
 		}
 		workspace_search_edit_acknowledged(app, rt, intent, result.command.edit.editor_revision)
+		stable_document_id: string
+		stable_document_id_owned := false
+		if intent.pinned_edit && !intent.optimistic_projection {
+			stable_document_id_copy, copy_error := strings.clone(intent.document_id, context.allocator)
+			if copy_error == nil {
+				stable_document_id = stable_document_id_copy
+				stable_document_id_owned = true
+			}
+		}
 		editor_remove_edit(app, 0)
 		workspace_search_edit_finish_if_ready(app, rt)
 		if intent.pinned_edit {
 			pinned_edit_recompute_optimistic_end(app)
 			if !intent.optimistic_projection && len(app.editor_edits) == 0 && app.pinned.editing && rt != nil {
-				if view_index := editor_view_find(app.editor_views[:], intent.document_id); view_index >= 0 {
+				if !stable_document_id_owned {
+					app.pinned.force_refresh = true
+				} else if view_index := editor_view_find(app.editor_views[:], stable_document_id); view_index >= 0 {
 					view := &app.editor_views[view_index]
 					if view.optimistic_window_ready {
 						editor_window_destroy(&view.optimistic_window)
@@ -2773,16 +2966,21 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 				}
 			}
 		}
+		if stable_document_id_owned { delete(stable_document_id, context.allocator) }
 		sync_menu_states(app)
 		_, _ = editor_dispatch_next_edit(app)
 		if run_deferred && len(app.editor_edits) == 0 { deferred_actions_run(app, rt) }
 		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad accepted an optimistic document edit") }
 		return
 	}
-	failed_document, _ := strings.clone(intent.document_id, context.allocator)
 	message := result.command.message
 	if message == "" { message = result.command.code }
 	stale_revision := result.command.code == "stale_editor_revision"
+	failed_document_id, failed_document_id_error := strings.clone(intent.document_id, context.allocator)
+	if failed_document_id_error == nil { defer delete(failed_document_id, context.allocator) }
+	// Preserve an OS-committed text chain before refreshing backend state: that
+	// refresh can prune a closed document's ordinary view state.
+	preserved_ime := editor_preserve_rejected_ime_chain(app, &app.editor_edits[0])
 	if stale_revision {
 		// A conflict can arrive after another command advanced the document while
 		// this frontend still holds an older publication. Refresh before using the
@@ -2798,17 +2996,25 @@ editor_handle_edit_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^brid
 		}
 	}
 	shutdown_note_edit_failure(app)
-	set_error(app, fmt.tprintf("Edit was not accepted; reloading authoritative text: %s", message))
-	editor_discard_document_edits(app, failed_document)
+	if intent.document_instance_id != 0 {
+		editor_discard_document_instance_edits(app, intent.document_id, intent.document_instance_id)
+	} else {
+		editor_discard_document_edits(app, intent.document_id)
+	}
+	if preserved_ime {
+		set_error(app, fmt.tprintf("Edit was not accepted; committed input remains available for recovery: %s", message))
+	} else {
+		set_error(app, fmt.tprintf("Edit was not accepted; reloading authoritative text: %s", message))
+	}
 	if intent.pinned_edit {pinned_edit_finish(app,rt);app.pinned.force_refresh=true}
-	if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, intent) }
-	if stale_revision && app.editor_window_ready && app.editor_window.document_id == failed_document {
+	if intent.workspace_search_edit { workspace_search_edit_failed(app, rt, Editor_Edit_Intent{workspace_search_edit=true}) }
+	if stale_revision && failed_document_id_error == nil && app.editor_window_ready && app.editor_window.document_id == failed_document_id &&
+	   (intent.document_instance_id == 0 || app.editor_window.document_instance_id == intent.document_instance_id) {
 		// A rejected edit proves that matching revision numbers alone are not
 		// enough to trust this cached projection (Undo can reuse old revisions).
 		editor_window_destroy(&app.editor_window)
 		app.editor_window_ready = false
 	}
-	delete(failed_document, context.allocator)
 	editor_views_prune(app)
 	sync_menu_states(app)
 	_, _ = editor_dispatch_next_edit(app)
@@ -2861,16 +3067,7 @@ editor_text_input :: proc(
 	if app == nil { return }
 	defer pinned_edit_selection_sync(app)
 	if event.kind == .Cancel {
-		cleared := false
-		for &view in app.editor_views {
-			// SDL commonly sends an empty TEXT_EDITING cancel immediately after
-			// TEXT_INPUT. Preserve committed text that could not be queued as an
-			// edit so the terminal event cannot silently erase it.
-			if view.preedit_active && !view.preedit_recoverable {
-				editor_preedit_clear(&view)
-				cleared = true
-			}
-		}
+		cleared := editor_preedit_cancel_for_owner(app, owner)
 		if cleared {
 			sync_menu_states(app)
 			if rt != nil {
@@ -2889,6 +3086,22 @@ editor_text_input :: proc(
 	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
 	if !view_ok { set_error(app, "Could not retain the source document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
+	if view.document_instance_id != 0 && view.document_instance_id != document.instance_id {
+		set_error(app, "The source document changed before text input could be applied. Re-focus its editor and retry.")
+		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad rejected text input for a stale document instance") }
+		return
+	}
+	view.document_instance_id = document.instance_id
+	if view.preedit_recoverable && view.preedit_document_instance_id != 0 &&
+	   view.preedit_document_instance_id != document.instance_id {
+		set_error(app, "Committed input belongs to the previous document instance. Use Edit > Copy or Discard Recovery before editing this reopened document.")
+		sync_menu_states(app)
+		if rt != nil {
+			sync_runtime_actions(app, rt)
+			alicorn.invalidate_root(rt, "Scratchpad kept prior-instance IME recovery separate from reopened source")
+		}
+		return
+	}
 	if !pinned_owner { semantic_zoom_reveal_input(app, rt, view) }
 	if event.kind == .Preedit {
 		if view.preedit_recoverable {
@@ -2927,6 +3140,17 @@ editor_text_input :: proc(
 	was_composition := view.preedit_active || view.preedit_recoverable
 	start_byte, end_byte := min(view.selection_anchor, view.caret_byte), max(view.selection_anchor, view.caret_byte)
 	if view.preedit_recoverable {
+		if view.preedit_recovery_copy_only {
+			if !editor_preedit_append_recovery(view, event.text) {
+				set_error(app, "Committed input could not be added to the manual recovery text. Copy or discard the text already retained.")
+			} else {
+				set_error(app, "Committed input is being held for manual recovery. Use Edit > Copy or Discard Recovery before editing this document.")
+			}
+			sync_menu_states(app)
+			sync_runtime_actions(app, rt)
+			if rt != nil { alicorn.invalidate_root(rt, "Scratchpad kept additional committed input in manual recovery mode") }
+			return
+		}
 		// A later text-input commit must not replace (and lose) the earlier OS
 		// commit that could not be applied. Append in place to the preallocated
 		// bounded recovery buffer and retry the original source span.
@@ -2943,7 +3167,8 @@ editor_text_input :: proc(
 		}
 		replacement := view.preedit_text
 		resulting_caret := start_byte+u64(len(replacement))
-		if editor_apply_local_typing_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
+		if editor_apply_local_typing_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret,
+			recoverable_ime_commit=true) {
 			editor_preedit_clear(view)
 			editor_resume_text_input_target(app, rt, document.id)
 			sync_menu_states(app)
@@ -2996,7 +3221,8 @@ editor_text_input :: proc(
 					inner_end := inner_start+u64(len(selected))
 					result_anchor, result_caret := inner_start, inner_end
 					if view.selection_anchor > view.caret_byte { result_anchor, result_caret = inner_end, inner_start }
-					if editor_apply_local_replace(app, rt, start_byte, end_byte, pair_bytes, result_anchor, result_caret) {
+					if editor_apply_local_replace_with_wire(app, rt, start_byte, end_byte, pair_bytes, {}, result_anchor, result_caret,
+						recoverable_ime_commit=true) {
 						view.auto_pair_closer_byte = inner_end
 						view.auto_pair_closer = closer
 						view.auto_pair_valid = true
@@ -3010,7 +3236,8 @@ editor_text_input :: proc(
 		}
 	}
 	resulting_caret := start_byte+u64(len(replacement))
-	if editor_apply_local_typing_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret) {
+	if editor_apply_local_typing_replace(app, rt, start_byte, end_byte, replacement, resulting_caret, resulting_caret,
+		recoverable_ime_commit=true) {
 		editor_preedit_clear(view)
 		sync_menu_states(app)
 		sync_runtime_actions(app, rt)
@@ -3029,6 +3256,29 @@ editor_text_input :: proc(
 		sync_runtime_actions(app, rt)
 		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad could not apply committed IME text") }
 	}
+}
+
+editor_preedit_cancel_for_owner :: proc(app: ^App, owner: alicorn.Node_ID) -> bool {
+	if app == nil || owner == 0 || !app.backend.started { return false }
+	document_id := ""
+	if app.pinned.editing && owner == app.pinned.owner {
+		document_id = app.pinned.edit_document_id
+	} else if owner == app.editor_scroll_owner {
+		document_id = app.backend.state.active
+	} else {
+		return false
+	}
+	if view_index := editor_view_find(app.editor_views[:], document_id); view_index >= 0 {
+		view := &app.editor_views[view_index]
+		// SDL may send an empty TEXT_EDITING cancel after a committed event.
+		// Clear only this native owner's transient preedit and retain committed
+		// text held for recovery.
+		if view.preedit_active && !view.preedit_recoverable {
+			editor_preedit_clear(view)
+			return true
+		}
+	}
+	return false
 }
 
 handle_command_result :: proc(app: ^App, rt: ^alicorn.Runtime, result: ^bridge.Backend_Command_Result, prune_editor_state := true) {
@@ -3549,7 +3799,8 @@ editor_views_prune :: proc(app: ^App) {
 	if app == nil { return }
 	for index := len(app.editor_views)-1; index >= 0; index -= 1 {
 		if !document_is_open(&app.backend.state, app.editor_views[index].document_id) &&
-		   app.editor_views[index].optimistic_pending_edits == 0 {
+		   app.editor_views[index].optimistic_pending_edits == 0 &&
+		   !app.editor_views[index].preedit_recoverable {
 			editor_view_remove(&app.editor_views, index)
 		}
 	}

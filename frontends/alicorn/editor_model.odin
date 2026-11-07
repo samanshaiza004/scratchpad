@@ -65,6 +65,7 @@ Editor_Display_Line :: struct {
 
 Editor_Window :: struct {
 	document_id:     string,
+	document_instance_id: u64,
 	application_rev: u64,
 	editor_revision: u64,
 	start_line:      u64,
@@ -122,6 +123,7 @@ Editor_Wrap_Line_Cache_Entry :: struct {
 
 Editor_View_State :: struct {
 	document_id:       string,
+	document_instance_id: u64,
 	scroll_y:          f32,
 	scroll_x:          f32,
 	horizontal_extent: f32,
@@ -150,6 +152,10 @@ Editor_View_State :: struct {
 	// A committed SDL text event can be rejected by the bounded edit lane. Keep
 	// that text visible across the host's following empty TEXT_EDITING cancel.
 	preedit_recoverable: bool,
+	preedit_document_instance_id: u64,
+	// Set when queued edits cannot be replayed as one exact source replacement;
+	// the retained bytes are available for explicit copy, never auto-reapplied.
+	preedit_recovery_copy_only: bool,
 	// Recoverable composition uses one preallocated backing store so appending
 	// later text-input events is bounded and does not copy the growing prefix.
 	preedit_recovery_storage: []u8,
@@ -685,11 +691,15 @@ editor_view_window :: proc(
 ) -> (window: ^Editor_Window, matches: bool) {
 	if view != nil && view.optimistic_window_ready {
 		if view.optimistic_window.document_id == document_id &&
+		   (view.document_instance_id == 0 || view.optimistic_window.document_instance_id == 0 ||
+		    view.optimistic_window.document_instance_id == view.document_instance_id) &&
 		   (view.optimistic_pending_edits > 0 || view.optimistic_window.editor_revision == editor_revision) {
 			return &view.optimistic_window, true
 		}
 	}
-	if base_ready && base != nil && base.document_id == document_id && base.editor_revision == editor_revision {
+	if base_ready && base != nil && base.document_id == document_id && base.editor_revision == editor_revision &&
+	   (view == nil || view.document_instance_id == 0 || base.document_instance_id == 0 ||
+	    base.document_instance_id == view.document_instance_id) {
 		return base, true
 	}
 	return nil, false
@@ -804,6 +814,7 @@ editor_window_replace_bytes :: proc(
 	window, ok, message = editor_window_from_visible(&visible, allocator, EDITOR_MAX_OPTIMISTIC_SOURCE_BYTES)
 	if !ok && len(visible.source) > 0 { delete(visible.source, allocator) }
 	if ok {
+		window.document_instance_id = source.document_instance_id
 		window.presentation_revision = source.presentation_revision
 		window.presentation_ready = source.presentation_ready
 		window.presentation_truncated = source.presentation_truncated

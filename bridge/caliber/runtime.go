@@ -941,6 +941,12 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		if _, readOnly := r.app.FileViews[application.DocumentID(request.DocumentID)]; readOnly {
 			return commandError(request, "read_only_document", application.ErrReadOnlyFileView)
 		}
+		if request.SourceInstance != 0 {
+			document := r.app.Documents[application.DocumentID(request.DocumentID)]
+			if document == nil || document.InstanceID() != request.SourceInstance {
+				return commandError(request, "stale_document_instance", errors.New("document instance changed before the edit was applied"))
+			}
+		}
 		replacement := make([]byte, len(request.Replacement))
 		for i, value := range request.Replacement {
 			replacement[i] = byte(value)
@@ -1325,6 +1331,9 @@ func (r *Runtime) readVisibleLines(request CommandRequest) (Response, error) {
 	doc, ok := r.app.Documents[application.DocumentID(request.DocumentID)]
 	if !ok || doc == nil || doc.Editor == nil {
 		return Response{}, errors.New("unknown document")
+	}
+	if request.SourceInstance != 0 && doc.InstanceID() != request.SourceInstance {
+		return Response{}, errors.New("document instance changed before the visible source window was read")
 	}
 	buffer := doc.Editor.Buffer
 	lineCount := buffer.LineCount()

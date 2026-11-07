@@ -1157,6 +1157,48 @@ func TestReplaceDocumentIsRevisionedAndAcknowledged(t *testing.T) {
 	}
 }
 
+func TestReplaceDocumentRejectsStaleDocumentInstance(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "edit.txt")
+	writeFile(t, path, "hello")
+
+	runtime := newStartedRuntime(t, workspace)
+	defer stopRuntime(t, runtime)
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 40, BasedOnRevision: state.ApplicationRev,
+		Command: "open_path", Path: path,
+	}))
+	opened := decodeResponse(t, runtime.Pump())
+	if !opened.OK {
+		t.Fatalf("open response = %+v", opened)
+	}
+	state = latestStateForTest(t, runtime)
+	if len(state.Documents) != 1 || state.Documents[0].InstanceID == 0 {
+		t.Fatalf("opened document identity = %+v", state.Documents)
+	}
+	document := state.Documents[0]
+	staleInstance := document.InstanceID + 1
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 41, BasedOnRevision: state.ApplicationRev,
+		Command: "replace_document", DocumentID: document.ID, SourceInstance: staleInstance,
+		EditorRevision: document.EditorRevision, StartByte: 0, EndByte: 5, Replacement: []int{'n', 'e', 'w'},
+	}))
+	rejected := decodeResponse(t, runtime.Pump())
+	if rejected.OK || rejected.Outcome.Code != "stale_document_instance" {
+		t.Fatalf("stale-instance edit response = %+v, want stale_document_instance", rejected)
+	}
+	visible := runtime.app.Documents[application.DocumentID(document.ID)].Editor.Buffer.Text()
+	if string(visible) != "hello" {
+		t.Fatalf("stale-instance edit changed source to %q", visible)
+	}
+	if _, err := runtime.readVisibleLines(CommandRequest{
+		DocumentID: document.ID, SourceInstance: staleInstance, StartLine: 0, MaxLines: 1, MaxBytes: 4096,
+	}); err == nil {
+		t.Fatal("visible-window read from a stale document instance unexpectedly succeeded")
+	}
+}
+
 func TestReplaceDocumentAcknowledgementSurvivesUndoBranchAtOldRevision(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "branch.txt")
