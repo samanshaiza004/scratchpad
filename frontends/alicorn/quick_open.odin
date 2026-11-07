@@ -314,7 +314,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	} else { app.quick_open_selected_index = clamp(app.quick_open_selected_index, 0, len(results)-1) }
 	backdrop_color := scratchpad_modal_overlay_color(app, rt)
 	panel_fill := scratchpad_modal_panel_fill(app, rt)
-	backdrop_effect := scratchpad_modal_backdrop_effect(app)
+	backdrop_effect := scratchpad_modal_backdrop_effect(app, rt)
 	app.quick_open_overlay_node = alicorn.modal_overlay_begin(
 		ui,
 		alicorn.key_string("scratchpad-quick-open-overlay"),

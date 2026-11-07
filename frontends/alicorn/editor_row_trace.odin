@@ -1,5 +1,9 @@
 package main
 
+// This opt-in observer is the one frontend diagnostic allowed to read
+// Alicorn's retained presentation internals. It only hashes runtime state;
+// normal editor behavior does not depend on the trace being enabled.
+
 import "core:fmt"
 import "core:mem"
 import "core:os"

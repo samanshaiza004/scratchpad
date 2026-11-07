@@ -207,3 +207,36 @@ test_quick_open_fixed_panel_fits_narrow_windows :: proc(t: ^testing.T) {
 	testing.expect(t, alicorn.focused_node(&rt) == app.quick_open_node,
 		"the query field should remain focusable at narrow window widths")
 }
+
+@(test)
+test_scratchpad_modal_effects_follow_system_accessibility_preferences :: proc(t: ^testing.T) {
+	for index in 0..<2 {
+		rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 600})
+		app: App
+		observation := alicorn.Accessibility_Appearance_Observation{}
+		if index == 0 {
+			observation.preferences.increased_contrast = true
+			observation.known = {.Increased_Contrast}
+		} else {
+			observation.preferences.reduce_transparency = true
+			observation.known = {.Reduce_Transparency}
+		}
+		testing.expect(t, alicorn.style_root_accessibility_observation_set(&rt, observation),
+			"the fixture should register a system accessibility preference")
+		testing.expect(t, scratchpad_modal_requires_opaque_surfaces(&app, &rt) &&
+			scratchpad_modal_backdrop_effect(&app, &rt).kind == .None,
+			"system contrast and transparency preferences must disable modal blur")
+		testing.expect(t, scratchpad_modal_overlay_color(&app, &rt).a == 1 &&
+			scratchpad_modal_panel_fill(&app, &rt).a == 1,
+			"system accessibility preferences must make both modal layers opaque")
+
+		app.accessibility_appearance_override_enabled = true
+		app.accessibility_appearance = {}
+		testing.expect(t, !scratchpad_modal_requires_opaque_surfaces(&app, &rt) &&
+			scratchpad_modal_backdrop_effect(&app, &rt).kind == .Blur &&
+			scratchpad_modal_overlay_color(&app, &rt).a == SCRATCHPAD_MODAL_SCRIM_OPACITY &&
+			scratchpad_modal_panel_fill(&app, &rt).a == SCRATCHPAD_MODAL_PANEL_OPACITY,
+			"an explicit Scratchpad override should take precedence over the host snapshot")
+		alicorn.destroy_runtime(&rt)
+	}
+}

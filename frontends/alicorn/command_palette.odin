@@ -492,7 +492,7 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 		material=scratchpad_surface_material(app, app.floating_surface_material),
 		physical_height=scratchpad_surface_height(app, 1),
 		fill=scratchpad_modal_panel_fill(app, rt),
-		backdrop_effect=scratchpad_modal_backdrop_effect(app),
+		backdrop_effect=scratchpad_modal_backdrop_effect(app, rt),
 	)
 	if gui.row(ui, label="scratchpad-command-palette-query-row", height=44, gap=4, align=.Center) {
 		app.command_palette_motion_accent_node = alicorn.surface_begin(
