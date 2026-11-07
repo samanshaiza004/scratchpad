@@ -50,7 +50,7 @@ func TestPinnedReplaceBridgeReturnsExactEditAndCurrentPin(t *testing.T) {
 		PinRevision: response.Pinned.Revision, PinID: uint64(pin.ID), DocumentID: doc.ID, EditorRevision: 0,
 		StartByte: 7, EndByte: 14, Replacement: []int{'p', 'i', 'e', 'c', 'e'}, HasSelectionState: true,
 		BeforeAnchorByte: 7, BeforeCursorByte: 14, AfterAnchorByte: 12, AfterCursorByte: 12, TypingGroupID: 1})
-	if !response.OK || response.Edit == nil || response.Pinned == nil || len(response.Pinned.Ranges) != 1 {
+	if !response.OK || response.Edit == nil || response.Edit.SourceInstance != doc.InstanceID || response.Pinned == nil || len(response.Pinned.Ranges) != 1 {
 		t.Fatal(response)
 	}
 	updated := response.Pinned.Ranges[0]
@@ -63,7 +63,8 @@ func TestPinnedReplaceBridgeReturnsExactEditAndCurrentPin(t *testing.T) {
 	}
 	response = pinnedBridgeCommand(t, r, CommandRequest{Command: "pinned_undo", PinEpoch: response.Pinned.Epoch,
 		PinRevision: response.Pinned.Revision, PinID: uint64(pin.ID)})
-	if !response.OK || response.Edit == nil || response.Pinned == nil || response.Pinned.Ranges[0].Status != application.ProjectionCurrent {
+	if !response.OK || response.Edit == nil || response.Edit.SourceInstance != doc.InstanceID ||
+		response.Pinned == nil || response.Pinned.Ranges[0].Status != application.ProjectionCurrent {
 		t.Fatal(response)
 	}
 	if got, _ := r.app.Documents[application.DocumentID(doc.ID)].Editor.Buffer.Bytes(0, r.app.Documents[application.DocumentID(doc.ID)].Editor.Buffer.ByteLen()); string(got) != "before segment after\n" {

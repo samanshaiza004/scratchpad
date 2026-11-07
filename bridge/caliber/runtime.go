@@ -999,7 +999,11 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 			break
 		}
 		sourceEdit := appliedEdit.SourceEdit
-		edit = &EditAck{DocumentID: request.DocumentID, EditorRevision: sourceEdit.AfterRevision,
+		sourceInstance := uint64(0)
+		if document := r.app.Documents[application.DocumentID(request.DocumentID)]; document != nil {
+			sourceInstance = document.InstanceID()
+		}
+		edit = &EditAck{DocumentID: request.DocumentID, SourceInstance: sourceInstance, EditorRevision: sourceEdit.AfterRevision,
 			StartByte: uint64(sourceEdit.StartByte), OldEndByte: uint64(sourceEdit.OldEndByte), NewEndByte: uint64(sourceEdit.NewEndByte)}
 		if !bytes.Equal(appliedEdit.Replacement, replacement) || bytes.ContainsAny(replacement, "\r\n") {
 			edit.AppliedReplacement = make([]int, len(appliedEdit.Replacement))

@@ -140,6 +140,7 @@ App :: struct {
 	accessibility_projection: Editor_Accessibility_Projection,
 	accessibility_source_error: string,
 	accessibility_source_error_document_id: string,
+	accessibility_source_error_instance_id: u64,
 	accessibility_source_error_revision: u64,
 	accessibility_semantic_area_id: alicorn.Semantic_ID,
 	accessibility_semantic_revision: u64,
@@ -2636,7 +2637,11 @@ editor_discard_document_instance_edits :: proc(app: ^App, document_id: string, i
 	editor_discard_matching_document_intents(app, document_id, instance_id, match_instance=true)
 }
 
-editor_preserve_rejected_ime_chain :: proc(app: ^App, failed: ^Editor_Edit_Intent) -> bool {
+editor_preserve_rejected_ime_intent :: proc(
+	app: ^App,
+	failed: ^Editor_Edit_Intent,
+	force_copy_only := false,
+) -> bool {
 	if app == nil || failed == nil || !failed.recoverable_ime_commit || len(failed.replacement) == 0 { return false }
 	view_index := editor_view_find(app.editor_views[:], failed.document_id)
 	if view_index < 0 { return false }
@@ -2660,6 +2665,7 @@ editor_preserve_rejected_ime_chain :: proc(app: ^App, failed: ^Editor_Edit_Inten
 		if edit.sequence == failed.sequence { failed_index = index; break }
 	}
 	if failed_index < 0 { return true }
+	if force_copy_only { view.preedit_recovery_copy_only = true }
 	for index in failed_index+1..<len(app.editor_edits) {
 		next := &app.editor_edits[index]
 		if next.document_id != failed.document_id || next.document_instance_id != failed.document_instance_id { break }
@@ -2677,10 +2683,43 @@ editor_preserve_rejected_ime_chain :: proc(app: ^App, failed: ^Editor_Edit_Inten
 	return true
 }
 
+editor_preserve_rejected_ime_chain :: proc(app: ^App, failed: ^Editor_Edit_Intent) -> bool {
+	if app == nil || failed == nil { return false }
+	if failed.recoverable_ime_commit {
+		return editor_preserve_rejected_ime_intent(app, failed)
+	}
+	// A normal edit may be rejected while a committed IME edit is queued behind
+	// it. That later replacement is based on the optimistic source produced by
+	// the failed head, so preserve it for manual copy instead of replaying it at
+	// a potentially incorrect source range.
+	failed_index := -1
+	for edit, index in app.editor_edits {
+		if edit.sequence == failed.sequence { failed_index = index; break }
+	}
+	if failed_index < 0 { return false }
+	for index in failed_index+1..<len(app.editor_edits) {
+		edit := &app.editor_edits[index]
+		if edit.document_id != failed.document_id || edit.document_instance_id != failed.document_instance_id { break }
+		if edit.recoverable_ime_commit && len(edit.replacement) > 0 {
+			return editor_preserve_rejected_ime_intent(app, edit, force_copy_only=true)
+		}
+	}
+	return false
+}
+
 editor_edit_ack_identity_matches :: proc(intent: ^Editor_Edit_Intent, result: ^bridge.Editor_Edit_Lane_Result) -> bool {
-	return intent != nil && result != nil && intent.sequence == result.sequence &&
-	       intent.document_id == result.document_id &&
-	       (intent.document_instance_id == 0 || intent.document_instance_id == result.source_instance)
+	if intent == nil || result == nil || intent.sequence != result.sequence || intent.document_id != result.document_id {
+		return false
+	}
+	if intent.document_instance_id != 0 && intent.document_instance_id != result.source_instance { return false }
+	// Failed edits and no-op commands have no EditAck. For an applied edit, the
+	// backend must return the instance it actually mutated; the request's copied
+	// identity alone is not sufficient evidence for accepting the response.
+	if result.command.ok && result.command.command_outcome != "no_op" {
+		return result.command.edit.document_id == intent.document_id &&
+		       (intent.document_instance_id == 0 || result.command.edit.source_instance == intent.document_instance_id)
+	}
+	return true
 }
 
 editor_recover_failed_edit_chain :: proc(app: ^App, intent: ^Editor_Edit_Intent) -> bool {
@@ -3846,6 +3885,7 @@ application_stop :: proc(state: rawptr) {
 	if len(app.accessibility_source_error_document_id) > 0 { delete(app.accessibility_source_error_document_id, context.allocator) }
 	app.accessibility_source_error = ""
 	app.accessibility_source_error_document_id = ""
+	app.accessibility_source_error_instance_id = 0
 	app.accessibility_source_error_revision = 0
 	tree_clear_directories(app)
 	if len(app.tree_root_path) > 0 { delete(app.tree_root_path, context.allocator) }

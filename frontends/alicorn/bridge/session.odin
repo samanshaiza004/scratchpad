@@ -343,6 +343,7 @@ Editor_Selection :: struct {
 
 Edit_Ack :: struct {
 	document_id:     string `json:"document_id"`,
+	source_instance: u64    `json:"source_instance"`,
 	editor_revision: u64    `json:"editor_revision"`,
 	start_byte:      u64    `json:"start_byte"`,
 	old_end_byte:    u64    `json:"old_end_byte"`,

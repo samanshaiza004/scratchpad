@@ -248,6 +248,7 @@ type ResourceDescriptor struct {
 
 type EditAck struct {
 	DocumentID         string `json:"document_id"`
+	SourceInstance     uint64 `json:"source_instance,omitempty"`
 	EditorRevision     uint64 `json:"editor_revision"`
 	StartByte          uint64 `json:"start_byte"`
 	OldEndByte         uint64 `json:"old_end_byte"`

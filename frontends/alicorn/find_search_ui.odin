@@ -1211,6 +1211,7 @@ workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_inde
 		anchor_byte=u64(result.context_start_byte),
 		max_lines=1,
 		max_bytes=bridge.MAX_VISIBLE_BYTES,
+		source_instance=document.instance_id,
 		allow_unversioned_read=true,
 		read_latest_after=false,
 	)

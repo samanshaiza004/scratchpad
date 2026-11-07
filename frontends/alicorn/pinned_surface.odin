@@ -155,6 +155,7 @@ pinned_edit_window_load :: proc(app: ^App, line: u64, anchor_byte: u64) -> bool 
 		max_lines=bridge.MAX_VISIBLE_LINES,
 		max_bytes=bridge.MAX_VISIBLE_BYTES,
 		editor_revision=document.editor_revision,
+		source_instance=document.instance_id,
 		based_on_revision=app.backend.state.application_rev,
 	)
 	defer bridge.backend_command_result_destroy(&result, context.allocator)
@@ -164,6 +165,7 @@ pinned_edit_window_load :: proc(app: ^App, line: u64, anchor_byte: u64) -> bool 
 		if converted { editor_window_destroy(&window) }
 		return false
 	}
+	window.document_instance_id = document.instance_id
 	view_index := editor_view_find(app.editor_views[:], document.id)
 	if view_index < 0 { editor_window_destroy(&window); return false }
 	view := &app.editor_views[view_index]

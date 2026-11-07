@@ -31,6 +31,7 @@ Editor_Accessibility_Run :: struct {
 
 Editor_Accessibility_Projection :: struct {
 	document_id:          string,
+	document_instance_id: u64,
 	area_id:              alicorn.Semantic_ID,
 	byte_length:          u64,
 	editor_revision:      u64,
@@ -41,13 +42,14 @@ Editor_Accessibility_Projection :: struct {
 	allocator:            mem.Allocator,
 }
 
-// editor_accessibility_area_id is stable across document revisions and does
-// not depend on a retained visual Node_ID. An empty document ID has no ID.
-editor_accessibility_area_id :: proc(document_id: string) -> alicorn.Semantic_ID {
+// editor_accessibility_area_id is stable across revisions of one document
+// instance and does not depend on a retained visual Node_ID. An empty
+// document ID has no ID.
+editor_accessibility_area_id :: proc(document_id: string, document_instance_id: u64 = 0) -> alicorn.Semantic_ID {
 	if len(document_id) == 0 { return {} }
 	return alicorn.Semantic_ID{
 		namespace=EDITOR_ACCESSIBILITY_SEMANTIC_NAMESPACE,
-		value=editor_accessibility_hash(document_id, 0x41524541, 0),
+		value=editor_accessibility_hash(document_id, 0x41524541, document_instance_id),
 	}
 }
 
@@ -107,10 +109,12 @@ editor_accessibility_projection_build :: proc(
 	source: string,
 	editor_revision: u64,
 	allocator := context.allocator,
+	document_instance_id: u64 = 0,
 ) -> Editor_Accessibility_Projection {
 	projection := Editor_Accessibility_Projection{
-		area_id=editor_accessibility_area_id(document_id),
+		area_id=editor_accessibility_area_id(document_id, document_instance_id),
 		byte_length=u64(len(source)),
+		document_instance_id=document_instance_id,
 		editor_revision=editor_revision,
 		allocator=allocator,
 	}

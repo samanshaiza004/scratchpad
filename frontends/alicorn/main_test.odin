@@ -116,13 +116,25 @@ test_recoverable_ime_text_survives_document_switch_and_blocks_close :: proc(t: ^
 @(test)
 test_edit_ack_identity_includes_document_instance :: proc(t: ^testing.T) {
 	intent := Editor_Edit_Intent{sequence=12, document_id="same-id", document_instance_id=91}
-	result := bridge.Editor_Edit_Lane_Result{sequence=12, document_id="same-id", source_instance=91}
+	result := bridge.Editor_Edit_Lane_Result{
+		sequence=12,
+		document_id="same-id",
+		source_instance=91,
+		command=bridge.Backend_Command_Result{
+			ok=true,
+			edit=bridge.Edit_Ack{document_id="same-id", source_instance=91, editor_revision=1},
+		},
+	}
 	testing.expect(t, editor_edit_ack_identity_matches(&intent, &result),
-		"an acknowledgement must match sequence, document ID, and source instance")
+		"an acknowledgement must match the request and backend-confirmed source instance")
 	result.source_instance = 92
 	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
 		"an acknowledgement from a reopened document instance must not match an older edit")
 	result.source_instance = 91
+	result.command.edit.source_instance = 92
+	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
+		"a successful response must confirm the instance actually edited, not only echo the request tag")
+	result.command.edit.source_instance = 91
 	result.document_id = "other-id"
 	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
 		"an acknowledgement for another document must not match even when sequence and instance agree")
@@ -212,6 +224,49 @@ test_rejected_ime_edit_chain_remains_recoverable_after_prune :: proc(t: ^testing
 	editor_views_prune(&app)
 	testing.expect(t, len(app.editor_views) == 1 && app.editor_views[0].preedit_recoverable,
 		"pruning a closed document must not release its only recoverable committed text")
+}
+
+@(test)
+test_rejected_normal_head_preserves_queued_ime_commit_copy_only :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "ime-after-normal-reject")
+	if !view_ok { testing.expect(t, false, "IME editor view should be retained"); return }
+	app.editor_views[view_index].document_instance_id = 61
+	failed_id, _ := strings.clone("ime-after-normal-reject", context.allocator)
+	queued_id, _ := strings.clone("ime-after-normal-reject", context.allocator)
+	committed_text := "日本語"
+	committed_bytes, _ := make([]u8, len(committed_text), allocator=context.allocator)
+	mem.copy(rawptr(&committed_bytes[0]), rawptr(raw_data(committed_text)), len(committed_bytes))
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=1,
+		document_id=failed_id,
+		document_instance_id=61,
+		start_byte=12,
+		end_byte=13,
+		// This ordinary deletion is not itself an IME recovery payload.
+	})
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=2,
+		document_id=queued_id,
+		document_instance_id=61,
+		start_byte=12,
+		end_byte=12,
+		replacement=committed_bytes,
+		recoverable_ime_commit=true,
+	})
+	preserved := editor_recover_failed_edit_chain(&app, &app.editor_edits[0])
+	view := &app.editor_views[view_index]
+	testing.expect(t, preserved && len(app.editor_edits) == 0 && view.preedit_recoverable &&
+		view.preedit_recovery_copy_only && string(view.preedit_text) == committed_text &&
+		view.preedit_document_instance_id == 61,
+		"a committed IME edit queued behind a rejected normal edit should remain available as copy-only recovery text")
 }
 
 @(test)

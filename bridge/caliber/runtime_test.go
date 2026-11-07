@@ -1197,6 +1197,15 @@ func TestReplaceDocumentRejectsStaleDocumentInstance(t *testing.T) {
 	}); err == nil {
 		t.Fatal("visible-window read from a stale document instance unexpectedly succeeded")
 	}
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{
+		Version: ProtocolVersion, RequestID: 42, BasedOnRevision: state.ApplicationRev,
+		Command: "replace_document", DocumentID: document.ID, SourceInstance: document.InstanceID,
+		EditorRevision: document.EditorRevision, StartByte: 0, EndByte: 5, Replacement: []int{'w', 'o', 'r', 'l', 'd'},
+	}))
+	accepted := decodeResponse(t, runtime.Pump())
+	if !accepted.OK || accepted.Edit == nil || accepted.Edit.SourceInstance != document.InstanceID {
+		t.Fatalf("edit acknowledgement did not return the authoritative document instance: %+v", accepted)
+	}
 }
 
 func TestReplaceDocumentAcknowledgementSurvivesUndoBranchAtOldRevision(t *testing.T) {
