@@ -533,10 +533,6 @@ manual_folding_selection_overlaps_fold :: proc(view: ^Editor_View_State, fold: b
 	return selection_start < fold.end_byte && selection_end > fold.body_start_byte
 }
 
-manual_folding_header_marker_glyph :: proc(collapsed: bool) -> string {
-	return "›" if collapsed else "⌄"
-}
-
 manual_folding_toggle_at_caret :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
@@ -630,9 +626,11 @@ manual_folding_header_button :: proc(app: ^App, ui: ^alicorn.UI, document: bridg
 	index, collapsed, found := manual_folding_header_for_line(view, line)
 	if !found { return }
 	fold := view.manual_folding.plan.folds[index]
-	label := manual_folding_header_marker_glyph(collapsed)
-	if gui.button(ui, label, key=fmt.tprintf("manual-fold-gutter-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte),
-		width=12, height=18, variant=.Quiet) {
+	label := fmt.tprintf("%s %s", "Expand" if collapsed else "Collapse", fold.label)
+	icon: alicorn.Icon_ID = .Chevron_Right if collapsed else .Chevron_Down
+	if gui.icon_button(ui, label, icon,
+		key=fmt.tprintf("manual-fold-gutter-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte),
+		style=alicorn.layout_style(width=12, height=22)) {
 		_ = frame_deferred_action_schedule(app, .Toggle_Manual_Fold,
 			document_id=document.id, editor_revision=document.editor_revision,
 			source_instance_id=document.instance_id, source_start=fold.start_byte)

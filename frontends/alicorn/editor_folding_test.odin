@@ -1,11 +1,12 @@
 package main
 
+import "core:fmt"
 import "core:testing"
 import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
-test_manual_folding_selection_guard_and_marker_glyphs :: proc(t: ^testing.T) {
+test_manual_folding_selection_guard :: proc(t: ^testing.T) {
 	fold := bridge.Editor_Fold{start_byte=4, body_start_byte=10, end_byte=20}
 	view := Editor_View_State{selection_anchor=0, caret_byte=20}
 	testing.expect(t, manual_folding_selection_overlaps_fold(&view, fold),
@@ -19,11 +20,42 @@ test_manual_folding_selection_guard_and_marker_glyphs :: proc(t: ^testing.T) {
 	manual_folding_move_caret_out_of_fold(&view, fold)
 	testing.expect(t, view.caret_byte == fold.start_byte && view.selection_anchor == fold.start_byte,
 		"collapsing around an unselected caret moves it to the visible header")
+}
 
-	testing.expect(t, manual_folding_header_marker_glyph(true) == "›",
-		"a collapsed fold uses the right-pointing disclosure glyph")
-	testing.expect(t, manual_folding_header_marker_glyph(false) == "⌄",
-		"an expanded fold uses the down-pointing disclosure glyph")
+@(test)
+test_manual_folding_gutter_paints_and_toggles :: proc(t: ^testing.T) {
+	fixture: Semantic_Zoom_Test_Editor
+	defer semantic_zoom_test_destroy(&fixture, t)
+	if !semantic_zoom_test_open(&fixture, t, "md", "# First\n\nBody text.\n\n# Second\n\nMore text.\n") { return }
+
+	document, found := find_document(&fixture.app.backend.state, fixture.document_id)
+	if !testing.expect(t, found, "the Markdown fixture must be open") { return }
+	key := fmt.tprintf("manual-fold-gutter-%d-%d-0", document.instance_id, document.editor_revision)
+
+	expected_icons := [?]alicorn.Icon_ID{.Chevron_Down, .Chevron_Right}
+	for expected_icon in expected_icons {
+		button := connected_titlebar_test_key(&fixture.rt, key)
+		visible: alicorn.Rect
+		for command in fixture.rt.display {
+			if command.owner != button || command.opacity <= 0 { continue }
+			if icon, ok := command.payload.(alicorn.Icon_Paint); ok && icon.id == expected_icon {
+				visible = alicorn.rect_intersection(command.bounds, command.clip)
+				break
+			}
+		}
+		if !testing.expect(t, button != 0 && visible.w >= 10 && visible.h >= 10,
+			"the fold button must paint a visible chevron inside the gutter") { return }
+
+		x, y := visible.x+visible.w/2, visible.y+visible.h/2
+		_ = alicorn.process_pointer(&fixture.rt, {kind=.Down, x=x, y=y, button=alicorn.POINTER_BUTTON_PRIMARY})
+		_ = alicorn.process_pointer(&fixture.rt, {kind=.Up, x=x, y=y, button=alicorn.POINTER_BUTTON_PRIMARY})
+		editor_paste_test_frame(&fixture.app, &fixture.rt)
+		frame_deferred_action_run(&fixture.app, &fixture.rt)
+		semantic_zoom_test_settle(&fixture)
+		view := semantic_zoom_test_view(&fixture)
+		collapsed := manual_folding_projection_active(view)
+		testing.expect(t, collapsed == (expected_icon == .Chevron_Down), "clicking the chevron must toggle the fold")
+	}
 }
 
 @(test)
