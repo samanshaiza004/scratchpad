@@ -1,48 +1,30 @@
-# Alicorn feature coverage and follow-up gaps
+# Alicorn frontend coverage
 
-Alicorn is the supported Scratchpad frontend for v0.1.0. The former Shirei workbench is retired from the active source tree and preserved at the `archive/pre-v0.1.0-frontends` Git branch and tag. This page tracks migrated capabilities and remaining gaps; it is not a requirement to restore the old frontend.
+Alicorn is Scratchpad's supported desktop frontend. This page summarizes the current implementation on `main`; it is not a claim that every interaction has been manually certified on every operating system. The latest published release is v0.1.1, while `main` contains unreleased v0.2.0 work. See the [roadmap](../../PLAN.md), [changelog](../../../CHANGELOG.md), and date-scoped [validation records](../../validation/README.md).
 
-## Shirei capability status
+## Implemented product coverage
 
-| Capability in the retired Shirei workbench | Alicorn status | Notes for a future issue |
-|---|---|---|
-| Restore the last workspace and open-document session, including recent paths | Implemented; two-process native restart smoke | Clean shutdown stores a versioned session separately from crash recovery. Recent workspace paths are stored atomically in an independent bounded file, so they survive disabled or invalid session restoration. Startup restores workspace, existing documents, active tab, per-document selection/scroll, workspace sidebar and Pinned split widths, and up to ten recent workspace paths. The Windows/macOS native smoke checks clean quit/relaunch and recovery in isolated profiles. Pinned ranges remain session-local by design. Unavailable recent paths remain visible and report filesystem errors when opened; recent entries can be cleared. See [session restoration](../../SESSION-RESTORATION.md). |
-| Outline sidebar for code symbols and Markdown headings, tasks, and links | Implemented | Tasks, supported code symbols, Markdown headings, and Markdown links are bounded, revision-scoped views of the active document. Rows navigate to exact source ranges; task state changes use the existing command seam. |
-| Collapse/fold controls for Markdown sections and supported code blocks | Implemented in Full source; semantic zoom remains experimental | Manual folds use parser-derived, revision-checked source ranges, preserve nested collapse state, and reveal hidden navigation targets. Semantic zoom continues to provide four explicit depths; see [semantic zoom and manual folding](../../SEMANTIC_VIEWS.md). |
-| Selectable built-in/custom themes with persisted user settings | Missing | Alicorn currently uses a fixed palette and its Settings surface only exposes ignored-file visibility. |
-| Editor font increase/decrease/reset controls | Missing | Add frontend-local sizing with predictable per-session or persisted scope; do not alter source semantics. |
-| Expand-selection command for progressively larger semantic/source ranges | Missing | The shared command vocabulary contains `selection.expand`, but Alicorn does not currently implement the interaction. |
+| Area | Current implementation |
+| --- | --- |
+| Editing | One Go-owned document buffer and revision; Alicorn handles caret, selection, text shaping, soft wrapping, clipboard, IME presentation, and bounded optimistic edits. Supports undo/redo, Find/Replace, Go to Line, semantic selection expansion, Markdown commands, and revision-safe folds. |
+| Workspace | Keyboard-navigable tree, Quick Open, editable Search and Symbols, file and directory operations, recent workspaces, restored sessions, and detachable text-document windows. |
+| Source-connected views | Full, Focus, Skim, and Overview semantic zoom; source-linked tasks, symbols, headings, and links; pinned ranges across documents; safe write-through only when a current range maps unambiguously. |
+| Appearance | Persisted Warm and Cool Light themes, editor font family/size and zoom, accessibility appearance preferences, theme-driven syntax/modal colors, and optional Workbench Relief. Live theme replacement is development dogfood, not a general user-facing theme editor. |
+| Media and overlays | Read-only PNG/QOI tabs and Quick Open with an opt-in Gaussian backdrop-blur presentation. Image previews do not edit or save image data. |
+| Native shell | macOS content titlebar and AppKit menus, Windows integrated caption frame and connected tabs, Linux system decorations and separate-tab fallback; native menu/shortcut handling is platform-specific. |
+| Persistence and recovery | Versioned clean-session restoration, independent recent-workspace storage, atomic preferences, crash recovery, and external-file conflict handling. |
 
-These are follow-up product gaps, not reasons to retain Shirei as a second frontend. Keep them as separate, scoped follow-ups if they are promoted into the release or next-version plan.
+The Go application owns document bytes, editing commands, workspace semantics, persistence, conflicts, and recovery. Alicorn owns transient interaction and presentation. Caliber carries bounded commands, resources, and acknowledgements between them. The former Shirei and GPUI experiments are archived at `archive/pre-v0.1.0-frontends`; neither is an active frontend target.
 
-## Alicorn coverage already in place
+## Known limits and release work
 
-Alicorn now covers the core v0.1.0 file/editor path: open/save/Save As, reorderable tabs with drag-and-drop, dirty-close decisions, workspace browsing and mutations with file/directory drag-and-drop, quick open, workspace search, recent-workspace reopening and saved-session restore, Find/Replace with match-case and whole-word options, Go to Line, undo/redo, clipboard, IME composition, conflict resolution and recovery, Markdown editing commands, Tree-sitter syntax highlighting for Go/TypeScript/TSX, table formatting/navigation, prose and cell-aware wrapping, and per-document wrap override. The Go application owns document bytes and product commands; Alicorn owns transient interaction and presentation through the Caliber boundary.
+- v0.2.0 is not published. Release acceptance is tracked in [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
+- The complete semantic-zoom keyboard, mouse, and trackpad acceptance has been confirmed on macOS and Windows; the original October validation matrix predates that follow-up.
+- Semantic-plan construction has a measured pathological case of about 206 ms for a million-line prose fixture. The open release follow-up calls for a performance decision; see the [semantic-zoom validation report](../../validation/semantic-zoom.md).
+- Image tabs are read-only PNG/QOI previews; they are not general image editors.
+- Live color-theme replacement is an opt-in development dogfood path. It does not enable arbitrary theme-structure or layout replacement.
+- The language-aware code presentations are limited to the registered providers in the source tree; unsupported files remain editable as ordinary text.
 
-## Native validation record and remaining checks
+## Validation guidance
 
-The project owner manually verified on macOS (2026-10-02) that AppKit menu
-commands and keyboard shortcuts work, IME works, and native window resizing
-works. The owner had previously confirmed that the file/folder picker works.
-The latest local macOS native smoke also passed launch, rendered publication,
-wake, and ordered shutdown with SDL 3.4.16 and Metal.
-macOS verification for this pass is complete; the broader parity items below
-are explicitly deferred and are not claimed as tested.
-
-Still to verify on real desktop builds: Windows native menu/title-bar behavior;
-OS trash and clipboard; IME composition and candidate positioning beyond the
-reported Mac check; pointer selection and drag autoscroll; tab reordering;
-file/directory drag-and-drop (including invalid targets and preview-tab
-promotion); DPI/display movement beyond the reported resize check; and full
-Monitor, History, and Scope operation on both platforms. Headless tests and CI
-smoke checks do not replace these interaction checks.
-
-Validation record for 2026-10-02: the Windows native lifecycle smoke passed
-(`publication_rendered`, `wake_observed`, and `ordered_shutdown` all true). The
-full automated Go/Caliber/Alicorn test suite and `go vet ./...` also passed
-locally. The owner-reported macOS checks above are manual evidence; hands-on
-Windows and the remaining platform/app matrix are still open release-gate work.
-
-## Historical design evidence
-
-The retired UI's Shirei research and keyboard-navigation implementation notes are preserved under [`docs/history/shirei`](../../history/shirei/README.md). The GPUI experiment reports remain under [`docs/history`](../../history/README.md). The old implementation itself can be recovered from the archive branch/tag.
+Automated Go, Odin, bridge, and native-host checks establish the contracts they exercise. Package audits and launch smokes establish package loading and startup behavior. They do not prove physical gesture feel, IME candidate behavior, display-scale changes, native dialogs, or visual quality on every device. Consult each [validation record](../../validation/README.md) for its exact commit, platform, and scope; older reports remain historical evidence rather than a current aggregate pass/fail matrix.

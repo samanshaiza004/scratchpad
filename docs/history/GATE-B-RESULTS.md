@@ -5,7 +5,7 @@ source: commit [`6df9f18`](https://github.com/hasenj/go-shirei/tree/6df9f18).
 
 ## Method
 
-[`cmd/textbench`](../../cmd/textbench/main.go) drives the real Shirei `TextArea`
+[`cmd/textbench`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/cmd/textbench/main.go) drives the real Shirei `TextArea`
 through `RunFrameFn`: TextArea input processing, whole-buffer text shaping,
 layout, surface generation, and deterministic synthetic input are included.
 The default run does not add software rasterization because the current
@@ -60,7 +60,7 @@ the edit. A fresh stable Shirei identity is used for each independent case.
 
 ## Minimal ScratchEditor spike
 
-Because TextArea fails the scale gate, [`cmd/scratcheditor`](../../cmd/scratcheditor/main.go)
+Because TextArea fails the scale gate, [`cmd/scratcheditor`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/cmd/scratcheditor/main.go)
 and [`editor/`](../../editor/) contain the smallest conditional alternative:
 
 - piece-backed byte storage with an append-only add store;
@@ -177,7 +177,7 @@ the balanced implementation above.
 
 ## Shirei-backed visual and native parity
 
-The custom path is now wired through [`ui/editor_view.go`](../../ui/editor_view.go)
+The custom path is now wired through [`ui/editor_view.go`](https://github.com/samanshaiza004/scratchpad/blob/archive/pre-v0.1.0-frontends/ui/editor_view.go)
 as a real fixed-height Shirei view. `VirtualListViewExt` builds only visible
 logical rows. Each row copies and shapes only its own byte range, then retains
 the local byte/rune mapping needed by painting and pointer hit-testing. No

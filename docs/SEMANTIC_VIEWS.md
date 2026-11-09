@@ -1,9 +1,14 @@
-# Anchored semantic zoom (experiment)
+# Anchored semantic zoom and source folding
+
+Semantic zoom and revision-safe local folding are implemented on the current
+development line. v0.2.0 remains unreleased; the known large-document
+construction cost and remaining acceptance work are tracked in the [roadmap](PLAN.md).
 
 Semantic zoom changes which source lines are visible in the ordinary editor.
 It keeps one authoritative Go document buffer, original source line numbers,
 byte selections, undo history, save state, and the Alicorn source renderer.
-The former Full / Skim / Outline button row is absent from the normal editor.
+The status bar identifies the active depth; the View menu and command palette
+provide depth changes without a persistent toolbar row.
 
 ## Interaction
 
@@ -47,7 +52,7 @@ ancestors before resolving visible geometry.
 | Skim | Headings, source lines containing complete opening sentences, tasks, code-fence openings | Parser-backed signatures, doc comments, important declarations |
 | Overview | Heading hierarchy; paragraph openings when headings are absent | Recognized symbol declarations |
 
-This first experiment folds **whole logical source lines**. An opening sentence
+Reduced views fold **whole logical source lines**. An opening sentence
 is never cut at the previous 256-byte excerpt limit, but text after that sentence
 on the same logical line stays visible. Source syntax and ordering are retained.
 Sentence boundaries use deterministic terminal punctuation followed by whitespace;
@@ -114,7 +119,8 @@ editor scope before invoking the same callback.
 Wheel intent is latched until a 250 ms gap; fractional deltas accumulate before
 one depth change. Modifier changes during an ordinary scroll do not turn its
 tail into zoom. SDL wheel events do not carry a portable gesture-end phase, so
-the gap is a heuristic requiring physical wheel/trackpad testing. Pinch,
+the gap is a deliberate heuristic. Keyboard, mouse, and trackpad acceptance
+has been confirmed on macOS and Windows. Pinch,
 animation, and automatic fisheye refolding remain separate work. The
 source-connected Tasks, Outline, and Links sidebar is a separate projection
 consumer documented in [Source projections](design/SOURCE-PROJECTIONS.md).

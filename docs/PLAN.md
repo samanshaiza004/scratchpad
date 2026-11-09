@@ -1,31 +1,29 @@
 # Roadmap
 
-## Version 0.1.0 — text editor foundation
+The latest published release is [Scratchpad v0.1.1](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.1.1). The current `main` branch contains unreleased v0.2.0 work; implementation status and release notes are summarized in the [changelog](../CHANGELOG.md).
 
-The current goal is a reliable, comfortable foundation for editing ordinary text files. The work is centered on the basic editor feel and trustworthy file behavior.
+## v0.1.0 and v0.1.1 — released foundation
 
-The 0.1.0 bar is a user who can open a file and do ordinary writing and editing with predictable text input, caret movement, selection, and navigation, then trust that the result is saved back to the file. Notes, prose, tasks, and code remain text in the same document model.
+These releases established Scratchpad as a native, file-first editor and stabilized its Windows and macOS packages. Ordinary files remain authoritative; Scratchpad owns editing, workspace operations, saving, conflict handling, and recovery. See the versioned entries in the [changelog](../CHANGELOG.md).
 
-This release does not depend on projection workflows. It establishes the source editing experience they will need.
+## v0.2.0 — source-connected views (in development)
 
-## Version 0.2.0 — projection exploration
+The v0.2.0 direction is to make alternate ways of working with content useful while keeping their source mapping explicit. The current `main` implementation includes:
 
-The differentiating product ideas in [the thesis](THESIS.md) are planned for 0.2.0. The goal is to prove that a view can differ from a file while staying grounded in source.
+- semantic selection expansion and a bounded, revision-scoped projection model;
+- Full, Focus, Skim, and Overview source views, plus revision-safe Markdown and code folding;
+- pinned ranges with safe write-through for unambiguous edits;
+- editable workspace Search and source-linked task, symbol, heading, and link views;
+- session restoration, editor typography, persisted themes, and native workspace refinements that dogfood Alicorn's retained UI.
 
-Candidate steps:
+These implementations do not by themselves mean v0.2.0 is release-ready. The release gate remains [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17). Its open semantic-zoom follow-up records a measured construction cost of about 206 ms for a million-line prose fixture; performance and large-projection behavior need an explicit release decision. User-facing source mapping, stale-reference handling, bounded rendering, and the ordinary editor fallback remain part of acceptance.
 
-1. Semantic selection through derived prose and language structure.
-2. Full, skim, and outline density views over a document.
-3. Temporary pinned views composed from selected source ranges.
-4. Search results presented as an editable working surface.
-5. Shared projection and source-mapping rules for those experiences.
-
-Treat these as a coherent direction, not a commitment to ship every item in one version. Begin with same-document or single-segment cases where mapping is direct. Keep projections revision-scoped and temporary until real use demonstrates the need for persistent identity. Reject stale or ambiguous writes rather than guessing.
+Image previews and the Quick Open blur treatment are additional product work on `main`; they do not change the file-authority or source-mapping contracts.
 
 ## Longer-term questions
 
-History-aware views, stronger range re-anchoring, and additional structural projections remain research topics. They do not require event-sourced storage, a canonical graph, or a proprietary document format.
+History-aware views, stronger range re-anchoring, additional language projections, and broader projection composition remain research topics. They do not require event-sourced storage, a canonical graph, or a proprietary document format.
 
 ## Engineering records
 
-The previous gate-by-gate implementation plan is preserved in [the engineering history](history/IMPLEMENTATION-GATES.md). It records completed investigations and release evidence; this roadmap states product scope.
+The earlier gate-by-gate implementation plan is preserved in [engineering history](history/IMPLEMENTATION-GATES.md). Historical implementation and validation reports retain their original scope and date; use this roadmap and the [current Alicorn coverage page](frontends/alicorn/PARITY.md) for present status.
