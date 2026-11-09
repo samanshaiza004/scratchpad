@@ -13,9 +13,9 @@ tab_detach_test_open :: proc(data: rawptr, description: host.Application_Window_
 }
 
 // Exercise the retained drag and application callback together: a preview box
-// alone does not prove that an outside release reaches the window service.
+// alone does not prove that a magnetic strip breakout reaches the window service.
 @(test)
-test_tab_drag_release_outside_requests_window :: proc(t: ^testing.T) {
+test_tab_drag_beyond_strip_requests_window :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
 	defer alicorn.destroy_runtime(&rt)
 	documents := [?]bridge.State_Document{{id="detached-document", path="document.txt", view_kind="text"}}
@@ -30,7 +30,7 @@ test_tab_drag_release_outside_requests_window :: proc(t: ^testing.T) {
 	if !should_build { testing.expect(t, false, "the tab should be described"); return }
 	alicorn.container_begin_simple(&ui, .Root, style=alicorn.layout_style(.Row, width=640, height=480))
 	tab, _ := alicorn.button_ex(&ui, "document.txt", key="detach-test-tab", style=alicorn.layout_style(width=160, height=40))
-	_ = alicorn.drag_source(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(documents[0].id))
+	_ = alicorn.drag_source(&ui, SCRATCHPAD_DRAG_TABS, document_tab_semantic_id(documents[0].id), tracking=alicorn.DRAG_TRACKING_HORIZONTAL_MAGNETIC)
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
 	node, found := alicorn.node_info(&rt, tab)
@@ -38,20 +38,22 @@ test_tab_drag_release_outside_requests_window :: proc(t: ^testing.T) {
 	x := node.bounds.x+10
 	y := node.bounds.y+10
 	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Down, x=x, y=y, button=alicorn.POINTER_BUTTON_PRIMARY})
-	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Move, x=650, y=y})
+	tearoff_y := node.bounds.y+node.bounds.h+alicorn.DRAG_TRACKING_HORIZONTAL_MAGNETIC.detach_distance+1
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Move, x=200, y=tearoff_y})
 	started, pending := alicorn.drag_event_take(&rt)
-	testing.expect(t, pending && started.kind == .Started, "the drag must cross the threshold")
+	testing.expect(t, pending && started.kind == .Started, "the drag must cross the ordinary start threshold")
 	application_drag(rawptr(&app), &rt, started)
 	testing.expect(t, app.workspace_drag_source_document_id == documents[0].id, "drag start should retain the logical document identity")
-	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=650, y=y, button=alicorn.POINTER_BUTTON_PRIMARY})
+	_ = alicorn.process_pointer(&rt, alicorn.Pointer_Event{kind=.Up, x=200, y=tearoff_y, button=alicorn.POINTER_BUTTON_PRIMARY})
 	released, released_pending := alicorn.drag_event_take(&rt)
-	testing.expect(t, released_pending && released.kind == .Cancelled && released.has_pointer_position && released.pointer_x == 650,
-		"an outside release must preserve logical pointer coordinates for tear-off")
+	testing.expect(t, released_pending && released.kind == .Cancelled && released.has_pointer_position &&
+		released.presentation_state == .Detached && released.pointer_x == 200,
+		"a release past the strip's breakout threshold should carry detached state and raw pointer coordinates")
 	application_drag(rawptr(&app), &rt, released)
-	testing.expect(t, requests == 1, "releasing a tab outside the window must request a floating document window")
+	testing.expect(t, requests == 1, "releasing a detached tab inside the application window must request a floating window")
 	testing.expect(t, app.workspace_drag_kind == .None && app.workspace_drag_source_document_id == "", "release must clear the drag source even if the host rejects the request")
 	// Escape/focus cancellation has no release position and must not detach.
 	application_drag(rawptr(&app), &rt, started)
 	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{kind=.Cancelled})
-	testing.expect(t, requests == 1, "cancelling a drag without an outside release must not open a window")
+	testing.expect(t, requests == 1, "cancelling a drag without a pointer release must not open a window")
 }

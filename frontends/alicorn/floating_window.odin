@@ -352,11 +352,9 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	app.relief_materials = scope.relief_materials
 }
 
-floating_window_drag_outside :: proc(rt: ^alicorn.Runtime, event: alicorn.Drag_Event) -> bool {
-	if rt == nil || event.kind != .Cancelled || !event.has_pointer_position { return false }
-	viewport := alicorn.viewport_bounds(rt)
-	return event.pointer_x < viewport.x || event.pointer_y < viewport.y ||
-		event.pointer_x >= viewport.x+viewport.w || event.pointer_y >= viewport.y+viewport.h
+floating_window_drag_detached :: proc(rt: ^alicorn.Runtime, event: alicorn.Drag_Event) -> bool {
+	return rt != nil && event.kind == .Cancelled && event.has_pointer_position &&
+		event.presentation_state == .Detached
 }
 
 floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string) -> bool {
@@ -725,17 +723,17 @@ floating_window_text_input :: proc(state: rawptr, rt: ^alicorn.Runtime, owner: a
 }
 
 @(test)
-test_floating_window_drag_out_requires_outside_release :: proc(t: ^testing.T) {
+test_floating_window_drag_requires_magnetic_breakout :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
 	defer alicorn.destroy_runtime(&rt)
-	outside := alicorn.Drag_Event{kind=.Cancelled, pointer_x=641, pointer_y=20, has_pointer_position=true}
-	inside := alicorn.Drag_Event{kind=.Cancelled, pointer_x=639, pointer_y=20, has_pointer_position=true}
-	escape := alicorn.Drag_Event{kind=.Cancelled, pointer_x=641, pointer_y=20, has_pointer_position=false}
-	started := alicorn.Drag_Event{kind=.Started, pointer_x=641, pointer_y=20, has_pointer_position=true}
-	testing.expect(t, floating_window_drag_outside(&rt, outside), "releasing a tab beyond the window should detach it")
-	testing.expect(t, !floating_window_drag_outside(&rt, inside), "an in-window cancelled drag should not detach a tab")
-	testing.expect(t, !floating_window_drag_outside(&rt, escape), "a keyboard cancellation without a pointer position should not detach a tab")
-	testing.expect(t, !floating_window_drag_outside(&rt, started), "only a released drag may detach a tab")
+	detached := alicorn.Drag_Event{kind=.Cancelled, pointer_x=320, pointer_y=64, has_pointer_position=true, presentation_state=.Detached}
+	attached := alicorn.Drag_Event{kind=.Cancelled, pointer_x=641, pointer_y=20, has_pointer_position=true, presentation_state=.Horizontal_Track}
+	escape := alicorn.Drag_Event{kind=.Cancelled, pointer_x=641, pointer_y=20, has_pointer_position=false, presentation_state=.Detached}
+	started := alicorn.Drag_Event{kind=.Started, pointer_x=641, pointer_y=20, has_pointer_position=true, presentation_state=.Detached}
+	testing.expect(t, floating_window_drag_detached(&rt, detached), "a tab released after magnetic breakout should detach even inside the window")
+	testing.expect(t, !floating_window_drag_detached(&rt, attached), "a horizontally displaced but attached tab should not detach")
+	testing.expect(t, !floating_window_drag_detached(&rt, escape), "keyboard cancellation must not detach a tab")
+	testing.expect(t, !floating_window_drag_detached(&rt, started), "only a released drag may detach a tab")
 }
 
 @(test)

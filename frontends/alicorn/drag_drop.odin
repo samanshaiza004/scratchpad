@@ -39,7 +39,7 @@ application_drag :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Dra
 		workspace_drag_clear(app, reset_motion=true, snap_motion=true)
 		alicorn.invalidate_root(rt, "Scratchpad tab drag completed")
 	case .Cancelled:
-		if app.workspace_drag_kind == .Tabs && floating_window_drag_outside(rt, event) {
+		if app.workspace_drag_kind == .Tabs && floating_window_drag_detached(rt, event) {
 			_ = floating_window_open(app, rt, app.workspace_drag_source_document_id)
 		}
 		workspace_drag_clear(app, reset_motion=true)

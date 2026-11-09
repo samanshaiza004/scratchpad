@@ -854,6 +854,9 @@ scratchpad_document_tabs_build :: proc(
 	tab_options.height = height
 	tab_options.close_policy = .Selected_Or_Hover
 	tab_options.drag_type = SCRATCHPAD_DRAG_TABS
+	if !app.find_open && app.floating_window == nil {
+		tab_options.drag_tracking = alicorn.DRAG_TRACKING_HORIZONTAL_MAGNETIC
+	}
 	tab_style := alicorn.layout_style(.Row, grow=1, height=height, clip=true)
 	if compact {
 		tab_options.min_tab_width = SCRATCHPAD_CONTENT_TITLEBAR_MIN_TAB_WIDTH

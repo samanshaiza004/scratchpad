@@ -126,11 +126,14 @@ The retired Shirei and GPUI source is preserved at Git ref `archive/pre-v0.1.0-f
 
 ## Floating documents
 
-Drag a text-document tab outside the Scratchpad window to open it in a compact
-floating editor. The document remains in the shared authoritative workspace,
-but its tab and editor view move to the child window. The floating editor has an
-independent Alicorn Runtime, source-window reader, and accessibility reader; edits still flow through
-Scratchpad's shared serial edit lane. Use **Return to tabs** (or close the
+Drag a text-document tab vertically at least 24 logical pixels beyond its tab
+track, then release to open it in a compact floating editor. Horizontal movement
+reorders tabs while the preview stays magnetized to the track; returning within
+8 logical pixels reattaches it. Tear-off depends on this breakout, not the window
+edge. The document remains in the shared authoritative workspace, but its tab
+and editor view move to the child window. The floating editor has an independent
+Alicorn Runtime, source-window reader, and accessibility reader; edits still flow
+through Scratchpad's shared serial edit lane. Use **Return to tabs** (or close the
 floating window) to put the document back in the primary tab strip. **On top**
 is an optional native window setting. Image and unsupported-file tabs are not
 detachable yet.
