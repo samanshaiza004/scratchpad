@@ -6,6 +6,14 @@ physical Windows/macOS acceptance. The implementation contract and usage are
 in [Semantic zoom](../SEMANTIC_VIEWS.md); prior art is in
 [the research note](../research/semantic-zoom.md).
 
+**Status update:** the complete physical keyboard, mouse, and trackpad
+acceptance was later confirmed on macOS and Windows and recorded in
+[v0.2.0 issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
+The Pending entries in the matrix below describe the original 2026-10-24
+validation run; they are not the current physical-acceptance status. The
+measured pathological sentence-scan cost below remains an open release
+follow-up.
+
 ## Automated checks
 
 The Go application/Caliber suites cover deterministic Markdown, prose and Go
@@ -89,10 +97,11 @@ The 206 ms sentence scan remains a measured follow-up for large-input scheduling
 or a documented semantic-query budget before broad release. No extra scheduler
 or hidden polling was added for this experiment.
 
-## Physical desktop matrix
+## Physical desktop matrix — original run status
 
-These checks require a real input device and desktop. They remain unverified
-unless explicitly recorded as performed.
+These checks required a real input device and desktop. The original run below
+did not execute them; the later macOS and Windows acceptance is recorded in the
+status update above.
 
 | Scenario | Expected result | Status |
 | --- | --- | --- |
@@ -118,13 +127,12 @@ unless explicitly recorded as performed.
 
 ## Scope limits
 
-Folds cover whole logical source lines; trailing text on the opening sentence's
-line remains visible. Editing operations still return to Full in this first
-experiment; navigation and selection work in reduced views. There is no
-animation, pinch recognizer, automatic fisheye layout, or arbitrary manual
-fold-collapse UI beyond toggling the semantic disclosures. Very long chunked
-source lines return to the ordinary source lane, which already supports chunk
-navigation.
+Reduced-view folds cover whole logical source lines; trailing text on an
+opening sentence's line remains visible. Editing operations return to Full;
+navigation and selection work in reduced views. Manual source folding is
+available separately in Full source. There is no animation, pinch recognizer,
+or automatic fisheye layout. Very long chunked source lines return to the
+ordinary source lane, which already supports chunk navigation.
 
 Plans are built once per explicit transition and may scan all source bytes and
 structural entries. Visible rendering is bounded, but initial plan construction

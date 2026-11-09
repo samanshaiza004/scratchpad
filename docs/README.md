@@ -1,18 +1,28 @@
 # Documentation
 
-## Start here
+## Current product and architecture
 
-- [Product thesis](THESIS.md) — why Scratchpad exists, its file-native model, design laws, and planned 0.2.0 direction.
-- [Roadmap](PLAN.md) — the current v0.1.0 text editor foundation and the v0.2.0 projection exploration.
-- [Architecture](ARCHITECTURE.md) — application ownership and package boundaries.
+- [Product thesis](THESIS.md) — file-native source, derived structure, projections, and design laws.
+- [Roadmap](PLAN.md) — published baseline, unreleased v0.2.0 scope, and release acceptance.
+- [Changelog](../CHANGELOG.md) — consolidated changes from v0.1.0 through Unreleased.
+- [Architecture](ARCHITECTURE.md) — ownership, document model, package boundaries, and persistence.
+- [Alicorn coverage](frontends/alicorn/PARITY.md) — implemented frontend capabilities and known limits.
+- [Session restoration](SESSION-RESTORATION.md) — persisted session, recent workspaces, and recovery boundaries.
 
-## Supporting material
+## Frontend contracts and design
 
-- [Design contracts](design/EDITOR-CORE-CONTRACT.md) and [overflow lane specification](design/OVERFLOW-LANE-SPEC.md).
-- [Alicorn UI API dogfood](frontends/alicorn/UI-API-DOGFOOD.md) — measured Scratchpad migration and retained-output comparison.
-- [Alicorn setup and status](../frontends/alicorn/README.md), [editing ownership](frontends/alicorn/EDITING.md), [bounded Markdown design](frontends/alicorn/MARKDOWN.md), and [Alicorn coverage and follow-up gaps](frontends/alicorn/PARITY.md).
-- Research: [Tree-sitter options](research/TREE-SITTER-OPTIONS.md). Shirei and GPUI implementation reports are preserved as historical records under [engineering history](history/README.md).
-- [Baselines](baselines/README.md) — retained benchmark and parser measurements.
-- [Engineering history](history/README.md) — completed investigations, audits, and their original evidence.
+- [Alicorn setup and usage](../frontends/alicorn/README.md).
+- [Editing ownership](frontends/alicorn/EDITING.md) — source edits, interaction state, and Caliber boundaries.
+- [Markdown presentation](frontends/alicorn/MARKDOWN.md) — source-preserving Markdown styles, wrapping, and tasks.
+- [Semantic zoom and folding](SEMANTIC_VIEWS.md) — reduced source views, local folds, navigation, and cost model.
+- [Source projections](design/SOURCE-PROJECTIONS.md), [editor core contract](design/EDITOR-CORE-CONTRACT.md), and [overflow lane specification](design/OVERFLOW-LANE-SPEC.md).
+- [Alicorn UI API dogfood](frontends/alicorn/UI-API-DOGFOOD.md) — migration scope and retained-output comparison.
 
-Historical reports preserve the status and terminology from when they were written. Use the thesis and roadmap for current product direction and scope.
+## Research, validation, and history
+
+- [Research index](research/README.md) — active design investigations and measured dogfood.
+- [Validation index](validation/README.md) — platform records, manual matrices, and captured artifacts.
+- [Baselines](baselines/README.md) — retained-runtime and parser measurements.
+- [Engineering history](history/README.md) — completed investigations and implementation records from earlier phases.
+
+Research and validation documents are scoped evidence, not a single current certification statement. Each report should be read with its date, commit, platform, and tested scenario. Use the roadmap for current release scope and the coverage page for implementation status.

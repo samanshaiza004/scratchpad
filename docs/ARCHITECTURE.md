@@ -1,8 +1,8 @@
-# Provisional Scratchpad architecture
+# Scratchpad architecture boundaries
 
-This is a boundary document, not a specification for every future package.
-The architecture stays intentionally shallow until the scale and language
-gates produce evidence.
+This document describes current ownership and package boundaries; it is not a
+specification for every implementation detail. Keep new packages and
+abstractions tied to an observed second consumer or a demonstrated need.
 
 ## Ownership model
 
@@ -114,8 +114,8 @@ architecture theater.
 
 ## Editor/view split
 
-The current `ScratchEditor` is the Gate B-proven implementation for ordinary
-documents. It separates:
+The current `ScratchEditor` is the document editor for ordinary files. It
+separates:
 
 1. a document-owned editing/storage layer with byte offsets and mutation-aware
    line indexing;
@@ -124,10 +124,13 @@ documents. It separates:
 3. an Alicorn presentation adapter that keeps focus, IME, clipboard, and
    native input in the frontend while the Go editor remains authoritative.
 
-The first custom proof should be line-oriented with fixed row height and no soft
-wrapping. It should render only visible rows and convert byte/rune positions at
-the boundary. Width-dependent wrapping becomes a cache problem after the
-scalable baseline is proven.
+The current editor keeps source lines and byte offsets as its stable editing
+coordinates while rendering shaped visual rows. Prose can soft-wrap; Markdown
+tables share a table-wide wrap/overflow decision, and code lanes remain
+unwrapped. The frontend measures a bounded source window and keeps sparse row
+heights and presentation caches so local edits need not discard unaffected
+geometry. See the [editing contract](frontends/alicorn/EDITING.md) and
+[Markdown presentation](frontends/alicorn/MARKDOWN.md) for the current details.
 
 This is a deep-module opportunity: the buffer/line-index module should expose a
 small edit/snapshot/range surface while hiding its data structure. The editor
@@ -225,10 +228,12 @@ The filesystem remains authoritative after a successful save. Scratchpad does
 not synchronize files, invent a note database, or require a cloud service.
 Sync tools operate on the ordinary folder outside the application.
 
-Gate C now contains the file store, raw-byte document lifecycle, open-document
-registry, parent-directory watcher hints, verified reconciliation and conflict
-state, disposable session/recovery state, workspace listing, and asynchronous
-raw-byte search. Native platform certification remains an explicit C7 task.
+The application layer owns the file store, raw-byte document lifecycle,
+open-document registry, parent-directory watcher hints, reconciliation and
+conflict state, disposable session/recovery state, workspace listing, and
+asynchronous raw-byte search. Those are current implementation boundaries;
+historical gate completion and platform evidence are recorded separately in
+[engineering history](history/README.md) and [validation records](validation/README.md).
 
 ## Unified commands
 
@@ -256,8 +261,8 @@ range. Configurable bindings remain deferred until semantics stabilize.
 
 ## Framework boundary
 
-Alicorn is the supported presentation runtime for v0.1.0. A generic runtime
-limitation should be fixed upstream only after a minimal reproduction, a
-focused test, and evidence that the need is not Scratchpad product policy.
-Scratchpad-specific workspace semantics, Markdown behavior, parser selection,
-and command behavior remain in the Go application and its adapters.
+Alicorn is the supported presentation runtime. A generic runtime limitation
+should be fixed upstream only after a minimal reproduction, a focused test, and
+evidence that the need is not Scratchpad product policy. Scratchpad-specific
+workspace semantics, Markdown behavior, parser selection, and command behavior
+remain in the Go application and its adapters.

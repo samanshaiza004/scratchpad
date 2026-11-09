@@ -12,11 +12,9 @@ The product is not a proprietary note database, a graph users must maintain, or 
 
 ## What Scratchpad is building now
 
-Version **0.1.0** is about establishing a dependable text editor foundation. The immediate product goal is the basic feel of editing text well: predictable input, caret and selection behavior, navigation, and trustworthy work with ordinary files.
+The published v0.1 releases established a dependable native editor for ordinary files. The current `main` branch is developing v0.2.0 around source-connected views: semantic selection, reduced views, pinned ranges, editable search, and task, symbol, heading, and link projections. These features are implemented in the development line, but v0.2.0 has not been released; see the [roadmap](PLAN.md) and [changelog](../CHANGELOG.md) for current scope and remaining acceptance work.
 
-This release is the base on which the product can grow. The distinctive projection ideas below are planned for **0.2.0**. They describe the direction of the project; they are not claims about what 0.1.0 already delivers.
-
-Scratchpad should earn the right to experiment by making the source editing experience solid first.
+The editing foundation remains a product requirement, not a completed phase that can be traded away. Source input, caret and selection behavior, navigation, saving, recovery, and ordinary-file interoperability must remain trustworthy while the view model grows.
 
 ## The product bet
 
@@ -58,9 +56,9 @@ History is the time and revision dimension of source and projections. It may eve
 
 The first four concepts define the near-term product direction. History stays experimental.
 
-## Planned projection direction for 0.2.0
+## Projection model in practice
 
-The first projection work should demonstrate the thesis in small, understandable steps:
+The v0.2.0 work applies the thesis through a small set of source-connected experiences:
 
 1. **Semantic selection.** Expand a caret or selection through useful boundaries such as a word, inline construct, sentence, paragraph, section, or function. The command can remain consistent while the available structure depends on the content.
 2. **Reduced views.** Let users move from full text toward skim or outline density while keeping shown text connected to its source.
@@ -68,7 +66,7 @@ The first projection work should demonstrate the thesis in small, understandable
 4. **Editable search.** Present search results with enough context to work in place, mapping clear edits back to their source files.
 5. **Other structural views.** Tasks, symbols, links, and similar structures can use the same model rather than becoming unrelated secondary systems.
 
-This sequence is a proving path, not a promise that every item ships together in 0.2.0. Start with views that make the source mapping obvious. A projection edit wholly inside one current segment can map directly to that segment. Stale references and edits that cross source boundaries need explicit handling; early versions should reject ambiguous mutations rather than guess.
+The order is architectural guidance, not a promise that every possible projection ships in one version. Each view keeps source mapping explicit. An edit wholly inside one current segment can map directly to that segment; stale references and edits that cross source boundaries require explicit handling. Scratchpad rejects ambiguous mutations rather than guessing.
 
 ## Design laws
 

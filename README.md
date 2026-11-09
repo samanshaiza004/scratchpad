@@ -1,54 +1,88 @@
 # Scratchpad
 
-Scratchpad is a native, file-first editor for notes, prose, tasks, and code. For v0.1.0, **Alicorn is the supported desktop frontend**. The Go application remains authoritative for document bytes, editing commands, workspace operations, saves, conflicts, and recovery; Alicorn provides the native window, interaction, and presentation.
+Scratchpad is a native, file-first editor for notes, prose, tasks, and code.
+Ordinary files remain the durable source of truth. The Go application owns
+document bytes, editing commands, workspace operations, saves, conflicts, and
+recovery; the Odin/Alicorn frontend owns native interaction and presentation
+through the Caliber C ABI.
 
-## Product direction
+The latest published release is [v0.1.1](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.1.1).
+The current `main` branch contains unreleased v0.2.0 work. Release status and
+remaining acceptance gates are tracked in the [roadmap](docs/PLAN.md); the full
+release history is in the [changelog](CHANGELOG.md).
 
-Scratchpad keeps ordinary files durable and portable while exploring views that can gather or reduce text without becoming a new source of truth. Version 0.1.0 focuses on dependable file workflows and ordinary editing. Projection features described in [the product thesis](docs/THESIS.md) are future exploration, not a v0.1.0 promise. See [the roadmap](docs/PLAN.md) for current scope.
+## What is in current `main`
 
-## Run Alicorn
+- Edit regular files in one source-backed document model, with Markdown and
+  supported code presentation, selection expansion, folding, and source-aware
+  Full, Focus, Skim, and Overview views.
+- Work with derived surfaces: pin ranges, edit unambiguous pinned source, edit
+  workspace search results, and navigate tasks, symbols, headings, and links.
+- Use a keyboard-navigable workspace tree, Quick Open, editable Search and
+  Symbols tools, detachable text-document windows, and read-only PNG/QOI
+  previews.
+- Restore clean sessions and recent workspaces, recover unsaved edits after a
+  crash, choose an editor font and size, and switch persisted themes.
 
-From the repository root:
+These are capabilities on the unreleased development line; consult the
+[v0.1.1 release notes](CHANGELOG.md) for what is in the latest published
+packages.
 
-```powershell
-.\tools\alicorn.ps1 run
-```
+## Run from source
+
+The wrappers synchronize the pinned Alicorn and Caliber revisions before
+building or testing:
 
 ```sh
 ./tools/alicorn.sh run
+./tools/alicorn.sh test
+./tools/alicorn.sh smoke
 ```
 
-The wrapper synchronizes the pinned Alicorn and Caliber dependencies. It requires Go 1.25.5 or newer, Odin, Rust/Cargo for Caliber, and the platform's native build tools. Windows also needs a 64-bit MinGW-w64 C compiler; macOS needs SDL3 (`brew install sdl3`). See [Alicorn setup and current status](frontends/alicorn/README.md).
+On Windows, use the equivalent PowerShell commands:
 
-Run the Alicorn integration suite with `test` instead of `run`; `build` creates a native artifact and `smoke` checks launch, publication, wake, presentation, and shutdown.
+```powershell
+.\tools\alicorn.ps1 run
+.\tools\alicorn.ps1 test
+.\tools\alicorn.ps1 smoke
+```
 
-Alicorn includes draggable/reorderable document tabs, file and directory drag-and-drop in the workspace, and restrained Tree-sitter syntax highlighting for Go, TypeScript, and TSX alongside live Markdown presentation.
+The native frontend requires Go with cgo, Odin, Rust/Cargo, and platform build
+tools. See [Alicorn setup and usage](frontends/alicorn/README.md) for pinned
+toolchain details, platform requirements, diagnostics, and interactive
+features. Build consumer packages with `package --version <version>`; see the
+[packaging guide](packaging/README.md). The v0.1.1 release has Windows x64 and
+Apple Silicon macOS packages.
 
-The [semantic zoom experiment](docs/SEMANTIC_VIEWS.md) folds the editable source through Full, Focus, Skim, and Overview while preserving a source anchor. Use the View menu, command palette, or Ctrl/Cmd+Alt/Option+wheel over the editor; Settings → Editor can change or disable the wheel gesture.
-
-## Checks
+Run the backend and language tests independently with:
 
 ```sh
 go test -tags treesitter_release ./...
 ```
 
-The Alicorn integration suite also runs Go/Caliber boundary tests, Odin checks, and frontend behavior tests through `tools/alicorn.ps1 test` or `tools/alicorn.sh test`.
+## Product and engineering docs
 
-## Frontend history and known gaps
+- [Product thesis](docs/THESIS.md) — ordinary files, source-connected views,
+  and the design laws.
+- [Roadmap](docs/PLAN.md) — unreleased v0.2.0 scope and remaining release
+  gates.
+- [Documentation index](docs/README.md) — current guides, design notes, and
+  validation records.
+- [Alicorn coverage](docs/frontends/alicorn/PARITY.md) — current capabilities
+  and known limits.
+- [Changelog](CHANGELOG.md) — consolidated v0.1.0, v0.1.1, and Unreleased notes.
 
-The former Shirei and GPUI implementations are preserved at the `archive/pre-v0.1.0-frontends` branch and tag. They are not supported build targets. Remaining Alicorn gaps include the outline sidebar, editor font-zoom controls, and expand-selection. These are recorded in the [Alicorn coverage and follow-up list](docs/frontends/alicorn/PARITY.md); native Windows/macOS validation is tracked separately from missing features.
+The former Shirei and GPUI frontends are preserved at the
+`archive/pre-v0.1.0-frontends` Git ref for historical reference; they are not
+active build targets.
 
-## Project principles
+## Principles
 
 - Ordinary files stay durable and portable.
 - One document model supports prose, notes, tasks, and code.
-- Derived structure may be rebuilt from source.
-- Views do not silently modify source.
-- Editing behavior stays explicit and predictable.
-
-## Documentation
-
-Start with the [documentation index](docs/README.md), [architecture](docs/ARCHITECTURE.md), [Alicorn editing behavior](docs/frontends/alicorn/EDITING.md), and [Markdown design](docs/frontends/alicorn/MARKDOWN.md). Completed implementation and retired frontend reports are under [engineering history](docs/history/README.md).
+- Derived structure can be rebuilt from source.
+- Views do not silently mutate source; writes require explicit, safe mapping.
+- When structure is stale or unavailable, ordinary text remains available.
 
 ## License
 

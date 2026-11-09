@@ -1,6 +1,6 @@
 # Scratchpad Alicorn
 
-Alicorn is Scratchpad's supported native frontend for v0.1.0. The Odin/Runa frontend owns transient interaction and presentation; the Go application remains authoritative for document bytes, commands, workspace operations, saving, conflict handling, and crash recovery. The two run in one native process through the Caliber C ABI.
+Alicorn is Scratchpad's supported desktop frontend. The Odin/Runa frontend owns transient interaction and presentation; the Go application remains authoritative for document bytes, commands, workspace operations, saving, conflict handling, and crash recovery. The two run in one native process through the Caliber C ABI. The latest published release is v0.1.1; the current development line and its limits are summarized in [frontend coverage](../../docs/frontends/alicorn/PARITY.md).
 
 Ordinary production text, buttons, and simple layout scopes use Alicorn's public `alicorn:ui` helpers; advanced retained controls continue to use the runtime API where they need exact identity, scrolling, text-input, or native behavior. See the [UI API dogfood report](../../docs/frontends/alicorn/UI-API-DOGFOOD.md) for the migration scope, before/after source counts, retained-output comparison, and validation results.
 
@@ -24,7 +24,7 @@ The wrapper synchronizes the exact Caliber and Alicorn revisions in `dependencie
 
 On macOS, Scratchpad's retained document tabs share the titlebar row with AppKit's native traffic lights; application menus remain in the macOS system menu bar. Windows keeps native caption behavior and hides the permanent File/Edit/Workspace/Document/View labels. Press Alt to open the native application menu, or use its Alt+letter routes and existing command shortcuts; Ctrl+Shift+P opens the Command Palette. The sidebar and document headers belong to the same retained workspace split as their contents, so tabs follow the editor pane immediately while resizing the sidebar. The selected tab uses the active editor-paper color and a connected contour, with the paper's top material edge open at the join. Find interrupts that connection and restores the ordinary selected treatment. Alicorn resolves native-control reservations and app-declared tab, divider, and blank-drag regions from finalized layout. Linux retains its system-decorated window and separate document-tab row as an explicit visual fallback. Scratchpad owns selection, close, reorder, and detach behavior.
 
-`build` creates the native artifact under `out/alicorn`. `test` runs Go/Caliber ABI checks, Odin type-checking, Alicorn bridge tests, and frontend behavior tests. `smoke` builds and launches a native window for a bounded run and checks publication, host wake, presentation, and ordered shutdown. Native IME, dialogs, clipboard, OS trash, DPI, pointer feel, and tab/workspace drag-and-drop still need hands-on verification on the target operating systems.
+`build` creates the native artifact under `out/alicorn`. `test` runs Go/Caliber ABI checks, Odin type-checking, Alicorn bridge tests, and frontend behavior tests. `smoke` builds and launches a native window for a bounded run and checks publication, host wake, presentation, and ordered shutdown. Automated tests and package smoke cover only their stated scenarios; physical input, IME, native dialogs, clipboard, OS trash, DPI transitions, and visual behavior require platform-specific review. See [frontend coverage and validation scope](../../docs/frontends/alicorn/PARITY.md).
 
 For development-only invalidation checks, pass `--app-mutation-diagnostics` to `build`, `test`, `smoke`, or `run`. For example, `.\tools\alicorn.ps1 test --app-mutation-diagnostics` compiles Alicorn with `-debug -define:ALICORN_APP_MUTATION_DIAGNOSTICS=true`; the option is rejected for optimized builds and packages. Scratchpad currently reports backend state/projection adoption and user selection updates; these checks verify that a changed revision schedules UI work, not that the exact affected subtree was invalidated. After building, launch `out\alicorn\scratchpad-alicorn.exe --inspector-open` to inspect the trace (F9 toggles the inspector).
 
@@ -117,9 +117,9 @@ The editor reads a bounded source window, maps displayed bytes back to source of
 
 Scratchpad installs its bundled Atkinson UI and monospace faces through Alicorn's public application font API, then registers the available platform UI fallback from disk. The empty-editor state uses a small app-owned PNG mark; switching Warm/Cool Light replaces its Runtime image handle and defers release of the old handle until a later build callback, after the replacement presentation has completed. The native host owns GPU textures and rebuilds them from Runtime-owned decoded pixels. Consumer packages include both Atkinson OFL notices in their release manifest.
 
-## Current feature gaps
+## Current scope
 
-Compared with the retired Shirei workbench, Alicorn does not yet provide the outline sidebar (code symbols, Markdown headings, tasks, and links), editor font-zoom commands, or expand-selection. Manual source folding is available in Full mode for Markdown and supported code; the [semantic zoom experiment](../../docs/SEMANTIC_VIEWS.md) provides four global depths and local source-range expansion. Alicorn restores the last saved workspace, open documents, active document, editor positions, sidebar width, and recent workspace list; crash-recovery data remains a separate lifecycle. The detailed coverage and follow-up list is in [Alicorn coverage](../../docs/frontends/alicorn/PARITY.md). These remaining product gaps are distinct from native-platform verification still pending for v0.1.0.
+The frontend includes source-connected Full, Focus, Skim, and Overview views; local source folding; semantic selection; pinned ranges; editable workspace Search; task, symbol, heading, and link navigation; session restoration; editor font controls; persisted themes; and PNG/QOI previews. See [semantic zoom and folding](../../docs/SEMANTIC_VIEWS.md) for the interaction contract and [frontend coverage](../../docs/frontends/alicorn/PARITY.md) for known limits. v0.2.0 is not released; the [roadmap](../../docs/PLAN.md) describes its current release gate.
 
 The retired Shirei and GPUI source is preserved at Git ref `archive/pre-v0.1.0-frontends`; it is no longer an active build target.
 
@@ -135,8 +135,8 @@ and editor view move to the child window. The floating editor has an independent
 Alicorn Runtime, source-window reader, and accessibility reader; edits still flow
 through Scratchpad's shared serial edit lane. Use **Return to tabs** (or close the
 floating window) to put the document back in the primary tab strip. **On top**
-is an optional native window setting. Image and unsupported-file tabs are not
-detachable yet.
+is an optional native window setting. Only text-document tabs can be detached;
+image previews and unsupported-file tabs remain in the primary window.
 
 Detaching promotes a preview to a regular document and selects the next primary
 tab, or the preceding tab when detaching the last one. On Windows, document
@@ -147,9 +147,9 @@ use the selected workbench theme.
 ## Durable UI restoration
 
 Clean sessions also retain the focused workspace-tree path and tree scroll, or
-the editor focus area. These are additive application fields in the existing
-version-1 session, written through Go's atomic session persistence. Alicorn node
-IDs and restore tokens never enter that file. Startup expands only the focused
+the editor focus area. These fields are stored in the current version-2 session
+through Go's atomic persistence; version-1 sessions migrate in memory. Alicorn
+node IDs and restore tokens never enter that file. Startup expands only the focused
 path's ancestors and restores through a fresh tree owner; deleted or hidden paths
 fall back to the editor (or tree owner when no document exists). A virtualized
 focus target remains logical until its row is described. Last-minute split and
@@ -164,4 +164,5 @@ to the next match; F3/Shift+F3 and Escape keep their existing navigation behavio
 The frontend tests exercise this path against the actual Go backend, including
 preedit, commit, submit, programmatic replacement, reopen, source invariance,
 and allocator cleanup. Native smoke covers launch and shutdown; physical IME
-composition and mixed-DPI pointer behavior still need native use.
+composition and mixed-DPI pointer behavior require platform-specific
+verification. See the validation index for scoped evidence.

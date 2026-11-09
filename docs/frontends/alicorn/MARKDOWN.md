@@ -1,10 +1,10 @@
 # Source-preserving Markdown presentation — Alicorn
 
-## Research verdict
+## Current status and ownership
 
-Scratchpad already lowers Goldmark into `document.MarkdownPresentation` source spans and `BlockPresentation` ranges. Shirei's Markdown presentation remains the behavioral oracle. Reuse these projections; do not parse Markdown in Odin or transfer an AST.
+Scratchpad lowers Goldmark into `document.MarkdownPresentation` source spans and `BlockPresentation` ranges. The source editor renders these derived ranges without parsing Markdown in Odin or transferring an AST. Markdown styling, structural spacing, soft wrapping, table layout, task interaction, and source-mapped editing are implemented; the current product coverage and known limits are in [Alicorn coverage](PARITY.md).
 
-The missing integration was the foreign backend's asynchronous projection lifecycle. It activates on the first Markdown presentation request; clients using the default resource format do not start new parser work. It must drive the application's existing debounced worker coordinator, publish exact-revision readiness, and wake sleeping clients when a projection becomes available. Parsing stays outside the visible-window request. No periodic frontend polling is required.
+The foreign backend's asynchronous projection lifecycle uses the application's debounced worker coordinator. It publishes exact-revision readiness and wakes sleeping clients when analysis becomes available. Parsing stays outside the visible-window request; no periodic frontend polling is required.
 
 ## Ownership
 
@@ -38,7 +38,7 @@ Markdown and plain-text prose wrap. Markdown tables use one table-wide layout pl
 
 After an optimistic edit, presentation ranges that were explicitly rebased with the source remain usable for visual continuity across the edit acknowledgement. As Goldmark catches up, Alicorn can take an exact projection for an acknowledged revision and chase it through the remaining queued replacements, so newly formed headings and inline constructs can appear styled while typing continues. Rebased ranges remain presentation-only and never authorize source mutation; the next exact projection replaces them when it arrives. Table commands use the frontend's current caret and selection snapshot, while Go synchronously validates table context against authoritative source before applying a command.
 
-The existing Markdown and soft-wrap coverage verifies exact-revision styling, source/display mapping, wrapped visual-row navigation and selection, no-wrap code and table-overflow policy, long-word wrapping, sparse height shifts, and resize anchoring. The cell-aware table path compiles and preserves source bytes, but still needs focused automated layout/hit-test coverage and native review of table selection, resize, scrolling, and IME on Windows and macOS. Alicorn is the supported frontend; the remaining differences from the retired Shirei workbench are tracked in [the coverage list](PARITY.md).
+Automated Markdown and soft-wrap coverage verifies exact-revision styling, source/display mapping, wrapped visual-row navigation and selection, no-wrap code and table-overflow policy, long-word wrapping, sparse height shifts, and resize anchoring. The cell-aware table path preserves source bytes and participates in shared table layout. Native behavior should be evaluated against the specific target platform and scenario; see the [validation index](../../validation/README.md). Differences from the retired Shirei workbench are summarized in [Alicorn coverage](PARITY.md).
 
 ## Tasks and source editing
 
@@ -50,9 +50,11 @@ The permanent sidebar is Explorer with Search and Symbols tools. `Ctrl+Shift+F` 
 
 ## Validation limits
 
-Headless tests must cover exact/stale revision handling, metadata bounds and malformed payloads, source/display mapping, lease ownership, and unchanged caret/layout geometry under paint spans. Typography tests verify semantic ranges and source preservation; shaping changes are expected for those spans. Native startup smoke verifies publication, wake, presentation, and shutdown; it does not certify visual style or native IME. Windows/macOS visual checks and the remaining Phase 4 manual matrix must be recorded separately before release certification.
+Automated coverage exercises exact/stale revision handling, metadata bounds, source/display mapping, lease ownership, and caret/layout behavior under presentation spans. Typography tests verify semantic ranges and source preservation; shaping changes are expected for those spans. Native startup smoke verifies publication, wake, presentation, and shutdown, but does not certify visual style or OS-level IME behavior. Read each platform record together with its commit and test scope.
 
-## Validation recorded for Markdown A
+## Historical implementation-slice evidence
+
+The following records describe the original Markdown implementation slices. They are retained for provenance and are not a current all-platform status report.
 
 Historical Windows validation for the pre-cleanup frontend tree passed root Go tests, cgo bridge tests, Odin type checking, nine bridge tests, and forty frontend tests. The bridge also passed `go test -race ./...` with the canonical Caliber header and actual library. The archived GPUI report records its Rust test and smoke results.
 
@@ -60,4 +62,4 @@ The locked native Alicorn smoke passes startup, publication, wake, GPU submissio
 
 The bounded transport benchmark caps a 20,000-block fixture at 4,096 records (about 120 microseconds per query on this machine). A late-viewport query with an enclosing span and 100,000 indexed spans takes about 3 microseconds; indexed subtree end bounds prevent scanning all earlier spans. These are local microbenchmarks, not end-to-end typing measurements.
 
-macOS/Linux execution and native Markdown appearance/wrap feel were not manually checked in this slice. Native Phase 4 pointer/clipboard/IME certification also remains open. Markdown blocks and full product presentation remain incomplete.
+The original validation slice did not include macOS/Linux manual appearance and wrapping checks or full native pointer/clipboard/IME certification. Its statement that Markdown blocks and full product presentation were incomplete reflected that point in development; consult the current coverage page and dated validation records for later work.
