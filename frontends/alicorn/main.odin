@@ -594,13 +594,6 @@ editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.
 	metrics := alicorn.virtual_list_variable_metrics(geometry_index, scroll.offset_y, viewport_height)
 	anchor_row := clamp(metrics.first, 0, geometry_index.item_count-1)
 	line_number := editor_geometry_source_line(view, anchor_row)
-	if manual_folding_projection_active(view) {
-		if _, fold_index, mapped := semantic_zoom_rows_source_at(&view.manual_folding.rows, anchor_row); mapped && fold_index >= 0 {
-			visible: bool
-			anchor_row, line_number, visible = manual_folding_nearest_visible_row(view, anchor_row, 1)
-			if !visible { return }
-		}
-	}
 	line_window := window
 	if _, line_available := editor_window_line(line_window, u64(line_number)); !line_available && manual_folding_projection_active(view) {
 		if cached := manual_folding_cached_window(view, u64(line_number)); cached != nil { line_window = cached }
@@ -2120,14 +2113,7 @@ editor_text_key :: proc(
 					                     current_geometry.rect.y + current_geometry.rect.h*0.5
 					target_content_y := current_content_y-page if event.key == .Page_Up else current_content_y+page
 						target_row := clamp(alicorn.virtual_list_height_index_item_at(geometry_index, target_content_y), 0, geometry_index.item_count-1)
-						if !pinned_owner && manual_folding_projection_active(view) {
-							direction := -1 if event.key == .Page_Up else 1
-							if visible_row, source_line, visible := manual_folding_nearest_visible_row(view, target_row, direction); visible {
-								target_row, target_line = visible_row, u64(source_line)
-							}
-						} else {
-							target_line = u64(editor_geometry_source_line(view, target_row))
-						}
+						target_line = u64(editor_geometry_source_line(view, target_row))
 						target_visual_y = target_content_y-alicorn.virtual_list_height_index_item_top(geometry_index, target_row)
 						target_visual_y = min(max(target_visual_y, 0),
 							max(alicorn.virtual_list_height_index_item_height(geometry_index, target_row)-0.5, 0))

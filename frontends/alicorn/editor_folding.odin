@@ -78,8 +78,8 @@ manual_folding_visible_windows_ready :: proc(
 	all_rows_ready, all_presentation_current = true, true
 	if !manual_folding_projection_active(view) { return false, false }
 	for row := first_row; row < last_row; row += 1 {
-		source_line, fold_index, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, row)
-		if !ok || fold_index >= 0 { continue }
+		source_line, _, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, row)
+		if !ok { continue }
 		line := u64(source_line)
 		window := base
 		if window == nil || window.document_id != document.id || window.editor_revision != document.editor_revision ||
@@ -143,33 +143,18 @@ manual_folding_measure_window :: proc(
 
 manual_folding_adjacent_visible_line :: proc(view: ^Editor_View_State, current_line: u64, direction: int) -> (line: u64, found: bool) {
 	if !manual_folding_projection_active(view) || (direction != -1 && direction != 1) { return current_line, false }
-	row := semantic_zoom_rows_row_for_source(&view.manual_folding.rows, int(current_line))
+	row := manual_folding_row_for_source(&view.manual_folding.rows, int(current_line))
 	if row < 0 { return current_line, false }
-	for target_row := row+direction; target_row >= 0 && target_row < view.manual_folding.rows.row_count; target_row += direction {
-		source_line, fold_index, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, target_row)
-		if !ok || fold_index >= 0 { continue }
-		return u64(source_line), true
-	}
-	return current_line, false
+	source_line, _, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, row+direction)
+	return u64(source_line) if ok else current_line, ok
 }
 
-manual_folding_nearest_visible_row :: proc(view: ^Editor_View_State, row, direction: int) -> (visible_row, source_line: int, found: bool) {
-	if !manual_folding_projection_active(view) || row < 0 || row >= view.manual_folding.rows.row_count ||
-	   (direction != -1 && direction != 1) { return row, 0, false }
-	if source, fold_index, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, row); ok && fold_index < 0 {
-		return row, source, true
-	}
-	for target := row+direction; target >= 0 && target < view.manual_folding.rows.row_count; target += direction {
-		if source, fold_index, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, target); ok && fold_index < 0 {
-			return target, source, true
-		}
-	}
-	for target := row-direction; target >= 0 && target < view.manual_folding.rows.row_count; target -= direction {
-		if source, fold_index, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, target); ok && fold_index < 0 {
-			return target, source, true
-		}
-	}
-	return row, 0, false
+// An anchor hidden by a new fold lands on the preceding visible row. This
+// also gives folds at EOF a real row instead of the insertion point past EOF.
+manual_folding_row_for_source :: proc(rows: ^Semantic_Zoom_Rows, line: int) -> int {
+	row := semantic_zoom_rows_row_for_source(rows, line)
+	if semantic_zoom_rows_hidden(rows, line) { return max(row-1, 0) }
+	return row
 }
 
 manual_folding_source_window :: proc(
@@ -312,6 +297,7 @@ manual_folding_rebuild_rows :: proc(folding: ^Editor_Manual_Folding) -> bool {
 			start_byte=source.body_start_byte,
 			end_byte=source.end_byte,
 			label=source.label,
+			silent=true,
 		})
 	}
 	return semantic_zoom_rows_init(&folding.rows, active[:], int(folding.plan.line_count))
@@ -324,7 +310,7 @@ manual_folding_sync_geometry :: proc(view: ^Editor_View_State, window: ^Editor_W
 		if folding.index_ready { alicorn.virtual_list_height_index_destroy(&folding.index); folding.index_ready = false }
 		// Expanding the last collapsed fold returns geometry to the ordinary
 		// wrapped-line index. Apply the captured source-line anchor there too;
-		// otherwise the viewport stays at the old marker-row offset and jumps
+		// otherwise the viewport stays at the old folded offset and jumps
 		// to different source after the hidden rows reappear.
 		if len(folding.rows.folds) == 0 && view.wrap_height_index_ready && folding.anchor_pending {
 			line := clamp(int(folding.anchor_line), 0, max(view.wrap_height_index.item_count-1, 0))
@@ -342,9 +328,6 @@ manual_folding_sync_geometry :: proc(view: ^Editor_View_State, window: ^Editor_W
 			row := semantic_zoom_rows_row_for_source(&folding.rows, entry.index)
 			if row >= 0 { _ = alicorn.virtual_list_height_index_set_height(&folding.index, row, entry.height) }
 		}
-		for fold in folding.rows.folds {
-			_ = alicorn.virtual_list_height_index_set_height(&folding.index, fold.row, 28*scale)
-		}
 	}
 	if window != nil {
 		for line in window.lines {
@@ -359,7 +342,9 @@ manual_folding_sync_geometry :: proc(view: ^Editor_View_State, window: ^Editor_W
 	}
 	alicorn.virtual_list_height_index_rebuild_prefix(&folding.index)
 	if folding.anchor_pending {
-		row := semantic_zoom_rows_row_for_source(&folding.rows, int(folding.anchor_line))
+		line := int(folding.anchor_line)
+		row := manual_folding_row_for_source(&folding.rows, line)
+		if semantic_zoom_rows_hidden(&folding.rows, line) { folding.anchor_offset = 0 }
 		_ = manual_folding_restore_anchor_at_row(view, folding, &folding.index, row)
 	}
 }
@@ -391,7 +376,7 @@ manual_folding_capture_anchor :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Ed
 		if scroll.id != 0 && index != nil && index.item_count > 0 {
 			metrics := alicorn.virtual_list_variable_metrics(index, scroll.offset_y, scroll.viewport_height)
 			folding.anchor_line = u64(max(editor_geometry_source_line(view, metrics.first), 0))
-			folding.anchor_offset = editor_geometry_line_top(view, int(folding.anchor_line))-scroll.offset_y
+			folding.anchor_offset = scroll.offset_y-editor_geometry_line_top(view, int(folding.anchor_line))
 		}
 	}
 	folding.anchor_pending = true
@@ -405,23 +390,17 @@ manual_folding_find_by_start :: proc(view: ^Editor_View_State, start_byte: u64) 
 	return -1
 }
 
-manual_folding_find_projected :: proc(view: ^Editor_View_State, projected: bridge.Semantic_Zoom_Fold) -> int {
-	if !manual_folding_has_candidates(view) { return -1 }
-	for fold, index in view.manual_folding.plan.folds {
-		if fold.body_start_line == projected.start_line && fold.end_line == projected.end_line &&
-		   fold.body_start_byte == projected.start_byte && fold.end_byte == projected.end_byte {
-			return index
-		}
-	}
-	return -1
-}
-
 manual_folding_header_for_line :: proc(view: ^Editor_View_State, line: u64) -> (index: int, collapsed: bool, found: bool) {
 	if !manual_folding_has_candidates(view) { return -1, false, false }
-	for fold, index in view.manual_folding.plan.folds {
-		if fold.start_line == line { return index, view.manual_folding.collapsed[index], true }
+	first := -1
+	for fold, candidate in view.manual_folding.plan.folds {
+		if fold.start_line != line { continue }
+		// Keep the remaining collapsed range reachable when several parser
+		// candidates share one header and its single gutter control.
+		if view.manual_folding.collapsed[candidate] { return candidate, true, true }
+		if first < 0 { first = candidate }
 	}
-	return -1, false, false
+	return first, false, first >= 0
 }
 
 manual_folding_toggle :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: string, instance_id, revision, start_byte: u64) {
@@ -605,28 +584,45 @@ manual_folding_reveal_lines :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Edit
 	alicorn.invalidate_root(rt, "Scratchpad revealed a source target through collapsed folds")
 }
 
-manual_folding_render_marker :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_Document, entry: Semantic_Zoom_Row_Fold, height: f32) {
-	fold := entry.fold
-	label := fmt.tprintf("… %d lines folded (%d–%d) · expand", fold.end_line-fold.start_line, fold.start_line+1, fold.end_line)
-	if gui.button(ui, label, key=fmt.tprintf("manual-fold-%d-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte, fold.end_byte), height=height, variant=.Quiet,
-		content_style=alicorn.button_content_style(.Start, .Center, padding_x=12, padding_y=0)) {
-		if index := editor_view_find(app.editor_views[:], document.id); index >= 0 {
-			view := &app.editor_views[index]
-			if fold_index := manual_folding_find_projected(view, fold); fold_index >= 0 {
-				_ = frame_deferred_action_schedule(app, .Toggle_Manual_Fold,
-					document_id=document.id, editor_revision=document.editor_revision,
-					source_instance_id=document.instance_id,
-					source_start=view.manual_folding.plan.folds[fold_index].start_byte)
-			}
-		}
-	}
+// Overlay the marker at the end of the last visual line. Keep the source in
+// its own Row so the marker grid cannot change the text's layout constraints.
+manual_folding_ellipsis_begin :: proc(
+	ui: ^alicorn.UI, rt: ^alicorn.Runtime, line: ^Editor_Display_Line,
+	width, row_height, scale: f32, wraps: bool, spans: []alicorn.Text_Style_Span,
+) -> alicorn.Node_ID {
+	overflow := alicorn.Text_Overflow.Wrap if wraps else .Clip
+	run, ok := editor_temporary_text_run(rt, line, width if wraps else 0, overflow, spans, scale)
+	if !ok { return 0 }
+	defer alicorn.text_run_destroy(&run)
+	if len(run.lines) == 0 { return 0 }
+	last := run.lines[len(run.lines)-1]
+	left := last.x+last.width+4*scale
+	marker_width := 12*scale
+	if last.y >= row_height || (wraps && left+marker_width > width) { return 0 }
+	columns := [?]alicorn.Grid_Track{alicorn.grid_fixed(left), alicorn.grid_fixed(max(width-left, marker_width))}
+	rows := [?]alicorn.Grid_Track{alicorn.grid_fixed(last.y), alicorn.grid_fixed(row_height-last.y)}
+	style := alicorn.layout_style(.Row, width=width, height=row_height)
+	if alicorn.grid_begin(ui, "fold-inline", columns[:], rows[:], style=style) == 0 { return 0 }
+	source := alicorn.container_begin(ui, .Container, key="fold-inline-source", style=style)
+	if source == 0 { alicorn.grid_end(ui) }
+	return source
 }
 
-manual_folding_header_button :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_Document, view: ^Editor_View_State, line: u64) {
+manual_folding_ellipsis_end :: proc(ui: ^alicorn.UI, source: alicorn.Node_ID) {
+	alicorn.container_end(ui)
+	_ = alicorn.grid_cell(ui, source, 0, 0, row_span=2, column_span=2, align_x=.Start, align_y=.Start)
+	marker := gui.text(ui, "…", key="fold-inline-ellipsis", font=.Monospace,
+		color=alicorn.style_color(ui, .Muted_Text), decorative=true)
+	_ = alicorn.grid_cell(ui, marker, 1, 1, align_x=.Start, align_y=.Start)
+	alicorn.grid_end(ui)
+}
+
+manual_folding_header_button :: proc(app: ^App, ui: ^alicorn.UI, document: bridge.State_Document, view: ^Editor_View_State, line: u64) -> bool {
 	index, collapsed, found := manual_folding_header_for_line(view, line)
-	if !found { return }
+	if !found { return false }
 	fold := view.manual_folding.plan.folds[index]
-	label := fmt.tprintf("%s %s", "Expand" if collapsed else "Collapse", fold.label)
+	label := fmt.tprintf("Collapse %s", fold.label)
+	if collapsed { label = fmt.tprintf("Expand %s, %d lines hidden", fold.label, fold.end_line-fold.body_start_line) }
 	icon: alicorn.Icon_ID = .Chevron_Right if collapsed else .Chevron_Down
 	if gui.icon_button(ui, label, icon,
 		key=fmt.tprintf("manual-fold-gutter-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte),
@@ -635,6 +631,8 @@ manual_folding_header_button :: proc(app: ^App, ui: ^alicorn.UI, document: bridg
 			document_id=document.id, editor_revision=document.editor_revision,
 			source_instance_id=document.instance_id, source_start=fold.start_byte)
 	}
+	if collapsed { _ = alicorn.tooltip(ui, label) }
+	return collapsed
 }
 
 manual_folding_action :: proc(app: ^App, rt: ^alicorn.Runtime, action: string) -> bool {

@@ -135,7 +135,7 @@ editor_geometry_source_line :: proc(view: ^Editor_View_State, row: int) -> int {
 
 editor_geometry_row :: proc(view: ^Editor_View_State, line: int) -> int {
 	if semantic_zoom_active(view) { return semantic_zoom_rows_row_for_source(&view.zoom.rows, line) }
-	if manual_folding_projection_active(view) { return semantic_zoom_rows_row_for_source(&view.manual_folding.rows, line) }
+	if manual_folding_projection_active(view) { return manual_folding_row_for_source(&view.manual_folding.rows, line) }
 	return line
 }
 

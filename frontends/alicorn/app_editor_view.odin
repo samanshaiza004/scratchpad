@@ -464,8 +464,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	} else if manual_folding_projection_active(view) {
 		metrics := alicorn.virtual_list_variable_metrics(geometry_index, scroll_y, viewport_height)
 		for row := metrics.first; row < metrics.last; row += 1 {
-			source_line, fold_index, mapped := semantic_zoom_rows_source_at(&view.manual_folding.rows, row)
-			if !mapped || fold_index >= 0 { continue }
+			source_line, _, mapped := semantic_zoom_rows_source_at(&view.manual_folding.rows, row)
+			if !mapped { continue }
 			line_number := u64(source_line)
 			row_window := manual_folding_source_window(app, view, document, line_number, window)
 			if row_window == nil { continue }
@@ -595,14 +595,6 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				continue
 			}
 		}
-		if manual_folding_projection_active(view) {
-			_, fold_index, mapped := semantic_zoom_rows_source_at(&view.manual_folding.rows, position)
-			if mapped && fold_index >= 0 {
-				manual_folding_render_marker(app, ui, document, view.manual_folding.rows.folds[fold_index],
-					alicorn.virtual_list_height_index_item_height(geometry_index, position))
-				continue
-			}
-		}
 		window := base_window
 		if semantic_zoom_active(view) {
 			window = semantic_zoom_source_window(app, view, document, line_number)
@@ -666,7 +658,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				style=alicorn.layout_style(.Row, width=gutter_width, height=row_height, align=.Center, clip=true),
 				color=alicorn.style_color(ui, .Subtle_Surface),
 			)
-			manual_folding_header_button(app, ui, document, view, line.logical_line)
+			fold_collapsed := manual_folding_header_button(app, ui, document, view, line.logical_line)
 			if gui.row(ui, label="scratchpad-editor-line-number-spacer", height=-1, grow=1) {
 			}
 			line_number_text := editor_line_number_text(line.logical_line+1)
@@ -747,6 +739,15 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				line_text_style.width = wrap_width
 				text_overflow = .Wrap
 			}
+			paint_current := row_window_covers_view && row_presentation_visual &&
+			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
+			text_style_spans: []alicorn.Text_Style_Span
+			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, alicorn.runtime_scratch_allocator(rt)) }
+			fold_source: alicorn.Node_ID
+			if fold_collapsed && manual_folding_projection_active(view) && row_window_matches &&
+			   !view.preedit_active && !view.preedit_recoverable {
+				fold_source = manual_folding_ellipsis_begin(ui, rt, line, wrap_width, row_height, text_scale, line_wraps, text_style_spans)
+			}
 			line_node := gui.text(
 				ui,
 				display_text,
@@ -756,13 +757,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_REGULAR, overflow=text_overflow},
 			)
 			paint_spans: []alicorn.Text_Paint_Span
-			paint_current := row_window_covers_view && row_presentation_visual &&
-			                 window.document_id == document.id && !view.preedit_active && !view.preedit_recoverable
 			if paint_current {
 				paint_spans = editor_presentation_spans_for_line(window, line, markdown_palette, alicorn.runtime_scratch_allocator(rt))
 			}
-			text_style_spans: []alicorn.Text_Style_Span
-			if paint_current { text_style_spans = editor_presentation_text_styles_for_line(window, line, alicorn.runtime_scratch_allocator(rt)) }
 			decoration_current := row_window_covers_view && window.document_id == document.id &&
 			                      !view.preedit_active && !view.preedit_recoverable
 			if decoration_current {
@@ -814,6 +811,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				_ = alicorn.visual_row_background(ui, editor_row_node, line_node, caret_position, markdown_palette.active_line)
 				_ = alicorn.visual_row_background(ui, editor_gutter_node, line_node, caret_position, markdown_palette.active_line_gutter)
 			}
+			if fold_source != 0 { manual_folding_ellipsis_end(ui, fold_source) }
 			}
 			alicorn.container_end(ui)
 			alicorn.container_end(ui)

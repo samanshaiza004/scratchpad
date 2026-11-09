@@ -27,7 +27,9 @@ In **Full source**, supported Markdown headings and parser-recognized code
 blocks have disclosure controls in the line-number gutter. The Document menu
 and command palette also provide **Toggle Fold at Cursor**, **Fold All**, and
 **Unfold All**. These controls hide whole source lines while keeping the
-heading or opening-delimiter line visible. They do not change document bytes,
+heading or opening-delimiter line visible. A collapsed heading shows a muted
+inline ellipsis when there is room. The gutter chevron expands the fold and
+reports the number of hidden lines. Folding does not change document bytes,
 revision, or undo history.
 
 Nested folds retain independent collapsed state: collapsing an outer range
