@@ -155,9 +155,6 @@ build_app :: proc(
 		if app.workspace_projection_mode {
 			projection_sidebar_build(app, &ui, rt)
 		} else {
-			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="workspace-root-row", style=alicorn.layout_style(.Row, height=26, gap=4, align=.Center), shape=scratchpad_surface_shape(app, 4), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
-			gui.text(&ui, state.workspace_root if state.has_workspace else "No workspace open", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-			alicorn.container_end(&ui)
 			build_workspace_tree(app, &ui, rt)
 		}
 		alicorn.surface_end(&ui)
@@ -557,10 +554,9 @@ scratchpad_content_titlebar_region_add :: proc(
 }
 
 Workspace_Panel_Tabs_Nodes :: struct {
-	row:     alicorn.Node_ID,
-	spacer:  alicorn.Node_ID,
-	symbols: alicorn.Node_ID,
-	search:  alicorn.Node_ID,
+	row:           alicorn.Node_ID,
+	workspace_path: alicorn.Node_ID,
+	search:         alicorn.Node_ID,
 }
 
 scratchpad_workspace_panel_tabs_build :: proc(
@@ -579,31 +575,26 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		style=style,
 	)
 	if result.row == 0 { return result }
-	// Keep the remaining tools aligned at the trailing edge, while letting
-	// blank titlebar space continue to initiate a native window drag.
-	result.spacer = alicorn.container_begin(
+	// Put the current workspace path in the top utility bar. This region stays
+	// a native drag target; the path is informational and clipped when needed.
+	result.workspace_path = alicorn.container_begin(
 		ui, .Container,
-		label="workspace-panel-drag-space",
-		key=alicorn.key_string("workspace-panel-drag-space"),
+		label="workspace-panel-root-path",
+		key=alicorn.key_string("workspace-panel-root-path"),
 		style=alicorn.layout_style(.Row, grow=1, height=button_height),
 	)
-	if result.spacer != 0 {
-		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, result.spacer, .Window_Drag) }
+	if result.workspace_path != 0 {
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, result.workspace_path, .Window_Drag) }
+		path := app.backend.state.workspace_root if app.backend.state.has_workspace else "No workspace open"
+		gui.text(ui, path,
+			key=alicorn.key_string("workspace-panel-root-path-text"),
+			style=alicorn.layout_style(.Row, grow=1, height=button_height, align=.Center, clip=true),
+			color=alicorn.style_color(ui, .Muted_Text),
+			text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
+		)
+		_ = alicorn.tooltip(ui, path)
 		alicorn.container_end(ui)
 	}
-	symbol_id, symbol_clicked := alicorn.button_begin(ui, "Symbols…", key=alicorn.key_string("workspace-go-to-symbol"),
-		style=alicorn.layout_style(.Row, width=72, height=button_height, compress_weight=1),
-		content_style=alicorn.button_content_style(padding_x=4, padding_y=0),
-		variant=.Quiet, text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
-	result.symbols = symbol_id
-	if symbol_id != 0 {
-		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, symbol_id, .Interactive) }
-		alicorn.button_end(ui)
-	}
-	if symbol_clicked {
-		symbol_picker_open_surface(app, app.ui_description_runtime)
-	}
-	_ = alicorn.tooltip(ui, "Go to Symbol (Ctrl+Shift+O)")
 	search_id, search_clicked := alicorn.icon_button(
 		ui, "Search Workspace", .Search,
 		key=alicorn.key_string("workspace-panel-search"),

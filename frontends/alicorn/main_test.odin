@@ -1219,26 +1219,29 @@ test_workspace_titlebar_switcher_keeps_focus_and_fits_safe_area :: proc(t: ^test
 	}
 	app.window_chrome_region_count = 0
 	scratchpad_test_sidebar_titlebar_frame(&app, &rt)
-	symbols_id := connected_titlebar_test_key(&rt, "workspace-go-to-symbol")
+	path_id := connected_titlebar_test_key(&rt, "workspace-panel-root-path")
 	search_id := connected_titlebar_test_key(&rt, "workspace-panel-search")
 	drag_id := connected_titlebar_test_node(&rt, "scratchpad-titlebar-sidebar-drag-space")
-	symbols, symbols_found := rt.nodes[symbols_id]
+	path, path_found := rt.nodes[path_id]
 	search, search_found := rt.nodes[search_id]
 	drag, drag_found := rt.nodes[drag_id]
-	interactive_symbols, interactive_search, draggable_tail := false, false, false
+	text_id := connected_titlebar_test_key(&rt, "workspace-panel-root-path-text")
+	path_text, path_text_found := rt.nodes[text_id]
+	draggable_path, interactive_search, draggable_tail := false, false, false
 	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
-		if region.node == symbols_id && region.kind == .Interactive { interactive_symbols = true }
+		if region.node == path_id && region.kind == .Window_Drag { draggable_path = true }
 		if region.node == search_id && region.kind == .Interactive { interactive_search = true }
 		if region.node == drag_id && region.kind == .Window_Drag { draggable_tail = true }
 	}
 	expected_x := f32(8)
 	when ODIN_OS == .Darwin { expected_x = app.window_chrome_metrics.content_start_x }
-	testing.expect(t, symbols_found && search_found && drag_found && symbols.button_variant == .Quiet && search.button_variant == .Quiet &&
-		symbols.bounds.x >= expected_x && symbols.bounds.w > 0 && search.bounds.w > 0 &&
-		symbols.bounds.x+symbols.bounds.w <= search.bounds.x+1 && abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
-		abs(drag.bounds.x+drag.bounds.w-app.workspace_sidebar_width) < 1 && interactive_symbols && interactive_search && draggable_tail,
-		fmt.tprintf("narrow sidebar tools should fit beside native reservations with distinct hit regions: symbols=%v search=%v drag=%v",
-			symbols.bounds, search.bounds, drag.bounds))
+	testing.expect(t, path_found && path_text_found && search_found && drag_found && search.button_variant == .Quiet &&
+		path_text.text == "No workspace open" && path.bounds.x >= expected_x && path.bounds.w > 0 && search.bounds.w > 0 &&
+		path.bounds.x+path.bounds.w <= search.bounds.x+1 && abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
+		abs(drag.bounds.x+drag.bounds.w-app.workspace_sidebar_width) < 1 && draggable_path && interactive_search && draggable_tail &&
+		connected_titlebar_test_key(&rt, "workspace-go-to-symbol") == 0,
+		fmt.tprintf("narrow sidebar should show the clipped workspace path beside Search and retain caption drag regions: path=%v search=%v drag=%v",
+			path.bounds, search.bounds, drag.bounds))
 	testing.expect(t, alicorn.focus(&rt, search_id), "Search should remain keyboard-focusable in the titlebar")
 	app.workspace_search_mode = true
 	app.window_chrome_region_count = 0
@@ -1312,7 +1315,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	tree_variant, _, tree_found := scratchpad_test_recipe_button(&rt, "sample.md")
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
-	sidebar_id, panel_tabs_id, workspace_root_id: alicorn.Node_ID
+	sidebar_id, panel_tabs_id, workspace_path_id, workspace_path_text_id: alicorn.Node_ID
 	sidebar_titlebar_id: alicorn.Node_ID
 	workspace_title_label_found := false
 	status_bar_id, status_responsive_id: alicorn.Node_ID
@@ -1322,7 +1325,8 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		if !found || !node.active { continue }
 		if node.label == "files-sidebar" { sidebar_id = node_id }
 		if node.label == "workspace-panel-tabs" { panel_tabs_id = node_id }
-		if node.label == "workspace-root-row" { workspace_root_id = node_id }
+		if node.key == "workspace-panel-root-path" { workspace_path_id = node_id }
+		if node.key == "workspace-panel-root-path-text" { workspace_path_text_id = node_id }
 		if node.label == "scratchpad-titlebar-sidebar-band" { sidebar_titlebar_id = node_id }
 		if node.kind == .Text && node.text == "Workspace" { workspace_title_label_found = true }
 		if node.label == "document-status-bar" { status_bar_id = node_id }
@@ -1333,6 +1337,10 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 
 	testing.expect(t, connected_titlebar_test_key(&rt, "workspace-panel-files") == 0,
 		"the file tree should need no persistent Explorer button")
+	testing.expect(t, connected_titlebar_test_key(&rt, "workspace-go-to-symbol") == 0 &&
+		workspace_path_text_id != 0 && rt.nodes[workspace_path_text_id].text == app.backend.state.workspace_root &&
+		connected_titlebar_test_node(&rt, "workspace-root-row") == 0,
+		"the current workspace path should move into the top utility bar, replacing its old row and Symbols button")
 	testing.expect(t, tab_found && tab_variant == .Tab && tab_selected,
 		"the active document should be represented by a selected semantic Tab control")
 	testing.expect(t, tab_bar_found && tab_bar_fills_viewport,
@@ -1343,20 +1351,20 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		"the selected Match Case find control should retain Toolbar recipe intent and selected state")
 	testing.expect(t, primary_found && primary_variant == .Primary,
 		"the workspace mutation confirmation should retain Primary recipe intent")
-	testing.expect(t, sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0,
-		"the compact workspace sidebar should retain its tools and root row")
-	if sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0 {
+	testing.expect(t, sidebar_id != 0 && panel_tabs_id != 0 && workspace_path_id != 0,
+		"the compact workspace sidebar should retain its tools and top-bar path")
+	if sidebar_id != 0 && panel_tabs_id != 0 && workspace_path_id != 0 {
 		sidebar_style := rt.nodes[sidebar_id].style
 		tabs_style := rt.nodes[panel_tabs_id].style
-		root_style := rt.nodes[workspace_root_id].style
+		path_style := rt.nodes[workspace_path_id].style
 		testing.expect(t, sidebar_style.padding == 8 && sidebar_style.gap == 6,
 			"the workspace sidebar should use compact outer padding and section spacing")
 			when ODIN_OS == .Darwin || ODIN_OS == .Windows {
-				testing.expect(t, tabs_style.height == 32 && tabs_style.gap == 2 && root_style.height == 26,
-					"titlebar workspace switches and root path should use compact aligned heights")
+				testing.expect(t, tabs_style.height == 32 && tabs_style.gap == 2 && path_style.height == 30,
+					"the titlebar path and workspace actions should share the compact titlebar row")
 			} else {
-				testing.expect(t, tabs_style.height == 30 && tabs_style.gap == 4 && root_style.height == 26,
-					"Linux should retain its existing sidebar switcher row and compact root path")
+				testing.expect(t, tabs_style.height == 30 && tabs_style.gap == 4 && path_style.height == 28,
+					"Linux should keep the workspace path in its compact top utility row")
 			}
 	}
 	when ODIN_OS == .Darwin || ODIN_OS == .Windows {
