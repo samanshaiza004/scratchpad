@@ -39,8 +39,7 @@
     "scratchpad.cool.syntax.attribute": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.416, 0.325, 0.106], "alpha": 1}},
     "scratchpad.cool.scrollbar_track": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.87, 0.89, 0.92], "alpha": 1}},
     "scratchpad.cool.scrollbar_thumb": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.47, 0.53, 0.59], "alpha": 1}},
-    "scratchpad.cool.paper_surface": {"$type": "color", "$value": "{scratchpad.cool.editor_background}"},
-    "scratchpad.cool.editor_padding": {"$type": "dimension", "$value": {"value": 10, "unit": "px"}}
+    "scratchpad.cool.paper_surface": {"$type": "color", "$value": "{scratchpad.cool.editor_background}"}
   },
   "roles": {
     "core": {
@@ -83,8 +82,7 @@
       "app.scratchpad.syntax.builtin": {"$type": "color", "$value": "{scratchpad.cool.syntax.builtin}"},
       "app.scratchpad.syntax.parameter": {"$type": "color", "$value": "{scratchpad.cool.syntax.parameter}"},
       "app.scratchpad.syntax.tag": {"$type": "color", "$value": "{scratchpad.cool.syntax.tag}"},
-      "app.scratchpad.syntax.attribute": {"$type": "color", "$value": "{scratchpad.cool.syntax.attribute}"},
-      "app.scratchpad.editor.padding": {"$type": "dimension", "$value": "{scratchpad.cool.editor_padding}"}
+      "app.scratchpad.syntax.attribute": {"$type": "color", "$value": "{scratchpad.cool.syntax.attribute}"}
     }
   }
 }

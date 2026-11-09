@@ -572,8 +572,7 @@ floating_window_build :: proc(
 		}
 	}
 	style_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
-	padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
-	alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("floating-document-surface"), label="floating-document-surface", style=alicorn.layout_style(.Column, grow=1, padding=padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75))
+	alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("floating-document-surface"), label="floating-document-surface", style=alicorn.layout_style(.Column, grow=1, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75))
 	if document, found := find_document(&app.backend.state, window.document_id); found {
 		if alicorn.component_begin(&ui, alicorn.key_string(document.id)) {
 			build_document_editor(app, &ui, rt, document, show_heading=false)

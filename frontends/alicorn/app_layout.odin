@@ -249,8 +249,7 @@ build_app :: proc(
 		}
 		if show_source {
 		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
-		paper_padding := scratchpad_editor_surface_padding(&ui, rt, app.editor_theme)
-		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, padding=paper_padding, gap=6, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75), open_top_edge=app.document_connected_tab_node)
+		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75), open_top_edge=app.document_connected_tab_node)
 		build_startup_notice(app, &ui, rt)
 		if app.workspace_search_mode {
 			workspace_search_editor_build(app, &ui, rt)

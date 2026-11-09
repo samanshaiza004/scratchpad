@@ -210,17 +210,6 @@
     "scratchpad.syntax.parameter": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.376, 0.310, 0.412], "alpha": 1}},
     "scratchpad.syntax.tag": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.478, 0.204, 0.251], "alpha": 1}},
     "scratchpad.syntax.attribute": {"$type": "color", "$value": {"colorSpace": "srgb", "components": [0.412, 0.310, 0.129], "alpha": 1}},
-    "scratchpad.dimension.editor_padding": {
-      "$type": "dimension",
-      "$value": {
-        "value": 10,
-        "unit": "px"
-      }
-    },
-    "scratchpad.semantic.editor.padding": {
-      "$type": "dimension",
-      "$value": "{scratchpad.dimension.editor_padding}"
-    },
     "scratchpad.palette.scrollbar_track": {
       "$type": "color",
       "$value": {
@@ -331,11 +320,7 @@
       "app.scratchpad.syntax.builtin": {"$type": "color", "$value": "{scratchpad.syntax.builtin}"},
       "app.scratchpad.syntax.parameter": {"$type": "color", "$value": "{scratchpad.syntax.parameter}"},
       "app.scratchpad.syntax.tag": {"$type": "color", "$value": "{scratchpad.syntax.tag}"},
-      "app.scratchpad.syntax.attribute": {"$type": "color", "$value": "{scratchpad.syntax.attribute}"},
-      "app.scratchpad.editor.padding": {
-        "$type": "dimension",
-        "$value": "{scratchpad.semantic.editor.padding}"
-      }
+      "app.scratchpad.syntax.attribute": {"$type": "color", "$value": "{scratchpad.syntax.attribute}"}
     }
   }
 }

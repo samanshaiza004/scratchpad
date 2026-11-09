@@ -102,8 +102,7 @@ scratchpad_cool_light_theme :: proc(allocator := context.allocator) -> alicorn.S
         alicorn.Style_Color_Token_ID(33),
         alicorn.Style_Color_Token_ID(32),
     }
-    result.length_tokens = make([]alicorn.Style_Length, 1, allocator)
-    result.length_tokens[0] = alicorn.Style_Length{logical_units=10}
+    result.length_tokens = make([]alicorn.Style_Length, 0, allocator)
     result.extension_color_roles = make([]alicorn.Style_Extension_Color_Role_Binding, 20, allocator)
     result.extension_color_roles[0] = alicorn.Style_Extension_Color_Role_Binding{
         role=alicorn.Style_Extension_Color_Role_ID(u64(14578696322234267626)),
@@ -185,11 +184,7 @@ scratchpad_cool_light_theme :: proc(allocator := context.allocator) -> alicorn.S
         role=alicorn.Style_Extension_Color_Role_ID(u64(14914549697372993553)),
         token=alicorn.Style_Color_Token_ID(29),
     }
-    result.extension_length_roles = make([]alicorn.Style_Extension_Length_Role_Binding, 1, allocator)
-    result.extension_length_roles[0] = alicorn.Style_Extension_Length_Role_Binding{
-        role=alicorn.Style_Extension_Length_Role_ID(u64(1169174812364479353)),
-        token=alicorn.Style_Length_Token_ID(1),
-    }
+    result.extension_length_roles = make([]alicorn.Style_Extension_Length_Role_Binding, 0, allocator)
     result.color_token_provenance = make([]alicorn.Style_Token_Provenance, 55, allocator)
     result.color_token_provenance[0] = alicorn.Style_Token_Provenance{id=1, name="alicorn.color.accent", alias_target=""}
     result.color_token_provenance[1] = alicorn.Style_Token_Provenance{id=2, name="alicorn.color.accent_hover", alias_target=""}
@@ -246,8 +241,7 @@ scratchpad_cool_light_theme :: proc(allocator := context.allocator) -> alicorn.S
     result.color_token_provenance[52] = alicorn.Style_Token_Provenance{id=53, name="scratchpad.cool.syntax.variable", alias_target=""}
     result.color_token_provenance[53] = alicorn.Style_Token_Provenance{id=54, name="scratchpad.cool.text", alias_target=""}
     result.color_token_provenance[54] = alicorn.Style_Token_Provenance{id=55, name="scratchpad.cool.window_background", alias_target=""}
-    result.length_token_provenance = make([]alicorn.Style_Token_Provenance, 1, allocator)
-    result.length_token_provenance[0] = alicorn.Style_Token_Provenance{id=1, name="scratchpad.cool.editor_padding", alias_target=""}
+    result.length_token_provenance = make([]alicorn.Style_Token_Provenance, 0, allocator)
     result.extension_color_role_provenance = make([]alicorn.Style_Extension_Color_Role_Provenance, 20, allocator)
     result.extension_color_role_provenance[0] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(14578696322234267626)), name="app.scratchpad.editor.active_line"}
     result.extension_color_role_provenance[1] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(7757750830692491148)), name="app.scratchpad.editor.active_line_gutter"}
@@ -269,8 +263,7 @@ scratchpad_cool_light_theme :: proc(allocator := context.allocator) -> alicorn.S
     result.extension_color_role_provenance[17] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(18109849898493734647)), name="app.scratchpad.syntax.type"}
     result.extension_color_role_provenance[18] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(5668493591123739747)), name="app.scratchpad.syntax.variable"}
     result.extension_color_role_provenance[19] = alicorn.Style_Extension_Color_Role_Provenance{role=alicorn.Style_Extension_Color_Role_ID(u64(14914549697372993553)), name="app.scratchpad.workbench.modal_backdrop"}
-    result.extension_length_role_provenance = make([]alicorn.Style_Extension_Length_Role_Provenance, 1, allocator)
-    result.extension_length_role_provenance[0] = alicorn.Style_Extension_Length_Role_Provenance{role=alicorn.Style_Extension_Length_Role_ID(u64(1169174812364479353)), name="app.scratchpad.editor.padding"}
+    result.extension_length_role_provenance = make([]alicorn.Style_Extension_Length_Role_Provenance, 0, allocator)
     return result
 }
 
