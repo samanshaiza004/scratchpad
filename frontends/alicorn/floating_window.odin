@@ -34,6 +34,8 @@ Floating_Window_State :: struct {
 	editor_focus_pending: bool,
 	style_theme_runtime: ^alicorn.Runtime,
 	workbench_theme, editor_theme: alicorn.Style_Theme_ID,
+	live_theme_applied_theme_id: alicorn.Style_Theme_ID,
+	live_theme_applied_signature: u64,
 	warm_workbench_theme, warm_editor_theme: alicorn.Style_Theme_ID,
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
@@ -447,6 +449,16 @@ floating_window_initialize :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	_ = alicorn.font_load_bytes(rt, .UI, SCRATCHPAD_UI_FONT_DATA)
 	_ = alicorn.font_load_italic_bytes(rt, .UI, SCRATCHPAD_UI_ITALIC_FONT_DATA)
 	_ = scratchpad_editor_font_install(rt, scratchpad_editor_font_regular_bytes(window.owner), scratchpad_editor_font_italic_bytes(window.owner))
+	if window.owner != nil && window.owner.live_theme.path != "" {
+		floating_app, floating_scope := floating_editor_scope_enter(window, rt)
+		if floating_app != nil {
+			_ = scratchpad_live_theme_apply(
+				floating_app, rt, &window.live_theme_applied_theme_id,
+				&window.live_theme_applied_signature, "secondary",
+			)
+			floating_editor_scope_leave(window, floating_app, &floating_scope)
+		}
+	}
 }
 
 floating_window_services :: proc(state: rawptr, services: host.Application_Services) {

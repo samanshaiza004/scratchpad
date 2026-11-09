@@ -93,6 +93,9 @@ App :: struct {
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
 	theme_choice: Scratchpad_Theme_Choice,
+	live_theme: Scratchpad_Live_Theme,
+	live_theme_applied_theme_id: alicorn.Style_Theme_ID,
+	live_theme_applied_signature: u64,
 	theme_preferences_directory: string,
 	theme_preferences_path: string,
 	editor_font_family: string,
@@ -548,6 +551,9 @@ application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	app := cast(^App)state
 	app.waker = waker
 	start_backend(app)
+	if app.backend.started && app.live_theme.path != "" {
+		scratchpad_live_theme_start(&app.live_theme, waker)
+	}
 	if app.appearance_fixture_workbench {
 		// One fixture-only deadline lets document loading settle before the host
 		// captures at one second. It adds no periodic wake to ordinary operation.
@@ -754,6 +760,23 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^App)state
 	if !app.backend.started { return }
 	app.smoke_wake_observed = true
+	if app.live_theme.path != "" {
+		scratchpad_live_theme_adopt(&app.live_theme)
+		_ = scratchpad_live_theme_apply(
+			app, rt, &app.live_theme_applied_theme_id,
+			&app.live_theme_applied_signature, "primary",
+		)
+		if floating := app.floating_window; floating != nil && floating.runtime != nil {
+			floating_app, floating_scope := floating_editor_scope_enter(floating, floating.runtime)
+			if floating_app != nil {
+				_ = scratchpad_live_theme_apply(
+					floating_app, floating.runtime, &floating.live_theme_applied_theme_id,
+					&floating.live_theme_applied_signature, "secondary",
+				)
+				floating_editor_scope_leave(floating, floating_app, &floating_scope)
+			}
+		}
+	}
 	if !bridge.editor_edit_lane_is_active(&app.editor_edit_lane) {
 		application_scope: alicorn.Application_Mutation_Scope
 		projection_scope: alicorn.Application_Mutation_Scope
@@ -3860,6 +3883,7 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	scratchpad_live_theme_stop(&app.live_theme)
 	editor_row_trace_finish(&app.editor_row_trace)
 	if len(app.smoke_session_mode) > 0 {
 		app.smoke_session_passed = smoke_session_validate(app)
@@ -3973,6 +3997,14 @@ main :: proc() {
 	}
 	if library, found := os.lookup_env("SCRATCHPAD_BACKEND_LIBRARY", context.allocator); found { app.backend_library = library }
 	if workspace, found := os.lookup_env("SCRATCHPAD_ALICORN_WORKSPACE", context.allocator); found { app.workspace_path = workspace }
+	if live_theme_path, found := os.lookup_env(SCRATCHPAD_LIVE_EDITOR_THEME_ENV, context.allocator); found {
+		if live_theme_path != "" {
+			app.live_theme.path = live_theme_path
+			fmt.println("[scratchpad-live-theme] watching editor theme: ", live_theme_path)
+		} else {
+			delete(live_theme_path, context.allocator)
+		}
+	}
 	if smoke, found := os.lookup_env("SCRATCHPAD_ALICORN_SMOKE", context.allocator); found { app.smoke = smoke == "1" || smoke == "true" }
 	if row_trace_path, found := os.lookup_env("SCRATCHPAD_EDITOR_ROW_TRACE_PATH", context.allocator); found {
 		_ = editor_row_trace_init(&app.editor_row_trace, row_trace_path, context.allocator)
