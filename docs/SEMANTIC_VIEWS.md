@@ -21,6 +21,23 @@ shows its original line interval and an **expand** action. The same disclosure
 collapses it again after expansion. Local folds retain their identity within
 the current depth; another global zoom transition resets them.
 
+## Manual source folding
+
+In **Full source**, supported Markdown headings and parser-recognized code
+blocks have disclosure controls in the line-number gutter. The Document menu
+and command palette also provide **Toggle Fold at Cursor**, **Fold All**, and
+**Unfold All**. These controls hide whole source lines while keeping the
+heading or opening-delimiter line visible. They do not change document bytes,
+revision, or undo history.
+
+Nested folds retain independent collapsed state: collapsing an outer range
+temporarily hides its inner controls, and expanding the outer range restores
+the inner folds as they were. Manual folds are suspended while another semantic
+zoom depth is active and resume when returning to Full source. Editing or
+reloading the document discards revision-stale fold state and leaves the new
+source visible. Navigation to a hidden source target expands its collapsed
+ancestors before resolving visible geometry.
+
 | Depth | Markdown / prose | Supported code |
 | --- | --- | --- |
 | Full | All editable source | All editable source |

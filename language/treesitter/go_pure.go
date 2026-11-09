@@ -131,7 +131,7 @@ func pureSyntaxRanges(language *gotreesitter.Language, root *gotreesitter.Node, 
 			selections = append(selections, document.SelectionRange{StartByte: start, EndByte: end})
 		}
 		if start >= 0 && end <= len(source) && end-start > 1 && isFoldNode(node.Type(language)) && bytesContainNewline(source[start:end]) {
-			folds = append(folds, document.LanguageFold{StartByte: start, EndByte: end})
+			folds = append(folds, document.LanguageFold{StartByte: start, BodyStartByte: foldBodyStartPure(node, language), EndByte: end})
 		}
 		if cursor.GotoFirstChild() {
 			continue
@@ -142,4 +142,20 @@ func pureSyntaxRanges(language *gotreesitter.Language, root *gotreesitter.Node, 
 			}
 		}
 	}
+}
+
+func foldBodyStartPure(node *gotreesitter.Node, language *gotreesitter.Language) int {
+	if node == nil {
+		return 0
+	}
+	if isFoldBodyNode(node.Type(language)) {
+		return int(node.StartByte())
+	}
+	for i := 0; i < node.ChildCount(); i++ {
+		child := node.Child(i)
+		if child != nil && isFoldBodyNode(child.Type(language)) {
+			return int(child.StartByte())
+		}
+	}
+	return int(node.StartByte())
 }

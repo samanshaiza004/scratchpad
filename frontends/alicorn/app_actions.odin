@@ -7,6 +7,7 @@ import bridge "./bridge"
 
 application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: host.Application_Command_ID) {
 	app := cast(^App)state
+	if manual_folding_action(app, rt, string_for_action_id(command)) { return }
 	if command == action_id_for(ACTION_PIN_SELECTION) { pinned_command(app, rt, "add"); return }
 	if command == action_id_for(ACTION_PINNED_FOCUS) { pinned_focus_request(app, rt); return }
 	if command == action_id_for(ACTION_PINNED_TOGGLE) {
@@ -144,6 +145,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	}
 	if pinned_edit_command(app,rt,action_id_for(action_id)) { return }
 	if semantic_zoom_action(app, rt, action_id) { return }
+	if manual_folding_action(app, rt, action_id) { return }
 	if action_id == ACTION_VIEW_THEME_WARM { _ = scratchpad_theme_select(app, rt, .Warm); return }
 	if action_id == ACTION_VIEW_THEME_COOL_LIGHT { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
 	if action_id == ACTION_VIEW_THEME_FLAT { _ = scratchpad_theme_select(app, rt, .Flat); return }
@@ -434,6 +436,13 @@ sync_menu_states :: proc(app: ^App) {
 			)
 		}
 	}
+	for &item in app.document_items {
+		if item.kind != .Command { continue }
+		action := string_for_action_id(item.command)
+		if action == ACTION_EDITOR_TOGGLE_FOLD || action == ACTION_EDITOR_FOLD_ALL || action == ACTION_EDITOR_UNFOLD_ALL {
+			item.state = alicorn.Action_State{enabled=has_text && manual_folding_menu_enabled(active_view, active_document, action)}
+		}
+	}
 	selection_nonempty := active_view != nil && active_view.selection_anchor != active_view.caret_byte
 	selection_available := false
 	if selection_nonempty && window_matches {
@@ -501,6 +510,9 @@ string_for_action_id :: proc(id: host.Application_Command_ID) -> string {
 	if id == action_id_for(ACTION_DOCUMENT_CLOSE) { return ACTION_DOCUMENT_CLOSE }
 	if id == action_id_for(ACTION_DOCUMENT_FORMAT) { return ACTION_DOCUMENT_FORMAT }
 	if id == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { return ACTION_DOCUMENT_GO_TO_LINE }
+	if id == action_id_for(ACTION_EDITOR_TOGGLE_FOLD) { return ACTION_EDITOR_TOGGLE_FOLD }
+	if id == action_id_for(ACTION_EDITOR_FOLD_ALL) { return ACTION_EDITOR_FOLD_ALL }
+	if id == action_id_for(ACTION_EDITOR_UNFOLD_ALL) { return ACTION_EDITOR_UNFOLD_ALL }
 	if id == action_id_for(ACTION_MARKDOWN_TABLE_NEXT) { return ACTION_MARKDOWN_TABLE_NEXT }
 	if id == action_id_for(ACTION_MARKDOWN_TABLE_PREVIOUS) { return ACTION_MARKDOWN_TABLE_PREVIOUS }
 	if id == action_id_for(ACTION_MARKDOWN_TABLE_ENTER) { return ACTION_MARKDOWN_TABLE_ENTER }
@@ -593,7 +605,7 @@ init_menus :: proc(app: ^App) {
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SETTINGS), label="Settings…"},
 	}
-	app.document_items = [12]host.Application_Menu_Item{
+	app.document_items = [16]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_TAB_NEXT), label="Next Document"},
 		{kind=.Command, command=action_id_for(ACTION_TAB_PREVIOUS), label="Previous Document"},
 		{kind=.Separator},
@@ -606,6 +618,10 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_EMPHASIS), label="Emphasis", shortcut=host.Application_Menu_Shortcut{'I', {.Primary}}},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
+		{kind=.Separator},
+		{kind=.Command, command=action_id_for(ACTION_EDITOR_TOGGLE_FOLD), label="Toggle Fold at Cursor"},
+		{kind=.Command, command=action_id_for(ACTION_EDITOR_FOLD_ALL), label="Fold All"},
+		{kind=.Command, command=action_id_for(ACTION_EDITOR_UNFOLD_ALL), label="Unfold All"},
 	}
 	app.view_items = [15]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_MORE), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}},

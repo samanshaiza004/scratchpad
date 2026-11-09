@@ -382,7 +382,7 @@ App :: struct {
 	file_items:             [7]host.Application_Menu_Item,
 	edit_items:             [11]host.Application_Menu_Item,
 	workspace_items:        [9]host.Application_Menu_Item,
-	document_items:         [12]host.Application_Menu_Item,
+	document_items:         [16]host.Application_Menu_Item,
 	view_items:             [15]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
@@ -586,15 +586,28 @@ editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.
 		view.viewport_anchor_pending, view.viewport_anchor_resolved = false, false
 		return
 	}
-	if !view.wrap_height_index_ready { return }
+	geometry_index := editor_geometry_index(view)
+	if geometry_index == nil || geometry_index.item_count <= 0 { return }
 	scroll := alicorn.scroll_region_state(rt, app.editor_scroll_owner)
 	if scroll.id == 0 { return }
 	_, viewport_height := editor_wrap_viewport_size(app, rt, view, scroll)
-	metrics := alicorn.virtual_list_variable_metrics(&view.wrap_height_index, scroll.offset_y, viewport_height)
-	line_number := max(metrics.first, 0)
-	line, line_found := editor_window_line(window, u64(line_number))
+	metrics := alicorn.virtual_list_variable_metrics(geometry_index, scroll.offset_y, viewport_height)
+	anchor_row := clamp(metrics.first, 0, geometry_index.item_count-1)
+	line_number := editor_geometry_source_line(view, anchor_row)
+	if manual_folding_projection_active(view) {
+		if _, fold_index, mapped := semantic_zoom_rows_source_at(&view.manual_folding.rows, anchor_row); mapped && fold_index >= 0 {
+			visible: bool
+			anchor_row, line_number, visible = manual_folding_nearest_visible_row(view, anchor_row, 1)
+			if !visible { return }
+		}
+	}
+	line_window := window
+	if _, line_available := editor_window_line(line_window, u64(line_number)); !line_available && manual_folding_projection_active(view) {
+		if cached := manual_folding_cached_window(view, u64(line_number)); cached != nil { line_window = cached }
+	}
+	line, line_found := editor_window_line(line_window, u64(line_number))
 	if !line_found { return }
-	line_top := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, line_number)
+	line_top := alicorn.virtual_list_height_index_item_top(geometry_index, anchor_row)
 	view.viewport_anchor_byte = line.source_start
 	view.viewport_anchor_revision = window.editor_revision
 	view.viewport_anchor_line = u64(line_number)
@@ -1287,11 +1300,19 @@ editor_source_at_pointer_for_rows :: proc(
 		}
 	}
 	if best_x_distance == 1e30 { return }
-	line, line_found := editor_window_line(window, best_line)
+	line_window := window
+	if _, line_available := editor_window_line(line_window, best_line); !line_available {
+		if semantic_zoom_active(view) {
+			if cached := semantic_zoom_find_window(view, best_line); cached != nil { line_window = cached }
+		} else if manual_folding_projection_active(view) {
+			if cached := manual_folding_cached_window(view, best_line); cached != nil { line_window = cached }
+		}
+	}
+	line, line_found := editor_window_line(line_window, best_line)
 	if !line_found { return }
 	position, hit := alicorn.text_node_hit_test(rt, best_target.node, best_hit_x, best_y)
 	if !hit { return }
-	display_line, display_found := editor_display_line_for_target(window, line, best_target)
+	display_line, display_found := editor_display_line_for_target(line_window, line, best_target)
 	if !display_found { return }
 	return editor_normalize_source_position(&display_line, editor_display_to_source(&display_line, position.byte)), position.affinity, true
 }
@@ -1309,6 +1330,11 @@ editor_source_at_pointer :: proc(
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !window_matches && manual_folding_projection_active(view) {
+		if cached := manual_folding_any_window(view, document.id, document.editor_revision); cached != nil {
+			window, window_matches = cached, true
+		}
+	}
 	if !window_matches { return }
 	return editor_source_at_pointer_for_rows(
 		app, rt, app.editor_scroll_owner, document.id, view, window,
@@ -1753,6 +1779,14 @@ editor_text_key :: proc(
 	rows := app.editor_row_targets[:]
 	if pinned_owner { rows = app.pinned.edit_row_targets[:] }
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
+	if !pinned_owner && manual_folding_projection_active(view) {
+		_, caret_in_window := editor_line_for_source(window, view.caret_byte)
+		if !window_matches || !caret_in_window {
+			if cached := manual_folding_window_for_byte(view, document.id, document.editor_revision, view.caret_byte); cached != nil {
+				window, window_matches = cached, true
+			}
+		}
+	}
 	if !window_matches { return false }
 	if view.preedit_active {
 		// The platform IME owns navigation/commit keys while it has an active
@@ -2078,13 +2112,25 @@ editor_text_key :: proc(
 					target_line = min(current_line+1, last_line)
 				}
 			} else {
-				if !pinned_owner && view.wrap_height_index_ready && owner_found {
+					geometry_index := editor_geometry_index(view)
+					if !pinned_owner && geometry_index != nil && geometry_index.item_count > 0 && owner_found {
 					page := max(owner_node.scroll_viewport_height-current_geometry.rect.h, current_geometry.rect.h)
-					current_content_y := alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, int(current_line)) +
+						current_row := editor_geometry_row(view, int(current_line))
+						current_content_y := alicorn.virtual_list_height_index_item_top(geometry_index, current_row) +
 					                     current_geometry.rect.y + current_geometry.rect.h*0.5
 					target_content_y := current_content_y-page if event.key == .Page_Up else current_content_y+page
-					target_line = u64(alicorn.virtual_list_height_index_item_at(&view.wrap_height_index, target_content_y))
-					target_visual_y = target_content_y-alicorn.virtual_list_height_index_item_top(&view.wrap_height_index, int(target_line))
+						target_row := clamp(alicorn.virtual_list_height_index_item_at(geometry_index, target_content_y), 0, geometry_index.item_count-1)
+						if !pinned_owner && manual_folding_projection_active(view) {
+							direction := -1 if event.key == .Page_Up else 1
+							if visible_row, source_line, visible := manual_folding_nearest_visible_row(view, target_row, direction); visible {
+								target_row, target_line = visible_row, u64(source_line)
+							}
+						} else {
+							target_line = u64(editor_geometry_source_line(view, target_row))
+						}
+						target_visual_y = target_content_y-alicorn.virtual_list_height_index_item_top(geometry_index, target_row)
+						target_visual_y = min(max(target_visual_y, 0),
+							max(alicorn.virtual_list_height_index_item_height(geometry_index, target_row)-0.5, 0))
 				} else {
 					step := u64(1)
 					if owner_found {
@@ -2099,7 +2145,20 @@ editor_text_key :: proc(
 					}
 				}
 			}
+			if !pinned_owner && manual_folding_projection_active(view) && target_visual_row < 0 &&
+			   (event.key == .Up || event.key == .Down) {
+				direction := -1 if event.key == .Up else 1
+				visible_line, visible_found := manual_folding_adjacent_visible_line(view, current_line, direction)
+				if !visible_found { return true }
+				target_line = visible_line
+			}
 			target, target_found := editor_window_line(window, target_line)
+			if !pinned_owner && !target_found && manual_folding_projection_active(view) {
+				if cached := manual_folding_cached_window(view, target_line); cached != nil {
+					window = cached
+					target, target_found = editor_window_line(window, target_line)
+				}
+			}
 			if !target_found {
 				if pinned_owner {
 					_ = pinned_edit_window_load(app, target_line, view.caret_byte)
@@ -2195,6 +2254,9 @@ editor_text_key :: proc(
 	}
 	view.caret_byte = next_caret
 	view.caret_affinity = next_affinity
+	if !pinned_owner && manual_folding_projection_active(view) {
+		manual_folding_reveal_range(app, rt, view, next_caret, next_caret)
+	}
 	when alicorn.APP_MUTATION_DIAGNOSTICS_ENABLED {
 		application_selection_diagnostic_revision_advance(app)
 	}

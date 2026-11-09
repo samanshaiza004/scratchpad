@@ -117,6 +117,7 @@ semantic_zoom_frontier_width :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Edi
 
 editor_geometry_index :: proc(view: ^Editor_View_State) -> ^alicorn.Virtual_List_Height_Index {
 	if semantic_zoom_active(view) { return &view.zoom.index }
+	if manual_folding_projection_active(view) { return &view.manual_folding.index }
 	return &view.wrap_height_index
 }
 
@@ -125,11 +126,16 @@ editor_geometry_source_line :: proc(view: ^Editor_View_State, row: int) -> int {
 		line, _, ok := semantic_zoom_rows_source_at(&view.zoom.rows, row)
 		return line if ok else 0
 	}
+	if manual_folding_projection_active(view) {
+		line, _, ok := semantic_zoom_rows_source_at(&view.manual_folding.rows, row)
+		return line if ok else 0
+	}
 	return row
 }
 
 editor_geometry_row :: proc(view: ^Editor_View_State, line: int) -> int {
 	if semantic_zoom_active(view) { return semantic_zoom_rows_row_for_source(&view.zoom.rows, line) }
+	if manual_folding_projection_active(view) { return semantic_zoom_rows_row_for_source(&view.manual_folding.rows, line) }
 	return line
 }
 

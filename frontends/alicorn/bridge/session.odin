@@ -293,6 +293,7 @@ Backend_Response :: struct {
 	save_as_conflict: Save_As_Conflict `json:"save_as_conflict"`,
 	semantic_view_window: Semantic_View_Window `json:"semantic_view_window"`,
 	semantic_zoom: Semantic_Zoom_Plan `json:"semantic_zoom"`,
+	editor_folds: Editor_Fold_Plan `json:"editor_folds"`,
 }
 
 Semantic_View_Window :: struct {
@@ -1240,6 +1241,7 @@ Backend_Command_Result :: struct {
 	image_bytes: []u8,
 	semantic_view_window: Semantic_View_Window,
 	semantic_zoom: Semantic_Zoom_Plan,
+	editor_folds: Editor_Fold_Plan,
 	code_owned:     bool,
 	message_owned:  bool,
 	command_outcome_owned: bool,
@@ -1252,6 +1254,7 @@ Backend_Command_Result :: struct {
 	image_bytes_owned: bool,
 	semantic_view_window_owned: bool,
 	semantic_zoom_owned: bool,
+	editor_folds_owned: bool,
 	matches_owned: bool,
 	search_page_owned: bool,
 	workspace_files_owned: bool,
@@ -1537,8 +1540,17 @@ backend_command :: proc(
 		}
 		result.semantic_zoom, result.semantic_zoom_owned = plan, true
 	}
+	if response.ok && command == "read_editor_folds" {
+		plan, ok := editor_fold_plan_clone(response.editor_folds, allocator)
+		if !ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="allocation_failed", message="could not retain manual folding metadata"}
+		}
+		result.editor_folds, result.editor_folds_owned = plan, true
+	}
 	backend_response_destroy(&response, allocator)
-	if command == "read_visible_lines" || command == "read_image" || command == "read_view_window" || command == "read_semantic_zoom" { return result }
+	if command == "read_visible_lines" || command == "read_image" || command == "read_view_window" || command == "read_semantic_zoom" || command == "read_editor_folds" { return result }
 	if !read_latest_after {
 		if !result.ok && result.message == "" { result.message = result.code }
 		return result
@@ -1575,6 +1587,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.visible_window_owned { visible_window_destroy(&result.visible_window, allocator) }
 	if result.semantic_view_window_owned { semantic_view_window_destroy(&result.semantic_view_window, allocator) }
 	if result.semantic_zoom_owned { semantic_zoom_plan_destroy(&result.semantic_zoom, allocator) }
+	if result.editor_folds_owned { editor_fold_plan_destroy(&result.editor_folds, allocator) }
 	if result.pinned_owned { pinned_snapshot_destroy(&result.pinned,allocator) }
 	if result.pinned_window_owned { pinned_window_destroy(&result.pinned_window,allocator) }
 	delete(result.pinned_data,allocator)
@@ -2535,6 +2548,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	directory_listing_destroy(&response.directory_listing, allocator)
 	semantic_view_window_destroy(&response.semantic_view_window, allocator)
 	semantic_zoom_plan_destroy(&response.semantic_zoom, allocator)
+	editor_fold_plan_destroy(&response.editor_folds, allocator)
 	pinned_snapshot_destroy(&response.pinned,allocator)
 	pinned_window_destroy(&response.pinned_window,allocator)
 	response^ = {}

@@ -266,6 +266,7 @@ func projectInjectedGo(regions []document.InjectedRegion, source []byte, revisio
 		}
 		for _, fold := range code.Folds {
 			fold.StartByte += region.StartByte
+			fold.BodyStartByte += region.StartByte
 			fold.EndByte += region.StartByte
 			folds = append(folds, fold)
 		}

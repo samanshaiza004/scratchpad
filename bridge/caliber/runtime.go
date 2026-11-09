@@ -1259,6 +1259,24 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		response.BasedOnRevision = request.BasedOnRevision
 		response.SemanticZoom = semanticZoomFromApplication(plan)
 		return response
+	case "read_editor_folds":
+		plan, err := r.app.QueryEditorFolds(application.DocumentID(request.DocumentID), request.EditorRevision)
+		if err != nil {
+			code := "folds_unavailable"
+			if errors.Is(err, application.ErrStaleEditorRevision) {
+				code = "stale_editor_revision"
+			}
+			return commandError(request, code, err)
+		}
+		if !plan.Ready {
+			if err := r.enablePresentationLocked(request.DocumentID); err != nil {
+				return commandError(request, "folds_unavailable", err)
+			}
+		}
+		response := okResponse(request.RequestID, r.lifecycle, r.revision)
+		response.BasedOnRevision = request.BasedOnRevision
+		response.EditorFolds = editorFoldsFromApplication(plan)
+		return response
 	case "set_view_density":
 		if err := r.app.SetViewDensity(application.DocumentID(request.DocumentID), application.ViewDensity(request.ViewDensity)); err != nil {
 			return commandError(request, "application_error", err)
