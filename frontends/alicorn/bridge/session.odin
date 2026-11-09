@@ -290,6 +290,7 @@ Backend_Response :: struct {
 	source_refresh_needed: bool           `json:"source_refresh_needed"`,
 	workspace_search_page: Workspace_Search_Page `json:"workspace_search_page"`,
 	workspace_files: Workspace_Files `json:"workspace_files"`,
+	workspace_browse: Workspace_Browse `json:"workspace_browse"`,
 	save_as_conflict: Save_As_Conflict `json:"save_as_conflict"`,
 	semantic_view_window: Semantic_View_Window `json:"semantic_view_window"`,
 	semantic_zoom: Semantic_Zoom_Plan `json:"semantic_zoom"`,
@@ -361,6 +362,14 @@ Directory_Listing :: struct {
 
 Workspace_Files :: struct {
 	paths: []string `json:"paths"`,
+	truncated: bool `json:"truncated"`,
+}
+
+Workspace_Browse :: struct {
+	directory_path: string `json:"directory_path"`,
+	parent_path: string `json:"parent_path"`,
+	exact_path: string `json:"exact_path"`,
+	entries: []Directory_Entry `json:"entries"`,
 	truncated: bool `json:"truncated"`,
 }
 
@@ -454,6 +463,7 @@ Backend_Command_Request :: struct {
 	action_id:        string `json:"action_id,omitempty"`,
 	argument:         string `json:"argument,omitempty"`,
 	path:             string `json:"path,omitempty"`,
+	base_path:        string `json:"base_path,omitempty"`,
 	name:             string `json:"name,omitempty"`,
 	disposition:      string `json:"disposition,omitempty"`,
 	document_id:      string `json:"document_id,omitempty"`,
@@ -1231,6 +1241,7 @@ Backend_Command_Result :: struct {
 	source_refresh_needed: bool,
 	workspace_search_page: Workspace_Search_Page,
 	workspace_files: Workspace_Files,
+	workspace_browse: Workspace_Browse,
 	code:           string,
 	message:        string,
 	command_outcome: string,
@@ -1258,6 +1269,7 @@ Backend_Command_Result :: struct {
 	matches_owned: bool,
 	search_page_owned: bool,
 	workspace_files_owned: bool,
+	workspace_browse_owned: bool,
 	save_as_conflict_path_owned: bool,
 }
 
@@ -1267,6 +1279,7 @@ backend_command :: proc(
 	action_id := "",
 	argument := "",
 	path := "",
+	base_path := "",
 	name := "",
 	disposition := "",
 	document_id := "",
@@ -1330,7 +1343,7 @@ backend_command :: proc(
 	if len(command) == 0 { return Backend_Command_Result{code="invalid_command", message="command is empty"} }
 	backend.request_id += 1
 	request_revision := based_on_revision
-	if request_revision == 0 && !(allow_unversioned_read && (command == "read_visible_lines" || command == "read_image" || command == "read_view_window")) {
+	if request_revision == 0 && !(allow_unversioned_read && (command == "read_visible_lines" || command == "read_image" || command == "read_view_window" || command == "browse_directory")) {
 		request_revision = backend.state.application_rev
 	}
 	request := Backend_Command_Request{
@@ -1341,6 +1354,7 @@ backend_command :: proc(
 		action_id=action_id,
 		argument=argument,
 		path=path,
+		base_path=base_path,
 		name=name,
 		disposition=disposition,
 		document_id=document_id,
@@ -1464,6 +1478,16 @@ backend_command :: proc(
 		}
 		result.directory_listing = listing
 		result.directory_listing_owned = true
+	}
+	if response.ok && command == "browse_directory" && response.workspace_browse.directory_path != "" {
+		browse, browse_ok := workspace_browse_clone(response.workspace_browse, allocator)
+		if !browse_ok {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="allocation_failed", message="could not retain workspace directory suggestions"}
+		}
+		result.workspace_browse = browse
+		result.workspace_browse_owned = true
 	}
 	if response.ok && command == "list_workspace_files" {
 		files, files_ok := workspace_files_clone(response.workspace_files, allocator)
@@ -1595,6 +1619,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.matches_owned { delete(result.matches, allocator) }
 	if result.search_page_owned { workspace_search_page_destroy(&result.workspace_search_page, allocator) }
 	if result.workspace_files_owned { workspace_files_destroy(&result.workspace_files, allocator) }
+	if result.workspace_browse_owned { workspace_browse_destroy(&result.workspace_browse, allocator) }
 	if result.save_as_conflict_path_owned { delete(result.save_as_conflict.path, allocator) }
 	result^ = {}
 }
@@ -2174,6 +2199,217 @@ workspace_files_lane_stop :: proc(lane: ^Workspace_Files_Lane) -> bool {
 	return !lane.active && !lane.pending
 }
 
+Workspace_Browse_Lane_Result :: struct {
+	generation: u64,
+	query: string,
+	base_path: string,
+	browse: Workspace_Browse,
+	browse_owned: bool,
+	error: string,
+	error_owned: bool,
+}
+
+// The address picker coalesces edits and keeps only the latest directory
+// completion. It transfers paths only; it never opens or mutates a workspace.
+Workspace_Browse_Lane :: struct {
+	backend: ^Backend,
+	wake: Application_Wake_Proc,
+	wake_data: rawptr,
+	allocator: mem.Allocator,
+	mutex: sync.Mutex,
+	sema: sync.Sema,
+	thread: ^thread.Thread,
+	stopping: u32,
+	pending: bool,
+	active: bool,
+	pending_generation: u64,
+	latest_generation: u64,
+	pending_query: string,
+	pending_base_path: string,
+	completed: Workspace_Browse_Lane_Result,
+	completed_ready: bool,
+}
+
+workspace_browse_lane_result_destroy :: proc(result: ^Workspace_Browse_Lane_Result, allocator: mem.Allocator) {
+	if result == nil { return }
+	delete(result.query, allocator)
+	delete(result.base_path, allocator)
+	if result.browse_owned { workspace_browse_destroy(&result.browse, allocator) }
+	if result.error_owned { delete(result.error, allocator) }
+	result^ = {}
+}
+
+workspace_browse_lane_worker :: proc(t: ^thread.Thread) {
+	lane := cast(^Workspace_Browse_Lane)t.data
+	for {
+		sync.sema_wait(&lane.sema)
+		sync.mutex_lock(&lane.mutex)
+		if sync.atomic_load(&lane.stopping) != 0 {
+			sync.mutex_unlock(&lane.mutex)
+			break
+		}
+		if !lane.pending {
+			sync.mutex_unlock(&lane.mutex)
+			continue
+		}
+		generation := lane.pending_generation
+		query := lane.pending_query
+		base_path := lane.pending_base_path
+		lane.pending_generation = 0
+		lane.pending_query = ""
+		lane.pending_base_path = ""
+		lane.pending = false
+		lane.active = true
+		sync.mutex_unlock(&lane.mutex)
+
+		command := backend_command(
+			lane.backend, "browse_directory",
+			path=query, base_path=base_path,
+			allow_unversioned_read=true,
+			read_latest_after=false,
+			allocator=lane.allocator,
+		)
+		completed := Workspace_Browse_Lane_Result{generation=generation, query=query, base_path=base_path}
+		if command.ok && command.workspace_browse_owned {
+			completed.browse = command.workspace_browse
+			completed.browse_owned = true
+			command.workspace_browse = {}
+			command.workspace_browse_owned = false
+		} else {
+			message := command.message
+			if message == "" { message = command.code }
+			completed.error, _ = strings.clone(message, lane.allocator)
+			completed.error_owned = len(completed.error) > 0
+		}
+		backend_command_result_destroy(&command, lane.allocator)
+
+		sync.mutex_lock(&lane.mutex)
+		lane.active = false
+		is_current := sync.atomic_load(&lane.stopping) == 0 && generation == lane.latest_generation
+		if is_current {
+			workspace_browse_lane_result_destroy(&lane.completed, lane.allocator)
+			lane.completed = completed
+			completed = {}
+			lane.completed_ready = true
+		}
+		wake := lane.wake
+		wake_data := lane.wake_data
+		sync.mutex_unlock(&lane.mutex)
+		workspace_browse_lane_result_destroy(&completed, lane.allocator)
+		if is_current && wake != nil { wake(wake_data) }
+	}
+}
+
+workspace_browse_lane_start :: proc(
+	lane: ^Workspace_Browse_Lane,
+	backend: ^Backend,
+	wake: Application_Wake_Proc,
+	wake_data: rawptr,
+	allocator := context.allocator,
+) -> bool {
+	if lane == nil || backend == nil || !backend.started || lane.thread != nil { return false }
+	lane.backend = backend
+	lane.wake = wake
+	lane.wake_data = wake_data
+	lane.allocator = allocator
+	lane.stopping = 0
+	lane.pending = false
+	lane.active = false
+	lane.latest_generation = 0
+	lane.completed = {}
+	lane.completed_ready = false
+	lane.sema = {}
+	lane.thread = thread.create(workspace_browse_lane_worker, name="Scratchpad workspace address browser")
+	if lane.thread == nil { return false }
+	lane.thread.data = rawptr(lane)
+	thread.start(lane.thread)
+	return true
+}
+
+workspace_browse_lane_request :: proc(
+	lane: ^Workspace_Browse_Lane,
+	query, base_path: string,
+) -> (generation: u64, accepted: bool) {
+	if lane == nil || lane.thread == nil { return 0, false }
+	sync.mutex_lock(&lane.mutex)
+	defer sync.mutex_unlock(&lane.mutex)
+	if sync.atomic_load(&lane.stopping) != 0 { return 0, false }
+	query_copy, query_err := strings.clone(query, lane.allocator)
+	if query_err != nil { return 0, false }
+	base_copy, base_err := strings.clone(base_path, lane.allocator)
+	if base_err != nil { delete(query_copy, lane.allocator); return 0, false }
+	if lane.pending {
+		delete(lane.pending_query, lane.allocator)
+		delete(lane.pending_base_path, lane.allocator)
+	}
+	workspace_browse_lane_result_destroy(&lane.completed, lane.allocator)
+	lane.completed_ready = false
+	lane.latest_generation += 1
+	if lane.latest_generation == 0 { lane.latest_generation = 1 }
+	generation = lane.latest_generation
+	lane.pending_generation = generation
+	lane.pending_query = query_copy
+	lane.pending_base_path = base_copy
+	lane.pending = true
+	sync.sema_post(&lane.sema)
+	return generation, true
+}
+
+workspace_browse_lane_cancel :: proc(lane: ^Workspace_Browse_Lane) {
+	if lane == nil || lane.thread == nil { return }
+	sync.mutex_lock(&lane.mutex)
+	if lane.pending {
+		delete(lane.pending_query, lane.allocator)
+		delete(lane.pending_base_path, lane.allocator)
+		lane.pending_query = ""
+		lane.pending_base_path = ""
+		lane.pending = false
+	}
+	lane.latest_generation += 1
+	if lane.latest_generation == 0 { lane.latest_generation = 1 }
+	workspace_browse_lane_result_destroy(&lane.completed, lane.allocator)
+	lane.completed_ready = false
+	sync.mutex_unlock(&lane.mutex)
+}
+
+workspace_browse_lane_take :: proc(lane: ^Workspace_Browse_Lane) -> (result: Workspace_Browse_Lane_Result, found: bool) {
+	if lane == nil { return {}, false }
+	sync.mutex_lock(&lane.mutex)
+	if !lane.completed_ready {
+		sync.mutex_unlock(&lane.mutex)
+		return {}, false
+	}
+	result = lane.completed
+	lane.completed = {}
+	lane.completed_ready = false
+	sync.mutex_unlock(&lane.mutex)
+	return result, true
+}
+
+workspace_browse_lane_stop :: proc(lane: ^Workspace_Browse_Lane) -> bool {
+	if lane == nil || lane.thread == nil { return true }
+	sync.mutex_lock(&lane.mutex)
+	sync.atomic_store(&lane.stopping, 1)
+	if lane.pending {
+		delete(lane.pending_query, lane.allocator)
+		delete(lane.pending_base_path, lane.allocator)
+		lane.pending_query = ""
+		lane.pending_base_path = ""
+		lane.pending = false
+	}
+	sync.mutex_unlock(&lane.mutex)
+	sync.sema_post(&lane.sema)
+	thread.join(lane.thread)
+	thread.destroy(lane.thread)
+	lane.thread = nil
+	workspace_browse_lane_result_destroy(&lane.completed, lane.allocator)
+	lane.completed_ready = false
+	lane.backend = nil
+	lane.wake = nil
+	lane.wake_data = nil
+	return !lane.active && !lane.pending
+}
+
 Editor_Edit_Request :: struct {
 	sequence:          u64,
 	command:           string,
@@ -2499,6 +2735,38 @@ directory_listing_destroy :: proc(listing: ^Directory_Listing, allocator: mem.Al
 	listing^ = {}
 }
 
+workspace_browse_clone :: proc(source: Workspace_Browse, allocator: mem.Allocator) -> (copy: Workspace_Browse, ok: bool) {
+	copy.truncated = source.truncated
+	copy.directory_path, _ = strings.clone(source.directory_path, allocator)
+	if copy.directory_path == "" { workspace_browse_destroy(&copy, allocator); return {}, false }
+	copy.parent_path, _ = strings.clone(source.parent_path, allocator)
+	if len(source.parent_path) > 0 && len(copy.parent_path) == 0 { workspace_browse_destroy(&copy, allocator); return {}, false }
+	copy.exact_path, _ = strings.clone(source.exact_path, allocator)
+	if len(source.exact_path) > 0 && len(copy.exact_path) == 0 { workspace_browse_destroy(&copy, allocator); return {}, false }
+	copy.entries = make([]Directory_Entry, len(source.entries), allocator=allocator)
+	for entry, index in source.entries {
+		copy.entries[index].name, _ = strings.clone(entry.name, allocator)
+		if len(entry.name) > 0 && len(copy.entries[index].name) == 0 { workspace_browse_destroy(&copy, allocator); return {}, false }
+		copy.entries[index].path, _ = strings.clone(entry.path, allocator)
+		if len(entry.path) > 0 && len(copy.entries[index].path) == 0 { workspace_browse_destroy(&copy, allocator); return {}, false }
+		copy.entries[index].dir = entry.dir
+	}
+	return copy, true
+}
+
+workspace_browse_destroy :: proc(browse: ^Workspace_Browse, allocator: mem.Allocator) {
+	if browse == nil { return }
+	delete(browse.directory_path, allocator)
+	delete(browse.parent_path, allocator)
+	delete(browse.exact_path, allocator)
+	for &entry in browse.entries {
+		delete(entry.name, allocator)
+		delete(entry.path, allocator)
+	}
+	delete(browse.entries, allocator)
+	browse^ = {}
+}
+
 workspace_search_page_clone :: proc(source: Workspace_Search_Page, allocator: mem.Allocator) -> (copy: Workspace_Search_Page, ok: bool) {
 	copy = source
 	copy.results = make([]Workspace_Search_Result, len(source.results), allocator=allocator)
@@ -2546,6 +2814,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.matches, allocator)
 	workspace_search_page_destroy(&response.workspace_search_page, allocator)
 	directory_listing_destroy(&response.directory_listing, allocator)
+	workspace_browse_destroy(&response.workspace_browse, allocator)
 	semantic_view_window_destroy(&response.semantic_view_window, allocator)
 	semantic_zoom_plan_destroy(&response.semantic_zoom, allocator)
 	editor_fold_plan_destroy(&response.editor_folds, allocator)

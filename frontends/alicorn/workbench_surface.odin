@@ -52,11 +52,9 @@ build_start_screen :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 }
 recent_workspace_open :: proc(app: ^App, rt: ^alicorn.Runtime, path: string) {
 	if app == nil || rt == nil || !app.backend.started || path == "" { return }
-	response := bridge.backend_command(&app.backend, "open_path", path=path)
-	handle_command_result(app, rt, &response)
-	bridge.backend_command_result_destroy(&response, context.allocator)
-	app.recent_workspaces_open = false
-	alicorn.invalidate_root(rt, "Scratchpad opened a recent workspace")
+	workspace_address_request_switch(app, rt, path, false)
+	if !app.workspace_address_confirm_open { app.recent_workspaces_open = false }
+	alicorn.invalidate_root(rt, "Scratchpad selected a recent workspace")
 }
 
 recent_workspace_clear :: proc(app: ^App, rt: ^alicorn.Runtime) {

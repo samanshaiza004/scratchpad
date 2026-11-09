@@ -33,6 +33,8 @@ build_app :: proc(
 		find_text_history_observe(&app.find_replace_edit_history, app.find_replace_text)
 	}
 	_ = find_capture_text_field(rt, app.workspace_search_query_node, &app.workspace_search_query)
+	_ = find_capture_text_field(rt, app.workspace_address_node, &app.workspace_address_query)
+	app.workspace_address_node = 0
 	app.workspace_search_results_owner = 0
 	clear(&app.workspace_search_pointer_targets)
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
@@ -152,7 +154,9 @@ build_app :: proc(
 			)
 			app.workspace_search_edit_node = 0
 		}
-		if app.workspace_projection_mode {
+		if app.workspace_address_open {
+			workspace_address_suggestions_build(app, &ui, rt)
+		} else if app.workspace_projection_mode {
 			projection_sidebar_build(app, &ui, rt)
 		} else {
 			build_workspace_tree(app, &ui, rt)
@@ -454,6 +458,7 @@ build_app :: proc(
 	frame_deferred_action_run(app, rt)
 	command_palette_restore_focus_after_frame(app, rt)
 	quick_open_restore_focus_after_frame(app, rt)
+	workspace_address_restore_focus_after_frame(app, rt)
 	symbol_picker_restore_focus_after_frame(app, rt)
 	scratchpad_editor_font_picker_restore_focus_after_frame(app, rt)
 	find_restore_after_frame(app, rt)
@@ -583,15 +588,31 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		style=alicorn.layout_style(.Row, grow=1, height=button_height),
 	)
 	if result.workspace_path != 0 {
-		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, result.workspace_path, .Window_Drag) }
 		path := app.backend.state.workspace_root if app.backend.state.has_workspace else "No workspace open"
-		gui.text(ui, path,
+		if app.workspace_address_open {
+			app.workspace_address_node = alicorn.text_field(
+				ui,
+				app.workspace_address_query,
+				key=alicorn.key_string("workspace-panel-root-path-text"),
+				style=alicorn.layout_style(.Row, grow=1, height=button_height, clip=true),
+				text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
+			)
+			_ = alicorn.semantic_text_field_label(ui, "Workspace address")
+		} else if gui.button(
+			ui,
+			path,
 			key=alicorn.key_string("workspace-panel-root-path-text"),
-			style=alicorn.layout_style(.Row, grow=1, height=button_height, align=.Center, clip=true),
-			color=alicorn.style_color(ui, .Muted_Text),
+			style=alicorn.layout_style(.Row, grow=1, height=button_height, clip=true),
+			variant=.Quiet,
 			text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis},
-		)
-		_ = alicorn.tooltip(ui, path)
+			content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=1),
+		) {
+			workspace_address_open_surface(app, app.ui_description_runtime)
+		}
+		if register_chrome_regions { scratchpad_content_titlebar_region_add(app, result.workspace_path, .Interactive) }
+		workspace_address_shortcut := "Ctrl+L"
+		when ODIN_OS == .Darwin { workspace_address_shortcut = "⌘L" }
+		_ = alicorn.tooltip(ui, fmt.tprintf("Workspace address · %s", workspace_address_shortcut))
 		alicorn.container_end(ui)
 	}
 	search_id, search_clicked := alicorn.icon_button(

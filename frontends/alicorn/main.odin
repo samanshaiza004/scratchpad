@@ -11,6 +11,7 @@ import bridge "./bridge"
 ACTION_FILE_OPEN       :: "file.open"
 ACTION_FILE_QUICK_OPEN :: "file.quick-open"
 ACTION_WORKSPACE_OPEN  :: "workspace.open"
+ACTION_WORKSPACE_ADDRESS :: "workspace.address"
 ACTION_WORKSPACE_RECENT :: "workspace.open-recent"
 ACTION_WORKSPACE_SEARCH_OPEN :: "workspace.search"
 ACTION_FILE_SAVE       :: "file.save"
@@ -151,6 +152,7 @@ App :: struct {
 	accessibility_semantic_run_count: int,
 	editor_edit_lane:       bridge.Editor_Edit_Lane,
 	quick_open_lane:        bridge.Workspace_Files_Lane,
+	workspace_browse_lane:  bridge.Workspace_Browse_Lane,
 	editor_edits:           [dynamic]Editor_Edit_Intent,
 	deferred_actions:       [dynamic]Deferred_Action,
 	editor_edit_sequence:   u64,
@@ -251,6 +253,21 @@ App :: struct {
 	settings_surface_open:  bool,
 	settings_category: Settings_Category,
 	recent_workspaces_open: bool,
+	workspace_address_open: bool,
+	workspace_address_query: string,
+	workspace_address_node: alicorn.Node_ID,
+	workspace_address_previous_focus: alicorn.Node_ID,
+	workspace_address_focus_pending: bool,
+	workspace_address_restore_pending: bool,
+	workspace_address_selected_index: int,
+	workspace_address_generation: u64,
+	workspace_address_loading: bool,
+	workspace_address_browse: bridge.Workspace_Browse,
+	workspace_address_browse_owned: bool,
+	workspace_address_error: string,
+	workspace_address_confirm_path: string,
+	workspace_address_confirm_pin_revision: u64,
+	workspace_address_confirm_open: bool,
 	workspace_search_mode:  bool,
 	workspace_search_tab_open: bool,
 	workspace_projection_mode: bool,
@@ -381,7 +398,7 @@ App :: struct {
 	dialog_action:          string,
 	file_items:             [7]host.Application_Menu_Item,
 	edit_items:             [11]host.Application_Menu_Item,
-	workspace_items:        [9]host.Application_Menu_Item,
+	workspace_items:        [10]host.Application_Menu_Item,
 	document_items:         [16]host.Application_Menu_Item,
 	view_items:             [15]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
@@ -478,6 +495,20 @@ start_backend :: proc(app: ^App) {
 			set_startup_error(app, "Could not start the asynchronous Quick Open file index worker.")
 			return
 		}
+		workspace_browse_lane_started := bridge.workspace_browse_lane_start(
+			&app.workspace_browse_lane,
+			&app.backend,
+			app.waker.wake,
+			app.waker.data,
+		)
+		if !workspace_browse_lane_started {
+			_ = bridge.workspace_files_lane_stop(&app.quick_open_lane)
+			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
+			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
+			_, _ = bridge.backend_stop(&app.backend)
+			set_startup_error(app, "Could not start the workspace address directory browser.")
+			return
+		}
 		accessibility_lane_started := accessibility_source_lane_start(
 			&app.accessibility_source_lane,
 			&app.backend,
@@ -485,6 +516,7 @@ start_backend :: proc(app: ^App) {
 			app.waker.data,
 		)
 		if !accessibility_lane_started {
+			_ = bridge.workspace_browse_lane_stop(&app.workspace_browse_lane)
 			_ = bridge.workspace_files_lane_stop(&app.quick_open_lane)
 			_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
 			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
@@ -509,6 +541,9 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	if !image_preview_lane_stop(&app.image_preview_lane) { return false, "Image preview worker did not stop cleanly" }
 	if !bridge.workspace_files_lane_stop(&app.quick_open_lane) {
 		return false, "Quick Open file index worker did not join cleanly"
+	}
+	if !bridge.workspace_browse_lane_stop(&app.workspace_browse_lane) {
+		return false, "workspace address directory browser did not join cleanly"
 	}
 	if !bridge.visible_window_lane_stop(&app.visible_window_lane) {
 		return false, "visible-window worker did not join cleanly"
@@ -836,6 +871,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	image_preview_take_completion(app, rt)
 	_ = workspace_search_sync_wake(app, rt)
 	quick_open_take_completion(app, rt)
+	workspace_address_take_completion(app, rt)
 	if floating := app.floating_window; floating != nil && !document_is_open(&app.backend.state, floating.document_id) {
 		floating.return_to_tabs = false
 		host.application_close_window(app.services.windows)
@@ -1063,6 +1099,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		}
 		return true
 	}
+	if app.workspace_address_open { return workspace_address_handle_key(app, rt, key) }
 	if app.command_palette_open {
 		#partial switch key {
 		case .Open_Command_Palette, .Escape:
@@ -3947,7 +3984,7 @@ application_stop :: proc(state: rawptr) {
 	app.retired_brand_marks = {}
 	if app.backend.started {
 		stopped, message := stop_backend(app)
-		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil && app.accessibility_source_lane.thread == nil && app.image_preview_lane.thread == nil
+		app.smoke_shutdown = stopped && !app.backend.started && app.backend.waiter.thread == nil && app.backend.state_leases == 0 && app.backend.resource_leases == 0 && app.visible_window_lane.thread == nil && app.editor_edit_lane.thread == nil && app.quick_open_lane.thread == nil && app.workspace_browse_lane.thread == nil && app.accessibility_source_lane.thread == nil && app.image_preview_lane.thread == nil
 		if !stopped { fmt.eprintln("Scratchpad backend shutdown error:", message) }
 	} else {
 		app.smoke_shutdown = true
@@ -4000,6 +4037,10 @@ application_stop :: proc(state: rawptr) {
 	find_set_message(&app.find_error, "")
 	find_set_message(&app.command_palette_query, "")
 	quick_open_destroy(app)
+	workspace_address_browse_clear(app)
+	workspace_address_confirmation_clear(app)
+	find_set_message(&app.workspace_address_query, "")
+	find_set_message(&app.workspace_address_error, "")
 	scratchpad_editor_font_destroy(app)
 	find_set_message(&app.workspace_search_query, "")
 	find_set_message(&app.symbol_picker_query, "")

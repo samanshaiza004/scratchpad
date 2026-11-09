@@ -204,6 +204,13 @@ application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.Fi
 		deferred_actions_run(app, rt)
 		return
 	}
+	if app.dialog_action == ACTION_WORKSPACE_OPEN {
+		app.dialog_action = ""
+		clear_dialog_document(app)
+		workspace_address_request_switch(app, rt, path, false)
+		deferred_actions_run(app, rt)
+		return
+	}
 	if len(app.editor_edits) > 0 {
 		if !deferred_action_enqueue(app, .Open_Path, path=path) {
 			set_error(app, "Could not queue the selected file behind pending edits.")

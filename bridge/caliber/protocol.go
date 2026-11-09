@@ -15,27 +15,29 @@ import (
 )
 
 const (
-	ProtocolVersion                uint32 = 1
-	StateSchemaV1                  uint32 = 1
-	MaxInputBytes                         = 1 << 20
-	DefaultListLimit                      = 200
-	MaxListLimit                          = 1000
-	MaxVisibleLines                       = 256
-	MaxVisibleBytes                       = 64 * 1024
-	MaxVisibleLineChunkBytes              = 16 * 1024
-	MaxEditBytes                          = 128 * 1024
-	MaxFindMatches                        = 1000
-	MaxFindQueryBytes                     = 4096
-	WorkspaceSearchQueryMaxBytes          = 4096
-	WorkspaceSearchPageSize               = 32
-	WorkspaceSearchMaxResults             = 5000
-	VisibleSliceSchemaV1                  = 1
-	VisibleSliceSchemaV2                  = 2
-	visibleSliceHeaderBytes               = 48
-	presentationTrailerHeaderBytes        = 24
-	presentationRecordBytes               = 16
-	MaxPresentationRecords                = 4096
-	maxPresentationMetadataBytes          = presentationTrailerHeaderBytes + MaxPresentationRecords*presentationRecordBytes
+	ProtocolVersion                  uint32 = 1
+	StateSchemaV1                    uint32 = 1
+	MaxInputBytes                           = 1 << 20
+	DefaultListLimit                        = 200
+	MaxListLimit                            = 1000
+	MaxVisibleLines                         = 256
+	MaxVisibleBytes                         = 64 * 1024
+	MaxVisibleLineChunkBytes                = 16 * 1024
+	MaxEditBytes                            = 128 * 1024
+	MaxFindMatches                          = 1000
+	MaxFindQueryBytes                       = 4096
+	WorkspaceSearchQueryMaxBytes            = 4096
+	WorkspaceSearchPageSize                 = 32
+	WorkspaceSearchMaxResults               = 5000
+	MaxWorkspaceBrowseDirectories           = 128
+	MaxWorkspaceBrowseEntriesScanned        = 16384
+	VisibleSliceSchemaV1                    = 1
+	VisibleSliceSchemaV2                    = 2
+	visibleSliceHeaderBytes                 = 48
+	presentationTrailerHeaderBytes          = 24
+	presentationRecordBytes                 = 16
+	MaxPresentationRecords                  = 4096
+	maxPresentationMetadataBytes            = presentationTrailerHeaderBytes + MaxPresentationRecords*presentationRecordBytes
 )
 
 type StartRequest struct {
@@ -63,6 +65,7 @@ type CommandRequest struct {
 	ActionID             string   `json:"action_id,omitempty"`
 	Argument             string   `json:"argument,omitempty"`
 	Path                 string   `json:"path,omitempty"`
+	BasePath             string   `json:"base_path,omitempty"`
 	Disposition          string   `json:"disposition,omitempty"`
 	Name                 string   `json:"name,omitempty"`
 	DocumentID           string   `json:"document_id,omitempty"`
@@ -121,6 +124,7 @@ type Response struct {
 	State               *StateEnvelope              `json:"state,omitempty"`
 	DirectoryListing    *DirectoryListing           `json:"directory_listing,omitempty"`
 	WorkspaceFiles      *WorkspaceFiles             `json:"workspace_files,omitempty"`
+	WorkspaceBrowse     *WorkspaceBrowse            `json:"workspace_browse,omitempty"`
 	Resource            *ResourceDescriptor         `json:"resource,omitempty"`
 	Edit                *EditAck                    `json:"edit,omitempty"`
 	EditorSelection     *EditorSelection            `json:"editor_selection,omitempty"`
@@ -450,6 +454,16 @@ type WorkspaceFiles struct {
 	Truncated bool     `json:"truncated"`
 }
 
+// WorkspaceBrowse contains bounded, path-only suggestions. Browsing never
+// changes the active workspace; a separate open_workspace command commits it.
+type WorkspaceBrowse struct {
+	DirectoryPath string           `json:"directory_path"`
+	ParentPath    string           `json:"parent_path"`
+	ExactPath     string           `json:"exact_path,omitempty"`
+	Entries       []DirectoryEntry `json:"entries"`
+	Truncated     bool             `json:"truncated"`
+}
+
 func decodeStartRequest(input []byte) (StartRequest, Response, bool) {
 	var request StartRequest
 	if response, ok := validateWireInput(input, ""); !ok {
@@ -577,6 +591,17 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.Disposition == "background" && request.HasTargetByte {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_disposition", "background open cannot set the active editor selection", false), false
+		}
+	case "open_workspace":
+		if err := validateRequiredPath(request.Path, "path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
+	case "browse_directory":
+		if err := validateOptionalPath(request.Path, "path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_path", err.Error(), false), false
+		}
+		if err := validateOptionalPath(request.BasePath, "base_path"); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_base_path", err.Error(), false), false
 		}
 	case "select_document", "save_document", "close_document", "reload_conflict", "keep_mine_conflict", string(commands.EditUndo), string(commands.EditRedo):
 		if request.DocumentID != "" && !utf8.ValidString(request.DocumentID) {

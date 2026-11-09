@@ -485,7 +485,7 @@ func (r *Runtime) Pump() []byte {
 	// The path-only Quick Open index is a read against the current workspace,
 	// not a mutation based on a snapshot. It is safe to serve even if unrelated
 	// application state advanced while the frontend's worker request was queued.
-	if request.Command != "list_workspace_files" && request.BasedOnRevision != 0 && request.BasedOnRevision != r.applicationRevision {
+	if request.Command != "list_workspace_files" && request.Command != "browse_directory" && request.BasedOnRevision != 0 && request.BasedOnRevision != r.applicationRevision {
 		response = errorResponse(request.RequestID, r.lifecycle, "stale_revision", fmt.Sprintf("based_on_revision %d does not match current application revision %d", request.BasedOnRevision, r.applicationRevision), false)
 		response.BasedOnRevision = request.BasedOnRevision
 		response.Revision = r.revision
@@ -726,6 +726,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	}
 	var listing *DirectoryListing
 	var workspaceFiles *WorkspaceFiles
+	var workspaceBrowse *WorkspaceBrowse
 	var edit *EditAck
 	var closeDecision *CloseDecision
 	var editorSelection *EditorSelection
@@ -830,6 +831,38 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 				}
 			}
 		}
+	case "open_workspace":
+		path, err := resolveWorkspacePath(request.Path, r.app.Workspace.Root)
+		if err != nil {
+			return commandError(request, "workspace_open_failed", err)
+		}
+		destination, err := workspace.Open(path)
+		if err != nil {
+			return commandError(request, "workspace_open_failed", err)
+		}
+		if r.app.HasWorkspace && workspaceRootsEqual(r.app.Workspace.Root, destination.Root) {
+			commandOutcome = CommandOutcomeNoOp
+			publishState = false
+			break
+		}
+		pinned := r.app.PinnedSnapshot()
+		if len(pinned.Ranges) > 0 {
+			if !request.Discard {
+				return commandError(request, "workspace_switch_requires_confirmation", fmt.Errorf("switching workspaces will remove %d pinned references", len(pinned.Ranges)))
+			}
+			if request.PinRevision != pinned.Revision {
+				return commandError(request, "stale_pinned_ranges", errors.New("pinned references changed while workspace confirmation was open; review the current references and try again"))
+			}
+		}
+		if err := r.app.OpenWorkspace(destination.Root); err != nil {
+			return commandError(request, "workspace_open_failed", err)
+		}
+	case "browse_directory":
+		browse, err := browseWorkspaceDirectories(request.Path, request.BasePath)
+		if err != nil {
+			return commandError(request, "directory_browse_failed", err)
+		}
+		workspaceBrowse = browse
 	case "clear_recent_workspaces":
 		if !r.app.ClearRecentWorkspaces() {
 			commandOutcome = CommandOutcomeNoOp
@@ -1337,6 +1370,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	response.BasedOnRevision = request.BasedOnRevision
 	response.DirectoryListing = listing
 	response.WorkspaceFiles = workspaceFiles
+	response.WorkspaceBrowse = workspaceBrowse
 	response.Edit = edit
 	response.EditorSelection = editorSelection
 	response.CommandOutcome = commandOutcome

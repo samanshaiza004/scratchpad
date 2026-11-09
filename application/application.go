@@ -279,6 +279,9 @@ func (a *Application) OpenWorkspace(path string) error {
 	if err != nil {
 		return err
 	}
+	if a.HasWorkspace && workspacePathsEqual(a.Workspace.Root, ws.Root) {
+		return nil
+	}
 	if !a.HasWorkspace || !workspacePathsEqual(a.Workspace.Root, ws.Root) {
 		if err := a.ClearPinnedRanges(); err != nil {
 			return err
