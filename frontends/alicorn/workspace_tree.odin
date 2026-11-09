@@ -13,7 +13,8 @@ TREE_SEMANTIC_NAMESPACE :: u64(0x5343524154434850)
 TREE_ROW_HEIGHT :: 26
 TREE_INDENT_WIDTH :: f32(12)
 TREE_TYPE_ICON_SIZE :: f32(16)
-TREE_ROW_GAP :: f32(4)
+TREE_ROW_PADDING :: f32(3)
+TREE_ROW_GAP :: f32(6)
 TREE_SCROLL_KEY :: "scratchpad-workspace-tree"
 
 Tree_Directory :: struct {
@@ -71,13 +72,14 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		selected := focus_state.id == semantic_id
 		active_document_row := has_active_document && !row.is_dir &&
 			tree_path_is_workspace_entry(app.tree_root_path, row.path, active_document.path)
+		// The filename paints from the top of its layout box. Padding brings
+		// the glyphs to the icon's centerline and insets both from the highlight.
 		row_button, clicked := alicorn.button_begin(
 			ui,
 			"",
 			key=alicorn.key_string(row.path),
-			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT, gap=TREE_ROW_GAP, align=.Center),
+			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT, padding=TREE_ROW_PADDING, gap=TREE_ROW_GAP, align=.Center),
 			state=alicorn.Button_State{selected=selected},
-			content_style=alicorn.button_content_style(.Start, padding_x=6, padding_y=0),
 			variant=.Quiet,
 		)
 		if row_button != 0 {

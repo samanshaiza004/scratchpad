@@ -109,6 +109,233 @@ test_theme_preferences_round_trip_and_fallback :: proc(t: ^testing.T) {
 	}
 }
 
+theme_preferences_test_paint_contains_color :: proc(rt: ^alicorn.Runtime, node_id: alicorn.Node_ID, expected: alicorn.Color) -> bool {
+	if rt == nil || node_id == 0 { return false }
+	node, found := rt.nodes[node_id]
+	if !found { return false }
+	for command in node.paint {
+		color, color_ok := alicorn.paint_surface_color(command)
+		if color_ok && color == expected { return true }
+	}
+	return false
+}
+
+@(test)
+test_live_editor_theme_replacement_preserves_document_interaction_and_scroll :: proc(t: ^testing.T) {
+	LINE_COUNT :: 180
+	DOCUMENT_ID :: "live-theme-source"
+
+	// Exercise Alicorn's in-place API through Scratchpad's actual editor theme
+	// scope, with enough source to create a genuinely scrollable editor.
+	source_text, source_error := strings.repeat("A retained Markdown paragraph for live theme dogfooding.\n", LINE_COUNT, context.temp_allocator)
+	testing.expect(t, source_error == nil, "live-theme dogfood should create a multi-page Markdown source")
+	if source_error != nil { return }
+	source, source_alloc_error := make([]u8, len(source_text), allocator=context.allocator)
+	testing.expect(t, source_alloc_error == nil, "live-theme dogfood should allocate mutable owned source bytes")
+	if source_alloc_error != nil { return }
+	for index in 0..<len(source_text) { source[index] = source_text[index] }
+	source_snapshot, snapshot_error := strings.clone(string(source), context.temp_allocator)
+	if snapshot_error != nil {
+		delete(source)
+		testing.expect(t, false, "live-theme dogfood should snapshot authoritative source bytes")
+		return
+	}
+	defer delete(source_snapshot, context.temp_allocator)
+
+	app: App
+	app.backend.started = true
+	app.backend.state.has_workspace = true
+	app.backend.state.revision = 37
+	app.backend.state.workspace_root = "/scratchpad/live-theme-dogfood"
+	app.backend.state.active = DOCUMENT_ID
+	app.tree_root_path = app.backend.state.workspace_root
+	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
+	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
+	init_menus(&app)
+	documents := [?]bridge.State_Document{{
+		id=DOCUMENT_ID,
+		instance_id=92,
+		path="notes.md",
+		status="synced",
+		dirty=true,
+		editor_revision=11,
+		line_count=LINE_COUNT,
+		byte_length=u64(len(source)),
+		language="markdown",
+		presentation_revision=11,
+		presentation_ready=true,
+	}}
+	app.backend.state.documents = documents[:]
+
+	visible := bridge.Visible_Window{
+		document_id=DOCUMENT_ID,
+		document_instance_id=92,
+		application_rev=37,
+		editor_revision=11,
+		start_line=0,
+		end_line=LINE_COUNT,
+		start_byte=0,
+		line_byte_length=u64(len(source)),
+		source=source,
+		presentation_revision=11,
+		presentation_ready=true,
+	}
+	window, window_ok, window_error := editor_window_from_visible(&visible, context.allocator)
+	if !window_ok {
+		if len(visible.source) > 0 { delete(visible.source, context.allocator) }
+		testing.expect(t, false, window_error)
+		return
+	}
+	app.editor_window = window
+	app.editor_window_ready = true
+	source = {}
+
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
+	defer {
+		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
+		editor_window_destroy(&app.editor_window, context.allocator)
+		editor_views_destroy(&app.editor_views, context.allocator)
+		delete(app.editor_edits)
+		delete(app.editor_row_targets)
+		delete(app.tree_directories)
+		deferred_actions_clear(&app)
+		delete(app.deferred_actions)
+		alicorn.destroy_runtime(&rt)
+	}
+
+	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
+		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
+	styles_ready := fonts_loaded && scratchpad_styles_ensure(&app, &rt)
+	testing.expect(t, styles_ready, "the real editor should load its fonts and generated theme")
+	if !styles_ready { return }
+	stable_theme_id := app.editor_theme
+	registry_size := len(rt.style_themes)
+
+	view_index, view_ok := editor_view_ensure(&app.editor_views, DOCUMENT_ID)
+	testing.expect(t, view_ok, "the real document should have retained editor state")
+	if !view_ok { return }
+	view := &app.editor_views[view_index]
+	view.document_instance_id = 92
+	view.authoritative_revision = 11
+
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	if app.editor_scroll_owner == 0 { testing.expect(t, false, "the real editor should create its scroll owner"); return }
+	_ = alicorn.scroll_region_set_offset(&rt, app.editor_scroll_owner, 900, "position live-theme dogfood in the document")
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	testing.expect(t, len(app.editor_row_targets) > 4, "the scrolled editor should realize several visible source rows")
+	if len(app.editor_row_targets) <= 4 { return }
+
+	target := app.editor_row_targets[len(app.editor_row_targets)/2]
+	line, line_found := editor_window_line(&app.editor_window, target.logical_line)
+	testing.expect(t, line_found && len(line.display) > 8, "the chosen visible row should map to a source line")
+	if !line_found || len(line.display) <= 8 { return }
+	view.selection_anchor = line.source_start+2
+	view.caret_byte = line.source_start+8
+	view.caret_affinity = .Trailing
+	_ = alicorn.focus(&rt, app.editor_scroll_owner)
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	view_index = editor_view_find(app.editor_views[:], DOCUMENT_ID)
+	if view_index < 0 { testing.expect(t, false, "the editor view should remain associated with the active document"); return }
+	view = &app.editor_views[view_index]
+	selected_line := line.logical_line
+	selected_target, row_found := editor_row_target_for_source(app.editor_row_targets[:], selected_line, view.caret_byte)
+	row_before, row_before_found := rt.nodes[selected_target.node]
+	paper_id := theme_switch_test_find_label(&rt, "document-surface")
+	paper_before, paper_before_found := rt.nodes[paper_id]
+	selection_before, caret_before := view.selection_anchor, view.caret_byte
+	owner_before := alicorn.scroll_region_state(&rt, app.editor_scroll_owner)
+	active_before, active_before_found := alicorn.style_extension_color(&rt, stable_theme_id, scratchpad_editor_active_line_role())
+	paper_before_color, paper_color_found := alicorn.style_extension_color(&rt, stable_theme_id, scratchpad_editor_paper_surface_role())
+	active_row_node := alicorn.Node_ID(0)
+	old_active_painted := false
+	if row_before_found {
+		if source_lane, lane_found := rt.nodes[row_before.parent]; lane_found { active_row_node = source_lane.parent }
+		old_active_painted = theme_preferences_test_paint_contains_color(&rt, active_row_node, active_before)
+	}
+	old_paper_painted := paper_before_found && paper_color_found &&
+		theme_preferences_test_paint_contains_color(&rt, paper_id, paper_before_color)
+	testing.expect(t, row_found && row_before_found && row_before.text_interaction_show_caret &&
+		row_before.text_interaction_focus.byte == int(view.caret_byte-line.source_start),
+		"the active source row should have its real caret and focused editor interaction before replacement")
+	testing.expect(t, owner_before.offset_y > 0 && row_before_found && row_before.bounds.y >= owner_before.viewport_bounds.y &&
+		row_before.bounds.y+row_before.bounds.h <= owner_before.viewport_bounds.y+owner_before.viewport_height,
+		"the focused source row should be visible in a genuinely scrolled editor")
+	testing.expect(t, old_active_painted,
+		"the focused logical-row container should paint Scratchpad's original active-line theme color")
+	testing.expect(t, old_paper_painted,
+		"the document surface should paint Scratchpad's original paper theme color")
+	if !row_found || !row_before_found || !paper_before_found || !active_before_found || !paper_color_found { return }
+
+	active_token, active_token_found := alicorn.style_extension_color_token(&rt, stable_theme_id, scratchpad_editor_active_line_role())
+	paper_token, paper_token_found := alicorn.style_extension_color_token(&rt, stable_theme_id, scratchpad_editor_paper_surface_role())
+	candidate := scratchpad_editor_theme(context.allocator)
+	defer scratchpad_editor_theme_destroy(&candidate, context.allocator)
+	testing.expect(t, active_token_found && paper_token_found && u32(active_token) <= u32(len(candidate.color_tokens)) &&
+		u32(paper_token) <= u32(len(candidate.color_tokens)),
+		"Scratchpad's generated editor theme should expose stable tokens for its real editor colors")
+	if !active_token_found || !paper_token_found || u32(active_token) > u32(len(candidate.color_tokens)) ||
+		u32(paper_token) > u32(len(candidate.color_tokens)) { return }
+	new_active := alicorn.Color{0.88, 0.16, 0.54, 0.42}
+	new_paper := alicorn.Color{0.70, 0.83, 0.92, 1}
+	candidate.color_tokens[int(u32(active_token))-1] = new_active
+	candidate.color_tokens[int(u32(paper_token))-1] = new_paper
+
+	layout_before := rt.stats.layout_nodes_visited
+	measure_before := rt.stats.measure_requests
+	shape_before := rt.stats.text_shape_requests
+	paint_before := rt.stats.paint_nodes_visited
+	result := alicorn.style_theme_replace(&rt, stable_theme_id, candidate)
+	testing.expect(t, result == .Replaced && app.editor_theme == stable_theme_id && len(rt.style_themes) == registry_size,
+		"live editor-theme dogfooding should replace the same theme ID without growing the registry")
+	if result != .Replaced { return }
+	new_active_resolved, active_resolved := alicorn.style_extension_color(&rt, stable_theme_id, scratchpad_editor_active_line_role())
+	new_paper_resolved, paper_resolved := alicorn.style_extension_color(&rt, stable_theme_id, scratchpad_editor_paper_surface_role())
+	testing.expect(t, active_resolved && new_active_resolved == new_active && paper_resolved && new_paper_resolved == new_paper,
+		"the active runtime theme should resolve the newly adopted Scratchpad colors")
+
+	// Scratchpad bakes extension colors into active-row decoration at description
+	// time, so it explicitly invalidates that derived app-owned paint once. The
+	// runtime still resolves the paper role itself and performs no layout work.
+	alicorn.invalidate_root(&rt, "Scratchpad live editor-theme candidate")
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	view_index = editor_view_find(app.editor_views[:], DOCUMENT_ID)
+	view = &app.editor_views[view_index]
+	row_after_target, row_after_target_found := editor_row_target_for_source(app.editor_row_targets[:], selected_line, view.caret_byte)
+	row_after, row_after_found := rt.nodes[row_after_target.node]
+	paper_after, paper_after_found := rt.nodes[paper_id]
+	after_scroll := alicorn.scroll_region_state(&rt, app.editor_scroll_owner)
+	active_row_after := alicorn.Node_ID(0)
+	if row_after_found {
+		if source_lane, lane_found := rt.nodes[row_after.parent]; lane_found { active_row_after = source_lane.parent }
+	}
+	active_painted := row_after_found && theme_preferences_test_paint_contains_color(&rt, active_row_after, new_active)
+	paper_painted := paper_after_found && theme_preferences_test_paint_contains_color(&rt, paper_id, new_paper)
+	document_after, document_found := find_document(&app.backend.state, DOCUMENT_ID)
+	testing.expect(t, document_found && document_after.instance_id == 92 && document_after.editor_revision == 11 &&
+		document_after.dirty && app.backend.state.active == DOCUMENT_ID && app.backend.state.revision == 37 &&
+		app.backend.state.workspace_root == "/scratchpad/live-theme-dogfood" &&
+		string(app.editor_window.source) == source_snapshot,
+		"theme replacement must preserve Scratchpad's authoritative unsaved document and workspace state")
+	testing.expect(t, view.selection_anchor == selection_before && view.caret_byte == caret_before &&
+		alicorn.focused_node(&rt) == app.editor_scroll_owner && row_after_target_found &&
+	row_after_target.node == selected_target.node && row_after_found && row_after.text_interaction_show_caret,
+		"theme replacement must preserve source selection, caret, focus, and retained row identity")
+	testing.expect(t, abs(after_scroll.offset_y-owner_before.offset_y) < 1 && row_after_found &&
+		row_after.bounds.y >= after_scroll.viewport_bounds.y &&
+		row_after.bounds.y+row_after.bounds.h <= after_scroll.viewport_bounds.y+after_scroll.viewport_height,
+		"theme replacement must preserve the scroll offset and keep the focused source row visible")
+	testing.expect(t, active_painted,
+		"the next Scratchpad frame should paint the replacement active-line color on the focused logical row")
+	testing.expect(t, paper_painted,
+		"the next Scratchpad frame should paint the replacement paper color on the document surface")
+	testing.expect(t, rt.stats.layout_nodes_visited == layout_before && rt.stats.measure_requests == measure_before &&
+		rt.stats.text_shape_requests == shape_before && rt.stats.paint_nodes_visited > paint_before,
+		"the real editor should adopt color-only replacement through paint without layout, measurement, or reshaping")
+}
+
 @(test)
 test_theme_preferences_use_platform_configuration_root :: proc(t: ^testing.T) {
 	config_root, err := os.user_config_dir(context.temp_allocator)

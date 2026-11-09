@@ -12,72 +12,9 @@ QUICK_OPEN_MAX_VISIBLE_ROWS :: 10
 QUICK_OPEN_ROW_HEIGHT :: f32(36)
 QUICK_OPEN_RESULTS_HEIGHT :: f32(QUICK_OPEN_MAX_VISIBLE_ROWS) * QUICK_OPEN_ROW_HEIGHT
 QUICK_OPEN_PANEL_HEIGHT_BASE :: f32(496)
-QUICK_OPEN_TUNING_ROW_HEIGHT :: f32(24)
-QUICK_OPEN_EFFECT_DOGFOOD :: #config(SCRATCHPAD_QUICK_OPEN_EFFECT_DOGFOOD, false)
-
-// The normal application defaults to its existing opaque panel. Experimental
-// builds add Tint and Blur comparisons without changing consumer builds.
-Quick_Open_Backdrop_Mode :: enum { Flat, Tint, Blur }
-
-Quick_Open_Effect_Control :: enum { Blur_Sigma, Panel_Opacity, Backdrop_Dim }
 
 quick_open_panel_height :: proc() -> f32 {
-	when QUICK_OPEN_EFFECT_DOGFOOD {
-		return QUICK_OPEN_PANEL_HEIGHT_BASE + QUICK_OPEN_TUNING_ROW_HEIGHT + 8
-	}
 	return QUICK_OPEN_PANEL_HEIGHT_BASE
-}
-
-quick_open_effect_controls_initialize :: proc(app: ^App) {
-	when QUICK_OPEN_EFFECT_DOGFOOD {
-		if app == nil || app.quick_open_effect_controls_initialized { return }
-		app.quick_open_backdrop_mode = .Blur
-		app.quick_open_blur_sigma = 6
-		app.quick_open_panel_opacity_percent = 70
-		app.quick_open_backdrop_dim_percent = 50
-		app.quick_open_effect_controls_initialized = true
-	}
-}
-
-quick_open_effect_controls_changed :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || rt == nil { return }
-	app.quick_open_restore_query_focus_pending = true
-	alicorn.invalidate_root(rt, "Scratchpad Quick Open backdrop comparison changed")
-}
-
-quick_open_render_effect_control :: proc(
-	ui: ^alicorn.UI,
-	app: ^App,
-	rt: ^alicorn.Runtime,
-	label: string,
-	key_prefix: string,
-	kind: Quick_Open_Effect_Control,
-	values: []int,
-	selected_value: int,
-	button_width: f32,
-	group_width: f32,
-) {
-	alicorn.container_begin(ui, .Container, label=label, key=alicorn.key_string(key_prefix), style=alicorn.layout_style(.Row, width=group_width, height=24, gap=4, align=.Center))
-	gui.text(ui, label, key=alicorn.key_string(fmt.tprintf("%s-label", key_prefix)), style=alicorn.layout_style(.Row, width=64, height=24, align=.Center))
-	for value in values {
-		if gui.button(
-			ui,
-			fmt.tprintf("%d", value),
-			key=fmt.tprintf("%s-%d", key_prefix, value),
-			width=button_width,
-			height=24,
-			state=alicorn.Button_State{selected=value == selected_value},
-			variant=.Toolbar,
-		) {
-			switch kind {
-			case .Blur_Sigma: app.quick_open_blur_sigma = value
-			case .Panel_Opacity: app.quick_open_panel_opacity_percent = value
-			case .Backdrop_Dim: app.quick_open_backdrop_dim_percent = value
-			}
-			quick_open_effect_controls_changed(app, rt)
-		}
-	}
-	alicorn.container_end(ui)
 }
 
 Quick_Open_Result :: struct {
@@ -370,24 +307,14 @@ quick_open_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alic
 
 quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil || !app.quick_open_open { return }
-	quick_open_effect_controls_initialize(app)
 	quick_open_request_index(app)
 	results := quick_open_filter(app.quick_open_paths, app.quick_open_query, alicorn.runtime_scratch_allocator(rt))
 	defer delete(results)
 	if len(results) == 0 { app.quick_open_selected_index = 0
 	} else { app.quick_open_selected_index = clamp(app.quick_open_selected_index, 0, len(results)-1) }
-	backdrop_color := scratchpad_modal_backdrop_color(rt, app.workbench_theme)
-	panel_fill := alicorn.style_environment_color(rt, scratchpad_workbench_style_environment(app), .Surface)
-	backdrop_effect := alicorn.EXPERIMENTAL_BACKDROP_NONE
-	when QUICK_OPEN_EFFECT_DOGFOOD {
-		backdrop_color.a = f32(app.quick_open_backdrop_dim_percent) / 100
-		if app.quick_open_backdrop_mode != .Flat {
-			panel_fill.a = f32(app.quick_open_panel_opacity_percent) / 100
-		}
-		if app.quick_open_backdrop_mode == .Blur {
-			backdrop_effect = alicorn.experimental_backdrop_blur(f32(app.quick_open_blur_sigma), .Direct)
-		}
-	}
+	backdrop_color := scratchpad_modal_overlay_color(app, rt)
+	panel_fill := scratchpad_modal_panel_fill(app, rt)
+	backdrop_effect := scratchpad_modal_backdrop_effect(app, rt)
 	app.quick_open_overlay_node = alicorn.modal_overlay_begin(
 		ui,
 		alicorn.key_string("scratchpad-quick-open-overlay"),
@@ -408,31 +335,7 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	)
 	alicorn.container_begin(ui, .Container, label="quick-open-heading", style=alicorn.layout_style(.Row, height=28, justify=.Space_Between, align=.Center))
 	gui.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22, grow=1))
-	when QUICK_OPEN_EFFECT_DOGFOOD {
-		if gui.button(ui, "Flat", key="quick-open-backdrop-flat", width=52, height=26, state=alicorn.Button_State{selected=app.quick_open_backdrop_mode == .Flat}, variant=.Toolbar) {
-			app.quick_open_backdrop_mode = .Flat
-			quick_open_effect_controls_changed(app, rt)
-		}
-		if gui.button(ui, "Tint", key="quick-open-backdrop-tint", width=52, height=26, state=alicorn.Button_State{selected=app.quick_open_backdrop_mode == .Tint}, variant=.Toolbar) {
-			app.quick_open_backdrop_mode = .Tint
-			quick_open_effect_controls_changed(app, rt)
-		}
-		if gui.button(ui, "Blur", key="quick-open-backdrop-blur", width=52, height=26, state=alicorn.Button_State{selected=app.quick_open_backdrop_mode == .Blur}, variant=.Toolbar) {
-			app.quick_open_backdrop_mode = .Blur
-			quick_open_effect_controls_changed(app, rt)
-		}
-	}
 	alicorn.container_end(ui)
-	when QUICK_OPEN_EFFECT_DOGFOOD {
-		sigma_options := [?]int{4, 6, 8}
-		opacity_options := [?]int{65, 70, 88}
-		dim_options := [?]int{45, 50, 55, 72}
-		alicorn.container_begin(ui, .Container, label="quick-open-effect-tuning", key=alicorn.key_string("quick-open-effect-tuning"), style=alicorn.layout_style(.Row, height=QUICK_OPEN_TUNING_ROW_HEIGHT, gap=12, align=.Center))
-		quick_open_render_effect_control(ui, app, rt, "Sigma px", "quick-open-blur-sigma", .Blur_Sigma, sigma_options[:], app.quick_open_blur_sigma, 30, 166)
-		quick_open_render_effect_control(ui, app, rt, "Panel %", "quick-open-panel-opacity", .Panel_Opacity, opacity_options[:], app.quick_open_panel_opacity_percent, 36, 184)
-		quick_open_render_effect_control(ui, app, rt, "Dim %", "quick-open-backdrop-dim", .Backdrop_Dim, dim_options[:], app.quick_open_backdrop_dim_percent, 36, 224)
-		alicorn.container_end(ui)
-	}
 	app.quick_open_node = alicorn.text_field(ui, app.quick_open_query, key=alicorn.key_string("scratchpad-quick-open-query"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	alicorn.container_begin(ui, .Container, label="quick-open-result-slot", key=alicorn.key_string("quick-open-result-slot"), style=alicorn.layout_style(.Column, height=QUICK_OPEN_RESULTS_HEIGHT, clip=true))
 	if app.quick_open_error != "" {

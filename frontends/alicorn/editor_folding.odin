@@ -29,9 +29,9 @@ manual_folding_destroy :: proc(folding: ^Editor_Manual_Folding, allocator := con
 	if folding == nil { return }
 	manual_folding_clear_projection(folding)
 	for &window in folding.windows { editor_window_destroy(&window, allocator) }
-	delete(folding.windows, allocator)
+	delete(folding.windows)
 	if folding.owned { bridge.Editor_Fold_Plan_Destroy(&folding.plan, allocator) }
-	delete(folding.collapsed, allocator)
+	delete(folding.collapsed)
 	folding^ = {}
 }
 
@@ -322,6 +322,14 @@ manual_folding_sync_geometry :: proc(view: ^Editor_View_State, window: ^Editor_W
 	folding := &view.manual_folding
 	if !manual_folding_has_candidates(view) || len(folding.rows.folds) == 0 || !view.wrap_height_index_ready {
 		if folding.index_ready { alicorn.virtual_list_height_index_destroy(&folding.index); folding.index_ready = false }
+		// Expanding the last collapsed fold returns geometry to the ordinary
+		// wrapped-line index. Apply the captured source-line anchor there too;
+		// otherwise the viewport stays at the old marker-row offset and jumps
+		// to different source after the hidden rows reappear.
+		if len(folding.rows.folds) == 0 && view.wrap_height_index_ready && folding.anchor_pending {
+			line := clamp(int(folding.anchor_line), 0, max(view.wrap_height_index.item_count-1, 0))
+			_ = manual_folding_restore_anchor_at_row(view, folding, &view.wrap_height_index, line)
+		}
 		return
 	}
 	row_count := folding.rows.row_count
@@ -352,13 +360,25 @@ manual_folding_sync_geometry :: proc(view: ^Editor_View_State, window: ^Editor_W
 	alicorn.virtual_list_height_index_rebuild_prefix(&folding.index)
 	if folding.anchor_pending {
 		row := semantic_zoom_rows_row_for_source(&folding.rows, int(folding.anchor_line))
-		if row >= 0 {
-			view.scroll_y = max(alicorn.virtual_list_height_index_item_top(&folding.index, row)+folding.anchor_offset, 0)
-			view.restore_y_pending = true
-			view.restore_token = alicorn.RESTORE_TOKEN_NONE
-			folding.anchor_pending = false
-		}
+		_ = manual_folding_restore_anchor_at_row(view, folding, &folding.index, row)
 	}
+}
+
+manual_folding_restore_anchor_at_row :: proc(
+	view: ^Editor_View_State,
+	folding: ^Editor_Manual_Folding,
+	index: ^alicorn.Virtual_List_Height_Index,
+	row: int,
+) -> bool {
+	if view == nil || folding == nil || index == nil || !folding.anchor_pending ||
+	   row < 0 || row >= index.item_count {
+		return false
+	}
+	view.scroll_y = max(alicorn.virtual_list_height_index_item_top(index, row)+folding.anchor_offset, 0)
+	view.restore_y_pending = true
+	view.restore_token = alicorn.RESTORE_TOKEN_NONE
+	folding.anchor_pending = false
+	return true
 }
 
 manual_folding_capture_anchor :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State, fallback_line: u64) {
@@ -385,7 +405,7 @@ manual_folding_find_by_start :: proc(view: ^Editor_View_State, start_byte: u64) 
 	return -1
 }
 
-manual_folding_find_projected :: proc(view: ^Editor_View_State, projected: Semantic_Zoom_Fold) -> int {
+manual_folding_find_projected :: proc(view: ^Editor_View_State, projected: bridge.Semantic_Zoom_Fold) -> int {
 	if !manual_folding_has_candidates(view) { return -1 }
 	for fold, index in view.manual_folding.plan.folds {
 		if fold.body_start_line == projected.start_line && fold.end_line == projected.end_line &&
@@ -418,8 +438,9 @@ manual_folding_toggle :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: stri
 	fold_index := manual_folding_find_by_start(view, start_byte)
 	if fold_index < 0 { return }
 	fold := view.manual_folding.plan.folds[fold_index]
-	manual_folding_capture_anchor(app, rt, view, view.manual_folding.plan.folds[fold_index].start_line)
 	was_collapsed := view.manual_folding.collapsed[fold_index]
+	if !was_collapsed && manual_folding_selection_overlaps_fold(view, fold) { return }
+	manual_folding_capture_anchor(app, rt, view, view.manual_folding.plan.folds[fold_index].start_line)
 	view.manual_folding.collapsed[fold_index] = !was_collapsed
 	if !manual_folding_rebuild_rows(&view.manual_folding) {
 		view.manual_folding.collapsed[fold_index] = was_collapsed
@@ -447,21 +468,32 @@ manual_folding_set_all :: proc(app: ^App, rt: ^alicorn.Runtime, collapse: bool) 
 	if view_index < 0 { return }
 	view := &app.editor_views[view_index]
 	if !manual_folding_plan_matches(&view.manual_folding, document) || view.zoom.depth != 0 || view.optimistic_pending_edits != 0 { return }
-	manual_folding_capture_anchor(app, rt, view, 0)
 	changed := false
 	previous: [4096]bool
-	for index in 0..<len(view.manual_folding.collapsed) { previous[index] = view.manual_folding.collapsed[index] }
-	for &collapsed in view.manual_folding.collapsed {
-		if collapsed != collapse { collapsed = collapse; changed = true }
+	for fold, index in view.manual_folding.plan.folds {
+		previous[index] = view.manual_folding.collapsed[index]
+		target := collapse
+		if collapse && manual_folding_selection_overlaps_fold(view, fold) {
+			// A fold must not discard or shorten the editor's authoritative
+			// source selection. Leave any intersecting range expanded.
+			target = previous[index]
+		}
+		if target != previous[index] { changed = true }
 	}
 	if !changed { return }
+	manual_folding_capture_anchor(app, rt, view, 0)
+	for fold, index in view.manual_folding.plan.folds {
+		target := collapse
+		if collapse && manual_folding_selection_overlaps_fold(view, fold) { target = previous[index] }
+		view.manual_folding.collapsed[index] = target
+	}
 	if !manual_folding_rebuild_rows(&view.manual_folding) {
 		for index in 0..<len(view.manual_folding.collapsed) { view.manual_folding.collapsed[index] = previous[index] }
 		return
 	}
 	if collapse {
 		for fold, index in view.manual_folding.plan.folds {
-			if !previous[index] { manual_folding_move_caret_out_of_fold(view, fold) }
+			if !previous[index] && view.manual_folding.collapsed[index] { manual_folding_move_caret_out_of_fold(view, fold) }
 		}
 	}
 	manual_folding_clear_geometry_index(&view.manual_folding)
@@ -485,16 +517,24 @@ manual_folding_toggle_index :: proc(view: ^Editor_View_State) -> int {
 
 manual_folding_move_caret_out_of_fold :: proc(view: ^Editor_View_State, fold: bridge.Editor_Fold) {
 	if view == nil { return }
-	selection_start := min(view.selection_anchor, view.caret_byte)
-	selection_end := max(view.selection_anchor, view.caret_byte)
 	hides_caret := view.caret_byte >= fold.body_start_byte && view.caret_byte < fold.end_byte
-	hides_selection := selection_start < fold.end_byte && selection_end > fold.body_start_byte
-	if hides_caret || hides_selection {
+	if hides_caret && view.selection_anchor == view.caret_byte {
 		view.selection_anchor = fold.start_byte
 		view.caret_byte = fold.start_byte
 		view.anchor_affinity, view.caret_affinity = .Leading, .Leading
 		view.preferred_x_set = false
 	}
+}
+
+manual_folding_selection_overlaps_fold :: proc(view: ^Editor_View_State, fold: bridge.Editor_Fold) -> bool {
+	if view == nil || view.selection_anchor == view.caret_byte { return false }
+	selection_start := min(view.selection_anchor, view.caret_byte)
+	selection_end := max(view.selection_anchor, view.caret_byte)
+	return selection_start < fold.end_byte && selection_end > fold.body_start_byte
+}
+
+manual_folding_header_marker_glyph :: proc(collapsed: bool) -> string {
+	return "›" if collapsed else "⌄"
 }
 
 manual_folding_toggle_at_caret :: proc(app: ^App, rt: ^alicorn.Runtime) {
@@ -590,7 +630,7 @@ manual_folding_header_button :: proc(app: ^App, ui: ^alicorn.UI, document: bridg
 	index, collapsed, found := manual_folding_header_for_line(view, line)
 	if !found { return }
 	fold := view.manual_folding.plan.folds[index]
-	label := "⌄" if collapsed else "›"
+	label := manual_folding_header_marker_glyph(collapsed)
 	if gui.button(ui, label, key=fmt.tprintf("manual-fold-gutter-%d-%d-%d", document.instance_id, document.editor_revision, fold.start_byte),
 		width=12, height=18, variant=.Quiet) {
 		_ = frame_deferred_action_schedule(app, .Toggle_Manual_Fold,

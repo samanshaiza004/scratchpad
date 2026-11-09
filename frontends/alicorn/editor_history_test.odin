@@ -661,7 +661,7 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 
 	// Start a second chain, accept its first replacement, then mutate the
 	// authoritative document before the next serialized request is dispatched.
-	// The stale edit and all dependent local edits must be discarded together.
+	// The optimistic chain is discarded, but committed input is kept recoverable.
 	select_document(&app, &rt, typing_document_id)
 	document_before_stale, found_before_stale := find_document(&app.backend.state, typing_document_id)
 	testing.expect(t, found_before_stale, "the source document should be active for stale-chain recovery")
@@ -745,8 +745,9 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	testing.expect(t, conflicted_document_found && conflicted_document.editor_revision == stale_base_revision+2 &&
 		app.backend.state_revision > publication_before_external_edit && !app.editor_window_ready,
 		"stale rejection should adopt the newer state publication and evict any cached window before recovery")
-	testing.expect(t, strings.contains(app.error_message, "reloading authoritative text"),
-		"stale rejection should report the controlled recovery instead of silently diverging")
+	testing.expect(t, strings.contains(app.error_message, "committed input remains available for recovery") &&
+		view.preedit_recoverable && string(view.preedit_text) == "bcd",
+		"stale rejection should discard the optimistic projection but retain every committed text event for recovery")
 
 	// Rebuild asks the existing visible-window lane for the canonical revision.
 	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
@@ -774,8 +775,12 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 		view.caret_byte <= app.editor_window.start_byte+u64(len(app.editor_window.source)) &&
 		caret_is_legal,
 		"recovery should clamp and normalize the caret to a legal source boundary in the reloaded window")
-	testing.expect(t, app.error_message == "",
-		"a successful authoritative reload should clear the temporary stale-edit alert")
+	testing.expect(t, strings.contains(app.error_message, "committed input remains available for recovery"),
+		"the recovery notice should remain visible until the user copies or explicitly discards the retained input")
+	testing.expect(t, view.preedit_recoverable && string(view.preedit_text) == "bcd",
+		"reloading authoritative source must not discard the independent committed-input recovery buffer")
+	testing.expect(t, editor_discard_recoverable_preedit(&app, &rt, typing_document_id),
+		"the user should be able to explicitly discard the retained test composition before continuing")
 
 	// The recovered editor remains usable: a new local edit should be accepted
 	// against the new authoritative revision and converge normally.

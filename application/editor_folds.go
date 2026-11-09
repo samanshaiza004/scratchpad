@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 
-	"scratchpad/document"
 	"scratchpad/language"
 )
 

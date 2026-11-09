@@ -21,6 +21,12 @@ func main() {
 		if entry.IsDir() || filepath.Ext(path) != ".odin" || strings.HasSuffix(path, "_test.odin") {
 			return nil
 		}
+		// The opt-in editor row trace is a read-only diagnostic that fingerprints
+		// retained style and paint products intentionally omitted from Alicorn's
+		// application query API. Keep this exception isolated to that observer.
+		if relative, relErr := filepath.Rel(root, path); relErr == nil && relative == "editor_row_trace.odin" {
+			return nil
+		}
 		file, err := os.Open(path)
 		if err != nil {
 			return err

@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -110,6 +111,226 @@ test_recoverable_ime_text_survives_document_switch_and_blocks_close :: proc(t: ^
 		!view.preedit_recoverable && len(view.preedit_text) == 0 &&
 		strings.contains(app.error_message, "explicitly discarded"),
 		"the recovery prompt's explicit discard choice should clear only the held composition, not edit source bytes")
+}
+
+@(test)
+test_edit_ack_identity_includes_document_instance :: proc(t: ^testing.T) {
+	intent := Editor_Edit_Intent{sequence=12, document_id="same-id", document_instance_id=91}
+	result := bridge.Editor_Edit_Lane_Result{
+		sequence=12,
+		document_id="same-id",
+		source_instance=91,
+		command=bridge.Backend_Command_Result{
+			ok=true,
+			edit=bridge.Edit_Ack{document_id="same-id", source_instance=91, editor_revision=1},
+		},
+	}
+	testing.expect(t, editor_edit_ack_identity_matches(&intent, &result),
+		"an acknowledgement must match the request and backend-confirmed source instance")
+	result.source_instance = 92
+	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
+		"an acknowledgement from a reopened document instance must not match an older edit")
+	result.source_instance = 91
+	result.command.edit.source_instance = 92
+	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
+		"a successful response must confirm the instance actually edited, not only echo the request tag")
+	result.command.edit.source_instance = 91
+	result.document_id = "other-id"
+	testing.expect(t, !editor_edit_ack_identity_matches(&intent, &result),
+		"an acknowledgement for another document must not match even when sequence and instance agree")
+}
+
+@(test)
+test_editor_window_rejects_same_revision_from_another_document_instance :: proc(t: ^testing.T) {
+	view := Editor_View_State{document_id="same-id", document_instance_id=92}
+	base := Editor_Window{document_id="same-id", document_instance_id=91, editor_revision=7}
+	_, matches := editor_view_window(&view, &base, true, "same-id", 7)
+	testing.expect(t, !matches,
+		"a cached visible projection from a prior document instance must not be reused at the same revision")
+	base.document_instance_id = 92
+	_, matches = editor_view_window(&view, &base, true, "same-id", 7)
+	testing.expect(t, matches, "the matching document instance should keep using its authoritative projection")
+}
+
+@(test)
+test_uncommitted_ime_preedit_clears_on_document_switch :: proc(t: ^testing.T) {
+	view := Editor_View_State{document_instance_id=17}
+	defer editor_preedit_clear(&view)
+	retained := editor_preedit_update(&view, "composing", 0, len("composing"))
+	editor_preedit_clear_for_document_switch(&view)
+	testing.expect(t, retained && !view.preedit_active && len(view.preedit_text) == 0 && !view.preedit_recoverable,
+		"switching away should clear uncommitted platform composition")
+}
+
+@(test)
+test_ime_cancel_clears_only_the_native_owner_preedit :: proc(t: ^testing.T) {
+	app: App
+	app.backend.started = true
+	app.backend.state.active = "main-doc"
+	app.editor_scroll_owner = 101
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	defer editor_views_destroy(&app.editor_views)
+	main_index, main_ok := editor_view_ensure(&app.editor_views, "main-doc")
+	other_index, other_ok := editor_view_ensure(&app.editor_views, "other-doc")
+	if !main_ok || !other_ok {
+		testing.expect(t, false, "both editor views should be retained")
+		return
+	}
+	_ = editor_preedit_update(&app.editor_views[main_index], "main composition", 0, len("main composition"))
+	_ = editor_preedit_update(&app.editor_views[other_index], "other composition", 0, len("other composition"))
+	cleared := editor_preedit_cancel_for_owner(&app, 101)
+	testing.expect(t, cleared && !app.editor_views[main_index].preedit_active,
+		"a native cancel should clear the preedit owned by its active editor field")
+	testing.expect(t, app.editor_views[other_index].preedit_active && string(app.editor_views[other_index].preedit_text) == "other composition",
+		"a native cancel must not erase composition in another retained document view")
+	testing.expect(t, !editor_preedit_cancel_for_owner(&app, 999),
+		"an unrelated native owner must not clear any editor composition")
+}
+
+@(test)
+test_rejected_ime_edit_chain_remains_recoverable_after_prune :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "ime-doc")
+	if !view_ok { testing.expect(t, false, "IME editor view should be retained"); return }
+	app.editor_views[view_index].document_instance_id = 44
+	first_id, _ := strings.clone("ime-doc", context.allocator)
+	second_id, _ := strings.clone("ime-doc", context.allocator)
+	first_bytes := []u8{'\xe3', '\x81', '\xab'}
+	second_bytes := []u8{'\xe3', '\x81', '\xbb', '\xe3', '\x82', '\x93'}
+	first_owned, _ := make([]u8, len(first_bytes), allocator=context.allocator)
+	second_owned, _ := make([]u8, len(second_bytes), allocator=context.allocator)
+	copy(first_owned, first_bytes)
+	copy(second_owned, second_bytes)
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=1, document_id=first_id, document_instance_id=44,
+		start_byte=5, end_byte=5, replacement=first_owned, recoverable_ime_commit=true,
+	})
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=2, document_id=second_id, document_instance_id=44,
+		start_byte=8, end_byte=8, replacement=second_owned, recoverable_ime_commit=true,
+	})
+	preserved := editor_recover_failed_edit_chain(&app, &app.editor_edits[0])
+	view := &app.editor_views[view_index]
+	testing.expect(t, preserved && len(app.editor_edits) == 0 && view.preedit_recoverable &&
+		string(view.preedit_text) == "にほん" && view.preedit_replace_start == 5 &&
+		view.preedit_document_instance_id == 44,
+		"a rejected serial IME chain should retain committed text once, with its original source instance and range")
+	editor_views_prune(&app)
+	testing.expect(t, len(app.editor_views) == 1 && app.editor_views[0].preedit_recoverable,
+		"pruning a closed document must not release its only recoverable committed text")
+}
+
+@(test)
+test_rejected_normal_head_preserves_queued_ime_commit_copy_only :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "ime-after-normal-reject")
+	if !view_ok { testing.expect(t, false, "IME editor view should be retained"); return }
+	app.editor_views[view_index].document_instance_id = 61
+	failed_id, _ := strings.clone("ime-after-normal-reject", context.allocator)
+	queued_id, _ := strings.clone("ime-after-normal-reject", context.allocator)
+	committed_text := "日本語"
+	committed_bytes, _ := make([]u8, len(committed_text), allocator=context.allocator)
+	mem.copy(rawptr(&committed_bytes[0]), rawptr(raw_data(committed_text)), len(committed_bytes))
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=1,
+		document_id=failed_id,
+		document_instance_id=61,
+		start_byte=12,
+		end_byte=13,
+		// This ordinary deletion is not itself an IME recovery payload.
+	})
+	append(&app.editor_edits, Editor_Edit_Intent{
+		sequence=2,
+		document_id=queued_id,
+		document_instance_id=61,
+		start_byte=12,
+		end_byte=12,
+		replacement=committed_bytes,
+		recoverable_ime_commit=true,
+	})
+	preserved := editor_recover_failed_edit_chain(&app, &app.editor_edits[0])
+	view := &app.editor_views[view_index]
+	testing.expect(t, preserved && len(app.editor_edits) == 0 && view.preedit_recoverable &&
+		view.preedit_recovery_copy_only && string(view.preedit_text) == committed_text &&
+		view.preedit_document_instance_id == 61,
+		"a committed IME edit queued behind a rejected normal edit should remain available as copy-only recovery text")
+}
+
+@(test)
+test_rejected_edit_chain_replays_caret_inserts_and_marks_unmappable_text_copy_only :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		delete(app.editor_edits)
+		editor_views_destroy(&app.editor_views)
+	}
+	view_index, view_ok := editor_view_ensure(&app.editor_views, "chain-doc")
+	if !view_ok { testing.expect(t, false, "recovery view should be retained"); return }
+	app.editor_views[view_index].document_instance_id = 18
+	texts := [3]string{"()", "x", "y"}
+	starts := [3]u64{20, 21, 90}
+	for index in 0..<len(texts) {
+		document_id, _ := strings.clone("chain-doc", context.allocator)
+		bytes, _ := make([]u8, len(texts[index]), allocator=context.allocator)
+		if len(bytes) > 0 { mem.copy(rawptr(&bytes[0]), rawptr(raw_data(texts[index])), len(bytes)) }
+		append(&app.editor_edits, Editor_Edit_Intent{
+			sequence=u64(index+1), document_id=document_id, document_instance_id=18,
+			start_byte=starts[index], end_byte=starts[index], replacement=bytes,
+			recoverable_ime_commit=true,
+		})
+	}
+	preserved := editor_recover_failed_edit_chain(&app, &app.editor_edits[0])
+	view := &app.editor_views[view_index]
+	testing.expect(t, preserved && string(view.preedit_text) == "(x)y" && view.preedit_recovery_copy_only,
+		"the failed replacement and an interior caret insertion should replay in order, then unmappable text should be retained as copy-only")
+	editor_preedit_clear(view)
+}
+
+@(test)
+test_copy_only_ime_recovery_accumulates_manual_payload :: proc(t: ^testing.T) {
+	view := Editor_View_State{document_instance_id=18}
+	defer editor_preedit_clear(&view)
+	retained := editor_preedit_make_recoverable(&view, "first", 20, 20, context.allocator, 18)
+	view.preedit_recovery_copy_only = true
+	text := []u8{'s', 'e', 'c', 'o', 'n', 'd'}
+	updated := editor_preedit_append_recovery(&view, string(text))
+	testing.expect(t, retained && updated && view.preedit_recoverable && view.preedit_recovery_copy_only &&
+		string(view.preedit_text) == "firstsecond",
+		"copy-only recovery should continue retaining committed text without offering it as an automatic source replacement")
+}
+
+@(test)
+test_discard_document_intents_keeps_a_borrowed_middle_id_alive :: proc(t: ^testing.T) {
+	app: App
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+	}
+	for sequence in 0..<3 {
+		document_id, _ := strings.clone("borrowed-id", context.allocator)
+		append(&app.editor_edits, Editor_Edit_Intent{
+			sequence=u64(sequence+1), document_id=document_id, document_instance_id=44,
+		})
+	}
+	borrowed_id := app.editor_edits[1].document_id
+	editor_discard_matching_document_intents(&app, borrowed_id, 44, match_instance=true)
+	testing.expect(t, len(app.editor_edits) == 0,
+		"discarding a queue through a middle intent's borrowed ID must not invalidate comparisons for earlier matching intents")
 }
 
 
@@ -998,58 +1219,34 @@ test_workspace_titlebar_switcher_keeps_focus_and_fits_safe_area :: proc(t: ^test
 	}
 	app.window_chrome_region_count = 0
 	scratchpad_test_sidebar_titlebar_frame(&app, &rt)
-	files_variant, files_selected, files_found := scratchpad_test_recipe_button(&rt, "Files")
-	search_variant, search_selected, search_found := scratchpad_test_recipe_button(&rt, "Search")
-	files_id, search_id, switcher_id, drag_id: alicorn.Node_ID
-	for node_id in rt.order {
-		node, found := rt.nodes[node_id]
-		if !found || !node.active { continue }
-		if node.kind == .Button && node.label == "Files" { files_id = node_id }
-		if node.kind == .Button && node.label == "Search" { search_id = node_id }
-		if node.label == "workspace-panel-tabs" { switcher_id = node_id }
-		if node.label == "scratchpad-titlebar-sidebar-drag-space" { drag_id = node_id }
-	}
-	band_id: alicorn.Node_ID
-	for node_id in rt.order {
-		if node, found := rt.nodes[node_id]; found && node.active && node.label == "scratchpad-titlebar-sidebar-band" { band_id = node_id; break }
-	}
-	files, files_node_found := rt.nodes[files_id]
-	search, search_node_found := rt.nodes[search_id]
-	switcher, switcher_found := rt.nodes[switcher_id]
+	symbols_id := connected_titlebar_test_key(&rt, "workspace-go-to-symbol")
+	search_id := connected_titlebar_test_key(&rt, "workspace-panel-search")
+	drag_id := connected_titlebar_test_node(&rt, "scratchpad-titlebar-sidebar-drag-space")
+	symbols, symbols_found := rt.nodes[symbols_id]
+	search, search_found := rt.nodes[search_id]
 	drag, drag_found := rt.nodes[drag_id]
-	band, band_found := rt.nodes[band_id]
-	interactive_files, interactive_search, draggable_tail := false, false, false
+	interactive_symbols, interactive_search, draggable_tail := false, false, false
 	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
-		if region.node == files_id && region.kind == .Interactive { interactive_files = true }
+		if region.node == symbols_id && region.kind == .Interactive { interactive_symbols = true }
 		if region.node == search_id && region.kind == .Interactive { interactive_search = true }
 		if region.node == drag_id && region.kind == .Window_Drag { draggable_tail = true }
 	}
 	expected_x := f32(8)
 	when ODIN_OS == .Darwin { expected_x = app.window_chrome_metrics.content_start_x }
-	testing.expect(t, files_found && search_found && files_variant == .Toolbar && search_variant == .Toolbar &&
-		files_selected && !search_selected && files_node_found && search_node_found && switcher_found && drag_found &&
-		abs(files.bounds.x-expected_x) < 1 && files.bounds.w > 0 && search.bounds.w > 0 &&
-		files.bounds.x+files.bounds.w <= search.bounds.x+1 && abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
-		abs(switcher.bounds.x-files.bounds.x) < 1 && abs(search.bounds.x+search.bounds.w-(switcher.bounds.x+switcher.bounds.w)) < 1 &&
-		band_found && abs(drag.bounds.x+drag.bounds.w-(band.bounds.x+band.bounds.w)) < 1 &&
-			drag.bounds.w == 8 && switcher.bounds.h == 32 && switcher.bounds.w > 0 && interactive_files && interactive_search && draggable_tail,
-		fmt.tprintf("narrow sidebar titlebar controls should fit beside native reservations with distinct hit regions: files=%v search=%v switcher=%v drag=%v expected_x=%.1f found=%v/%v/%v/%v interactive=%v/%v drag_region=%v",
-			files.bounds, search.bounds, switcher.bounds, drag.bounds, expected_x, files_node_found, search_node_found, switcher_found, drag_found, interactive_files, interactive_search, draggable_tail))
+	testing.expect(t, symbols_found && search_found && drag_found && symbols.button_variant == .Quiet && search.button_variant == .Quiet &&
+		symbols.bounds.x >= expected_x && symbols.bounds.w > 0 && search.bounds.w > 0 &&
+		symbols.bounds.x+symbols.bounds.w <= search.bounds.x+1 && abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
+		abs(drag.bounds.x+drag.bounds.w-app.workspace_sidebar_width) < 1 && interactive_symbols && interactive_search && draggable_tail,
+		fmt.tprintf("narrow sidebar tools should fit beside native reservations with distinct hit regions: symbols=%v search=%v drag=%v",
+			symbols.bounds, search.bounds, drag.bounds))
 	testing.expect(t, alicorn.focus(&rt, search_id), "Search should remain keyboard-focusable in the titlebar")
 	app.workspace_search_mode = true
 	app.window_chrome_region_count = 0
-	alicorn.invalidate_root(&rt, "toggle titlebar workspace switcher selection")
+	alicorn.invalidate_root(&rt, "open workspace search")
 	scratchpad_test_sidebar_titlebar_frame(&app, &rt)
-	search, search_node_found = rt.nodes[search_id]
-	testing.expect(t, search_node_found && search.selected && rt.focused == search_id,
-		"switching to Search should preserve titlebar focus while updating selected state")
-	app.workspace_search_mode = false
-	app.window_chrome_region_count = 0
-	alicorn.invalidate_root(&rt, "restore titlebar workspace switcher selection")
-	scratchpad_test_sidebar_titlebar_frame(&app, &rt)
-	search, search_node_found = rt.nodes[search_id]
-	testing.expect(t, search_node_found && !search.selected && rt.focused == search_id,
-		"switching back to Files should preserve titlebar focus while restoring selected state")
+	search, search_found = rt.nodes[search_id]
+	testing.expect(t, search_found && search.active && rt.focused == search_id,
+		"opening Workspace Search should preserve the titlebar action's retained focus")
 }
 
 @(test)
@@ -1101,8 +1298,6 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	if !fonts_loaded { return }
 
 	_ = build_app(rawptr(&app), &rt, 900, 600, 1)
-	files_variant, files_selected, files_found := scratchpad_test_recipe_button(&rt, "Files")
-	search_variant, search_selected, search_found := scratchpad_test_recipe_button(&rt, "Search")
 	tab_variant, tab_selected, tab_found := scratchpad_test_tab_button_for_label(&rt, "notes.md", document_tab_semantic_id("recipe-doc"))
 	tab_bar_found := false
 	tab_bar_fills_viewport := false
@@ -1118,7 +1313,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	find_variant, find_selected, find_found := scratchpad_test_recipe_button(&rt, "Aa")
 	primary_variant, _, primary_found := scratchpad_test_recipe_button(&rt, "Create")
 	sidebar_id, panel_tabs_id, workspace_root_id: alicorn.Node_ID
-	sidebar_titlebar_id, files_switch_id, search_switch_id: alicorn.Node_ID
+	sidebar_titlebar_id: alicorn.Node_ID
 	workspace_title_label_found := false
 	status_bar_id, status_responsive_id: alicorn.Node_ID
 	wrap_semantic_id, goto_semantic_id: alicorn.Semantic_ID
@@ -1129,8 +1324,6 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		if node.label == "workspace-panel-tabs" { panel_tabs_id = node_id }
 		if node.label == "workspace-root-row" { workspace_root_id = node_id }
 		if node.label == "scratchpad-titlebar-sidebar-band" { sidebar_titlebar_id = node_id }
-		if node.kind == .Button && node.label == "Files" { files_switch_id = node_id }
-		if node.kind == .Button && node.label == "Search" { search_switch_id = node_id }
 		if node.kind == .Text && node.text == "Workspace" { workspace_title_label_found = true }
 		if node.label == "document-status-bar" { status_bar_id = node_id }
 		if node.label == "document-status-responsive" { status_responsive_id = node_id }
@@ -1138,10 +1331,8 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		if node.kind == .Button && node.label == "Go to Line…" && alicorn.node_is_presentation_active(&rt, node_id) { goto_semantic_id = node.semantic_id }
 	}
 
-	testing.expect(t, files_found && files_variant == .Toolbar && files_selected,
-		"the active Files workspace switch should use the quiet Toolbar recipe and selected state")
-	testing.expect(t, search_found && search_variant == .Toolbar && !search_selected,
-		"the Search workspace switch should use the quiet Toolbar recipe and remain unselected")
+	testing.expect(t, connected_titlebar_test_key(&rt, "workspace-panel-files") == 0,
+		"the file tree should need no persistent Explorer button")
 	testing.expect(t, tab_found && tab_variant == .Tab && tab_selected,
 		"the active document should be represented by a selected semantic Tab control")
 	testing.expect(t, tab_bar_found && tab_bar_fills_viewport,
@@ -1153,7 +1344,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	testing.expect(t, primary_found && primary_variant == .Primary,
 		"the workspace mutation confirmation should retain Primary recipe intent")
 	testing.expect(t, sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0,
-		"the compact workspace sidebar should retain its view switches and root row")
+		"the compact workspace sidebar should retain its tools and root row")
 	if sidebar_id != 0 && panel_tabs_id != 0 && workspace_root_id != 0 {
 		sidebar_style := rt.nodes[sidebar_id].style
 		tabs_style := rt.nodes[panel_tabs_id].style
@@ -1171,40 +1362,16 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	when ODIN_OS == .Darwin || ODIN_OS == .Windows {
 		titlebar, titlebar_found := rt.nodes[sidebar_titlebar_id]
 		tabs, tabs_found := rt.nodes[panel_tabs_id]
-		files, files_node_found := rt.nodes[files_switch_id]
-		search, search_node_found := rt.nodes[search_switch_id]
-		drag_id: alicorn.Node_ID
-		for node_id in rt.order {
-			node, found := rt.nodes[node_id]
-			if found && node.active && node.label == "scratchpad-titlebar-sidebar-drag-space" { drag_id = node_id; break }
-		}
-		drag, drag_found := rt.nodes[drag_id]
-		chrome := scratchpad_content_titlebar_layout(rawptr(&app), &rt)
-		files_interactive, search_interactive, trailing_drag := false, false, false
-		for region in chrome.regions {
-			if region.node == files_switch_id && region.kind == .Interactive { files_interactive = true }
-			if region.node == search_switch_id && region.kind == .Interactive { search_interactive = true }
-			if region.node == drag_id && region.kind == .Window_Drag { trailing_drag = true }
-		}
-		expected_switcher_x := f32(8)
-		when ODIN_OS == .Darwin {
-			expected_switcher_x = max(app.window_chrome_metrics.content_start_x, f32(8))
-		}
 		pane, pane_found := rt.nodes[titlebar.parent]
 		testing.expect(t, titlebar_found && tabs_found && tabs.parent == sidebar_titlebar_id &&
-			files_node_found && search_node_found && files.parent == panel_tabs_id && search.parent == panel_tabs_id &&
-			abs(files.bounds.x-expected_switcher_x) < 1 &&
-			files.bounds.w > 0 && search.bounds.w > 0 && files.bounds.x+files.bounds.w <= search.bounds.x+1 &&
-			drag_found && search.bounds.x+search.bounds.w <= drag.bounds.x+1 && drag.bounds.w == 8 &&
 			titlebar.bounds.h == SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT &&
-			pane_found && abs(titlebar.bounds.w-pane.bounds.w) < 1 && abs(tabs.bounds.w-(titlebar.bounds.w-(expected_switcher_x-titlebar.bounds.x)-drag.bounds.w)) < 1 &&
-			files_interactive && search_interactive && trailing_drag && !workspace_title_label_found,
-			"Files/Search should sit in the sidebar titlebar after the macOS safe area, with separate interactive and draggable regions and no redundant Workspace label")
+			pane_found && abs(titlebar.bounds.w-pane.bounds.w) < 1 && !workspace_title_label_found,
+			"the sidebar titlebar should fill its pane and contain the workspace tools")
 	} else {
 		tabs, tabs_found := rt.nodes[panel_tabs_id]
 		sidebar, sidebar_found := rt.nodes[sidebar_id]
 		testing.expect(t, tabs_found && sidebar_found && tabs.parent == sidebar_id,
-			"Linux should keep the Files/Search switcher in the sidebar body")
+			"Linux should keep the workspace tools in the sidebar body")
 	}
 	status_bar, status_bar_found := rt.nodes[status_bar_id]
 	wrap_semantic, wrap_semantic_found := alicorn.semantic_node_lookup(&rt, wrap_semantic_id)

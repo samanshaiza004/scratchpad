@@ -39,7 +39,7 @@ editor_fold_plan_clone :: proc(source: Editor_Fold_Plan, allocator: mem.Allocato
 	if len(source.folds) > 4096 { return {}, false }
 	copy = source
 	copy.document_id, copy.reason, copy.folds = "", "", nil
-	var err: mem.Allocator_Error
+	err: mem.Allocator_Error
 	copy.document_id, err = strings.clone(source.document_id, allocator)
 	if err != nil { return {}, false }
 	copy.reason, err = strings.clone(source.reason, allocator)

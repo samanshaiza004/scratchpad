@@ -121,6 +121,85 @@ scratchpad_modal_backdrop_color :: proc(rt: ^alicorn.Runtime, theme: alicorn.Sty
 	return alicorn.Color{0.015, 0.02, 0.03, 0.72}
 }
 
+SCRATCHPAD_MODAL_BLUR_SIGMA :: 6.0
+SCRATCHPAD_MODAL_PANEL_OPACITY :: 0.70
+SCRATCHPAD_MODAL_SCRIM_OPACITY :: 0.50
+
+scratchpad_modal_accessibility_preferences :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+) -> alicorn.Accessibility_Appearance_Preferences {
+	if app != nil && app.accessibility_appearance_override_enabled {
+		return app.accessibility_appearance
+	}
+	if rt != nil {
+		return alicorn.style_root_accessibility_observation_get(rt).preferences
+	}
+	if app != nil { return app.accessibility_appearance }
+	return {}
+}
+
+scratchpad_modal_requires_opaque_surfaces :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	accessibility := scratchpad_modal_accessibility_preferences(app, rt)
+	return accessibility.increased_contrast || accessibility.reduce_transparency
+}
+
+scratchpad_modal_backdrop_effect :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	enabled := true,
+) -> alicorn.Backdrop_Effect {
+	if !enabled || app == nil || rt == nil || scratchpad_modal_requires_opaque_surfaces(app, rt) {
+		return alicorn.BACKDROP_NONE
+	}
+	return alicorn.backdrop_blur(SCRATCHPAD_MODAL_BLUR_SIGMA, .Direct)
+}
+
+scratchpad_modal_overlay_color :: proc(app: ^App, rt: ^alicorn.Runtime) -> alicorn.Color {
+	if app == nil || rt == nil { return alicorn.Color{0.015, 0.02, 0.03, 0.72} }
+	color := scratchpad_modal_backdrop_color(rt, app.workbench_theme)
+	if scratchpad_modal_requires_opaque_surfaces(app, rt) {
+		color.a = 1
+	} else {
+		color.a = SCRATCHPAD_MODAL_SCRIM_OPACITY
+	}
+	return color
+}
+
+scratchpad_modal_panel_fill :: proc(app: ^App, rt: ^alicorn.Runtime, translucent := true) -> alicorn.Color {
+	if app == nil || rt == nil { return alicorn.NO_BACKGROUND_COLOR }
+	environment := scratchpad_workbench_style_environment(app)
+	fill := alicorn.style_environment_color(rt, environment, .Surface)
+	if translucent && !scratchpad_modal_requires_opaque_surfaces(app, rt) {
+		fill.a = SCRATCHPAD_MODAL_PANEL_OPACITY
+	} else {
+		fill.a = 1
+	}
+	return fill
+}
+
+scratchpad_modal_surface_begin :: proc(
+	ui: ^alicorn.UI,
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	key: alicorn.UI_Key,
+	label: string,
+	style: alicorn.Layout_Style,
+) -> alicorn.Node_ID {
+	return alicorn.surface_begin(
+		ui,
+		alicorn.surface_core_color_role(.Surface),
+		key=key,
+		label=label,
+	style=style,
+		shape=scratchpad_surface_shape(app, 6),
+		material=scratchpad_surface_material(app, app.floating_surface_material),
+		physical_height=scratchpad_surface_height(app, 1),
+		fill=scratchpad_modal_panel_fill(app, rt),
+		backdrop_effect=scratchpad_modal_backdrop_effect(app, rt),
+	)
+}
+
 scratchpad_workbench_style_environment :: proc(app: ^App) -> alicorn.Style_Environment {
 	if app == nil { return alicorn.Style_Environment{} }
 	environment := alicorn.Style_Environment{theme=app.workbench_theme}

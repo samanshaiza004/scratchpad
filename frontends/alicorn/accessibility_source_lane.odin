@@ -11,6 +11,7 @@ ACCESSIBILITY_SOURCE_PAGE_BYTES :: u64(bridge.MAX_VISIBLE_BYTES)
 
 Accessibility_Source_Request :: struct {
 	document_id: string,
+	document_instance_id: u64,
 	editor_revision: u64,
 	byte_length: u64,
 	line_count: u64,
@@ -48,6 +49,7 @@ Accessibility_Source_Lane :: struct {
 
 accessibility_source_request_equal :: proc(a, b: Accessibility_Source_Request) -> bool {
 	return a.document_id == b.document_id &&
+		a.document_instance_id == b.document_instance_id &&
 		a.editor_revision == b.editor_revision &&
 		a.byte_length == b.byte_length &&
 		a.line_count == b.line_count
@@ -90,7 +92,8 @@ accessibility_source_lane_worker :: proc(t: ^thread.Thread) {
 				request.document_id,
 				string(source),
 				request.editor_revision,
-				lane.allocator,
+				allocator=lane.allocator,
+				document_instance_id=request.document_instance_id,
 			)
 			delete(source, lane.allocator)
 			source = nil
@@ -170,14 +173,16 @@ accessibility_source_lane_start :: proc(
 accessibility_source_lane_request :: proc(
 	lane: ^Accessibility_Source_Lane,
 	document_id: string,
-	editor_revision, byte_length, line_count: u64,
+	document_instance_id, editor_revision, byte_length, line_count: u64,
 ) -> (generation: u64, accepted: bool) {
-	if lane == nil || lane.thread == nil || len(document_id) == 0 || (line_count == 0 && byte_length != 0) { return 0, false }
+	if lane == nil || lane.thread == nil || len(document_id) == 0 || document_instance_id == 0 ||
+	   (line_count == 0 && byte_length != 0) { return 0, false }
 	sync.mutex_lock(&lane.mutex)
 	defer sync.mutex_unlock(&lane.mutex)
 	if sync.atomic_load(&lane.stopping) != 0 { return 0, false }
 	request := Accessibility_Source_Request{
 		document_id=document_id,
+		document_instance_id=document_instance_id,
 		editor_revision=editor_revision,
 		byte_length=byte_length,
 		line_count=line_count,
@@ -308,6 +313,7 @@ accessibility_source_read :: proc(
 			max_lines=max_lines,
 			max_bytes=ACCESSIBILITY_SOURCE_PAGE_BYTES,
 			editor_revision=request.editor_revision,
+			source_instance=request.document_instance_id,
 			allow_unversioned_read=true,
 			read_latest_after=false,
 			allocator=lane.allocator,

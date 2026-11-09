@@ -2,8 +2,8 @@
   "schema": 1,
   "alicorn": {
     "repository": "https://github.com/samanshaiza004/alicorn.git",
-    "ref": "codex/issue-111-retained-effects",
-    "revision": "4375e64642570d93c180244fb6c6f665bf8e679f"
+    "ref": "master",
+    "revision": "ae43c830d2e0f86de28ac27ef2d7968302570654"
   },
   "caliber": {
     "repository": "https://github.com/samanshaiza004/caliber.git",

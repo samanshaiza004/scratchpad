@@ -126,7 +126,7 @@ func (r *Runtime) applyPinnedCommand(request CommandRequest) Response {
 
 func editAckFromPinnedResult(documentID string, result application.PinnedEditResult) *EditAck {
 	edit := result.Applied.SourceEdit
-	ack := &EditAck{DocumentID: documentID, EditorRevision: edit.AfterRevision,
+	ack := &EditAck{DocumentID: documentID, SourceInstance: result.UpdatedPin.InstanceID, EditorRevision: edit.AfterRevision,
 		StartByte: uint64(edit.StartByte), OldEndByte: uint64(edit.OldEndByte), NewEndByte: uint64(edit.NewEndByte)}
 	if len(result.Applied.Replacement) > 0 {
 		ack.AppliedReplacement = make([]int, len(result.Applied.Replacement))

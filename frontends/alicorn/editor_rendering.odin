@@ -856,6 +856,71 @@ editor_measure_line_height :: proc(
 	return
 }
 
+editor_wrap_fingerprint_mix :: proc(hash, value: u64) -> u64 {
+	return (hash ~ value)*1099511628211
+}
+
+editor_wrap_fingerprint_bool :: proc(hash: u64, value: bool) -> u64 {
+	return editor_wrap_fingerprint_mix(hash, 1 if value else 0)
+}
+
+editor_wrap_fingerprint_f32 :: proc(hash: u64, value: f32) -> u64 {
+	return editor_wrap_fingerprint_mix(hash, u64(transmute(u32)value))
+}
+
+editor_wrap_fingerprint_bytes :: proc(hash: u64, value: string) -> u64 {
+	result := hash
+	for index := 0; index < len(value); index += 1 {
+		result = editor_wrap_fingerprint_mix(result, u64(value[index]))
+	}
+	return result
+}
+
+editor_wrap_line_measurement_fingerprint :: proc(
+	window: ^Editor_Window,
+	line: ^Editor_Display_Line,
+	width: f32,
+	wrap: bool,
+	presentation_current: bool,
+	text_scale: f32,
+) -> u64 {
+	if window == nil || line == nil { return 0 }
+	hash := u64(14695981039346656037)
+	hash = editor_wrap_fingerprint_mix(hash, u64(len(line.display)))
+	hash = editor_wrap_fingerprint_bytes(hash, line.display)
+	hash = editor_wrap_fingerprint_bool(hash, wrap)
+	hash = editor_wrap_fingerprint_bool(hash, presentation_current)
+	hash = editor_wrap_fingerprint_f32(hash, width)
+	hash = editor_wrap_fingerprint_f32(hash, text_scale)
+	style_spans := editor_presentation_text_styles_for_line(window, line, context.temp_allocator) if presentation_current else nil
+	hash = editor_wrap_fingerprint_mix(hash, u64(len(style_spans)))
+	for span in style_spans {
+		hash = editor_wrap_fingerprint_mix(hash, u64(max(span.start, 0)))
+		hash = editor_wrap_fingerprint_mix(hash, u64(max(span.end, 0)))
+		hash = editor_wrap_fingerprint_f32(hash, span.font_weight)
+		hash = editor_wrap_fingerprint_bool(hash, span.font_weight_set)
+		hash = editor_wrap_fingerprint_bool(hash, span.italic)
+		hash = editor_wrap_fingerprint_bool(hash, span.italic_set)
+	}
+	row := editor_markdown_row_presentation(window, line, presentation_current)
+	hash = editor_wrap_fingerprint_f32(hash, editor_markdown_row_extra_height(row))
+	if editor_table_line_is_projected(window, line) {
+		// Table row heights depend on a shared column-width plan. Include that
+		// plan so a cell edit invalidates every affected row, while unrelated
+		// Markdown edits leave the rest of the table measurements reusable.
+		layout := editor_table_row_layout(window, line, width, text_scale=text_scale)
+		hash = editor_wrap_fingerprint_bool(hash, layout.ok)
+		hash = editor_wrap_fingerprint_bool(hash, layout.wraps)
+		hash = editor_wrap_fingerprint_bool(hash, layout.delimiter)
+		hash = editor_wrap_fingerprint_bool(hash, window.table_plan_cache_wraps)
+		hash = editor_wrap_fingerprint_mix(hash, u64(window.table_plan_cache_width_count))
+		for column in 0..<window.table_plan_cache_width_count {
+			hash = editor_wrap_fingerprint_f32(hash, window.table_plan_cache_widths[column])
+		}
+	}
+	return hash
+}
+
 editor_measure_window_wrapping :: proc(
 	rt: ^alicorn.Runtime,
 	view: ^Editor_View_State,
@@ -869,9 +934,14 @@ editor_measure_window_wrapping :: proc(
 	changed := false
 	for &line in window.lines {
 		wrap := editor_line_should_wrap_for_view(language, window, &line, presentation_current, width, view.wrap_mode, text_scale)
+		fingerprint := editor_wrap_line_measurement_fingerprint(
+			window, &line, width, wrap, presentation_current, text_scale,
+		)
+		if editor_wrap_line_cache_matches(view, line.logical_line, fingerprint) { continue }
 		height, _, _, ok := editor_measure_line_height(rt, window, &line, width, wrap, presentation_current, text_scale)
 		if !ok { continue }
 		changed = alicorn.virtual_list_height_index_set_height(&view.wrap_height_index, int(line.logical_line), height) || changed
+		editor_wrap_line_cache_store(view, line.logical_line, fingerprint)
 	}
 	return changed
 }

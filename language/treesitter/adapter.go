@@ -95,17 +95,3 @@ func highlightKind(capture string) document.HighlightKind {
 		return document.HighlightKind(capture)
 	}
 }
-
-func sourceInputEdit(edit editor.SourceEdit) inputEdit {
-	return inputEdit{
-		startByte: edit.StartByte, oldEndByte: edit.OldEndByte, newEndByte: edit.NewEndByte,
-		startPoint: edit.StartPoint, oldEndPoint: edit.OldEndPoint, newEndPoint: edit.NewEndPoint,
-	}
-}
-
-// inputEdit lets each runtime adapter convert the same editor-owned edit
-// journal without exposing either runtime's point type to Scratchpad.
-type inputEdit struct {
-	startByte, oldEndByte, newEndByte    int
-	startPoint, oldEndPoint, newEndPoint editor.BytePoint
-}

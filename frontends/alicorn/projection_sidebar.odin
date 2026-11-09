@@ -123,6 +123,12 @@ projection_sidebar_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, requested_fi
 
 projection_sidebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
+	if gui.button(ui, "Back to Files", key="projection-back-to-files", width=104, height=26,
+		text_style=alicorn.Text_Style{font_size=13, overflow=.Ellipsis},
+		content_style=alicorn.button_content_style(.Start, padding_x=4, padding_y=0), variant=.Quiet) {
+		app.workspace_projection_mode = false
+		alicorn.invalidate_root(rt, "Scratchpad returned to the file tree")
+	}
 	active, has_active := find_document(&app.backend.state, app.backend.state.active)
 	active_text := has_active && (active.view_kind == "" || active.view_kind == "text")
 	if !active_text || floating_window_contains(app, active.id) {

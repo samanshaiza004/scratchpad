@@ -34,6 +34,8 @@ Floating_Window_State :: struct {
 	editor_focus_pending: bool,
 	style_theme_runtime: ^alicorn.Runtime,
 	workbench_theme, editor_theme: alicorn.Style_Theme_ID,
+	live_theme_applied_theme_id: alicorn.Style_Theme_ID,
+	live_theme_applied_signature: u64,
 	warm_workbench_theme, warm_editor_theme: alicorn.Style_Theme_ID,
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
@@ -49,6 +51,7 @@ Floating_Window_State :: struct {
 	accessibility_projection: Editor_Accessibility_Projection,
 	accessibility_source_error: string,
 	accessibility_source_error_document_id: string,
+	accessibility_source_error_instance_id: u64,
 	accessibility_source_error_revision: u64,
 	accessibility_semantic_area_id: alicorn.Semantic_ID,
 	accessibility_semantic_revision: u64,
@@ -63,6 +66,7 @@ Floating_Window_Scope :: struct {
 	accessibility_projection: Editor_Accessibility_Projection,
 	accessibility_source_error: string,
 	accessibility_source_error_document_id: string,
+	accessibility_source_error_instance_id: u64,
 	accessibility_source_error_revision: u64,
 	accessibility_semantic_area_id: alicorn.Semantic_ID,
 	accessibility_semantic_revision: u64,
@@ -159,6 +163,7 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 		accessibility_projection=app.accessibility_projection,
 		accessibility_source_error=app.accessibility_source_error,
 		accessibility_source_error_document_id=app.accessibility_source_error_document_id,
+		accessibility_source_error_instance_id=app.accessibility_source_error_instance_id,
 		accessibility_source_error_revision=app.accessibility_source_error_revision,
 		accessibility_semantic_area_id=app.accessibility_semantic_area_id,
 		accessibility_semantic_revision=app.accessibility_semantic_revision,
@@ -205,6 +210,7 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 	state.accessibility_projection = {}
 	app.accessibility_source_error = state.accessibility_source_error
 	app.accessibility_source_error_document_id = state.accessibility_source_error_document_id
+	app.accessibility_source_error_instance_id = state.accessibility_source_error_instance_id
 	app.accessibility_source_error_revision = state.accessibility_source_error_revision
 	app.accessibility_semantic_area_id = state.accessibility_semantic_area_id
 	app.accessibility_semantic_revision = state.accessibility_semantic_revision
@@ -282,6 +288,7 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	state.accessibility_projection = app.accessibility_projection
 	state.accessibility_source_error = app.accessibility_source_error
 	state.accessibility_source_error_document_id = app.accessibility_source_error_document_id
+	state.accessibility_source_error_instance_id = app.accessibility_source_error_instance_id
 	state.accessibility_source_error_revision = app.accessibility_source_error_revision
 	state.accessibility_semantic_area_id = app.accessibility_semantic_area_id
 	state.accessibility_semantic_revision = app.accessibility_semantic_revision
@@ -305,6 +312,7 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	app.accessibility_projection = scope.accessibility_projection
 	app.accessibility_source_error = scope.accessibility_source_error
 	app.accessibility_source_error_document_id = scope.accessibility_source_error_document_id
+	app.accessibility_source_error_instance_id = scope.accessibility_source_error_instance_id
 	app.accessibility_source_error_revision = scope.accessibility_source_error_revision
 	app.accessibility_semantic_area_id = scope.accessibility_semantic_area_id
 	app.accessibility_semantic_revision = scope.accessibility_semantic_revision
@@ -441,6 +449,16 @@ floating_window_initialize :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	_ = alicorn.font_load_bytes(rt, .UI, SCRATCHPAD_UI_FONT_DATA)
 	_ = alicorn.font_load_italic_bytes(rt, .UI, SCRATCHPAD_UI_ITALIC_FONT_DATA)
 	_ = scratchpad_editor_font_install(rt, scratchpad_editor_font_regular_bytes(window.owner), scratchpad_editor_font_italic_bytes(window.owner))
+	if window.owner != nil && window.owner.live_theme.path != "" {
+		floating_app, floating_scope := floating_editor_scope_enter(window, rt)
+		if floating_app != nil {
+			_ = scratchpad_live_theme_apply(
+				floating_app, rt, &window.live_theme_applied_theme_id,
+				&window.live_theme_applied_signature, "secondary",
+			)
+			floating_editor_scope_leave(window, floating_app, &floating_scope)
+		}
+	}
 }
 
 floating_window_services :: proc(state: rawptr, services: host.Application_Services) {
