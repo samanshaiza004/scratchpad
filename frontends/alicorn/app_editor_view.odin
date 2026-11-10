@@ -168,7 +168,7 @@ editor_wrap_viewport_size :: proc(
 	return max(width, 240), max(height, EDITOR_ROW_HEIGHT*text_scale)
 }
 
-build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document, show_heading := true) {
+build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
 	view_index := editor_view_find(app.editor_views[:], document.id)
 	view_created := view_index < 0
 	view_ok := true
@@ -250,13 +250,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			display_line_count += u64(view.optimistic_line_delta)
 		}
 	}
-	if show_heading {
-		if gui.row(ui, label="document-view-heading", height=30, gap=12, align=.Center) {
-			heading := fmt.tprintf("%s  ·  %s  ·  %d lines", document_title(document.path), document.language, display_line_count)
-			gui.text(ui, heading)
-			if app.editor_window_error != "" { gui.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
-		}
-	} else if app.editor_window_error != "" { gui.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
+	if app.editor_window_error != "" { gui.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
 	if document.status == "conflict" {
 		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string("document-conflict-actions"), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=alicorn.style_color(ui, .Subtle_Surface))
 		gui.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
