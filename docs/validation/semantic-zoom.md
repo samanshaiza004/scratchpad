@@ -11,8 +11,11 @@ acceptance was later confirmed on macOS and Windows and recorded in
 [v0.2.0 issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
 The Pending entries in the matrix below describe the original 2026-10-24
 validation run; they are not the current physical-acceptance status. The
-measured pathological sentence-scan cost below remains an open release
-follow-up.
+historical pathological sentence-scan measurement below motivated a follow-up
+that now builds large plans outside the serialized command path. Native
+responsiveness and cancellation acceptance for the worker are still pending;
+the historical duration is a construction-cost reference, not a current
+foreground or worker-latency measurement.
 
 ## Automated checks
 
@@ -93,9 +96,28 @@ allocation when the caller reuses storage.
 The 100,000- and 1,000,000-line fixtures expose initial linear work; only visible
 rendering is virtualized. Dense fixtures with 50,000 structures return an explicit
 unsupported plan with zero folds rather than a truncated 4,096-fold result.
-The 206 ms sentence scan remains a measured follow-up for large-input scheduling
-or a documented semantic-query budget before broad release. No extra scheduler
-or hidden polling was added for this experiment.
+
+## Asynchronous large-plan follow-up
+
+Large semantic-plan requests now capture a piece-backed immutable source
+snapshot and current derived projection metadata on the backend command path,
+then build on one bounded worker lane. Cancellation is checked while scanning
+source chunks, paragraphs, sentences, and projected structures. New requests
+replace queued work and cancel active work; source edits, document closure, and
+backend shutdown also cancel it. Results carry a request generation and are
+published only when document ID, instance, and revision still match. Full
+source remains visible while a plan is pending, and the frontend retries
+against the latest revision after in-progress editing or IME composition
+settles.
+
+Bridge tests exercise a deliberately blocked worker, prove that an
+authoritative edit can proceed while it is blocked, verify cooperative
+cancellation, and confirm that the next revision receives a newer generation.
+Application tests verify snapshot isolation and cancellation during a long
+sentence scan. Native responsiveness, IME interaction, worker completion
+latency, and memory high-water still require a current desktop run; the
+206.44 ms number above predates this worker and is not evidence of current
+foreground latency.
 
 ## Physical desktop matrix — original run status
 

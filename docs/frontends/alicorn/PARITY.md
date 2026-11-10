@@ -20,7 +20,7 @@ The Go application owns document bytes, editing commands, workspace semantics, p
 
 - v0.2.0 is not published. Release acceptance is tracked in [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
 - The complete semantic-zoom keyboard, mouse, and trackpad acceptance has been confirmed on macOS and Windows; the original October validation matrix predates that follow-up.
-- Semantic-plan construction has a measured pathological case of about 206 ms for a million-line prose fixture. The open release follow-up calls for a performance decision; see the [semantic-zoom validation report](../../validation/semantic-zoom.md).
+- Large semantic-plan construction runs on a cancellable, generation-scoped worker while Full source remains interactive. The historical million-line prose fixture measured about 206 ms before this change; current native responsiveness, cancellation, and memory behavior still need validation. See the [semantic-zoom validation report](../../validation/semantic-zoom.md).
 - Image tabs are read-only PNG/QOI previews; they are not general image editors.
 - Live color-theme replacement is an opt-in development dogfood path. It does not enable arbitrary theme-structure or layout replacement.
 - The language-aware code presentations are limited to the registered providers in the source tree; unsupported files remain editable as ordinary text.

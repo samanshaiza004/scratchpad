@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -58,6 +59,11 @@ func TestSemanticZoomExactWireSchemaAndDetachedConversion(t *testing.T) {
 	if plan.Folds[0].StartByte != 9 {
 		t.Fatal("wire conversion aliases application plan")
 	}
+	plan.Generation = 42
+	wire = semanticZoomFromApplication(plan)
+	if wire.Generation != 42 {
+		t.Fatalf("worker generation was lost in protocol conversion: %+v", wire)
+	}
 	plan.Folds = nil
 	plan.Supported, plan.Reason = false, "fold_limit_exceeded"
 	response := Response{Version: ProtocolVersion, OK: true, SemanticZoom: semanticZoomFromApplication(plan)}
@@ -76,6 +82,167 @@ func semanticZoomBridgeRead(t *testing.T, runtime *Runtime, id string, revision 
 	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 81,
 		Command: "read_semantic_zoom", DocumentID: id, EditorRevision: revision, ZoomDepth: depth, AnchorByte: anchor}))
 	return decodeResponse(t, runtime.Pump())
+}
+
+func semanticZoomBridgeReadGeneration(t *testing.T, runtime *Runtime, id string, revision uint64, depth int, anchor uint64, generation uint64) Response {
+	t.Helper()
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 82,
+		Command: "read_semantic_zoom", DocumentID: id, EditorRevision: revision, ZoomDepth: depth,
+		AnchorByte: anchor, SemanticZoomGeneration: generation}))
+	return decodeResponse(t, runtime.Pump())
+}
+
+func TestSemanticZoomGenerationRequestValidation(t *testing.T) {
+	input := `{"version":1,"request_id":80,"command":"cancel_semantic_zoom","semantic_zoom_generation":1}`
+	request, response, ok := decodeCommandRequest([]byte(input), lifecycleRunning)
+	if !ok || request.SemanticZoomGeneration != 1 {
+		t.Fatalf("valid cancel request rejected: %+v", response)
+	}
+	input = `{"version":1,"request_id":80,"command":"cancel_semantic_zoom"}`
+	_, response, ok = decodeCommandRequest([]byte(input), lifecycleRunning)
+	if ok || response.OK || response.Outcome.Code != "invalid_semantic_zoom_generation" {
+		t.Fatalf("cancel without a generation was accepted: %+v", response)
+	}
+}
+
+func TestLargeSemanticZoomBuildPublishesGenerationScopedPlan(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "large.txt")
+	writeFile(t, path, strings.Repeat("x", 128*1024))
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 80, Command: "open_path", Path: path}))
+	if response := decodeResponse(t, runtime.Pump()); !response.OK {
+		t.Fatalf("open: %+v", response)
+	}
+	state := latestStateForTest(t, runtime)
+	id, revision := state.Documents[0].ID, state.Documents[0].EditorRevision
+	pending := semanticZoomBridgeRead(t, runtime, id, revision, application.SemanticZoomSkim, 0)
+	if !pending.OK || pending.SemanticZoom == nil || pending.SemanticZoom.Ready || pending.SemanticZoom.Reason != "pending" || pending.SemanticZoom.Generation == 0 {
+		t.Fatalf("large plan was not returned as a pending generation: %+v", pending)
+	}
+	generation := pending.SemanticZoom.Generation
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.mu.Lock()
+		ready := runtime.semanticZoom != nil && runtime.semanticZoom.generation == generation && runtime.semanticZoom.done
+		runtime.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	state = latestStateForTest(t, runtime)
+	if state.SemanticZoomGeneration != generation || !state.SemanticZoomReady {
+		t.Fatalf("completion did not publish its matching generation: %+v", state)
+	}
+	completed := semanticZoomBridgeReadGeneration(t, runtime, id, revision, application.SemanticZoomSkim, 0, generation)
+	if !completed.OK || completed.SemanticZoom == nil || !completed.SemanticZoom.Ready || completed.SemanticZoom.Generation != generation {
+		t.Fatalf("could not retrieve completed generation: %+v", completed)
+	}
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 83,
+		Command: "cancel_semantic_zoom", SemanticZoomGeneration: generation}))
+	if response := decodeResponse(t, runtime.Pump()); !response.OK {
+		t.Fatalf("cancel completed generation: %+v", response)
+	}
+	stale := semanticZoomBridgeReadGeneration(t, runtime, id, revision, application.SemanticZoomSkim, 0, generation)
+	if stale.OK || stale.Outcome.Code != "stale_semantic_zoom_request" {
+		t.Fatalf("canceled generation remained retrievable: %+v", stale)
+	}
+}
+
+func TestSemanticZoomEditCancelsBlockedWorkerAndRejectsOldGeneration(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "large.txt")
+	source := strings.Repeat("x", 128*1024)
+	writeFile(t, path, source)
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	workerStarted := make(chan struct{}, 1)
+	workerCanceled := make(chan struct{}, 1)
+	runtime.mu.Lock()
+	runtime.semanticZoomBuilder = func(ctx context.Context, _ application.SemanticZoomSnapshot) (application.SemanticZoomPlan, error) {
+		workerStarted <- struct{}{}
+		<-ctx.Done()
+		workerCanceled <- struct{}{}
+		return application.SemanticZoomPlan{}, application.ErrSemanticZoomCanceled
+	}
+	runtime.mu.Unlock()
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 80,
+		BasedOnRevision: state.ApplicationRev, Command: "open_path", Path: path}))
+	if response := decodeResponse(t, runtime.Pump()); !response.OK {
+		t.Fatalf("open: %+v", response)
+	}
+	state = latestStateForTest(t, runtime)
+	document := state.Documents[0]
+	pending := semanticZoomBridgeRead(t, runtime, document.ID, document.EditorRevision, application.SemanticZoomSkim, 0)
+	if !pending.OK || pending.SemanticZoom == nil || pending.SemanticZoom.Ready || pending.SemanticZoom.Generation == 0 {
+		t.Fatalf("large plan was not pending: %+v", pending)
+	}
+	generation := pending.SemanticZoom.Generation
+	select {
+	case <-workerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("semantic zoom worker did not start")
+	}
+
+	// The test builder blocks until cancellation. The runtime lock must remain
+	// available while it does, so an authoritative edit can proceed.
+	if !runtime.mu.TryLock() {
+		t.Fatal("semantic plan construction held the application runtime lock")
+	}
+	runtime.mu.Unlock()
+
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 81,
+		BasedOnRevision: state.ApplicationRev, Command: "replace_document", DocumentID: document.ID,
+		EditorRevision: document.EditorRevision, StartByte: uint64(len(source)), EndByte: uint64(len(source)),
+		Replacement: []int{'!'}}))
+	edited := decodeResponse(t, runtime.Pump())
+	if !edited.OK || edited.Edit == nil || edited.Edit.EditorRevision == document.EditorRevision {
+		t.Fatalf("edit did not proceed while semantic work was pending: %+v", edited)
+	}
+	select {
+	case <-workerCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("source revision change did not cooperatively cancel semantic work")
+	}
+
+	stale := semanticZoomBridgeReadGeneration(t, runtime, document.ID, document.EditorRevision,
+		application.SemanticZoomSkim, 0, generation)
+	if stale.OK || stale.Outcome.Code != "stale_semantic_zoom_request" {
+		t.Fatalf("superseded plan remained available after an edit: %+v", stale)
+	}
+
+	state = latestStateForTest(t, runtime)
+	current := state.Documents[0]
+	if current.EditorRevision <= document.EditorRevision {
+		t.Fatalf("authoritative revision did not advance: before=%d after=%d", document.EditorRevision, current.EditorRevision)
+	}
+	next := semanticZoomBridgeRead(t, runtime, current.ID, current.EditorRevision, application.SemanticZoomSkim, 1)
+	if !next.OK || next.SemanticZoom == nil || next.SemanticZoom.Ready || next.SemanticZoom.Generation <= generation {
+		t.Fatalf("latest revision did not receive a newer pending generation: %+v", next)
+	}
+}
+
+func TestSemanticZoomWorkerDropsSupersededCompletion(t *testing.T) {
+	runtime := newStartedRuntime(t, t.TempDir())
+	defer stopRuntime(t, runtime)
+	old := &semanticZoomSession{generation: 1}
+	current := &semanticZoomSession{generation: 2}
+	runtime.mu.Lock()
+	runtime.semanticZoom = current
+	runtime.mu.Unlock()
+	runtime.finishSemanticZoom(semanticZoomJob{session: old, ctx: context.Background()}, application.SemanticZoomPlan{Ready: true}, nil)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.semanticZoom != current || current.done {
+		t.Fatal("a superseded worker completion replaced the current semantic plan")
+	}
 }
 
 func TestReadSemanticZoomParserFreeReadOnlyAndValidation(t *testing.T) {
@@ -202,8 +369,24 @@ func TestReadSemanticZoomUnsupportedAndFoldBudget(t *testing.T) {
 				t.Fatalf("open: %+v", response)
 			}
 			state := latestStateForTest(t, runtime)
-			response := semanticZoomBridgeRead(t, runtime, state.Documents[0].ID, state.Documents[0].EditorRevision, 3, 0)
+			id, revision := state.Documents[0].ID, state.Documents[0].EditorRevision
+			response := semanticZoomBridgeRead(t, runtime, id, revision, 3, 0)
 			plan := response.SemanticZoom
+			if plan != nil && !plan.Ready && plan.Reason == "pending" {
+				generation := plan.Generation
+				deadline := time.Now().Add(5 * time.Second)
+				for time.Now().Before(deadline) {
+					runtime.mu.Lock()
+					done := runtime.semanticZoom != nil && runtime.semanticZoom.generation == generation && runtime.semanticZoom.done
+					runtime.mu.Unlock()
+					if done {
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
+				response = semanticZoomBridgeReadGeneration(t, runtime, id, revision, 3, 0, generation)
+				plan = response.SemanticZoom
+			}
 			if !response.OK || plan == nil || !plan.Ready || plan.Supported || plan.Reason != tc.reason || len(plan.Folds) != 0 {
 				t.Fatalf("unsupported fallback: %+v, %+v", response, plan)
 			}

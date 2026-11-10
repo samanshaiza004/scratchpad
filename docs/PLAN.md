@@ -16,7 +16,7 @@ The v0.2.0 direction is to make alternate ways of working with content useful wh
 - editable workspace Search and source-linked task, symbol, heading, and link views;
 - session restoration, editor typography, persisted themes, and native workspace refinements that dogfood Alicorn's retained UI.
 
-These implementations do not by themselves mean v0.2.0 is release-ready. The release gate remains [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17). Its open semantic-zoom follow-up records a measured construction cost of about 206 ms for a million-line prose fixture; performance and large-projection behavior need an explicit release decision. User-facing source mapping, stale-reference handling, bounded rendering, and the ordinary editor fallback remain part of acceptance.
+These implementations do not by themselves mean v0.2.0 is release-ready. The release gate remains [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17). Large semantic plans now build from immutable snapshots on a cancellable worker, leaving Full source interactive and rejecting stale generations. The historical million-line prose measurement was about 206 ms; current native responsiveness, cancellation, and memory behavior still need acceptance evidence. User-facing source mapping, stale-reference handling, bounded rendering, and the ordinary editor fallback remain part of acceptance.
 
 Image previews and the Quick Open blur treatment are additional product work on `main`; they do not change the file-authority or source-mapping contracts.
 

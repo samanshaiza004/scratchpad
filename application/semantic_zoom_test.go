@@ -2,18 +2,42 @@ package application
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"scratchpad/document"
 	"scratchpad/language"
 	"scratchpad/language/markdown"
 	"scratchpad/language/treesitter"
 )
+
+type cancelAfterSemanticZoomChecks struct {
+	calls, cancelAt int
+}
+
+type failingSemanticZoomBuffer struct{}
+
+func (failingSemanticZoomBuffer) ByteLen() int { return 1 }
+func (failingSemanticZoomBuffer) ReadAt([]byte, int64) (int, error) {
+	return 0, errors.New("snapshot read failed")
+}
+
+func (c *cancelAfterSemanticZoomChecks) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *cancelAfterSemanticZoomChecks) Done() <-chan struct{}       { return nil }
+func (c *cancelAfterSemanticZoomChecks) Value(any) any               { return nil }
+func (c *cancelAfterSemanticZoomChecks) Err() error {
+	c.calls++
+	if c.calls >= c.cancelAt {
+		return context.Canceled
+	}
+	return nil
+}
 
 func zoomTestDocument(t *testing.T, source, lang string) (*Application, DocumentID) {
 	t.Helper()
@@ -178,6 +202,60 @@ func TestSemanticZoomCompleteLongSentencesAndUnicode(t *testing.T) {
 		plan := queryZoom(t, app, id, SemanticZoomOverview, 0)
 		assertZoomTextVisible(t, plan, source, "Hidden.", false)
 	}
+}
+
+func TestSemanticZoomSnapshotBuildIsIsolatedAndCooperativelyCancelable(t *testing.T) {
+	source := bytes.Repeat([]byte("x"), 1<<20)
+	app, id := zoomTestDocument(t, string(source), "")
+	doc := app.Documents[id]
+	plan, snapshot, err := app.CaptureSemanticZoom(id, doc.Revision(), SemanticZoomSkim, 0)
+	if err != nil || snapshot == nil || !snapshot.RequiresBackground() {
+		t.Fatalf("large source was not captured for background construction: plan=%+v snapshot=%v err=%v", plan, snapshot != nil, err)
+	}
+	if err := doc.Editor.Buffer.Insert(doc.Editor.Buffer.ByteLen(), []byte("\nnew revision")); err != nil {
+		t.Fatal(err)
+	}
+	built, err := BuildSemanticZoom(context.Background(), *snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.Revision != plan.Revision || built.LineCount != 1 {
+		t.Fatalf("snapshot plan observed later document mutation: captured=%+v built=%+v", plan, built)
+	}
+
+	cancel := &cancelAfterSemanticZoomChecks{cancelAt: 38}
+	if _, err := BuildSemanticZoom(cancel, *snapshot); !errors.Is(err, ErrSemanticZoomCanceled) {
+		t.Fatalf("long opening sentence did not stop at a cancellation checkpoint: calls=%d err=%v", cancel.calls, err)
+	}
+	if cancel.calls < cancel.cancelAt {
+		t.Fatalf("cancellation context was not consulted at the expected checkpoint: calls=%d", cancel.calls)
+	}
+}
+
+func TestSemanticZoomSnapshotPreservesSourceReadErrors(t *testing.T) {
+	_, err := newSemanticZoomSource(context.Background(), failingSemanticZoomBuffer{}, 1)
+	if err == nil || errors.Is(err, ErrSemanticZoomCanceled) || err.Error() != "could not read immutable semantic zoom source" {
+		t.Fatalf("source read failure was not preserved as a real error: %v", err)
+	}
+}
+
+func TestSemanticZoomSnapshotKeepsReplacedProjectionRevision(t *testing.T) {
+	source := "# First\n\nOpening.\nDetail.\n\n# Second\n\nMore.\n"
+	app, id := zoomTestDocument(t, source, string(language.Markdown))
+	doc := app.Documents[id]
+	plan, snapshot, err := app.CaptureSemanticZoom(id, doc.Revision(), SemanticZoomOverview, 0)
+	if err != nil || snapshot == nil {
+		t.Fatalf("capture: plan=%+v snapshot=%v err=%v", plan, snapshot != nil, err)
+	}
+	if !doc.SetDerived(nil, document.Projections{Revision: doc.Revision(), Headings: []document.Heading{{Level: 1, Text: "replacement", StartByte: 0, EndByte: 1}}}) {
+		t.Fatal("could not replace current projection set")
+	}
+	built, err := BuildSemanticZoom(context.Background(), *snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertZoomTextVisible(t, built, source, "# First", true)
+	assertZoomTextVisible(t, built, source, "# Second", true)
 }
 
 func TestSemanticZoomGoBodiesSignaturesDocCommentsAndDeclarations(t *testing.T) {

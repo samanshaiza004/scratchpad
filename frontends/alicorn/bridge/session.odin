@@ -262,6 +262,8 @@ State_Envelope :: struct {
 	workspace_search_page_available: bool `json:"workspace_search_page_available"`,
 	workspace_search_done:       bool `json:"workspace_search_done"`,
 	workspace_search_truncated:  bool `json:"workspace_search_truncated"`,
+	semantic_zoom_generation:    u64  `json:"semantic_zoom_generation"`,
+	semantic_zoom_ready:         bool `json:"semantic_zoom_ready"`,
 }
 
 Backend_Outcome :: struct {
@@ -483,6 +485,7 @@ Backend_Command_Request :: struct {
 	whole_word:       bool   `json:"whole_word,omitempty"`,
 	save_as_token:    u64    `json:"save_as_token,omitempty"`,
 	search_generation: u64   `json:"search_generation,omitempty"`,
+	semantic_zoom_generation: u64 `json:"semantic_zoom_generation,omitempty"`,
 	has_target_byte:  bool   `json:"has_target_byte,omitempty"`,
 	target_byte:      u64    `json:"target_byte,omitempty"`,
 	editor_revision:  u64    `json:"editor_revision"`,
@@ -1314,6 +1317,7 @@ backend_command :: proc(
 	whole_word := false,
 	save_as_token: u64 = 0,
 	search_generation: u64 = 0,
+	semantic_zoom_generation: u64 = 0,
 	has_target_byte := false,
 	target_byte: u64 = 0,
 	based_on_revision: u64 = 0,
@@ -1390,6 +1394,7 @@ backend_command :: proc(
 		whole_word=whole_word,
 		save_as_token=save_as_token,
 		search_generation=search_generation,
+		semantic_zoom_generation=semantic_zoom_generation,
 		image_revision=image_revision,
 		view_density=view_density,
 		projection_kind=projection_kind,

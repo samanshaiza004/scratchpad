@@ -46,3 +46,39 @@ func TestBufferReadAtMatchesSourceAcrossFragmentedPieces(t *testing.T) {
 		t.Fatalf("ReadAt allocated %g times", allocations)
 	}
 }
+
+func TestBufferSnapshotReadAtMatchesFragmentedSourceAfterEdits(t *testing.T) {
+	b := NewBuffer([]byte("alpha\nbeta\ngamma"))
+	if err := b.Insert(6, []byte("inserted\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Delete(0, 2); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte(nil), b.Text()...)
+	snapshot := b.Snapshot()
+	if err := b.Insert(0, []byte("later prefix")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Delete(3, 9); err != nil {
+		t.Fatal(err)
+	}
+
+	for start := 0; start <= len(want); start++ {
+		for size := 0; size <= min(24, len(want)+1); size++ {
+			storage := bytes.Repeat([]byte{0xaa}, size+2)
+			n, err := snapshot.ReadAt(storage[1:1+size], int64(start))
+			read := min(size, len(want)-start)
+			wantEOF := read < size
+			if n != read || (err == io.EOF) != wantEOF || err != nil && err != io.EOF {
+				t.Fatalf("offset=%d size=%d: n=%d err=%v want n=%d EOF=%v", start, size, n, err, read, wantEOF)
+			}
+			if !bytes.Equal(storage[1:1+n], want[start:start+read]) {
+				t.Fatalf("offset=%d size=%d read %q, want %q", start, size, storage[1:1+n], want[start:start+read])
+			}
+			if storage[0] != 0xaa || storage[len(storage)-1] != 0xaa {
+				t.Fatal("snapshot ReadAt wrote outside destination")
+			}
+		}
+	}
+}

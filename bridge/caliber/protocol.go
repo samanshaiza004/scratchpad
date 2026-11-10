@@ -53,62 +53,63 @@ type StopRequest struct {
 }
 
 type CommandRequest struct {
-	PinID                uint64   `json:"pin_id"`
-	PinEpoch             uint64   `json:"pin_epoch"`
-	PinRevision          uint64   `json:"pin_revision"`
-	SourceInstance       uint64   `json:"source_instance"`
-	PinDelta             int      `json:"pin_delta"`
-	Version              uint32   `json:"version"`
-	RequestID            uint64   `json:"request_id"`
-	BasedOnRevision      uint64   `json:"based_on_revision"`
-	Command              string   `json:"command"`
-	ActionID             string   `json:"action_id,omitempty"`
-	Argument             string   `json:"argument,omitempty"`
-	Path                 string   `json:"path,omitempty"`
-	BasePath             string   `json:"base_path,omitempty"`
-	Disposition          string   `json:"disposition,omitempty"`
-	Name                 string   `json:"name,omitempty"`
-	DocumentID           string   `json:"document_id,omitempty"`
-	Discard              bool     `json:"discard,omitempty"`
-	RelativePath         string   `json:"relative_path,omitempty"`
-	DocumentOrder        []string `json:"document_order,omitempty"`
-	Limit                int      `json:"limit,omitempty"`
-	StartLine            uint64   `json:"start_line,omitempty"`
-	AnchorByte           uint64   `json:"anchor_byte,omitempty"`
-	MaxLines             uint64   `json:"max_lines,omitempty"`
-	MaxBytes             uint64   `json:"max_bytes,omitempty"`
-	IncludePresentation  bool     `json:"include_presentation,omitempty"`
-	IncludeIgnored       bool     `json:"include_ignored,omitempty"`
-	EditorRevision       uint64   `json:"editor_revision"`
-	EditorAnchorByte     uint64   `json:"editor_anchor_byte,omitempty"`
-	EditorCursorByte     uint64   `json:"editor_cursor_byte,omitempty"`
-	StartByte            uint64   `json:"start_byte"`
-	EndByte              uint64   `json:"end_byte"`
-	Replacement          []int    `json:"replacement,omitempty"`
-	HasSelectionState    bool     `json:"has_selection_state,omitempty"`
-	BeforeAnchorByte     uint64   `json:"before_anchor_byte,omitempty"`
-	BeforeCursorByte     uint64   `json:"before_cursor_byte,omitempty"`
-	AfterAnchorByte      uint64   `json:"after_anchor_byte,omitempty"`
-	AfterCursorByte      uint64   `json:"after_cursor_byte,omitempty"`
-	TypingGroupID        uint64   `json:"typing_group_id,omitempty"`
-	Query                string   `json:"query,omitempty"`
-	MaxMatches           int      `json:"max_matches,omitempty"`
-	MatchCase            bool     `json:"match_case,omitempty"`
-	WholeWord            bool     `json:"whole_word,omitempty"`
-	SaveAsToken          uint64   `json:"save_as_token,omitempty"`
-	SearchGeneration     uint64   `json:"search_generation,omitempty"`
-	HasTargetByte        bool     `json:"has_target_byte,omitempty"`
-	TargetByte           uint64   `json:"target_byte,omitempty"`
-	HasSourceAnchor      bool     `json:"has_source_anchor,omitempty"`
-	SourceAnchorRevision uint64   `json:"source_anchor_revision,omitempty"`
-	SourceAnchorByte     uint64   `json:"source_anchor_byte,omitempty"`
-	SourceAnchorLine     uint64   `json:"source_anchor_line,omitempty"`
-	ImageRevision        uint64   `json:"image_revision,omitempty"`
-	ViewDensity          string   `json:"view_density,omitempty"`
-	ZoomDepth            int      `json:"zoom_depth"`
-	ProjectionKind       string   `json:"projection_kind,omitempty"`
-	ProjectionFirst      uint64   `json:"projection_first"`
-	ProjectionLimit      uint64   `json:"projection_limit,omitempty"`
+	PinID                  uint64   `json:"pin_id"`
+	PinEpoch               uint64   `json:"pin_epoch"`
+	PinRevision            uint64   `json:"pin_revision"`
+	SourceInstance         uint64   `json:"source_instance"`
+	PinDelta               int      `json:"pin_delta"`
+	Version                uint32   `json:"version"`
+	RequestID              uint64   `json:"request_id"`
+	BasedOnRevision        uint64   `json:"based_on_revision"`
+	Command                string   `json:"command"`
+	ActionID               string   `json:"action_id,omitempty"`
+	Argument               string   `json:"argument,omitempty"`
+	Path                   string   `json:"path,omitempty"`
+	BasePath               string   `json:"base_path,omitempty"`
+	Disposition            string   `json:"disposition,omitempty"`
+	Name                   string   `json:"name,omitempty"`
+	DocumentID             string   `json:"document_id,omitempty"`
+	Discard                bool     `json:"discard,omitempty"`
+	RelativePath           string   `json:"relative_path,omitempty"`
+	DocumentOrder          []string `json:"document_order,omitempty"`
+	Limit                  int      `json:"limit,omitempty"`
+	StartLine              uint64   `json:"start_line,omitempty"`
+	AnchorByte             uint64   `json:"anchor_byte,omitempty"`
+	MaxLines               uint64   `json:"max_lines,omitempty"`
+	MaxBytes               uint64   `json:"max_bytes,omitempty"`
+	IncludePresentation    bool     `json:"include_presentation,omitempty"`
+	IncludeIgnored         bool     `json:"include_ignored,omitempty"`
+	EditorRevision         uint64   `json:"editor_revision"`
+	EditorAnchorByte       uint64   `json:"editor_anchor_byte,omitempty"`
+	EditorCursorByte       uint64   `json:"editor_cursor_byte,omitempty"`
+	StartByte              uint64   `json:"start_byte"`
+	EndByte                uint64   `json:"end_byte"`
+	Replacement            []int    `json:"replacement,omitempty"`
+	HasSelectionState      bool     `json:"has_selection_state,omitempty"`
+	BeforeAnchorByte       uint64   `json:"before_anchor_byte,omitempty"`
+	BeforeCursorByte       uint64   `json:"before_cursor_byte,omitempty"`
+	AfterAnchorByte        uint64   `json:"after_anchor_byte,omitempty"`
+	AfterCursorByte        uint64   `json:"after_cursor_byte,omitempty"`
+	TypingGroupID          uint64   `json:"typing_group_id,omitempty"`
+	Query                  string   `json:"query,omitempty"`
+	MaxMatches             int      `json:"max_matches,omitempty"`
+	MatchCase              bool     `json:"match_case,omitempty"`
+	WholeWord              bool     `json:"whole_word,omitempty"`
+	SaveAsToken            uint64   `json:"save_as_token,omitempty"`
+	SearchGeneration       uint64   `json:"search_generation,omitempty"`
+	HasTargetByte          bool     `json:"has_target_byte,omitempty"`
+	TargetByte             uint64   `json:"target_byte,omitempty"`
+	HasSourceAnchor        bool     `json:"has_source_anchor,omitempty"`
+	SourceAnchorRevision   uint64   `json:"source_anchor_revision,omitempty"`
+	SourceAnchorByte       uint64   `json:"source_anchor_byte,omitempty"`
+	SourceAnchorLine       uint64   `json:"source_anchor_line,omitempty"`
+	ImageRevision          uint64   `json:"image_revision,omitempty"`
+	ViewDensity            string   `json:"view_density,omitempty"`
+	ZoomDepth              int      `json:"zoom_depth"`
+	ProjectionKind         string   `json:"projection_kind,omitempty"`
+	ProjectionFirst        uint64   `json:"projection_first"`
+	ProjectionLimit        uint64   `json:"projection_limit,omitempty"`
+	SemanticZoomGeneration uint64   `json:"semantic_zoom_generation,omitempty"`
 }
 
 type Response struct {
@@ -188,6 +189,7 @@ type SemanticZoomPlan struct {
 	DocumentID string             `json:"document_id"`
 	Revision   uint64             `json:"revision"`
 	InstanceID uint64             `json:"instance_id"`
+	Generation uint64             `json:"generation,omitempty"`
 	Depth      int                `json:"depth"`
 	AnchorByte int                `json:"anchor_byte"`
 	Ready      bool               `json:"ready"`
@@ -208,7 +210,7 @@ type SemanticZoomFold struct {
 
 func semanticZoomFromApplication(plan application.SemanticZoomPlan) *SemanticZoomPlan {
 	result := &SemanticZoomPlan{DocumentID: string(plan.DocumentID), Revision: plan.Revision,
-		InstanceID: plan.InstanceID, Depth: plan.Depth, AnchorByte: plan.AnchorByte,
+		InstanceID: plan.InstanceID, Generation: plan.Generation, Depth: plan.Depth, AnchorByte: plan.AnchorByte,
 		Ready: plan.Ready, Supported: plan.Supported, Reason: plan.Reason, LineCount: plan.LineCount,
 		Folds: make([]SemanticZoomFold, len(plan.Folds))}
 	for i, fold := range plan.Folds {
@@ -385,6 +387,8 @@ type StateEnvelope struct {
 	WorkspaceSearchPageAvailable bool                  `json:"workspace_search_page_available,omitempty"`
 	WorkspaceSearchDone          bool                  `json:"workspace_search_done,omitempty"`
 	WorkspaceSearchTruncated     bool                  `json:"workspace_search_truncated,omitempty"`
+	SemanticZoomGeneration       uint64                `json:"semantic_zoom_generation,omitempty"`
+	SemanticZoomReady            bool                  `json:"semantic_zoom_ready,omitempty"`
 }
 
 // ActionState publishes the canonical Scratchpad command vocabulary to any
@@ -706,6 +710,10 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 		}
 		if request.AnchorByte > uint64(^uint(0)>>1) {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_zoom_anchor", "anchor_byte does not fit the host word size", false), false
+		}
+	case "cancel_semantic_zoom":
+		if request.SemanticZoomGeneration == 0 {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_semantic_zoom_generation", "semantic_zoom_generation is required", false), false
 		}
 	case "read_editor_folds":
 		if request.DocumentID == "" || !utf8.ValidString(request.DocumentID) || strings.ContainsRune(request.DocumentID, 0) {

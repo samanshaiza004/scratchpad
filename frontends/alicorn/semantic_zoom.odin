@@ -31,6 +31,8 @@ Editor_Semantic_Zoom :: struct {
 	waiting: bool,
 	waiting_presentation: u64,
 	waiting_ready: bool,
+	request_generation: u64,
+	restart_after_input: bool,
 }
 
 semantic_zoom_plan_matches :: proc(view: ^Editor_View_State, document: bridge.State_Document) -> bool {
@@ -202,10 +204,17 @@ semantic_zoom_anchor_capture :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Edi
 	z.anchor_pending = true
 }
 
-semantic_zoom_load :: proc(app: ^App, rt: ^alicorn.Runtime, document: bridge.State_Document, view: ^Editor_View_State) -> bool {
+semantic_zoom_load :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	document: bridge.State_Document,
+	view: ^Editor_View_State,
+	request_generation: u64 = 0,
+) -> bool {
 	z := &view.zoom
 	result := bridge.backend_command(&app.backend, "read_semantic_zoom", document_id=document.id,
-		editor_revision=document.editor_revision, anchor_byte=z.anchor_byte, zoom_depth=z.depth, read_latest_after=false)
+		editor_revision=document.editor_revision, anchor_byte=z.anchor_byte, zoom_depth=z.depth,
+		semantic_zoom_generation=request_generation, read_latest_after=false)
 	defer bridge.backend_command_result_destroy(&result, context.allocator)
 	if !result.ok || !result.semantic_zoom_owned {
 		set_error(app, result.message if result.message != "" else "Could not prepare semantic zoom.")
@@ -222,6 +231,9 @@ semantic_zoom_load :: proc(app: ^App, rt: ^alicorn.Runtime, document: bridge.Sta
 	result.semantic_zoom, result.semantic_zoom_owned = {}, false
 	z.waiting, z.waiting_presentation = !plan.ready, document.presentation_revision
 	z.waiting_ready = document.presentation_ready
+	z.request_generation = plan.generation
+	if !plan.ready && plan.reason == "pending" { return true }
+	if plan.ready { z.request_generation = 0 }
 	if plan.ready && !plan.supported {
 		message := "This file type has no semantic structure yet. Full source is available."
 		if plan.reason == "fold_limit_exceeded" { message = "This document has too many separate folds for this experiment. Showing Full source." }
@@ -255,9 +267,14 @@ semantic_zoom_set_depth :: proc(app: ^App, rt: ^alicorn.Runtime, depth: int, sou
 	}
 	next_depth := clamp(depth, 0, 3)
 	if next_depth == view.zoom.depth { return true }
+	if next_depth == 0 && (view.zoom.request_generation != 0 ||
+		(view.zoom.owned && view.zoom.plan.generation != 0)) {
+		semantic_zoom_cancel_request(app, &view.zoom)
+	}
 	semantic_zoom_anchor_capture(app, rt, view, source)
 	view.zoom.depth = next_depth
 	view.zoom.waiting = false
+	view.zoom.restart_after_input = false
 	if next_depth > 0 && !semantic_zoom_load(app, rt, document, view) {
 		view.zoom.depth, view.zoom.waiting = 0, false
 		view.restore_y_pending = true
@@ -273,12 +290,62 @@ semantic_zoom_set_depth :: proc(app: ^App, rt: ^alicorn.Runtime, depth: int, sou
 
 semantic_zoom_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, document: bridge.State_Document, view: ^Editor_View_State) {
 	z := &view.zoom
+	if z.waiting && z.request_generation != 0 &&
+		(len(app.editor_edits) > 0 || view.preedit_active || view.preedit_recoverable || view.dragging_selection) {
+		depth, anchor := z.depth, z.anchor_byte
+		semantic_zoom_cancel_request(app, z)
+		semantic_zoom_destroy(z)
+		z.depth, z.anchor_byte, z.restart_after_input = depth, anchor, true
+		alicorn.invalidate_root(rt, "semantic zoom canceled to keep source editing responsive")
+		return
+	}
+	if z.waiting && z.owned && !semantic_zoom_plan_matches(view, document) {
+		if z.plan.document_id == document.id && z.plan.instance_id == document.instance_id {
+			// An authoritative edit superseded the pending revision. Keep the
+			// requested depth, but rebuild only after the edit lane settles.
+			depth, anchor := z.depth, z.anchor_byte
+			if z.request_generation != 0 { semantic_zoom_cancel_request(app, z) }
+			semantic_zoom_destroy(z)
+			z.depth, z.anchor_byte, z.restart_after_input = depth, anchor, true
+		} else {
+			semantic_zoom_reveal_input(app, rt, view)
+			return
+		}
+	}
+	if z.restart_after_input {
+		if len(app.editor_edits) > 0 || view.preedit_active || view.preedit_recoverable || view.dragging_selection ||
+			view.authoritative_revision != document.editor_revision {
+			return
+		}
+		semantic_zoom_anchor_capture(app, rt, view, view.caret_byte)
+		z.restart_after_input = false
+		if !semantic_zoom_load(app, rt, document, view) {
+			semantic_zoom_destroy(z)
+			z.depth = 0
+			view.restore_y_pending = true
+			view.restore_token = alicorn.RESTORE_TOKEN_NONE
+			alicorn.invalidate_root(rt, "Scratchpad restored full source after a superseded zoom plan")
+			return
+		}
+		alicorn.invalidate_root(rt, "Scratchpad requested a current semantic zoom plan after editing")
+		return
+	}
 	if z.depth > 0 && z.owned && !semantic_zoom_plan_matches(view, document) {
 		// An edit or reload invalidates source coordinates. Require another explicit
 		// zoom after returning to source; parser completion never folds while typing.
 		semantic_zoom_reveal_input(app, rt, view)
 	}
-	if z.waiting && document.presentation_ready && (!z.waiting_ready || document.presentation_revision != z.waiting_presentation) {
+	if z.waiting && z.request_generation != 0 &&
+		app.backend.state.semantic_zoom_generation == z.request_generation && app.backend.state.semantic_zoom_ready {
+		if !semantic_zoom_load(app, rt, document, view, z.request_generation) {
+			semantic_zoom_cancel_request(app, z)
+			semantic_zoom_destroy(z)
+			alicorn.invalidate_root(rt, "Scratchpad discarded an unavailable semantic zoom plan")
+			return
+		}
+	}
+	if z.waiting && z.request_generation == 0 && document.presentation_ready &&
+		(!z.waiting_ready || document.presentation_revision != z.waiting_presentation) {
 		_ = semantic_zoom_load(app, rt, document, view)
 	}
 }
@@ -290,6 +357,7 @@ semantic_zoom_session_scroll :: proc(view: ^Editor_View_State) -> f32 {
 
 semantic_zoom_reveal_input :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State) {
 	if view == nil || view.zoom.depth == 0 { return }
+	if view.zoom.request_generation != 0 { semantic_zoom_cancel_request(app, &view.zoom) }
 	if document, found := find_document(&app.backend.state, view.document_id); found && view.zoom.owned && !semantic_zoom_plan_matches(view, document) {
 		// A different source instance/revision cannot inherit hidden coordinates.
 		view.selection_anchor = min(document.anchor_byte, document.byte_length)
@@ -337,6 +405,17 @@ semantic_zoom_reveal_input :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Edito
 	view.restore_y_pending = true
 	view.restore_token = alicorn.RESTORE_TOKEN_NONE
 	alicorn.invalidate_root(rt, "Scratchpad revealed source before editing or caret navigation")
+}
+
+semantic_zoom_cancel_request :: proc(app: ^App, zoom: ^Editor_Semantic_Zoom) {
+	if app == nil || zoom == nil || !app.backend.started { return }
+	generation := zoom.request_generation
+	if generation == 0 && zoom.owned { generation = zoom.plan.generation }
+	if generation == 0 { return }
+	result := bridge.backend_command(&app.backend, "cancel_semantic_zoom",
+		semantic_zoom_generation=generation, read_latest_after=false)
+	bridge.backend_command_result_destroy(&result, context.allocator)
+	zoom.request_generation = 0
 }
 
 semantic_zoom_resolve_anchor :: proc(app: ^App, rt: ^alicorn.Runtime, view: ^Editor_View_State, window: ^Editor_Window, viewport_height: f32, language: string) -> (offset: f32, apply: bool) {

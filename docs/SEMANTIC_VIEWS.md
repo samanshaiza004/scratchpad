@@ -10,6 +10,17 @@ byte selections, undo history, save state, and the Alicorn source renderer.
 The status bar identifies the active depth; the View menu and command palette
 provide depth changes without a persistent toolbar row.
 
+Large semantic plans are built from an immutable source/projection snapshot on
+a single cancellable background worker. Inputs above 64 KiB, 2,048 source
+lines, or 2,048 derived structures take that path; smaller plans stay on the
+serialized command path. While a plan is pending, Full source remains visible
+and editable. A new request or source revision supersedes the old generation;
+the frontend discards stale results and requests a plan for the latest
+authoritative revision after active typing or IME composition settles. Closing
+the backend cancels its worker. This keeps source scanning out of the command
+lock, while preserving document-instance, revision, and request-generation
+checks at publication.
+
 ## Interaction
 
 - **More detail:** Ctrl+Alt+Plus on Windows/Linux; Cmd+Option+Plus on macOS.

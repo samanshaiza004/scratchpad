@@ -2,6 +2,7 @@ package application
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,9 +23,12 @@ const (
 
 const MaxSemanticZoomFolds = 4096
 const semanticZoomScanBytes = 32 * 1024
+const semanticZoomBackgroundBytes = 64 * 1024
+const semanticZoomBackgroundLines = 2048
 
 var ErrInvalidSemanticZoomDepth = errors.New("semantic zoom depth must be between 0 and 3")
 var ErrInvalidSemanticZoomAnchor = errors.New("semantic zoom anchor outside source")
+var ErrSemanticZoomCanceled = errors.New("semantic zoom construction canceled")
 
 // SemanticZoomFold hides complete logical source lines, including their LF or
 // CRLF terminators. Both line and byte coordinates are zero-based, half-open.
@@ -50,6 +54,7 @@ type SemanticZoomPlan struct {
 	DocumentID DocumentID
 	Revision   uint64
 	InstanceID uint64
+	Generation uint64
 	Depth      int
 	AnchorByte int
 	Ready      bool
@@ -59,93 +64,177 @@ type SemanticZoomPlan struct {
 	Folds      []SemanticZoomFold
 }
 
-// QuerySemanticZoom runs on the application goroutine, serialized with source
-// mutations. It never parses, schedules workers, or changes source/editor state.
-// The initial transition scans bounded source chunks and current projections;
-// cache the resulting plan in the frontend, not in a per-frame query loop.
-// Work is O(source bytes + structure log structure), with a single line index
-// avoiding Buffer.LineAt/LineRange's repeated scans of large original pieces.
-func (a *Application) QuerySemanticZoom(id DocumentID, revision uint64, depth int, anchorByte int) (SemanticZoomPlan, error) {
+// SemanticZoomSnapshot is an immutable, detached input for plan construction.
+// Capture it on the application goroutine, then pass it to BuildSemanticZoom
+// from a bounded worker so whole-source scans never hold the application lock.
+type SemanticZoomSnapshot struct {
+	plan         SemanticZoomPlan
+	buffer       editor.BufferSnapshot
+	projections  document.Projections
+	rootLanguage string
+	lineCount    int
+}
+
+// RequiresBackground reports whether the captured input exceeds the small
+// bound kept on the serialized command path.
+func (s SemanticZoomSnapshot) RequiresBackground() bool {
+	return s.buffer.ByteLen() > semanticZoomBackgroundBytes || s.lineCount > semanticZoomBackgroundLines ||
+		len(s.projections.Headings)+len(s.projections.Paragraphs)+len(s.projections.Tasks)+len(s.projections.Blocks)+
+			len(s.projections.Code.Highlights)+len(s.projections.Code.Symbols)+len(s.projections.Code.Folds) > 2048
+}
+
+// CaptureSemanticZoom validates the request and captures immutable source and
+// derived metadata without scanning source bytes. The returned plan is already
+// complete for Full, unsupported, and not-yet-derived requests; a non-nil
+// snapshot requires BuildSemanticZoom to produce its folds.
+func (a *Application) CaptureSemanticZoom(id DocumentID, revision uint64, depth int, anchorByte int) (plan SemanticZoomPlan, snapshot *SemanticZoomSnapshot, err error) {
 	if a == nil {
-		return SemanticZoomPlan{}, errors.New("nil application")
+		return SemanticZoomPlan{}, nil, errors.New("nil application")
 	}
 	if depth < SemanticZoomFull || depth > SemanticZoomOverview {
-		return SemanticZoomPlan{}, ErrInvalidSemanticZoomDepth
+		return SemanticZoomPlan{}, nil, ErrInvalidSemanticZoomDepth
 	}
 	doc := a.Documents[id]
 	if doc == nil || doc.Editor == nil {
-		return SemanticZoomPlan{}, errors.New("unknown document")
+		return SemanticZoomPlan{}, nil, errors.New("unknown document")
 	}
 	if _, readOnly := a.FileViews[id]; readOnly {
-		return SemanticZoomPlan{}, ErrReadOnlyFileView
+		return SemanticZoomPlan{}, nil, ErrReadOnlyFileView
 	}
 	if revision != doc.Revision() {
-		return SemanticZoomPlan{}, fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, revision, doc.Revision())
+		return SemanticZoomPlan{}, nil, fmt.Errorf("%w: expected %d, current %d", ErrStaleEditorRevision, revision, doc.Revision())
 	}
 	buffer := &doc.Editor.Buffer
 	if anchorByte < 0 || anchorByte > buffer.ByteLen() {
-		return SemanticZoomPlan{}, ErrInvalidSemanticZoomAnchor
+		return SemanticZoomPlan{}, nil, ErrInvalidSemanticZoomAnchor
 	}
-	plan := SemanticZoomPlan{DocumentID: id, Revision: revision, InstanceID: doc.InstanceID(),
+	plan = SemanticZoomPlan{DocumentID: id, Revision: revision, InstanceID: doc.InstanceID(),
 		Depth: depth, AnchorByte: anchorByte, Ready: true, Supported: true, LineCount: buffer.LineCount(),
 		Folds: make([]SemanticZoomFold, 0)}
 	if depth == SemanticZoomFull {
-		return plan, nil
+		return plan, nil, nil
 	}
 	plain := doc.RootLanguage == "" || doc.RootLanguage == string(language.PlainText)
 	markdown := doc.RootLanguage == string(language.Markdown)
 	if !plain && !markdown && !AnalysisSupported(language.ID(doc.RootLanguage)) {
 		plan.Supported, plan.Reason = false, "unsupported_language"
-		return plan, nil
+		return plan, nil, nil
 	}
 	if !plain && (!doc.DerivedCurrent() || (!markdown &&
 		(doc.Projections.Code.Revision != revision || doc.Projections.Code.Language != doc.RootLanguage))) {
 		plan.Ready, plan.Reason = false, "derived_not_current"
-		return plan, nil
+		return plan, nil, nil
 	}
-	source := newSemanticZoomSource(buffer)
+	// Source descriptors are captured because the live piece tree can change.
+	// Published projection arrays are immutable after SetDerived, so capture
+	// their slice headers instead of copying potentially large derived tables
+	// while the serialized application command is running.
+	snapshot = &SemanticZoomSnapshot{
+		plan: plan, buffer: buffer.Snapshot(), projections: doc.Projections,
+		rootLanguage: doc.RootLanguage, lineCount: buffer.LineCount(),
+	}
+	return plan, snapshot, nil
+}
+
+// BuildSemanticZoom constructs a plan solely from an immutable snapshot. It
+// checks cancellation throughout long source scans and structural walks.
+func BuildSemanticZoom(ctx context.Context, snapshot SemanticZoomSnapshot) (SemanticZoomPlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	plan := snapshot.plan
+	if err := ctx.Err(); err != nil {
+		return SemanticZoomPlan{}, ErrSemanticZoomCanceled
+	}
+	source, err := newSemanticZoomSource(ctx, snapshot.buffer, snapshot.lineCount)
+	if err != nil {
+		if errors.Is(err, ErrSemanticZoomCanceled) || ctx.Err() != nil {
+			return SemanticZoomPlan{}, ErrSemanticZoomCanceled
+		}
+		return SemanticZoomPlan{}, err
+	}
 	var hidden []semanticZoomLines
 	switch {
-	case plain:
-		visible := source.proseVisible(source.paragraphs(), depth, anchorByte)
+	case snapshot.rootLanguage == "" || snapshot.rootLanguage == string(language.PlainText):
+		paragraphs, canceled := source.paragraphs()
+		if canceled {
+			return SemanticZoomPlan{}, ErrSemanticZoomCanceled
+		}
+		visible := source.proseVisible(paragraphs, plan.Depth, plan.AnchorByte)
 		hidden = subtractSemanticZoomLines([]semanticZoomLines{{0, source.contentLines()}}, visible)
-	case markdown:
-		visible := source.markdownVisible(doc.Projections, depth, anchorByte)
+	case snapshot.rootLanguage == string(language.Markdown):
+		visible := source.markdownVisible(snapshot.projections, plan.Depth, plan.AnchorByte)
 		hidden = subtractSemanticZoomLines([]semanticZoomLines{{0, source.contentLines()}}, visible)
 	default:
-		hidden = source.codeHidden(doc.Projections.Code, depth, anchorByte)
+		hidden = source.codeHidden(snapshot.projections.Code, plan.Depth, plan.AnchorByte)
+	}
+	if ctx.Err() != nil {
+		return SemanticZoomPlan{}, ErrSemanticZoomCanceled
 	}
 	if len(hidden) > MaxSemanticZoomFolds {
 		plan.Supported, plan.Reason = false, "fold_limit_exceeded"
 		return plan, nil
 	}
-	for _, lines := range hidden {
+	for i, lines := range hidden {
+		if i%128 == 0 && ctx.Err() != nil {
+			return SemanticZoomPlan{}, ErrSemanticZoomCanceled
+		}
 		if start, end := source.lineStart(lines.start), source.lineStart(lines.end); end > start {
+			silent, canceled := source.whitespaceOnly(lines)
+			if canceled {
+				return SemanticZoomPlan{}, ErrSemanticZoomCanceled
+			}
 			plan.Folds = append(plan.Folds, SemanticZoomFold{StartLine: lines.start, EndLine: lines.end,
 				StartByte: start, EndByte: end, Label: fmt.Sprintf("%d lines", lines.end-lines.start),
-				Silent: source.whitespaceOnly(lines)})
+				Silent: silent})
 		}
+	}
+	if ctx.Err() != nil {
+		return SemanticZoomPlan{}, ErrSemanticZoomCanceled
 	}
 	return plan, nil
 }
 
+// QuerySemanticZoom is the synchronous compatibility API used by small local
+// callers and benchmarks. The bridge uses CaptureSemanticZoom plus a worker
+// for large plans.
+func (a *Application) QuerySemanticZoom(id DocumentID, revision uint64, depth int, anchorByte int) (SemanticZoomPlan, error) {
+	plan, snapshot, err := a.CaptureSemanticZoom(id, revision, depth, anchorByte)
+	if err != nil || snapshot == nil {
+		return plan, err
+	}
+	return BuildSemanticZoom(context.Background(), *snapshot)
+}
+
 type semanticZoomLines struct{ start, end int }
 
+type semanticZoomBuffer interface {
+	ByteLen() int
+	ReadAt([]byte, int64) (int, error)
+}
+
 type semanticZoomSource struct {
-	buffer *editor.Buffer
+	ctx    context.Context
+	buffer semanticZoomBuffer
 	starts []int
 	blank  []bool
 }
 
 // Only metadata survives this scan. Each temporary source read is at most 32KiB;
 // no complete source, oversized logical line, or paragraph is materialized.
-func newSemanticZoomSource(buffer *editor.Buffer) semanticZoomSource {
-	s := semanticZoomSource{buffer: buffer, starts: make([]int, 1, buffer.LineCount()), blank: make([]bool, 1, buffer.LineCount())}
+func newSemanticZoomSource(ctx context.Context, buffer semanticZoomBuffer, lineCount int) (semanticZoomSource, error) {
+	s := semanticZoomSource{ctx: ctx, buffer: buffer, starts: make([]int, 1, lineCount), blank: make([]bool, 1, lineCount)}
 	s.blank[0] = true
 	storage := make([]byte, min(semanticZoomScanBytes, buffer.ByteLen()))
 	for at := 0; at < buffer.ByteLen(); {
+		if ctx.Err() != nil {
+			return semanticZoomSource{}, ErrSemanticZoomCanceled
+		}
 		end := at + min(semanticZoomScanBytes, buffer.ByteLen()-at)
-		count, _ := buffer.ReadAt(storage[:end-at], int64(at)) // Bounds are established above on the app goroutine.
+		count, err := buffer.ReadAt(storage[:end-at], int64(at))
+		if err != nil && err != io.EOF || count != end-at {
+			return semanticZoomSource{}, errors.New("could not read immutable semantic zoom source")
+		}
 		data := storage[:count]
 		for i, c := range data {
 			if c == '\n' {
@@ -157,7 +246,7 @@ func newSemanticZoomSource(buffer *editor.Buffer) semanticZoomSource {
 		}
 		at = end
 	}
-	return s
+	return s, nil
 }
 
 func (s semanticZoomSource) lineStart(line int) int {
@@ -179,16 +268,19 @@ func (s semanticZoomSource) contentLines() int {
 	return count
 }
 
-func (s semanticZoomSource) whitespaceOnly(lines semanticZoomLines) bool {
+func (s semanticZoomSource) whitespaceOnly(lines semanticZoomLines) (only, canceled bool) {
 	if lines.start < 0 || lines.end <= lines.start || lines.end > len(s.blank) {
-		return false
+		return false, false
 	}
 	for line := lines.start; line < lines.end; line++ {
+		if line%1024 == 0 && s.ctx.Err() != nil {
+			return false, true
+		}
 		if !s.blank[line] {
-			return false
+			return false, false
 		}
 	}
-	return true
+	return true, false
 }
 
 func (s semanticZoomSource) lines(start, end int) semanticZoomLines {
@@ -198,26 +290,32 @@ func (s semanticZoomSource) lines(start, end int) semanticZoomLines {
 	return semanticZoomLines{s.lineAt(start), s.lineAt(end-1) + 1}
 }
 
-func (s semanticZoomSource) paragraphs() []document.ParagraphRange {
+func (s semanticZoomSource) paragraphs() ([]document.ParagraphRange, bool) {
 	var paragraphs []document.ParagraphRange
 	for line := 0; line < s.contentLines(); {
+		if line%1024 == 0 && s.ctx.Err() != nil {
+			return nil, true
+		}
 		if s.blank[line] {
 			line++
 			continue
 		}
 		start := line
 		for line < s.contentLines() && !s.blank[line] {
+			if line%1024 == 0 && s.ctx.Err() != nil {
+				return nil, true
+			}
 			line++
 		}
 		paragraphs = append(paragraphs, document.ParagraphRange{StartByte: s.lineStart(start), EndByte: s.lineStart(line)})
 	}
-	return paragraphs
+	return paragraphs, false
 }
 
 // A bounded reader permits full opening sentences of any length, including
 // UTF-8 punctuation and sentences spanning source lines/chunk boundaries.
 type semanticZoomReader struct {
-	buffer  *editor.Buffer
+	buffer  semanticZoomBuffer
 	at, end int
 }
 
@@ -241,11 +339,19 @@ func (s semanticZoomSource) opening(start, end int) semanticZoomLines {
 	}
 	reader := bufio.NewReaderSize(&semanticZoomReader{buffer: s.buffer, at: start, end: end}, min(1024, end-start))
 	at, sentenceEnd, terminal := start, end, false
+	readBytes, nextCancelCheck := 0, semanticZoomScanBytes
 	for at < end {
+		if readBytes >= nextCancelCheck {
+			if s.ctx.Err() != nil {
+				return semanticZoomLines{}
+			}
+			nextCancelCheck += semanticZoomScanBytes
+		}
 		r, size, err := reader.ReadRune()
 		if err != nil {
 			break
 		}
+		readBytes += size
 		if terminal && unicode.IsSpace(r) {
 			return s.lines(start, sentenceEnd)
 		}
@@ -273,6 +379,9 @@ func (s semanticZoomSource) proseVisible(paragraphs []document.ParagraphRange, d
 		focused = 0
 	}
 	for i, p := range paragraphs {
+		if i%128 == 0 && s.ctx.Err() != nil {
+			return nil
+		}
 		if depth == SemanticZoomFocus && i == focused {
 			visible = append(visible, s.lines(p.StartByte, p.EndByte))
 		} else {
@@ -290,8 +399,11 @@ func (s semanticZoomSource) headingLines(heading document.Heading) semanticZoomL
 	if lines.end <= lines.start || lines.end >= s.contentLines() || heading.Level > 2 {
 		return lines
 	}
-	prefix, _ := s.buffer.Bytes(s.lineStart(lines.start), min(s.lineStart(lines.start)+4, s.buffer.ByteLen()))
-	for _, c := range prefix {
+	prefixStart := s.lineStart(lines.start)
+	var prefix [4]byte
+	prefixLen := min(len(prefix), s.buffer.ByteLen()-prefixStart)
+	read, _ := s.buffer.ReadAt(prefix[:prefixLen], int64(prefixStart))
+	for _, c := range prefix[:read] {
 		if c == '#' {
 			return lines
 		}
@@ -304,12 +416,19 @@ func (s semanticZoomSource) headingLines(heading document.Heading) semanticZoomL
 		marker = '-'
 	}
 	reader := bufio.NewReaderSize(&semanticZoomReader{buffer: s.buffer, at: s.lineStart(lines.end), end: s.lineStart(lines.end + 1)}, 256)
-	seen := false
+	seen, scanned := false, 0
 	for {
-		r, _, err := reader.ReadRune()
+		if scanned >= semanticZoomScanBytes {
+			if s.ctx.Err() != nil {
+				return semanticZoomLines{}
+			}
+			scanned = 0
+		}
+		r, size, err := reader.ReadRune()
 		if err != nil {
 			break
 		}
+		scanned += size
 		if r == marker {
 			seen = true
 		} else if r != ' ' && r != '\t' && r != '\r' && r != '\n' {
@@ -331,7 +450,10 @@ func (s semanticZoomSource) markdownVisible(p document.Projections, depth, ancho
 	if len(headings) == 0 {
 		visible = s.proseVisible(paragraphs, depth, anchor)
 	} else {
-		for _, heading := range headings {
+		for i, heading := range headings {
+			if i%128 == 0 && s.ctx.Err() != nil {
+				return nil
+			}
 			visible = append(visible, s.headingLines(heading))
 		}
 		if depth == SemanticZoomFocus {
@@ -352,7 +474,10 @@ func (s semanticZoomSource) markdownVisible(p document.Projections, depth, ancho
 		}
 		if depth == SemanticZoomSkim {
 			headingIndex, previousSection := 0, -1
-			for _, paragraph := range paragraphs {
+			for i, paragraph := range paragraphs {
+				if i%128 == 0 && s.ctx.Err() != nil {
+					return nil
+				}
 				for headingIndex < len(headings) && headings[headingIndex].StartByte <= paragraph.StartByte {
 					headingIndex++
 				}
@@ -364,12 +489,18 @@ func (s semanticZoomSource) markdownVisible(p document.Projections, depth, ancho
 		}
 	}
 	if depth == SemanticZoomSkim {
-		for _, task := range p.Tasks {
+		for i, task := range p.Tasks {
+			if i%128 == 0 && s.ctx.Err() != nil {
+				return nil
+			}
 			visible = append(visible, s.lines(task.StartByte, task.EndByte))
 		}
 	}
 	if depth == SemanticZoomSkim || len(headings) == 0 {
-		for _, block := range p.Blocks {
+		for i, block := range p.Blocks {
+			if i%128 == 0 && s.ctx.Err() != nil {
+				return nil
+			}
 			if block.Kind == document.BlockCode {
 				line := s.lines(block.StartByte, block.EndByte)
 				line.end = min(line.end, line.start+1)
@@ -386,12 +517,18 @@ func (s semanticZoomSource) codeHidden(p document.CodeProjection, depth, anchor 
 	// rescanning every fold for every symbol. A first-line fallback handles
 	// projections (e.g. type_spec) which expose only a declaration fold.
 	bodyStarts := make(map[int]int, len(p.Folds))
-	for _, fold := range p.Folds {
+	for i, fold := range p.Folds {
+		if i%256 == 0 && s.ctx.Err() != nil {
+			return nil
+		}
 		bodyStarts[fold.EndByte] = max(bodyStarts[fold.EndByte], fold.StartByte)
 	}
 	var comments []semanticZoomLines
 	if depth == SemanticZoomFocus {
-		for _, span := range p.Highlights {
+		for i, span := range p.Highlights {
+			if i%256 == 0 && s.ctx.Err() != nil {
+				return nil
+			}
 			if span.Kind == document.HighlightComment {
 				comments = append(comments, s.lines(span.StartByte, span.EndByte))
 			}
@@ -401,7 +538,10 @@ func (s semanticZoomSource) codeHidden(p document.CodeProjection, depth, anchor 
 	var hidden, headers []semanticZoomLines
 	var focused semanticZoomLines
 	focusedBytes := s.buffer.ByteLen() + 1
-	for _, symbol := range p.Symbols {
+	for i, symbol := range p.Symbols {
+		if i%256 == 0 && s.ctx.Err() != nil {
+			return nil
+		}
 		lines := s.lines(symbol.StartByte, symbol.EndByte)
 		if lines.end <= lines.start {
 			continue

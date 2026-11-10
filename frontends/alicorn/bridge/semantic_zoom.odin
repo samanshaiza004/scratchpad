@@ -16,6 +16,7 @@ Semantic_Zoom_Plan :: struct {
 	document_id: string `json:"document_id"`,
 	revision: u64 `json:"revision"`,
 	instance_id: u64 `json:"instance_id"`,
+	generation: u64 `json:"generation"`,
 	depth: int `json:"depth"`,
 	anchor_byte: u64 `json:"anchor_byte"`,
 	line_count: u64 `json:"line_count"`,

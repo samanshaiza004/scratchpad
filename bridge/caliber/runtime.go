@@ -28,19 +28,25 @@ const (
 )
 
 type Runtime struct {
-	mu                            sync.Mutex
-	lifecycle                     string
-	caliber                       *caliberRuntime
-	app                           *application.Application
-	revision                      uint64
-	applicationRevision           uint64
-	state                         StateEnvelope
-	stateLeases                   int
-	resourceLeases                int
-	presentationEnabled           bool
-	generation                    uint64
-	asyncError                    string
-	workspaceSearch               *workspaceSearchSession
+	mu                     sync.Mutex
+	lifecycle              string
+	caliber                *caliberRuntime
+	app                    *application.Application
+	revision               uint64
+	applicationRevision    uint64
+	state                  StateEnvelope
+	stateLeases            int
+	resourceLeases         int
+	presentationEnabled    bool
+	generation             uint64
+	asyncError             string
+	workspaceSearch        *workspaceSearchSession
+	semanticZoom           *semanticZoomSession
+	semanticZoomJobs       chan semanticZoomJob
+	semanticZoomStop       chan struct{}
+	semanticZoomGeneration uint64
+	// Tests may block plan construction to exercise cancellation and lock ownership.
+	semanticZoomBuilder           func(context.Context, application.SemanticZoomSnapshot) (application.SemanticZoomPlan, error)
 	pendingSaveAs                 *pendingSaveAsConfirmation
 	nextSaveAsToken               uint64
 	recoveryDir                   string
@@ -280,6 +286,8 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.generation++
 	r.asyncError = ""
 	r.workspaceSearch = nil
+	r.semanticZoom = nil
+	r.semanticZoomGeneration = 0
 	r.pendingSaveAs = nil
 	r.nextSaveAsToken = 0
 	if err := r.publishApplicationState(); err != nil {
@@ -296,6 +304,9 @@ func (r *Runtime) Start(input []byte) []byte {
 	if watcher != nil {
 		go r.watchWorkspace(r.generation, app, app.WatchEvents())
 	}
+	r.semanticZoomJobs = make(chan semanticZoomJob, 1)
+	r.semanticZoomStop = make(chan struct{})
+	go r.runSemanticZoomWorker(r.semanticZoomJobs, r.semanticZoomStop)
 	response = okResponse(request.RequestID, r.lifecycle, r.revision)
 	return marshalResponse(response)
 }
@@ -338,6 +349,12 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.cancelRecoveryTimerLocked()
 	r.generation++
 	r.cancelWorkspaceSearchLocked()
+	r.cancelSemanticZoomLocked()
+	if r.semanticZoomStop != nil {
+		close(r.semanticZoomStop)
+		r.semanticZoomStop = nil
+		r.semanticZoomJobs = nil
+	}
 	if r.app != nil {
 		r.app.CloseDerived()
 	}
@@ -739,6 +756,9 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	publishState := true
 	switch request.Command {
 	case "ping", "snapshot":
+	case "cancel_semantic_zoom":
+		r.cancelSemanticZoomGenerationLocked(request.SemanticZoomGeneration)
+		publishState = false
 	case "refresh_workspace":
 		if !r.app.HasWorkspace {
 			return commandError(request, "no_workspace", errors.New("no workspace is open"))
@@ -1268,30 +1288,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 		return response
 	case "read_semantic_zoom":
-		plan, err := r.app.QuerySemanticZoom(application.DocumentID(request.DocumentID), request.EditorRevision, request.ZoomDepth, int(request.AnchorByte))
-		if err != nil {
-			code := "zoom_unavailable"
-			switch {
-			case errors.Is(err, application.ErrStaleEditorRevision):
-				code = "stale_editor_revision"
-			case errors.Is(err, application.ErrInvalidSemanticZoomAnchor):
-				code = "invalid_zoom_anchor"
-			case errors.Is(err, application.ErrInvalidSemanticZoomDepth):
-				code = "invalid_zoom_depth"
-			}
-			return commandError(request, code, err)
-		}
-		// Reuse the existing derived wake/scheduling lane. The query itself
-		// never parses or starts a second worker runtime, including for prose.
-		if !plan.Ready {
-			if err := r.enablePresentationLocked(request.DocumentID); err != nil {
-				return commandError(request, "zoom_unavailable", err)
-			}
-		}
-		response := okResponse(request.RequestID, r.lifecycle, r.revision)
-		response.BasedOnRevision = request.BasedOnRevision
-		response.SemanticZoom = semanticZoomFromApplication(plan)
-		return response
+		return r.readSemanticZoomLocked(request)
 	case "read_editor_folds":
 		plan, err := r.app.QueryEditorFolds(application.DocumentID(request.DocumentID), request.EditorRevision)
 		if err != nil {
@@ -1509,9 +1506,14 @@ func commandError(request CommandRequest, code string, err error) Response {
 }
 
 func (r *Runtime) publishApplicationState() error {
+	r.cancelStaleSemanticZoomLocked()
 	snapshot := r.app.Snapshot()
 	state := stateFromApplication(r.revision+1, snapshot, r.presentationEnabled)
 	state.StartupNotice = r.startupNotice
+	if session := r.semanticZoom; session != nil {
+		state.SemanticZoomGeneration = session.generation
+		state.SemanticZoomReady = session.done
+	}
 	if search := r.workspaceSearch; search != nil {
 		state.WorkspaceSearchGeneration = search.generation
 		state.WorkspaceSearchSequence = search.sequence

@@ -805,6 +805,9 @@ func (d *Document) DerivedCurrent() bool {
 }
 
 // SetDerived records projections against one immutable editor revision.
+// Published projection slices are immutable: callers transfer their contents
+// to the document and must not mutate them afterward. Consumers may retain
+// slice headers while a later revision replaces the projection set.
 func (d *Document) SetDerived(injected []InjectedRegion, projections Projections) bool {
 	if d == nil || projections.Revision != d.Revision() {
 		return false

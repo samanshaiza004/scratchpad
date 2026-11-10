@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"sort"
 	"unicode"
 	"unicode/utf8"
 
@@ -62,6 +63,7 @@ type BufferSnapshot struct {
 	original []byte
 	added    []byte
 	pieces   []piece
+	starts   []int
 	byteLen  int
 }
 
@@ -84,7 +86,59 @@ func (b *Buffer) Snapshot() BufferSnapshot {
 		collect(node.right)
 	}
 	collect(b.root)
+	snapshot.starts = make([]int, len(snapshot.pieces))
+	for i := range snapshot.pieces {
+		if i > 0 {
+			snapshot.starts[i] = snapshot.starts[i-1] + snapshot.pieces[i-1].length
+		}
+	}
 	return snapshot
+}
+
+// ByteLen returns the number of source bytes represented by the snapshot.
+func (s BufferSnapshot) ByteLen() int { return s.byteLen }
+
+// ReadAt reads the immutable snapshot without materializing the complete
+// source. It is safe to call from a background worker while the live Buffer is
+// being edited because the snapshot owns its piece descriptors and references
+// immutable portions of the append-only source stores.
+func (s BufferSnapshot) ReadAt(p []byte, offset int64) (int, error) {
+	if offset < 0 {
+		return 0, errors.New("negative buffer snapshot read offset")
+	}
+	if offset > int64(s.byteLen) || offset == int64(s.byteLen) && len(p) > 0 {
+		return 0, io.EOF
+	}
+	count := min(len(p), s.byteLen-int(offset))
+	if count == 0 {
+		return 0, nil
+	}
+
+	written := 0
+	start := int(offset)
+	index := sort.Search(len(s.pieces), func(i int) bool {
+		return s.starts[i]+s.pieces[i].length > start
+	})
+	for ; index < len(s.pieces) && written < count; index++ {
+		part := s.pieces[index]
+		localStart := max(start-s.starts[index], 0)
+		n := min(part.length-localStart, count-written)
+		var source []byte
+		if part.source == originalSource {
+			source = s.original
+		} else {
+			source = s.added
+		}
+		written += copy(p[written:written+n], source[part.start+localStart:part.start+localStart+n])
+		start += n
+		if written == count {
+			break
+		}
+	}
+	if written < len(p) {
+		return written, io.EOF
+	}
+	return written, nil
 }
 
 // Materialize returns the complete byte contents represented by the
