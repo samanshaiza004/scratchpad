@@ -33,3 +33,45 @@ func TestReplaceAllRejectsDocumentExpansionBeforeMutation(t *testing.T) {
 		t.Fatal("test fixture does not exceed the document size limit")
 	}
 }
+
+func TestReplaceAllDenseMatchesUsesNonOverlappingOrder(t *testing.T) {
+	app := New(nil)
+	id := DocumentID("dense-replace-all")
+	source := []byte("aba aba aba")
+	doc := document.New("dense.txt", source, "text")
+	app.Documents[id] = doc
+	app.Order = []DocumentID{id}
+	app.Active = id
+
+	result, err := app.ReplaceAllCurrent(id, doc.Revision(), []byte("aba"), []byte("x"), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MatchCount != 3 || !result.Changed {
+		t.Fatalf("Replace All result = %+v", result)
+	}
+	if got := string(doc.Editor.Buffer.Text()); got != "x x x" {
+		t.Fatalf("replacement result = %q", got)
+	}
+	if err := doc.Undo(); err != nil || string(doc.Editor.Buffer.Text()) != string(source) {
+		t.Fatal("the dense replacement was not restored by one undo")
+	}
+}
+
+func BenchmarkReplaceAllDenseMatches(b *testing.B) {
+	source := bytes.Repeat([]byte("x "), 1<<19)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(source)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		app := New(nil)
+		id := DocumentID("dense-replace-all")
+		doc := document.New("dense.txt", source, "text")
+		app.Documents[id] = doc
+		app.Order = []DocumentID{id}
+		app.Active = id
+		if _, err := app.ReplaceAllCurrent(id, doc.Revision(), []byte("x"), []byte("y"), 0, 0); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

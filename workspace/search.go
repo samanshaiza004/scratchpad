@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -192,17 +191,12 @@ func validEditableContext(data []byte) bool {
 }
 
 func readSearchableFile(ctx context.Context, path string) ([]byte, bool, error) {
-	file, err := os.Open(path)
+	file, info, _, err := openRegularFile(path)
 	if err != nil {
 		return nil, false, err
 	}
 	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		return nil, false, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > MaxSearchFileBytes {
+	if info.Size() > MaxSearchFileBytes {
 		return nil, false, nil
 	}
 

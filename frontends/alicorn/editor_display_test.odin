@@ -385,7 +385,9 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 				// only the glyph bounds. Clicking before text and after a short line
 				// should map to legal source line boundaries.
 				owner_node, _ = rt.nodes[app.editor_scroll_owner]
-				before_text_x := owner_node.bounds.x+2
+				// Keep the synthetic click clear of the adjacent Split handle's
+				// resize hit target while remaining to the left of the first glyph.
+				before_text_x := owner_node.bounds.x+10
 				before_text_y := row_node.bounds.y+row_node.bounds.h/2
 				before_event := alicorn.Pointer_Event{kind=.Down, x=before_text_x, y=before_text_y, button=1}
 				before_target := alicorn.process_pointer(&rt, before_event)

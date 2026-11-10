@@ -84,24 +84,24 @@ connected_titlebar_test_expect_join :: proc(t: ^testing.T, app: ^App, rt: ^alico
 	path_text, path_text_ok := rt.nodes[path_text_id]
 	search, search_ok := alicorn.node_info(rt, search_id)
 	drag, drag_ok := alicorn.node_info(rt, drag_id)
-	path_window_drag := false
+	path_interactive := false
 	search_interactive := false
 	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
-		if region.node == path_id && region.kind == .Window_Drag { path_window_drag = true }
+		if region.node == path_id && region.kind == .Interactive { path_interactive = true }
 		if region.node == search_id && region.kind == .Interactive { search_interactive = true }
 	}
 	parent_id: alicorn.Node_ID
 	if sidebar_node, found := rt.nodes[sidebar_header_id]; found { parent_id = sidebar_node.parent }
 	parent, parent_ok := alicorn.node_info(rt, parent_id)
 	if sidebar_header_ok && parent_ok {
-		testing.expect(t, switcher_ok && path_ok && path_text_ok && search_ok && drag_ok && path_window_drag && search_interactive &&
-			path_text.text == app.backend.state.workspace_root && abs(sidebar_header.bounds.w-parent.bounds.w) < 1 &&
+		testing.expect(t, switcher_ok && path_ok && path_text_ok && path_text.kind == .Button && search_ok && drag_ok && path_interactive && search_interactive &&
+			path_text.label == app.backend.state.workspace_root && abs(sidebar_header.bounds.w-parent.bounds.w) < 1 &&
 			path.bounds.x+path.bounds.w <= search.bounds.x+1 &&
 			abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
 			abs(drag.bounds.x+drag.bounds.w-(sidebar_header.bounds.x+sidebar_header.bounds.w)) < 1 &&
 			abs((search.bounds.x+search.bounds.w)-(switcher.bounds.x+switcher.bounds.w)) < 1 && drag.bounds.w == 8,
-			fmt.tprintf("sidebar titlebar should show the workspace path beside Search and retain its trailing caption drag inset: header=%v parent=%v path=%v search=%v drag=%v",
-				sidebar_header.bounds, parent.bounds, path.bounds, search.bounds, drag.bounds))
+			fmt.tprintf("sidebar titlebar should show the workspace path beside Search and retain its trailing caption drag inset: header=%v parent=%v path=%v search=%v drag=%v pathLabel=%q pathInteractive=%t searchInteractive=%t",
+				sidebar_header.bounds, parent.bounds, path.bounds, search.bounds, drag.bounds, path_text.label, path_interactive, search_interactive))
 	} else {
 		testing.expect(t, false, "the sidebar titlebar should remain a child of the retained Split pane")
 	}

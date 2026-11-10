@@ -78,6 +78,78 @@ func TestRuntimeRecoveryFailurePreservesSnapshotForRetry(t *testing.T) {
 	}
 }
 
+func TestRecoveryProfileLockPreventsConcurrentRuntimeFromClearingSnapshot(t *testing.T) {
+	t.Setenv("SCRATCHPAD_DISABLE_RECOVERY", "0")
+	t.Setenv("SCRATCHPAD_DISABLE_SESSION", "1")
+	root := t.TempDir()
+	path := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(path, []byte("disk base"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "state")
+	first := NewRuntime()
+	first.stateDirOverride = stateDir
+	started := decodeResponse(t, first.Start(mustJSON(t, StartRequest{
+		Version: ProtocolVersion, RequestID: 1, WorkspacePath: root,
+	})))
+	if !started.OK {
+		t.Fatalf("first runtime start: %+v", started)
+	}
+	if err := first.app.OpenDocument(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.app.Documents[first.app.Active].ReplaceText([]byte("unsaved recoverable bytes")); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDir := filepath.Join(stateDir, "recovery")
+	if err := first.app.FlushRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(recoveryDir, "manifest.json")
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := NewRuntime()
+	second.stateDirOverride = stateDir
+	response := decodeResponse(t, second.Start(mustJSON(t, StartRequest{
+		Version: ProtocolVersion, RequestID: 2,
+	})))
+	if response.OK || response.Outcome.Code != "recovery_profile_in_use" {
+		t.Fatalf("second runtime start = %+v, want recovery_profile_in_use", response)
+	}
+	after, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("the failed second start removed the recovery manifest: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("the failed second start changed recovery data:\nbefore %s\nafter  %s", before, after)
+	}
+	stopRuntime(t, first)
+
+	third := NewRuntime()
+	third.stateDirOverride = stateDir
+	started = decodeResponse(t, third.Start(mustJSON(t, StartRequest{
+		Version: ProtocolVersion, RequestID: 3, WorkspacePath: root,
+	})))
+	if !started.OK {
+		t.Fatalf("runtime restart after lock release: %+v", started)
+	}
+	defer stopRuntime(t, third)
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := third.app.Documents[application.DocumentID(canonicalPath)]
+	if recovered == nil || recovered.Editor == nil {
+		t.Fatalf("runtime restart did not restore %q; notice=%q open documents=%v", path, third.startupNotice, third.app.Order)
+	}
+	if got := string(recovered.Editor.Buffer.Text()); got != "unsaved recoverable bytes" {
+		t.Fatalf("recovered bytes after lock release = %q", got)
+	}
+}
+
 func TestRuntimeRecoveryConflictActionsUseCurrentAuthoritativeState(t *testing.T) {
 	for _, action := range []struct {
 		name string

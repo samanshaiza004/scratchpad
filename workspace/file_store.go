@@ -154,25 +154,11 @@ func NewOSFileStore() OSFileStore { return OSFileStore{} }
 
 func (OSFileStore) Load(path string) (FileSnapshot, error) {
 	clean := filepath.Clean(path)
-	lstat, err := os.Lstat(clean)
-	if err != nil {
-		return FileSnapshot{}, err
-	}
-	if !lstat.Mode().IsRegular() && lstat.Mode()&os.ModeSymlink == 0 {
-		return FileSnapshot{}, errors.New("path is not a regular file")
-	}
-	file, err := os.Open(clean)
+	file, info, isSymlink, err := openRegularFile(clean)
 	if err != nil {
 		return FileSnapshot{}, err
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return FileSnapshot{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return FileSnapshot{}, errors.New("path is not a regular file")
-	}
 	if info.Size() > maxTextFileBytes {
 		return FileSnapshot{}, &UnsupportedTextFileError{Path: clean, Reason: "file exceeds the 64 MiB text-editor limit"}
 	}
@@ -207,22 +193,18 @@ func (OSFileStore) Load(path string) (FileSnapshot, error) {
 	if err != nil {
 		return FileSnapshot{}, err
 	}
-	return FileSnapshot{Path: clean, Data: data, Mode: info.Mode(), Version: version, IsSymlink: lstat.Mode()&os.ModeSymlink != 0}, nil
+	return FileSnapshot{Path: clean, Data: data, Mode: info.Mode(), Version: version, IsSymlink: isSymlink}, nil
 }
 
 // InspectImage classifies a file with at most 33 bytes of I/O. It does not
 // hash or retain its encoded contents, including unsupported binary files.
 func (s OSFileStore) InspectImage(path string) (ImageFileSnapshot, error) {
 	clean := filepath.Clean(path)
-	file, err := os.Open(clean)
+	file, info, _, err := openRegularFile(clean)
 	if err != nil {
 		return ImageFileSnapshot{}, err
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return ImageFileSnapshot{}, err
-	}
 	return inspectImageHeader(file, clean, info)
 }
 
@@ -266,15 +248,11 @@ func inspectImageHeader(reader io.Reader, path string, info fs.FileInfo) (ImageF
 // identified a supported, valid-sized image. Full decoding remains in Alicorn.
 func (s OSFileStore) LoadImage(path string) (ImageFileSnapshot, error) {
 	clean := filepath.Clean(path)
-	file, err := os.Open(clean)
+	file, info, _, err := openRegularFile(clean)
 	if err != nil {
 		return ImageFileSnapshot{}, err
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return ImageFileSnapshot{}, err
-	}
 	snapshot, err := inspectImageHeader(file, clean, info)
 	if err != nil || snapshot.Error != "" {
 		return snapshot, err
@@ -358,14 +336,15 @@ func (s OSFileStore) Observe(path string) (DiskVersion, error) {
 }
 
 func (s OSFileStore) Verify(path string) (DiskVersion, error) {
-	data, err := os.ReadFile(path)
+	file, info, _, err := openRegularFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return DiskVersion{}, nil
 		}
 		return DiskVersion{}, err
 	}
-	return verifiedVersion(path, data)
+	defer file.Close()
+	return verifiedVersionFile(path, file, info)
 }
 
 func (s OSFileStore) Save(path string, data []byte, mode fs.FileMode) (DiskVersion, error) {
@@ -411,6 +390,20 @@ func verifiedVersion(path string, data []byte) (DiskVersion, error) {
 	}
 	version := observedVersion(path, info)
 	version.Hash = sha256.Sum256(data)
+	version.Verified = true
+	return version, nil
+}
+
+func verifiedVersionFile(path string, file *os.File, info fs.FileInfo) (DiskVersion, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return DiskVersion{}, err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return DiskVersion{}, err
+	}
+	version := observedVersion(path, info)
+	copy(version.Hash[:], hash.Sum(nil))
 	version.Verified = true
 	return version, nil
 }
