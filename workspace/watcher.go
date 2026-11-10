@@ -1,16 +1,20 @@
 package workspace
 
-import "github.com/fsnotify/fsnotify"
+import (
+	"sync"
+
+	"github.com/fsnotify/fsnotify"
+)
 
 type WatchEvent struct {
 	Name string
 	Op   uint32
+	Err  error
 }
 
 type Watcher interface {
 	WatchDirectory(path string) error
 	Events() <-chan WatchEvent
-	Errors() <-chan error
 	Close() error
 }
 
@@ -22,7 +26,12 @@ type DirectoryUnwatcher interface {
 }
 
 type OSWatcher struct {
-	watcher *fsnotify.Watcher
+	watcher    *fsnotify.Watcher
+	done       chan struct{}
+	eventsOnce sync.Once
+	events     <-chan WatchEvent
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 func NewOSWatcher() (*OSWatcher, error) {
@@ -30,7 +39,7 @@ func NewOSWatcher() (*OSWatcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &OSWatcher{watcher: watcher}, nil
+	return &OSWatcher{watcher: watcher, done: make(chan struct{})}, nil
 }
 
 func (w *OSWatcher) WatchDirectory(path string) error {
@@ -42,16 +51,55 @@ func (w *OSWatcher) UnwatchDirectory(path string) error {
 }
 
 func (w *OSWatcher) Events() <-chan WatchEvent {
+	w.eventsOnce.Do(func() {
+		w.events = mergeFSNotifyStreams(w.watcher.Events, w.watcher.Errors, w.done)
+	})
+	return w.events
+}
+
+func mergeFSNotifyStreams(events <-chan fsnotify.Event, errs <-chan error, done <-chan struct{}) <-chan WatchEvent {
 	out := make(chan WatchEvent)
 	go func() {
 		defer close(out)
-		for event := range w.watcher.Events {
-			out <- WatchEvent{Name: event.Name, Op: uint32(event.Op)}
+		for events != nil || errs != nil {
+			select {
+			case <-done:
+				return
+			case event, ok := <-events:
+				if !ok {
+					events = nil
+					continue
+				}
+				if !forwardWatchEvent(out, done, WatchEvent{Name: event.Name, Op: uint32(event.Op)}) {
+					return
+				}
+			case err, ok := <-errs:
+				if !ok {
+					errs = nil
+					continue
+				}
+				if err != nil && !forwardWatchEvent(out, done, WatchEvent{Err: err}) {
+					return
+				}
+			}
 		}
 	}()
 	return out
 }
 
-func (w *OSWatcher) Errors() <-chan error { return w.watcher.Errors }
+func forwardWatchEvent(out chan<- WatchEvent, done <-chan struct{}, event WatchEvent) bool {
+	select {
+	case out <- event:
+		return true
+	case <-done:
+		return false
+	}
+}
 
-func (w *OSWatcher) Close() error { return w.watcher.Close() }
+func (w *OSWatcher) Close() error {
+	w.closeOnce.Do(func() {
+		close(w.done)
+		w.closeErr = w.watcher.Close()
+	})
+	return w.closeErr
+}

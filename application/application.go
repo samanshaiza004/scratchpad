@@ -73,10 +73,11 @@ func (e *SaveAsDestinationExistsError) Error() string {
 func (e *SaveAsDestinationExistsError) Unwrap() error { return ErrSaveAsDestinationExists }
 
 type Conflict struct {
-	Base        []byte
-	Disk        []byte
-	DiskVersion workspace.DiskVersion
-	DiskMode    os.FileMode
+	Base            []byte
+	Disk            []byte
+	DiskVersion     workspace.DiskVersion
+	DiskMode        os.FileMode
+	DiskUnsupported bool
 }
 
 type ViewState struct {
@@ -517,6 +518,15 @@ func (a *Application) PollWatcher() {
 // HandleWatchEvent records only an advisory hint. Reconcile performs the
 // authoritative read and fingerprint comparison.
 func (a *Application) HandleWatchEvent(event workspace.WatchEvent) {
+	if event.Err != nil {
+		// fsnotify reports lost-event conditions (for example queue overflow)
+		// on its error channel. Recheck every open document so a dropped
+		// notification cannot leave an external edit invisible indefinitely.
+		for id := range a.Documents {
+			a.Stale[id] = true
+		}
+		return
+	}
 	name := filepath.Clean(event.Name)
 	for id, doc := range a.Documents {
 		if filepath.Clean(doc.Path) == name {
@@ -688,7 +698,20 @@ func (a *Application) ReloadDisk(id DocumentID) error {
 		return errors.New("document is not conflicted")
 	}
 	doc := a.Documents[id]
-	doc.Reload(conflict.Disk, conflict.DiskVersion, conflict.DiskMode)
+	if conflict.DiskUnsupported {
+		replacement, view, err := a.loadDocumentView(doc.Path)
+		if err != nil {
+			return err
+		}
+		a.Documents[id] = replacement
+		if view.Kind == FileViewText {
+			delete(a.FileViews, id)
+		} else {
+			a.FileViews[id] = view
+		}
+	} else {
+		doc.Reload(conflict.Disk, conflict.DiskVersion, conflict.DiskMode)
+	}
 	delete(a.Conflicts, id)
 	a.touchPresentation()
 	if state := a.derived[id]; state != nil {

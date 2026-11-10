@@ -495,17 +495,23 @@ func (a *Application) restoreRecoveredDocument(saved recoveryDocument, recovered
 	if doc == nil {
 		return errors.New("recovery document identity is unavailable")
 	}
-	if identityMismatch || !doc.DiskVersion.Equal(saved.BaseVersion) {
+	_, hasFileView := a.FileViews[id]
+	if identityMismatch || hasFileView || !doc.DiskVersion.Equal(saved.BaseVersion) {
 		// Recovery stores the base fingerprint, but not a second copy of the
 		// base bytes. Keep the recovered bytes as the local side and retain the
 		// currently loaded disk bytes as the external side. The conflict gate
 		// ensures ordinary Save cannot overwrite those external changes until
 		// the user explicitly resolves the situation.
 		a.Conflicts[id] = Conflict{
-			Disk:        append([]byte(nil), doc.Editor.Buffer.Text()...),
-			DiskVersion: doc.DiskVersion,
-			DiskMode:    doc.FileMode,
+			Disk:            append([]byte(nil), doc.Editor.Buffer.Text()...),
+			DiskVersion:     doc.DiskVersion,
+			DiskMode:        doc.FileMode,
+			DiskUnsupported: hasFileView,
 		}
+		// The recovery is editable text even when the current path has since
+		// become an image or unsupported binary. Keep the external file behind
+		// the conflict gate, but allow the recovered bytes to be saved elsewhere.
+		delete(a.FileViews, id)
 	}
 	if string(doc.Editor.Buffer.Text()) != string(recovered) {
 		if err := doc.ReplaceText(recovered); err != nil {

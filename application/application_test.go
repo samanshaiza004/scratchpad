@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -74,6 +75,40 @@ func TestOpenPathSharesDocumentForAliases(t *testing.T) {
 	}
 	if len(a.Documents) != 1 || len(a.Order) != 1 {
 		t.Fatalf("documents=%d order=%d, want one document", len(a.Documents), len(a.Order))
+	}
+}
+
+func TestWatcherErrorReconcilesAllOpenDocuments(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")}
+	app := New(nil)
+	ids := make([]DocumentID, 0, len(paths))
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := app.OpenDocument(path); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, app.Active)
+	}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("after"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app.HandleWatchEvent(workspace.WatchEvent{Err: errors.New("watch queue overflow")})
+	if len(app.Stale) != len(paths) {
+		t.Fatalf("watcher error marked %d stale documents, want %d", len(app.Stale), len(paths))
+	}
+	app.ReconcileStale()
+	for _, id := range ids {
+		if got := string(app.Documents[id].Editor.Buffer.Text()); got != "after" {
+			t.Errorf("document %s after watcher recovery = %q", id, got)
+		}
+		if app.Stale[id] {
+			t.Errorf("document %s remained stale after reconciliation", id)
+		}
 	}
 }
 
@@ -1080,6 +1115,102 @@ func TestRestoreRecoveryConflictsWhenDiskChangedSinceBase(t *testing.T) {
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "external" {
 		t.Fatalf("disk after blocked save = %q, err=%v", got, err)
+	}
+}
+
+func TestRestoreRecoveryFromNowUnsupportedFileRemainsEditableAndCanSaveAs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("base text"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := New(nil)
+	if err := source.OpenDocument(path); err != nil {
+		t.Fatal(err)
+	}
+	id := source.Active
+	if err := source.Documents[id].ReplaceText([]byte("recovered editable text")); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDir := filepath.Join(t.TempDir(), "recovery")
+	if err := source.WriteRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	diskBytes := []byte("binary replacement\x00payload")
+	if err := os.WriteFile(path, diskBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := New(nil)
+	if err := restored.RestoreRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	id = restored.Active
+	doc := restored.Documents[id]
+	if doc == nil || !doc.Dirty() || string(doc.Editor.Buffer.Text()) != "recovered editable text" {
+		t.Fatalf("restored document = %#v, want dirty recovered text", doc)
+	}
+	if _, readOnly := restored.FileViews[id]; readOnly {
+		t.Fatal("recovered text remained classified as a read-only binary preview")
+	}
+	conflict, ok := restored.Conflict(id)
+	if !ok || !conflict.DiskUnsupported {
+		t.Fatalf("recovered binary conflict = %+v, present=%t", conflict, ok)
+	}
+	if err := restored.SaveActive(); !errors.Is(err, ErrConflict) {
+		t.Fatalf("SaveActive error = %v, want conflict", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, diskBytes) {
+		t.Fatalf("unsupported external file changed: bytes=%q err=%v", got, err)
+	}
+
+	copyPath := filepath.Join(dir, "recovered-copy.txt")
+	if err := restored.SaveAs(id, copyPath); err != nil {
+		t.Fatalf("SaveAs recovered text: %v", err)
+	}
+	if got, err := os.ReadFile(copyPath); err != nil || string(got) != "recovered editable text" {
+		t.Fatalf("saved recovery copy = %q, err=%v", got, err)
+	}
+}
+
+func TestReloadRecoveryConflictRestoresUnsupportedFilePreview(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("base text"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := New(nil)
+	if err := source.OpenDocument(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Documents[source.Active].ReplaceText([]byte("recovered text")); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDir := filepath.Join(t.TempDir(), "recovery")
+	if err := source.WriteRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("binary replacement\x00payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := New(nil)
+	if err := restored.RestoreRecovery(recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	id := restored.Active
+	if err := restored.ReloadDisk(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := restored.Conflict(id); ok {
+		t.Fatal("reload left the conflict unresolved")
+	}
+	view, ok := restored.FileViews[id]
+	if !ok || view.Kind != FileViewUnsupported {
+		t.Fatalf("reloaded external file view = %+v, present=%t", view, ok)
+	}
+	if doc := restored.Documents[id]; doc == nil || doc.Dirty() {
+		t.Fatalf("reloaded unsupported document = %#v, want clean preview backing", doc)
 	}
 }
 

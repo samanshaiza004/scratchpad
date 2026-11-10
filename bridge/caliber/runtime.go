@@ -54,6 +54,7 @@ type Runtime struct {
 	recentWorkspacesPath          string
 	recentWorkspacesWritesBlocked bool
 	recoveryTimer                 *time.Timer
+	recoveryProfileLock           *recoveryProfileLock
 	startupNotice                 string
 	watcher                       *workspace.OSWatcher
 	stateDirOverride              string
@@ -182,6 +183,18 @@ func (r *Runtime) Start(input []byte) []byte {
 	if stateDir == "" && (!disableRecovery || !disableSession) {
 		stateDir, stateDirErr = application.DefaultStateDir()
 	}
+	var recoveryProfileLock *recoveryProfileLock
+	if stateDirErr == nil && stateDir != "" && !disableRecovery {
+		recoveryProfileLock, err = acquireRecoveryProfileLock(stateDir)
+		if err != nil {
+			caliber.close()
+			code := "recovery_profile_lock_failed"
+			if errors.Is(err, ErrRecoveryProfileInUse) {
+				code = "recovery_profile_in_use"
+			}
+			return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, code, err.Error(), false))
+		}
+	}
 	recoveryDir := ""
 	sessionPath := ""
 	recentWorkspacesPath := ""
@@ -243,6 +256,7 @@ func (r *Runtime) Start(input []byte) []byte {
 	}
 	if request.WorkspacePath != "" {
 		if err := app.OpenWorkspace(request.WorkspacePath); err != nil {
+			_ = recoveryProfileLock.Close()
 			caliber.close()
 			return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "application_error", err.Error(), false))
 		}
@@ -271,6 +285,7 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.caliber = caliber
 	r.app = app
 	r.watcher = watcher
+	r.recoveryProfileLock = recoveryProfileLock
 	r.recoveryDir = recoveryDir
 	r.sessionPath = sessionPath
 	r.recentWorkspacesPath = recentWorkspacesPath
@@ -298,6 +313,8 @@ func (r *Runtime) Start(input []byte) []byte {
 		r.caliber.close()
 		r.caliber = nil
 		r.app = nil
+		_ = r.recoveryProfileLock.Close()
+		r.recoveryProfileLock = nil
 		r.lifecycle = lifecycleStopped
 		return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "caliber_error", err.Error(), true))
 	}
@@ -365,6 +382,8 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.caliber.close()
 	r.caliber = nil
 	r.app = nil
+	unlockErr := r.recoveryProfileLock.Close()
+	r.recoveryProfileLock = nil
 	r.lifecycle = lifecycleStopped
 	r.revision = 0
 	r.applicationRevision = 0
@@ -379,6 +398,9 @@ func (r *Runtime) Stop(input []byte) []byte {
 	r.recentWorkspacesPath = ""
 	r.recentWorkspacesWritesBlocked = false
 	r.startupNotice = ""
+	if unlockErr != nil {
+		return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "recovery_profile_unlock_failed", unlockErr.Error(), true))
+	}
 	return marshalResponse(Response{
 		Version:   ProtocolVersion,
 		RequestID: request.RequestID,

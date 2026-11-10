@@ -149,14 +149,15 @@ func atomicWriteFile(path string, data []byte, mode fs.FileMode, expected *DiskV
 }
 
 func versionForPath(path string) (DiskVersion, error) {
-	data, err := os.ReadFile(path)
+	file, info, _, err := openRegularFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return DiskVersion{}, nil
 		}
 		return DiskVersion{}, err
 	}
-	return verifiedVersion(path, data)
+	defer file.Close()
+	return verifiedVersionFile(path, file, info)
 }
 
 func replacementTarget(path string) (string, error) {

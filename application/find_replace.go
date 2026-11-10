@@ -84,7 +84,8 @@ func (a *Application) ReplaceAllCurrentWithOptions(id DocumentID, expectedRevisi
 	}
 	source := doc.Editor.Buffer.Text()
 	first, last := -1, -1
-	var matchStarts []int
+	count := 0
+	allReplacementsUnchanged := true
 	for offset := 0; offset <= len(source)-len(query); {
 		start, found := findNextLiteral(source, query, offset, options)
 		if !found {
@@ -94,20 +95,15 @@ func (a *Application) ReplaceAllCurrentWithOptions(id DocumentID, expectedRevisi
 			first = start
 		}
 		last = start + len(query)
-		matchStarts = append(matchStarts, start)
+		count++
+		if allReplacementsUnchanged && !bytes.Equal(source[start:last], replacement) {
+			allReplacementsUnchanged = false
+		}
 		offset = last
 	}
-	count := len(matchStarts)
 	result.MatchCount = count
 	if count == 0 {
 		return result, nil
-	}
-	allReplacementsUnchanged := true
-	for _, matchStart := range matchStarts {
-		if !bytes.Equal(source[matchStart:matchStart+len(query)], replacement) {
-			allReplacementsUnchanged = false
-			break
-		}
 	}
 	if allReplacementsUnchanged {
 		return result, nil
@@ -129,11 +125,16 @@ func (a *Application) ReplaceAllCurrentWithOptions(id DocumentID, expectedRevisi
 	}
 	newSpan := make([]byte, 0, newLength)
 	sourceOffset, finalCursor := first, first
-	for _, matchStart := range matchStarts {
+	for offset := first; offset < last; {
+		matchStart, found := findNextLiteral(source, query, offset, options)
+		if !found || matchStart >= last {
+			break
+		}
 		newSpan = append(newSpan, source[sourceOffset:matchStart]...)
 		newSpan = append(newSpan, replacement...)
 		sourceOffset = matchStart + len(query)
 		finalCursor = first + len(newSpan)
+		offset = sourceOffset
 	}
 	newSpan = append(newSpan, source[sourceOffset:last]...)
 	applied, err := a.ReplaceDocument(PresentationCommand{

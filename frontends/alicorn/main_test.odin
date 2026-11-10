@@ -1227,21 +1227,21 @@ test_workspace_titlebar_switcher_keeps_focus_and_fits_safe_area :: proc(t: ^test
 	drag, drag_found := rt.nodes[drag_id]
 	text_id := connected_titlebar_test_key(&rt, "workspace-panel-root-path-text")
 	path_text, path_text_found := rt.nodes[text_id]
-	draggable_path, interactive_search, draggable_tail := false, false, false
+	interactive_path, interactive_search, draggable_tail := false, false, false
 	for region in app.window_chrome_regions[:app.window_chrome_region_count] {
-		if region.node == path_id && region.kind == .Window_Drag { draggable_path = true }
+		if region.node == path_id && region.kind == .Interactive { interactive_path = true }
 		if region.node == search_id && region.kind == .Interactive { interactive_search = true }
 		if region.node == drag_id && region.kind == .Window_Drag { draggable_tail = true }
 	}
 	expected_x := f32(8)
 	when ODIN_OS == .Darwin { expected_x = app.window_chrome_metrics.content_start_x }
-	testing.expect(t, path_found && path_text_found && search_found && drag_found && search.button_variant == .Quiet &&
-		path_text.text == "No workspace open" && path.bounds.x >= expected_x && path.bounds.w > 0 && search.bounds.w > 0 &&
+	testing.expect(t, path_found && path_text_found && path_text.kind == .Button && search_found && drag_found && search.button_variant == .Quiet &&
+		path_text.label == "No workspace open" && path.bounds.x >= expected_x && path.bounds.w > 0 && search.bounds.w > 0 &&
 		path.bounds.x+path.bounds.w <= search.bounds.x+1 && abs(search.bounds.x+search.bounds.w-drag.bounds.x) < 1 &&
-		abs(drag.bounds.x+drag.bounds.w-app.workspace_sidebar_width) < 1 && draggable_path && interactive_search && draggable_tail &&
+		abs(drag.bounds.x+drag.bounds.w-app.workspace_sidebar_width) < 1 && interactive_path && interactive_search && draggable_tail &&
 		connected_titlebar_test_key(&rt, "workspace-go-to-symbol") == 0,
-		fmt.tprintf("narrow sidebar should show the clipped workspace path beside Search and retain caption drag regions: path=%v search=%v drag=%v",
-			path.bounds, search.bounds, drag.bounds))
+		fmt.tprintf("narrow sidebar should show the clipped workspace path beside Search and retain caption drag regions: path=%v search=%v drag=%v pathLabel=%q pathFound=%t searchFound=%t dragFound=%t pathInteractive=%t searchInteractive=%t draggableTail=%t",
+			path.bounds, search.bounds, drag.bounds, path_text.label, path_found, search_found, drag_found, interactive_path, interactive_search, draggable_tail))
 	testing.expect(t, alicorn.focus(&rt, search_id), "Search should remain keyboard-focusable in the titlebar")
 	app.workspace_search_mode = true
 	app.window_chrome_region_count = 0
@@ -1338,9 +1338,13 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	testing.expect(t, connected_titlebar_test_key(&rt, "workspace-panel-files") == 0,
 		"the file tree should need no persistent Explorer button")
 	testing.expect(t, connected_titlebar_test_key(&rt, "workspace-go-to-symbol") == 0 &&
-		workspace_path_text_id != 0 && rt.nodes[workspace_path_text_id].text == app.backend.state.workspace_root &&
+		workspace_path_text_id != 0 && rt.nodes[workspace_path_text_id].kind == .Button &&
+		rt.nodes[workspace_path_text_id].label == app.backend.state.workspace_root &&
 		connected_titlebar_test_node(&rt, "workspace-root-row") == 0,
-		"the current workspace path should move into the top utility bar, replacing its old row and Symbols button")
+		fmt.tprintf("the current workspace path should move into the top utility bar: textNode=%d kind=%v label=%q root=%q oldRow=%d symbol=%d",
+			workspace_path_text_id, rt.nodes[workspace_path_text_id].kind, rt.nodes[workspace_path_text_id].label,
+			app.backend.state.workspace_root, connected_titlebar_test_node(&rt, "workspace-root-row"),
+			connected_titlebar_test_key(&rt, "workspace-go-to-symbol")))
 	testing.expect(t, tab_found && tab_variant == .Tab && tab_selected,
 		"the active document should be represented by a selected semantic Tab control")
 	testing.expect(t, tab_bar_found && tab_bar_fills_viewport,
