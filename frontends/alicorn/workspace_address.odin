@@ -164,14 +164,14 @@ workspace_address_rows :: proc(app: ^App, allocator := context.temp_allocator) -
 	if app == nil { return rows }
 	browse := app.workspace_address_browse
 	if browse.parent_path != "" {
-		append(&rows, Workspace_Address_Row{.Parent, fmt.tprintf("↑  %s", browse.parent_path), browse.parent_path})
+		append(&rows, Workspace_Address_Row{.Parent, browse.parent_path, browse.parent_path})
 	}
 	if browse.exact_path != "" && browse.exact_path != app.backend.state.workspace_root {
 		append(&rows, Workspace_Address_Row{.Exact, fmt.tprintf("Open this folder  ·  %s", browse.exact_path), browse.exact_path})
 	}
 	for entry in browse.entries {
 		if !entry.dir { continue }
-		append(&rows, Workspace_Address_Row{.Directory, fmt.tprintf("▸  %s", entry.name), entry.path})
+		append(&rows, Workspace_Address_Row{.Directory, entry.name, entry.path})
 	}
 	if len(app.backend.state.recent_workspaces) > 0 {
 		append(&rows, Workspace_Address_Row{.Heading, "Recent Workspaces", ""})
@@ -236,16 +236,42 @@ workspace_address_suggestions_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^ali
 					continue
 				}
 				key := fmt.tprintf("workspace-address-option:%v:%s", row.kind, row.path)
-				if gui.button(
+				row_button, clicked := alicorn.button_begin(
 					ui,
-					row.label,
+					"",
 					key=alicorn.key_string(key),
-					height=WORKSPACE_ADDRESS_ROW_HEIGHT,
+					style=alicorn.layout_style(.Row, height=WORKSPACE_ADDRESS_ROW_HEIGHT, padding=3, gap=6, align=.Center),
 					state=alicorn.Button_State{selected=index == app.workspace_address_selected_index},
 					variant=.Quiet,
-					text_style=alicorn.Text_Style{overflow=.Ellipsis},
-					content_style=alicorn.button_content_style(.Start, padding_x=7, padding_y=3),
-				) {
+				)
+				if row_button != 0 {
+					row_description := "Workspace folder"
+					if row.kind == .Parent { row_description = "Parent folder" }
+					if row.kind == .Exact { row_description = "Open this folder as a workspace" }
+					if row.kind == .Recent { row_description = "Recent workspace folder" }
+					row_states := alicorn.Semantic_States{}
+					if index == app.workspace_address_selected_index {
+						row_states = alicorn.semantic_states_add(row_states, .Selected)
+					}
+					_ = alicorn.semantic_description(
+						ui,
+						.Button,
+						row.label,
+						description=row_description,
+						states=row_states,
+						actions=alicorn.semantic_actions_add({}, .Press),
+					)
+					_ = alicorn.icon(ui, .Folder_Closed, key=alicorn.key_string("workspace-address-folder-icon"), size=16)
+					_ = gui.text(
+						ui,
+						row.label,
+						key="workspace-address-option-label",
+						style=alicorn.layout_style(.Row, grow=1),
+						text_style=alicorn.Text_Style{overflow=.Ellipsis},
+					)
+					alicorn.button_end(ui)
+				}
+				if clicked {
 					app.workspace_address_selected_index = index
 					workspace_address_request_switch(app, rt, row.path, false)
 				}
