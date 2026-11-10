@@ -264,6 +264,7 @@ State_Envelope :: struct {
 	workspace_search_truncated:  bool `json:"workspace_search_truncated"`,
 	semantic_zoom_generation:    u64  `json:"semantic_zoom_generation"`,
 	semantic_zoom_ready:         bool `json:"semantic_zoom_ready"`,
+	semantic_zoom_superseded_through: u64 `json:"semantic_zoom_superseded_through"`,
 }
 
 Backend_Outcome :: struct {

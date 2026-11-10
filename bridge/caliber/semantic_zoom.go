@@ -31,10 +31,16 @@ type semanticZoomJob struct {
 
 func (r *Runtime) readSemanticZoomLocked(request CommandRequest) Response {
 	documentID := application.DocumentID(request.DocumentID)
+	superseded := false
 	if request.ZoomDepth == application.SemanticZoomFull {
-		r.cancelSemanticZoomLocked()
+		superseded = r.cancelSemanticZoomLocked()
 	}
 	if request.SemanticZoomGeneration != 0 {
+		if superseded {
+			if err := r.publishApplicationState(); err != nil {
+				return commandError(request, "caliber_error", err)
+			}
+		}
 		session := r.semanticZoom
 		if session == nil || session.generation != request.SemanticZoomGeneration ||
 			session.documentID != documentID || session.revision != request.EditorRevision ||
@@ -52,7 +58,14 @@ func (r *Runtime) readSemanticZoomLocked(request CommandRequest) Response {
 
 	// A fresh request supersedes any older work. Cancellation is cooperative;
 	// the worker lane keeps only one active build and one latest pending request.
-	r.cancelSemanticZoomLocked()
+	superseded = r.cancelSemanticZoomLocked() || superseded
+	if superseded {
+		// Other editor views may still be waiting on the canceled generation.
+		// Publish a terminal watermark before doing work that can fail or block.
+		if err := r.publishApplicationState(); err != nil {
+			return commandError(request, "caliber_error", err)
+		}
+	}
 	plan, snapshot, err := r.app.CaptureSemanticZoom(documentID, request.EditorRevision,
 		request.ZoomDepth, int(request.AnchorByte))
 	if err != nil {
@@ -131,11 +144,18 @@ func (r *Runtime) semanticZoomPendingResponse(request CommandRequest, session *s
 	return response
 }
 
-func (r *Runtime) cancelSemanticZoomLocked() {
-	if r.semanticZoom != nil && r.semanticZoom.cancel != nil {
+func (r *Runtime) cancelSemanticZoomLocked() bool {
+	if r.semanticZoom == nil {
+		return false
+	}
+	if r.semanticZoom.generation > r.semanticZoomSupersededThrough {
+		r.semanticZoomSupersededThrough = r.semanticZoom.generation
+	}
+	if r.semanticZoom.cancel != nil {
 		r.semanticZoom.cancel()
 	}
 	r.semanticZoom = nil
+	return true
 }
 
 func (r *Runtime) cancelSemanticZoomGenerationLocked(generation uint64) bool {

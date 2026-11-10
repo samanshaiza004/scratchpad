@@ -28,23 +28,24 @@ const (
 )
 
 type Runtime struct {
-	mu                     sync.Mutex
-	lifecycle              string
-	caliber                *caliberRuntime
-	app                    *application.Application
-	revision               uint64
-	applicationRevision    uint64
-	state                  StateEnvelope
-	stateLeases            int
-	resourceLeases         int
-	presentationEnabled    bool
-	generation             uint64
-	asyncError             string
-	workspaceSearch        *workspaceSearchSession
-	semanticZoom           *semanticZoomSession
-	semanticZoomJobs       chan semanticZoomJob
-	semanticZoomStop       chan struct{}
-	semanticZoomGeneration uint64
+	mu                            sync.Mutex
+	lifecycle                     string
+	caliber                       *caliberRuntime
+	app                           *application.Application
+	revision                      uint64
+	applicationRevision           uint64
+	state                         StateEnvelope
+	stateLeases                   int
+	resourceLeases                int
+	presentationEnabled           bool
+	generation                    uint64
+	asyncError                    string
+	workspaceSearch               *workspaceSearchSession
+	semanticZoom                  *semanticZoomSession
+	semanticZoomJobs              chan semanticZoomJob
+	semanticZoomStop              chan struct{}
+	semanticZoomGeneration        uint64
+	semanticZoomSupersededThrough uint64
 	// Tests may block plan construction to exercise cancellation and lock ownership.
 	semanticZoomBuilder           func(context.Context, application.SemanticZoomSnapshot) (application.SemanticZoomPlan, error)
 	pendingSaveAs                 *pendingSaveAsConfirmation
@@ -303,6 +304,7 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.workspaceSearch = nil
 	r.semanticZoom = nil
 	r.semanticZoomGeneration = 0
+	r.semanticZoomSupersededThrough = 0
 	r.pendingSaveAs = nil
 	r.nextSaveAsToken = 0
 	if err := r.publishApplicationState(); err != nil {
@@ -779,8 +781,7 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 	switch request.Command {
 	case "ping", "snapshot":
 	case "cancel_semantic_zoom":
-		r.cancelSemanticZoomGenerationLocked(request.SemanticZoomGeneration)
-		publishState = false
+		publishState = r.cancelSemanticZoomGenerationLocked(request.SemanticZoomGeneration)
 	case "refresh_workspace":
 		if !r.app.HasWorkspace {
 			return commandError(request, "no_workspace", errors.New("no workspace is open"))
@@ -1536,6 +1537,7 @@ func (r *Runtime) publishApplicationState() error {
 		state.SemanticZoomGeneration = session.generation
 		state.SemanticZoomReady = session.done
 	}
+	state.SemanticZoomSupersededThrough = r.semanticZoomSupersededThrough
 	if search := r.workspaceSearch; search != nil {
 		state.WorkspaceSearchGeneration = search.generation
 		state.WorkspaceSearchSequence = search.sequence

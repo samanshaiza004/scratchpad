@@ -291,6 +291,14 @@ semantic_zoom_set_depth :: proc(app: ^App, rt: ^alicorn.Runtime, depth: int, sou
 semantic_zoom_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, document: bridge.State_Document, view: ^Editor_View_State) {
 	z := &view.zoom
 	if z.waiting && z.request_generation != 0 &&
+		app.backend.state.semantic_zoom_superseded_through >= z.request_generation {
+		// Another document's newer request replaced the runtime's single worker
+		// session. Do not leave this view in a permanent Preparing state.
+		semantic_zoom_reveal_input(app, rt, view)
+		semantic_zoom_destroy(z)
+		return
+	}
+	if z.waiting && z.request_generation != 0 &&
 		(len(app.editor_edits) > 0 || view.preedit_active || view.preedit_recoverable || view.dragging_selection) {
 		depth, anchor := z.depth, z.anchor_byte
 		semantic_zoom_cancel_request(app, z)

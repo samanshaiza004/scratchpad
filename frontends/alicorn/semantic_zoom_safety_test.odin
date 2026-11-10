@@ -413,3 +413,22 @@ test_semantic_zoom_safety_same_path_new_instance_discards_frontend_pages :: proc
 	testing.expect(t, exact && window != nil && string(window.source) == replacement,
 		"equal revision numbers must never preserve the previous instance's ordinary or semantic source bytes")
 }
+
+@(test)
+test_semantic_zoom_safety_superseded_pending_generation_returns_to_full :: proc(t: ^testing.T) {
+	f: Semantic_Zoom_Test_Editor
+	defer semantic_zoom_test_destroy(&f, t)
+	if !semantic_zoom_test_open(&f, t, "md", "# Current\n\nOpening paragraph.\nHidden detail.\n") { return }
+	document, current := semantic_zoom_safety_current_document(&f, t)
+	if !current { return }
+	view := semantic_zoom_test_view(&f)
+	view.zoom.depth = 1
+	view.zoom.waiting = true
+	view.zoom.request_generation = 17
+	f.app.backend.state.semantic_zoom_superseded_through = 17
+
+	semantic_zoom_prepare(&f.app, &f.rt, document, view)
+	semantic_zoom_test_settle(&f)
+	testing.expect(t, view.zoom.depth == 0 && !view.zoom.waiting && view.zoom.request_generation == 0 && !view.zoom.owned,
+		"a terminal superseded-generation signal must restore the affected editor view instead of leaving it Preparing")
+}

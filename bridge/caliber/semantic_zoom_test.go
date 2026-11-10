@@ -153,6 +153,89 @@ func TestLargeSemanticZoomBuildPublishesGenerationScopedPlan(t *testing.T) {
 	}
 }
 
+func TestSemanticZoomNewDocumentPublishesSupersededGeneration(t *testing.T) {
+	root := t.TempDir()
+	largePath := filepath.Join(root, "large.txt")
+	smallPath := filepath.Join(root, "small.txt")
+	largeSource := strings.Repeat("x", 128*1024)
+	writeFile(t, largePath, largeSource)
+	writeFile(t, smallPath, "short document\n")
+	runtime := newStartedRuntime(t, root)
+	defer stopRuntime(t, runtime)
+
+	workerStarted := make(chan struct{}, 1)
+	workerCanceled := make(chan struct{}, 1)
+	runtime.mu.Lock()
+	runtime.semanticZoomBuilder = func(ctx context.Context, _ application.SemanticZoomSnapshot) (application.SemanticZoomPlan, error) {
+		workerStarted <- struct{}{}
+		<-ctx.Done()
+		workerCanceled <- struct{}{}
+		return application.SemanticZoomPlan{}, application.ErrSemanticZoomCanceled
+	}
+	runtime.mu.Unlock()
+
+	state := latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 80,
+		BasedOnRevision: state.ApplicationRev, Command: "open_path", Path: largePath}))
+	if response := decodeResponse(t, runtime.Pump()); !response.OK {
+		t.Fatalf("open large document: %+v", response)
+	}
+	state = latestStateForTest(t, runtime)
+	largeDocument := state.Documents[0]
+	pending := semanticZoomBridgeRead(t, runtime, largeDocument.ID, largeDocument.EditorRevision, application.SemanticZoomSkim, 0)
+	if !pending.OK || pending.SemanticZoom == nil || pending.SemanticZoom.Ready || pending.SemanticZoom.Generation == 0 {
+		t.Fatalf("large document did not start background semantic zoom: %+v", pending)
+	}
+	generation := pending.SemanticZoom.Generation
+	select {
+	case <-workerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("semantic zoom worker did not start")
+	}
+
+	state = latestStateForTest(t, runtime)
+	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 81,
+		BasedOnRevision: state.ApplicationRev, Command: "open_path", Path: smallPath}))
+	if response := decodeResponse(t, runtime.Pump()); !response.OK {
+		t.Fatalf("open small document: %+v", response)
+	}
+	state = latestStateForTest(t, runtime)
+	canonicalSmallPath, err := filepath.EvalSymlinks(smallPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var smallDocument StateDocument
+	for _, document := range state.Documents {
+		if document.ID == string(application.DocumentID(canonicalSmallPath)) {
+			smallDocument = document
+			break
+		}
+	}
+	if smallDocument.ID == "" {
+		t.Fatalf("small document missing from state: %+v", state.Documents)
+	}
+	ready := semanticZoomBridgeRead(t, runtime, smallDocument.ID, smallDocument.EditorRevision, application.SemanticZoomSkim, 0)
+	if !ready.OK || ready.SemanticZoom == nil || !ready.SemanticZoom.Ready {
+		t.Fatalf("small document should be prepared synchronously: %+v", ready)
+	}
+
+	state = latestStateForTest(t, runtime)
+	if state.SemanticZoomSupersededThrough < generation {
+		t.Fatalf("canceled tab was not given a terminal state signal: got=%d want at least %d",
+			state.SemanticZoomSupersededThrough, generation)
+	}
+	stale := semanticZoomBridgeReadGeneration(t, runtime, largeDocument.ID, largeDocument.EditorRevision,
+		application.SemanticZoomSkim, 0, generation)
+	if stale.OK || stale.Outcome.Code != "stale_semantic_zoom_request" {
+		t.Fatalf("superseded tab still retrieved its canceled generation: %+v", stale)
+	}
+	select {
+	case <-workerCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("superseding a request did not cancel its worker")
+	}
+}
+
 func TestSemanticZoomEditCancelsBlockedWorkerAndRejectsOldGeneration(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "large.txt")

@@ -137,7 +137,15 @@ func TestRecoveryProfileLockPreventsConcurrentRuntimeFromClearingSnapshot(t *tes
 		t.Fatalf("runtime restart after lock release: %+v", started)
 	}
 	defer stopRuntime(t, third)
-	if got := string(third.app.Documents[application.DocumentID(path)].Editor.Buffer.Text()); got != "unsaved recoverable bytes" {
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := third.app.Documents[application.DocumentID(canonicalPath)]
+	if recovered == nil || recovered.Editor == nil {
+		t.Fatalf("runtime restart did not restore %q; notice=%q open documents=%v", path, third.startupNotice, third.app.Order)
+	}
+	if got := string(recovered.Editor.Buffer.Text()); got != "unsaved recoverable bytes" {
 		t.Fatalf("recovered bytes after lock release = %q", got)
 	}
 }

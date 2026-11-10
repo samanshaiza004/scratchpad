@@ -364,31 +364,32 @@ type Outcome struct {
 }
 
 type StateEnvelope struct {
-	PinnedEpoch                  uint64                `json:"pinned_epoch"`
-	PinnedRevision               uint64                `json:"pinned_revision"`
-	PinnedCount                  int                   `json:"pinned_count"`
-	PinnedSourceInvalidations    uint64                `json:"pinned_source_invalidations"`
-	SessionUI                    application.SessionUI `json:"session_ui,omitempty"`
-	Schema                       uint32                `json:"schema"`
-	Revision                     uint64                `json:"revision"`
-	ApplicationRev               uint64                `json:"application_revision"`
-	HasWorkspace                 bool                  `json:"has_workspace"`
-	WorkspaceRoot                string                `json:"workspace_root,omitempty"`
-	RecentWorkspaces             []string              `json:"recent_workspaces,omitempty"`
-	SidebarWidth                 float32               `json:"sidebar_width,omitempty"`
-	PinnedPaneWidth              float32               `json:"pinned_pane_width,omitempty"`
-	Active                       string                `json:"active,omitempty"`
-	StartupNotice                string                `json:"startup_notice,omitempty"`
-	Documents                    []StateDocument       `json:"documents"`
-	Actions                      []ActionState         `json:"actions,omitempty"`
-	WorkspaceSearchGeneration    uint64                `json:"workspace_search_generation,omitempty"`
-	WorkspaceSearchSequence      uint64                `json:"workspace_search_sequence,omitempty"`
-	WorkspaceSearchCount         uint64                `json:"workspace_search_count,omitempty"`
-	WorkspaceSearchPageAvailable bool                  `json:"workspace_search_page_available,omitempty"`
-	WorkspaceSearchDone          bool                  `json:"workspace_search_done,omitempty"`
-	WorkspaceSearchTruncated     bool                  `json:"workspace_search_truncated,omitempty"`
-	SemanticZoomGeneration       uint64                `json:"semantic_zoom_generation,omitempty"`
-	SemanticZoomReady            bool                  `json:"semantic_zoom_ready,omitempty"`
+	PinnedEpoch                   uint64                `json:"pinned_epoch"`
+	PinnedRevision                uint64                `json:"pinned_revision"`
+	PinnedCount                   int                   `json:"pinned_count"`
+	PinnedSourceInvalidations     uint64                `json:"pinned_source_invalidations"`
+	SessionUI                     application.SessionUI `json:"session_ui,omitempty"`
+	Schema                        uint32                `json:"schema"`
+	Revision                      uint64                `json:"revision"`
+	ApplicationRev                uint64                `json:"application_revision"`
+	HasWorkspace                  bool                  `json:"has_workspace"`
+	WorkspaceRoot                 string                `json:"workspace_root,omitempty"`
+	RecentWorkspaces              []string              `json:"recent_workspaces,omitempty"`
+	SidebarWidth                  float32               `json:"sidebar_width,omitempty"`
+	PinnedPaneWidth               float32               `json:"pinned_pane_width,omitempty"`
+	Active                        string                `json:"active,omitempty"`
+	StartupNotice                 string                `json:"startup_notice,omitempty"`
+	Documents                     []StateDocument       `json:"documents"`
+	Actions                       []ActionState         `json:"actions,omitempty"`
+	WorkspaceSearchGeneration     uint64                `json:"workspace_search_generation,omitempty"`
+	WorkspaceSearchSequence       uint64                `json:"workspace_search_sequence,omitempty"`
+	WorkspaceSearchCount          uint64                `json:"workspace_search_count,omitempty"`
+	WorkspaceSearchPageAvailable  bool                  `json:"workspace_search_page_available,omitempty"`
+	WorkspaceSearchDone           bool                  `json:"workspace_search_done,omitempty"`
+	WorkspaceSearchTruncated      bool                  `json:"workspace_search_truncated,omitempty"`
+	SemanticZoomGeneration        uint64                `json:"semantic_zoom_generation,omitempty"`
+	SemanticZoomReady             bool                  `json:"semantic_zoom_ready,omitempty"`
+	SemanticZoomSupersededThrough uint64                `json:"semantic_zoom_superseded_through,omitempty"`
 }
 
 // ActionState publishes the canonical Scratchpad command vocabulary to any
