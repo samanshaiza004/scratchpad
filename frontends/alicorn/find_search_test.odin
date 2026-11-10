@@ -251,3 +251,19 @@ test_workspace_search_result_label_includes_bounded_utf8_context :: proc(t: ^tes
 	label := workspace_search_result_label(result, 4)
 	testing.expect(t, label == "wiki/log.md:123\nab…", "result label should show the source location and a bounded preview without splitting UTF-8")
 }
+
+@(test)
+test_workspace_search_divergence_follows_literal_query_matching :: proc(t: ^testing.T) {
+	testing.expect(t,workspace_search_text_matches_query("first needle, then more","needle"),
+		"a live edited line that still contains the literal query remains a match")
+	testing.expect(t,!workspace_search_text_matches_query("first Needle, then more","needle"),
+		"workspace search matching is case-sensitive")
+	testing.expect(t,workspace_search_result_diverged("first value","needle",true),
+		"a changed line without the original literal query should be marked as diverged")
+	testing.expect(t,!workspace_search_result_diverged("needle remains","needle",true),
+		"a changed line that still contains the query remains current")
+	testing.expect(t,!workspace_search_result_diverged("first value","needle",false),
+		"an unchanged result should not be marked diverged before an edit")
+	testing.expect(t,!workspace_search_result_diverged("first value","",true),
+		"an empty query has no result state to diverge from")
+}

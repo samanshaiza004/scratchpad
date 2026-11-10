@@ -30,6 +30,12 @@ pinned_text_allocation_height :: proc(content_height, minimum, device_scale: f32
 Pinned_Page :: struct { window: bridge.Pinned_Window, data: []u8 }
 Pinned_Control :: struct { node: alicorn.Node_ID, pin: bridge.Pin_ID, key: string }
 Pinned_Read_Row_Target :: struct { node: alicorn.Node_ID, pin: bridge.Pin_ID, row: int }
+Pinned_Status_Presentation :: struct {
+	label: string,
+	icon: alicorn.Icon_ID,
+	color: alicorn.Style_Color_Role,
+	explanation: string,
+}
 Pinned_Surface :: struct {
 	visible, narrow_source, single_pane, focus_pending, restore_pending, force_refresh: bool,
 	editing: bool,
@@ -57,6 +63,30 @@ Pinned_Surface :: struct {
 	// Developer/test observability. No polling or dependency tracking.
 	rejected_responses, page_evictions, source_invalidations: u64,
 	temporary_text_measurement_builds, retained_text_measurement_hits: u64,
+}
+
+pinned_status_presentation :: proc(status: string) -> Pinned_Status_Presentation {
+	switch status {
+	case "current":
+		return Pinned_Status_Presentation{
+			label="Current", icon=.Check, color=.Success,
+			explanation="The source is at the captured revision. This excerpt can be edited, copied, and opened at its exact source range.",
+		}
+	case "stale":
+		return Pinned_Status_Presentation{
+			label="Changed", icon=.Warning, color=.Accent_Hover,
+			explanation="The source changed, so this excerpt is frozen. Select the current passage in source and pin it again.",
+		}
+	case "missing":
+		return Pinned_Status_Presentation{
+			label="Closed", icon=.Info, color=.Muted_Text,
+			explanation="The source document is closed. Open it and pin the current passage again.",
+		}
+	}
+	return Pinned_Status_Presentation{
+		label="Unavailable", icon=.Warning, color=.Muted_Text,
+		explanation="The source state is unavailable. Open the source and pin the current passage again.",
+	}
 }
 
 pinned_pages_clear :: proc(surface: ^Pinned_Surface) {
@@ -1151,10 +1181,8 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 					if display_name=="" { display_name=pin.relative_path }
 					range_label := fmt.tprintf("L%d-%d",pin.first_line+1,pin.first_line+pin.line_count)
 					status_label := fmt.tprintf("Lines %d-%d",pin.first_line+1,pin.first_line+pin.line_count)
-					accessible_description := fmt.tprintf("%s - Read-only source passage",status_label)
-					if pin.status=="current" { accessible_description=fmt.tprintf("%s - Editable source passage; click the excerpt to edit it",status_label) }
-					else if pin.status=="stale" { accessible_description=fmt.tprintf("%s - Source changed; read-only",status_label) }
-					else if pin.status=="missing" { accessible_description=fmt.tprintf("%s - Source closed; read-only",status_label) }
+					state := pinned_status_presentation(pin.status)
+					accessible_description := fmt.tprintf("%s. %s",status_label,state.explanation)
 					if gui.row(ui,height=32,gap=4,align=.Center) {
 						gui.icon(ui,.File,size=16)
 						heading_disabled:=s.editing
@@ -1169,6 +1197,13 @@ pinned_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, d
 						}
 						_ = alicorn.semantic_description(ui,.Button,display_name,description=accessible_description,states=heading_states,actions=heading_actions)
 						alicorn.tooltip(ui,pin.path)
+						gui.icon(ui,state.icon,size=14,color_role=state.color)
+						_ = gui.text(ui,state.label,style=alicorn.layout_style(.Row,width=58,height=22),
+							color=alicorn.style_color(ui,state.color),
+							text_style=alicorn.Text_Style{font_size=11,font_weight=alicorn.FONT_WEIGHT_MEDIUM,overflow=.Ellipsis})
+						_ = alicorn.semantic_description(ui,.Status,fmt.tprintf("Pinned source status: %s",state.label),
+							description=state.explanation,value=state.label)
+						alicorn.tooltip(ui,state.explanation)
 						gui.text(ui,range_label,style=alicorn.layout_style(width=72,clip=true),
 							text_style=alicorn.Text_Style{font_size=12,overflow=.Ellipsis},color=alicorn.style_color(ui,.Muted_Text))
 						if pinned_more_button(app,ui,pin.id) { s.selected=pin.id }

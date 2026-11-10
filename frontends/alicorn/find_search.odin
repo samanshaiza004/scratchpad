@@ -121,6 +121,17 @@ workspace_search_result_heading :: proc(result: bridge.Workspace_Search_Result) 
 	return fmt.tprintf("%s:%d", result.path, result.line+1)
 }
 
+// Workspace search uses a case-sensitive literal byte substring query. Keep
+// the live edit indicator on the same rule so it never claims a result is
+// current while the edited line no longer contains the query.
+workspace_search_text_matches_query :: proc(text, query: string) -> bool {
+	return len(query) > 0 && strings.contains(text, query)
+}
+
+workspace_search_result_diverged :: proc(text, query: string, source_changed: bool) -> bool {
+	return source_changed && len(query) > 0 && !workspace_search_text_matches_query(text, query)
+}
+
 Workspace_Search_Preview :: struct {
 	text: string,
 	source_start: int,

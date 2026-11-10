@@ -7,6 +7,21 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
+test_pinned_status_presentation_names_each_source_state :: proc(t: ^testing.T) {
+	current := pinned_status_presentation("current")
+	stale := pinned_status_presentation("stale")
+	missing := pinned_status_presentation("missing")
+	testing.expect(t,current.label=="Current" && current.icon==.Check && current.color==.Success,
+		"a current pin should have a positive, readable status")
+	testing.expect(t,stale.label=="Changed" && stale.icon==.Warning && stale.color==.Accent_Hover &&
+		strings.contains(stale.explanation,"frozen") && strings.contains(stale.explanation,"pin it again"),
+		"a stale pin should explain why its excerpt stopped tracking source and how to replace it")
+	testing.expect(t,missing.label=="Closed" && missing.icon==.Info && missing.color==.Muted_Text &&
+		strings.contains(missing.explanation,"document is closed"),
+		"a missing pin should explain that the source document is closed")
+}
+
+@(test)
 test_pinned_source_focus_respects_detached_owner :: proc(t: ^testing.T) {
 	app: App
 	app.pinned.visible=true
@@ -418,6 +433,21 @@ test_pinned_surface_rejects_old_pages_and_bounds_cache :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t,status_found,"stale sources should explain why their excerpt is no longer current")
+	status_label_found := false
+	status_semantic_found := false
+	for _,node in f.rt.nodes {
+		if node.kind==.Text && node.text=="Changed" { status_label_found=true }
+	}
+	status_snapshot:=alicorn.semantic_snapshot(&f.rt,context.temp_allocator)
+	for item in status_snapshot.nodes {
+		if item.role==.Status && item.label=="Pinned source status: Changed" && item.value=="Changed" &&
+		   strings.contains(item.description,"source changed") && strings.contains(item.description,"pin it again") {
+			status_semantic_found=true
+		}
+	}
+	alicorn.semantic_snapshot_destroy(&status_snapshot)
+	testing.expect(t,status_label_found && status_semantic_found,
+		"the stale card header should visibly and accessibly identify the changed source state")
 	testing.expect(t,go_id!=0 && f.rt.nodes[go_id].disabled && copy_id!=0 && f.rt.nodes[copy_id].disabled,
 		"stale source cards should keep navigation and copy disabled")
 }

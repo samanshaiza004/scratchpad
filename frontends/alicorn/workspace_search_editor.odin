@@ -88,9 +88,15 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 			continue
 		}
 		active_edit := workspace_search_edit_session_matches(app, position)
+		diverged := active_edit && workspace_search_result_diverged(
+			app.workspace_search_edit_buffer.text,
+			app.workspace_search_started_query,
+			app.workspace_search_edit_source_changed,
+		)
 		selected := app.workspace_search_selected == position
 		row_color := alicorn.NO_BACKGROUND_COLOR
 		if selected { row_color = editor_markdown_tint(alicorn.style_color(ui, .Selection), 0.14) }
+		else if diverged { row_color = editor_markdown_tint(alicorn.style_color(ui, .Accent_Hover), 0.10) }
 		alicorn.container_begin(ui, .Container,
 			key=alicorn.key_pair(app.workspace_search_view.generation, result.projection_key),
 			label="workspace-search-result",
@@ -122,7 +128,7 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 					_ = alicorn.semantic_text_field_label(ui, fmt.tprintf("Search result in %s, line %d", result.path, result.line+1))
 					match_start := min(max(app.workspace_search_edit_match_start, 0), len(app.workspace_search_edit_buffer.text))
 					match_end := min(max(app.workspace_search_edit_match_end, match_start), len(app.workspace_search_edit_buffer.text))
-					if match_end > match_start {
+					if !diverged && match_end > match_start {
 						match_paint := [?]alicorn.Text_Paint_Span{{
 							start=match_start,
 							end=match_end,
@@ -165,6 +171,18 @@ workspace_search_editor_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.R
 				projection_key=result.projection_key,
 				kind=.Edit_Text,
 			})
+		}
+		if diverged {
+			alicorn.icon(ui, .Warning, key=alicorn.key_string("workspace-search-diverged-icon"), size=14, color_role=.Accent_Hover)
+			_ = gui.text(ui, "No match", key=alicorn.key_string("workspace-search-diverged-label"),
+				style=alicorn.layout_style(.Row, width=62, height=22),
+				color=alicorn.style_color(ui, .Accent_Hover),
+				text_style=alicorn.Text_Style{font_size=11, font_weight=alicorn.FONT_WEIGHT_MEDIUM, overflow=.Ellipsis},
+			)
+			status_description := "This edited line no longer matches the search query. Finish editing to refresh the results."
+			_ = alicorn.semantic_description(ui, .Status, "Edited result no longer matches",
+				description=status_description, value="No match")
+			_ = alicorn.tooltip(ui, status_description)
 		}
 		alicorn.container_end(ui)
 	}
