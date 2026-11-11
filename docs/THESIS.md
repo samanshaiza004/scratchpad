@@ -12,7 +12,7 @@ The product is not a proprietary note database, a graph users must maintain, or 
 
 ## What Scratchpad is building now
 
-The published v0.1 releases established a dependable native editor for ordinary files. The v0.2.0 release candidate adds source-connected views: semantic selection, reduced views, pinned ranges, editable search, and task, symbol, heading, and link projections. Its release acceptance is complete and recorded in the [roadmap](PLAN.md) and [validation reports](validation/README.md); v0.2.0 has not yet been published. See the [changelog](../CHANGELOG.md) for the release scope.
+The published v0.1 releases established a dependable native editor for ordinary files. v0.2.0 adds source-connected views: semantic selection, reduced views, pinned ranges, editable search, and task, symbol, heading, and link projections. Its release acceptance and measured limits are recorded in the [roadmap](PLAN.md) and [validation reports](validation/README.md). See the [changelog](../CHANGELOG.md) for the release scope.
 
 The editing foundation remains a product requirement, not a completed phase that can be traded away. Source input, caret and selection behavior, navigation, saving, recovery, and ordinary-file interoperability must remain trustworthy while the view model grows.
 

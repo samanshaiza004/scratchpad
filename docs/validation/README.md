@@ -1,5 +1,9 @@
 # Validation records
 
+Scratchpad v0.2.0 is published. Its #17 reports below are dated acceptance
+records for the release candidate and retain the package hashes and limits
+observed during those runs; the release page contains the published artifacts.
+
 Each item records a bounded run, platform check, or manual acceptance matrix. Results apply to the commit, operating system, hardware, and scenario named by that record. A successful native startup smoke does not imply full physical-input or visual certification.
 
 - [Semantic zoom and folding](semantic-zoom.md) — deterministic scenarios and platform interaction matrix; includes the large-document construction measurement.

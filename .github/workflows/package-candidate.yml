@@ -3,6 +3,11 @@ name: Consumer package candidates
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: 'Consumer package version (major.minor.patch)'
+        required: true
+        type: string
+        default: '0.2.0'
       static_sdl:
         description: 'Also build and smoke-test the Windows static SDL package (opt-in, expensive on a cold runner)'
         required: false
@@ -79,13 +84,13 @@ jobs:
       - name: Build, audit, and smoke the package
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .\tools\alicorn.ps1 package --version 0.1.1 --out out\packages\windows
+        run: .\tools\alicorn.ps1 package --version ${{ inputs.version || '0.1.1' }} --out out\packages\windows
       - name: Build, sign, audit, and smoke the package
         if: runner.os == 'macOS'
-        run: ./tools/alicorn.sh package --version 0.1.1 --out out/packages/macos
+        run: ./tools/alicorn.sh package --version ${{ inputs.version || '0.1.1' }} --out out/packages/macos
       - uses: actions/upload-artifact@v4
         with:
-          name: scratchpad-v0.1.1-${{ matrix.output }}
+          name: scratchpad-v${{ inputs.version || '0.1.1' }}-${{ matrix.output }}
           path: out/packages/${{ matrix.output }}/
           if-no-files-found: error
 
@@ -135,7 +140,7 @@ jobs:
             throw 'Could not create a short drive mapping for the Alicorn checkout.'
           }
           try {
-            .\tools\alicorn.ps1 package --alicorn-root R:\ --version 0.1.1 --static-sdl --out out\packages\windows-static-sdl
+            .\tools\alicorn.ps1 package --alicorn-root R:\ --version ${{ inputs.version || '0.1.1' }} --static-sdl --out out\packages\windows-static-sdl
           } finally {
             subst R: /d
           }
@@ -185,7 +190,7 @@ jobs:
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: scratchpad-v0.1.1-windows-static-sdl
+          name: scratchpad-v${{ inputs.version || '0.1.1' }}-windows-static-sdl
           path: out/packages/windows-static-sdl/
           if-no-files-found: error
           retention-days: 7

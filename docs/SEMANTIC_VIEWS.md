@@ -1,9 +1,8 @@
 # Anchored semantic zoom and source folding
 
-Semantic zoom and revision-safe local folding are implemented in the v0.2.0
-release candidate. Release acceptance is complete; the worker and platform
-evidence are summarized in the [roadmap](PLAN.md) and
-[validation reports](validation/README.md). v0.2.0 has not yet been published.
+Semantic zoom and revision-safe local folding shipped in v0.2.0. The worker and
+platform evidence, including accepted measurement limits, are summarized in
+the [roadmap](PLAN.md) and [validation reports](validation/README.md).
 
 Semantic zoom changes which source lines are visible in the ordinary editor.
 It keeps one authoritative Go document buffer, original source line numbers,

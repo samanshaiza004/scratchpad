@@ -6,11 +6,11 @@ document bytes, editing commands, workspace operations, saves, conflicts, and
 recovery; the Odin/Alicorn frontend owns native interaction and presentation
 through the Caliber C ABI.
 
-The latest published release is [v0.1.1](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.1.1).
-The current `main` branch contains the v0.2.0 release candidate. Its acceptance
-is complete; see the [roadmap](docs/PLAN.md) and [validation records](docs/validation/README.md).
-The full release history is in the [changelog](CHANGELOG.md). v0.2.0 has not
-yet been published.
+The latest release is [v0.2.0](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.2.0).
+It is available as a portable Windows x64 ZIP and an Apple Silicon macOS app
+ZIP. The [roadmap](docs/PLAN.md) and [validation records](docs/validation/README.md)
+describe its scope and platform evidence. The full release history is in the
+[changelog](CHANGELOG.md).
 
 ## What is in current `main`
 
@@ -25,9 +25,8 @@ yet been published.
 - Restore clean sessions and recent workspaces, recover unsaved edits after a
   crash, choose an editor font and size, and switch persisted themes.
 
-These are capabilities on the unreleased development line; consult the
-[v0.1.1 release notes](CHANGELOG.md) for what is in the latest published
-packages.
+These capabilities are included in the v0.2.0 packages. See the
+[release notes](CHANGELOG.md) for the complete list of changes.
 
 ## Run from source
 
@@ -52,7 +51,7 @@ The native frontend requires Go with cgo, Odin, Rust/Cargo, and platform build
 tools. See [Alicorn setup and usage](frontends/alicorn/README.md) for pinned
 toolchain details, platform requirements, diagnostics, and interactive
 features. Build consumer packages with `package --version <version>`; see the
-[packaging guide](packaging/README.md). The v0.1.1 release has Windows x64 and
+[packaging guide](packaging/README.md). The v0.2.0 release has Windows x64 and
 Apple Silicon macOS packages.
 
 Run the backend and language tests independently with:
@@ -65,13 +64,13 @@ go test -tags treesitter_release ./...
 
 - [Product thesis](docs/THESIS.md) — ordinary files, source-connected views,
   and the design laws.
-- [Roadmap](docs/PLAN.md) — unreleased v0.2.0 scope and remaining release
-  gates.
+- [Roadmap](docs/PLAN.md) — released scope and accepted measurement limits.
 - [Documentation index](docs/README.md) — current guides, design notes, and
   validation records.
 - [Alicorn coverage](docs/frontends/alicorn/PARITY.md) — current capabilities
   and known limits.
-- [Changelog](CHANGELOG.md) — consolidated v0.1.0, v0.1.1, and Unreleased notes.
+- [Changelog](CHANGELOG.md) — consolidated v0.1.0, v0.1.1, v0.2.0, and
+  Unreleased notes.
 
 The former Shirei and GPUI frontends are preserved at the
 `archive/pre-v0.1.0-frontends` Git ref for historical reference; they are not

@@ -3,11 +3,11 @@
 Build a local consumer package from the pinned Alicorn and Caliber revisions:
 
 ```powershell
-.\tools\alicorn.ps1 package --version 0.1.1
+.\tools\alicorn.ps1 package --version 0.2.0
 ```
 
 ```sh
-./tools/alicorn.sh package --version 0.1.1
+./tools/alicorn.sh package --version 0.2.0
 ```
 
 The command always builds optimized production artifacts. It defaults to a

@@ -1,12 +1,19 @@
 # Changelog
 
 Notable changes to Scratchpad are collected here. The latest published release
-is [v0.1.1](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.1.1).
-The Unreleased section summarizes v0.2.0 work on `main` through 2026-11-11;
-merge commits and duplicate integration commits are represented by their
-resulting changes, not repeated as separate entries.
+is [v0.2.0](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.2.0).
+The Unreleased section tracks changes after v0.2.0. Merge commits and duplicate
+integration commits are represented by their resulting changes, not repeated
+as separate entries.
 
 ## [Unreleased]
+
+No unreleased changes.
+
+## [0.2.0] — 2026-11-11
+
+See the [v0.2.0 release](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.2.0)
+for platform downloads, package manifests, and checksums.
 
 ### Added
 

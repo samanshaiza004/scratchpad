@@ -3,7 +3,7 @@
 ## Current product and architecture
 
 - [Product thesis](THESIS.md) — file-native source, derived structure, projections, and design laws.
-- [Roadmap](PLAN.md) — published baseline, unreleased v0.2.0 scope, and release acceptance.
+- [Roadmap](PLAN.md) — published releases, v0.2.0 scope, and accepted measurement limits.
 - [Changelog](../CHANGELOG.md) — consolidated changes from v0.1.0 through Unreleased.
 - [Architecture](ARCHITECTURE.md) — ownership, document model, package boundaries, and persistence.
 - [Alicorn coverage](frontends/alicorn/PARITY.md) — implemented frontend capabilities and known limits.

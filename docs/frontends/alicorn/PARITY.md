@@ -1,6 +1,6 @@
 # Alicorn frontend coverage
 
-Alicorn is Scratchpad's supported desktop frontend. This page summarizes the current implementation on `main`; it is not a claim that every interaction has been manually certified on every operating system. The latest published release is v0.1.1, while `main` contains unreleased v0.2.0 work. See the [roadmap](../../PLAN.md), [changelog](../../../CHANGELOG.md), and date-scoped [validation records](../../validation/README.md).
+Alicorn is Scratchpad's supported desktop frontend. This page summarizes the current implementation; it is not a claim that every interaction has been manually certified on every operating system. The latest published release is v0.2.0. See the [roadmap](../../PLAN.md), [changelog](../../../CHANGELOG.md), and date-scoped [validation records](../../validation/README.md).
 
 ## Implemented product coverage
 
@@ -18,7 +18,7 @@ The Go application owns document bytes, editing commands, workspace semantics, p
 
 ## Known limits and release work
 
-- v0.2.0 is not published; its release acceptance is complete in [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
+- v0.2.0 release acceptance is recorded in [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17); see the validation records for the exact platform scope and accepted measurement limits.
 - The complete semantic-zoom keyboard, mouse, and trackpad acceptance has been confirmed on macOS and Windows; the original October validation matrix predates that follow-up.
 - Large semantic-plan construction runs on a cancellable, generation-scoped worker while Full source remains interactive. The historical million-line prose fixture measured about 206 ms before this change; current worker results and cross-platform acceptance are recorded in the [semantic-zoom](../../validation/semantic-zoom.md), [Windows](../../validation/issue-17-windows-2026-11-10.md), and [macOS](../../validation/issue-17-macos-2026-11-11.md) reports. Native UI-to-visible latency and full GUI-process memory high-water were not instrumented and are not release claims.
 - Image tabs are read-only PNG/QOI previews; they are not general image editors.
