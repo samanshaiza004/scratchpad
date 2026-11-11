@@ -96,4 +96,12 @@ The following quantitative Windows measurements remain open:
 - Measure native UI-to-visible latency and the time until Full source first accepts typing or scrolling while a plan is pending. The interaction has been manually confirmed, but no latency values were captured.
 - Measure Windows process working-set peak; current memory figures cover Go-managed heap only.
 
-The corresponding current-candidate macOS worker measurements and physical acceptance remain outstanding, including numeric responsiveness and memory measurements, pending-work input/IME and cancellation scenarios, recovery/conflict handling, multi-window behavior, and package launch/relaunch. This Windows report alone does not justify closing #17.
+## Cross-platform status update — 2026-11-11
+
+Current-main macOS worker latency, cancellation, and diagnostic-process peak RSS
+are now recorded in the [macOS validation report](issue-17-macos-2026-11-11.md).
+The worker diagnostics do not measure native UI latency or the full GUI process
+while editing. Current-candidate macOS physical input/IME, recovery/conflict,
+multi-window, and release-package checks remain open. Windows native UI-to-visible
+latency and process working-set peak also remain open, so #17 is not ready to
+close.

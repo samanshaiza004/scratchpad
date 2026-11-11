@@ -6,15 +6,18 @@ physical Windows/macOS acceptance. The implementation contract and usage are
 in [Semantic zoom](../SEMANTIC_VIEWS.md); prior art is in
 [the research note](../research/semantic-zoom.md).
 
-**Status update:** the complete physical keyboard, mouse, and trackpad
-acceptance was later confirmed on macOS and Windows and recorded in
-[v0.2.0 issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
+**Status update (2026-11-11):** the complete physical keyboard, mouse, and
+trackpad acceptance was previously confirmed on macOS and Windows and recorded
+in [v0.2.0 issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
 The Pending entries in the matrix below describe the original 2026-10-24
 validation run; they are not the current physical-acceptance status. The
 historical pathological sentence-scan measurement below motivated a follow-up
-that now builds large plans outside the serialized command path. Native
-responsiveness and cancellation acceptance for the worker are still pending;
-the historical duration is a construction-cost reference, not a current
+that now builds large plans outside the serialized command path. Current-main
+worker latency, cancellation, and macOS diagnostic-process RSS are recorded in
+the [macOS run](issue-17-macos-2026-11-11.md); Windows worker results are in the
+[Windows run](issue-17-windows-2026-11-10.md). Native UI-to-visible/first-input
+latency and current-candidate physical/package acceptance remain open. The
+historical 206 ms duration is a construction-cost reference, not a current
 foreground or worker-latency measurement.
 
 ## Automated checks
@@ -114,10 +117,11 @@ Bridge tests exercise a deliberately blocked worker, prove that an
 authoritative edit can proceed while it is blocked, verify cooperative
 cancellation, and confirm that the next revision receives a newer generation.
 Application tests verify snapshot isolation and cancellation during a long
-sentence scan. Native responsiveness, IME interaction, worker completion
-latency, and memory high-water still require a current desktop run; the
-206.44 ms number above predates this worker and is not evidence of current
-foreground latency.
+sentence scan. Current worker completion latency and diagnostic-process memory
+are measured in the linked platform reports. Native UI responsiveness and IME
+interaction still require current-candidate physical desktop runs; the 206.44 ms
+number above predates this worker and is not evidence of current foreground
+latency.
 
 ## Physical desktop matrix — original run status
 
