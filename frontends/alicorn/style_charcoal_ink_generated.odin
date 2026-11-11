@@ -7,24 +7,24 @@ import alicorn "alicorn:runtime"
 scratchpad_charcoal_ink_theme :: proc(allocator := context.allocator) -> alicorn.Style_Theme {
     result := alicorn.DEFAULT_STYLE_THEME
     result.colors = {
-        alicorn.Color{0.0159894992, 0.021227967, 0.0241505168, 1},
-        alicorn.Color{0.0231518783, 0.0295465421, 0.0343329422, 1},
-        alicorn.Color{0.0262492243, 0.0331047662, 0.0355872922, 1},
-        alicorn.Color{0.0251738392, 0.0231518783, 0.0176470336, 1},
+        alicorn.Color{0.00750519987, 0.00856868085, 0.00971523952, 1},
+        alicorn.Color{0.0122820344, 0.0144457268, 0.0168168396, 1},
+        alicorn.Color{0.0202789232, 0.0241505168, 0.0273230765, 1},
+        alicorn.Color{0.022177754, 0.0251738392, 0.0284221265, 1},
         alicorn.Color{0.79913795, 0.760573924, 0.686760545, 1},
-        alicorn.Color{0.386426866, 0.371190131, 0.327726901, 1},
-        alicorn.Color{0.181126371, 0.381351441, 0.59069103, 1},
-        alicorn.Color{0.250203997, 0.473462284, 0.658423781, 1},
-        alicorn.Color{0.109458029, 0.262230217, 0.43415913, 1},
-        alicorn.Color{0.00517675513, 0.00699146325, 0.00802666787, 1},
+        alicorn.Color{0.467746556, 0.43415913, 0.376315087, 1},
+        alicorn.Color{0.545715034, 0.291803271, 0.104639195, 1},
+        alicorn.Color{0.665397823, 0.381351441, 0.149937674, 1},
+        alicorn.Color{0.396695405, 0.187830865, 0.0595164001, 1},
+        alicorn.Color{0.00750519987, 0.00560907787, 0.00439125393, 1},
         alicorn.Color{0.0761943236, 0.181126371, 0.304947138, 0.819999993},
-        alicorn.Color{0.181126371, 0.381351441, 0.59069103, 1},
+        alicorn.Color{0.545715034, 0.291803271, 0.104639195, 1},
         alicorn.Color{0.533335149, 0.262230217, 0.371190131, 1},
-        alicorn.Color{0.0930846408, 0.116989806, 0.130151406, 1},
+        alicorn.Color{0.0595164001, 0.0703515634, 0.0802065134, 1},
         alicorn.Color{0.693907797, 0.262230217, 0.262230217, 1},
         alicorn.Color{0.341904879, 0.47936666, 0.274694115, 1},
-        alicorn.Color{0.0144457268, 0.019377891, 0.022177754, 1},
-        alicorn.Color{0.0930846408, 0.116989806, 0.130151406, 1},
+        alicorn.Color{0.00750519987, 0.00856868085, 0.00971523952, 1},
+        alicorn.Color{0.0802065134, 0.0908229947, 0.102216966, 1},
     }
     result.color_tokens = make([]alicorn.Color, 54, allocator)
     result.color_tokens[0] = alicorn.Color{0.270000011, 0.479999989, 0.699999988, 1}
@@ -45,25 +45,25 @@ scratchpad_charcoal_ink_theme :: proc(allocator := context.allocator) -> alicorn
     result.color_tokens[15] = alicorn.Color{0.0799999982, 0.0949999988, 0.129999995, 1}
     result.color_tokens[16] = alicorn.Color{0.879999995, 0.910000026, 0.959999979, 1}
     result.color_tokens[17] = alicorn.Color{0.0549999997, 0.0649999976, 0.0900000036, 1}
-    result.color_tokens[18] = alicorn.Color{0.181126371, 0.381351441, 0.59069103, 1}
-    result.color_tokens[19] = alicorn.Color{0.250203997, 0.473462284, 0.658423781, 1}
-    result.color_tokens[20] = alicorn.Color{0.109458029, 0.262230217, 0.43415913, 1}
-    result.color_tokens[21] = alicorn.Color{0.00517675513, 0.00699146325, 0.00802666787, 1}
-    result.color_tokens[22] = alicorn.Color{0.0409048274, 0.054470472, 0.0612416826, 0.899999976}
-    result.color_tokens[23] = alicorn.Color{0.0930846408, 0.116989806, 0.130151406, 0.819999993}
-    result.color_tokens[24] = alicorn.Color{0.0930846408, 0.116989806, 0.130151406, 1}
+    result.color_tokens[18] = alicorn.Color{0.545715034, 0.291803271, 0.104639195, 1}
+    result.color_tokens[19] = alicorn.Color{0.665397823, 0.381351441, 0.149937674, 1}
+    result.color_tokens[20] = alicorn.Color{0.396695405, 0.187830865, 0.0595164001, 1}
+    result.color_tokens[21] = alicorn.Color{0.00750519987, 0.00560907787, 0.00439125393, 1}
+    result.color_tokens[22] = alicorn.Color{0.0355872922, 0.0409048274, 0.0466591157, 0.920000017}
+    result.color_tokens[23] = alicorn.Color{0.0684800372, 0.0802065134, 0.0930846408, 0.879999995}
+    result.color_tokens[24] = alicorn.Color{0.0595164001, 0.0703515634, 0.0802065134, 1}
     result.color_tokens[25] = alicorn.Color{0.693907797, 0.262230217, 0.262230217, 1}
-    result.color_tokens[26] = alicorn.Color{0.0251738392, 0.0231518783, 0.0176470336, 1}
-    result.color_tokens[27] = alicorn.Color{0.181126371, 0.381351441, 0.59069103, 1}
-    result.color_tokens[28] = alicorn.Color{0.00517675513, 0.00699146325, 0.00802666787, 0.920000017}
-    result.color_tokens[29] = alicorn.Color{0.386426866, 0.371190131, 0.327726901, 1}
-    result.color_tokens[30] = alicorn.Color{0.0930846408, 0.116989806, 0.130151406, 1}
-    result.color_tokens[31] = alicorn.Color{0.0144457268, 0.019377891, 0.022177754, 1}
+    result.color_tokens[26] = alicorn.Color{0.022177754, 0.0251738392, 0.0284221265, 1}
+    result.color_tokens[27] = alicorn.Color{0.545715034, 0.291803271, 0.104639195, 1}
+    result.color_tokens[28] = alicorn.Color{0.00273219822, 0.0030340557, 0.00334348762, 0.920000017}
+    result.color_tokens[29] = alicorn.Color{0.467746556, 0.43415913, 0.376315087, 1}
+    result.color_tokens[30] = alicorn.Color{0.0802065134, 0.0908229947, 0.102216966, 1}
+    result.color_tokens[31] = alicorn.Color{0.00750519987, 0.00856868085, 0.00971523952, 1}
     result.color_tokens[32] = alicorn.Color{0.0761943236, 0.181126371, 0.304947138, 0.819999993}
     result.color_tokens[33] = alicorn.Color{0.533335149, 0.262230217, 0.371190131, 1}
-    result.color_tokens[34] = alicorn.Color{0.0262492243, 0.0331047662, 0.0355872922, 1}
+    result.color_tokens[34] = alicorn.Color{0.0202789232, 0.0241505168, 0.0273230765, 1}
     result.color_tokens[35] = alicorn.Color{0.341904879, 0.47936666, 0.274694115, 1}
-    result.color_tokens[36] = alicorn.Color{0.0231518783, 0.0295465421, 0.0343329422, 1}
+    result.color_tokens[36] = alicorn.Color{0.0122820344, 0.0144457268, 0.0168168396, 1}
     result.color_tokens[37] = alicorn.Color{0.658423781, 0.47936666, 0.19459036, 1}
     result.color_tokens[38] = alicorn.Color{0.270537317, 0.467746556, 0.391541511, 1}
     result.color_tokens[39] = alicorn.Color{0.242269412, 0.296147048, 0.238407239, 1}
@@ -80,7 +80,7 @@ scratchpad_charcoal_ink_theme :: proc(allocator := context.allocator) -> alicorn
     result.color_tokens[50] = alicorn.Color{0.181126371, 0.402022332, 0.391541511, 1}
     result.color_tokens[51] = alicorn.Color{0.79913795, 0.760573924, 0.686760545, 1}
     result.color_tokens[52] = alicorn.Color{0.79913795, 0.760573924, 0.686760545, 1}
-    result.color_tokens[53] = alicorn.Color{0.0159894992, 0.021227967, 0.0241505168, 1}
+    result.color_tokens[53] = alicorn.Color{0.00750519987, 0.00856868085, 0.00971523952, 1}
     result.core_color_tokens = {
         alicorn.Style_Color_Token_ID(54),
         alicorn.Style_Color_Token_ID(37),
