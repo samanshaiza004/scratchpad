@@ -76,14 +76,24 @@ Built from the exact Scratchpad candidate above. The package manifest records Al
 
 This is a local candidate artifact, not a published release asset. Manual clean-location use, quit, and relaunch have not been recorded.
 
+## Maintainer-reported physical Windows acceptance
+
+On 2026-11-10, the maintainer confirmed successful hands-on validation against this Windows package candidate. The following scenarios passed:
+
+- Large-prose semantic-zoom interaction: Full source remained usable for typing and scrolling while work was pending; depth/anchor changes and cancellation behaved correctly, including paste and IME interaction.
+- Switching or closing the source during pending work did not expose stale results.
+- Ordinary edit/save/reopen, source navigation, and stale-reference handling worked.
+- Primary and detached-window workflows remained isolated and usable.
+- Force-quitting with an unsaved edit restored the recovery data; the source/conflict checks and recovery or dismissal flow passed.
+- The package launched from a clean location and passed quit/relaunch validation.
+
+This is a maintainer-reported pass summary; detailed per-scenario logs, fixture identity, IME engine, and recovery/conflict transcript were not supplied. The worker diagnostic above provides worker p50/p95 and one cancellation-to-exit sample, but these manual checks do not provide a numeric native UI-to-visible or first-input latency measurement. Windows process working-set peak also remains unmeasured.
+
 ## Remaining acceptance
 
-The following physical checks are still open on Windows:
+The following quantitative Windows measurements remain open:
 
-- Measure native UI-to-visible latency and when Full source first accepts typing/scrolling while a plan is pending. Worker p50/p95, one cancellation-to-worker-exit sample, and Go heap samples are now recorded above; Windows process working-set peak remains unmeasured.
-- During a pending plan, type and paste, use IME composition where available, change depth/anchor, and switch or close the source. Confirm only the latest generation can publish and Full source stays available.
-- Record ordinary edit/save/reopen, source navigation and stale-reference handling, and primary/detached-window isolation.
-- Force-quit a session with an unsaved edit; verify the recovery prompt/data, unchanged source bytes, conflict handling, and recovery/dismissal.
-- Manually use the exact package from a clean location, then quit and relaunch it.
+- Measure native UI-to-visible latency and the time until Full source first accepts typing or scrolling while a plan is pending. The interaction has been manually confirmed, but no latency values were captured.
+- Measure Windows process working-set peak; current memory figures cover Go-managed heap only.
 
-The issue also requires macOS physical measurements and acceptance. The existing macOS comment is a partial run and does not provide worker percentiles, cancellation latency, peak memory, or the remaining cross-window/recovery-conflict evidence. This report does not justify closing #17.
+The corresponding current-candidate macOS worker measurements and physical acceptance remain outstanding, including numeric responsiveness and memory measurements, pending-work input/IME and cancellation scenarios, recovery/conflict handling, multi-window behavior, and package launch/relaunch. This Windows report alone does not justify closing #17.
