@@ -576,6 +576,7 @@ func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg str
 		{"scratchpad-workbench.json", "style_workbench_generated.odin", "scratchpad_workbench_theme"},
 		{"scratchpad-paper.json", "style_paper_generated.odin", "scratchpad_editor_theme"},
 		{"scratchpad-cool-light.json", "style_cool_light_generated.odin", "scratchpad_cool_light_theme"},
+		{"scratchpad-charcoal-ink.json", "style_charcoal_ink_generated.odin", "scratchpad_charcoal_ink_theme"},
 	}
 	for _, item := range themes {
 		args := []string{

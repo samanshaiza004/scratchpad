@@ -56,6 +56,7 @@ application_menu_command :: proc(state: rawptr, rt: ^alicorn.Runtime, command: h
 	if command == action_id_for(ACTION_VIEW_THEME_COOL_LIGHT) { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
 	if command == action_id_for(ACTION_VIEW_THEME_FLAT) { _ = scratchpad_theme_select(app, rt, .Flat); return }
 	if command == action_id_for(ACTION_VIEW_THEME_RELIEF) { _ = scratchpad_theme_select(app, rt, .Workbench_Relief); return }
+	if command == action_id_for(ACTION_VIEW_THEME_CHARCOAL_INK) { _ = scratchpad_theme_select(app, rt, .Charcoal_Ink); return }
 	if command == action_id_for(ACTION_VIEW_COMMAND_PALETTE) { command_palette_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_GO_TO_LINE) { go_to_line_open_surface(app, rt); return }
 	if command == action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP) { editor_toggle_wrap_mode(app, rt); return }
@@ -154,6 +155,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 	if action_id == ACTION_VIEW_THEME_COOL_LIGHT { _ = scratchpad_theme_select(app, rt, .Cool_Light); return }
 	if action_id == ACTION_VIEW_THEME_FLAT { _ = scratchpad_theme_select(app, rt, .Flat); return }
 	if action_id == ACTION_VIEW_THEME_RELIEF { _ = scratchpad_theme_select(app, rt, .Workbench_Relief); return }
+	if action_id == ACTION_VIEW_THEME_CHARCOAL_INK { _ = scratchpad_theme_select(app, rt, .Charcoal_Ink); return }
 	if !app.backend.started { return }
 	if action_id == ACTION_FILE_QUICK_OPEN {
 		quick_open_open_surface(app, rt)
@@ -628,7 +630,7 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_EDITOR_FOLD_ALL), label="Fold All"},
 		{kind=.Command, command=action_id_for(ACTION_EDITOR_UNFOLD_ALL), label="Unfold All"},
 	}
-	app.view_items = [15]host.Application_Menu_Item{
+	app.view_items = [16]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_MORE), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}},
 		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_LESS), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary, .Alt}}},
 		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_FULL), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary, .Alt}}},
@@ -644,6 +646,7 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_COOL_LIGHT), label="Use Cool Light Theme", state=alicorn.Action_State{enabled=true}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_FLAT), label="Use Flat Workbench", state=alicorn.Action_State{enabled=true}},
 		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_RELIEF), label="Use Workbench Relief (Experimental)", state=alicorn.Action_State{enabled=true}},
+		{kind=.Command, command=action_id_for(ACTION_VIEW_THEME_CHARCOAL_INK), label="Use Charcoal & Ink Theme", state=alicorn.Action_State{enabled=true}},
 	}
 	app.menus = [5]host.Application_Menu{
 		{label="File", items=app.file_items[:]},

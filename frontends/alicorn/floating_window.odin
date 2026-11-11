@@ -39,6 +39,7 @@ Floating_Window_State :: struct {
 	warm_workbench_theme, warm_editor_theme: alicorn.Style_Theme_ID,
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
+	charcoal_ink_theme: alicorn.Style_Theme_ID,
 	paper_surface_material, raised_surface_material, floating_surface_material: alicorn.Material_ID,
 	relief_materials: Scratchpad_Relief_Materials,
 	always_on_top: bool,
@@ -94,6 +95,7 @@ Floating_Window_Scope :: struct {
 	warm_workbench_theme, warm_editor_theme: alicorn.Style_Theme_ID,
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
+	charcoal_ink_theme: alicorn.Style_Theme_ID,
 	paper_surface_material, raised_surface_material, floating_surface_material: alicorn.Material_ID,
 	relief_materials: Scratchpad_Relief_Materials,
 }
@@ -197,6 +199,7 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 		relief_workbench_theme=app.relief_workbench_theme,
 		relief_editor_theme=app.relief_editor_theme,
 		cool_light_theme=app.cool_light_theme,
+		charcoal_ink_theme=app.charcoal_ink_theme,
 		paper_surface_material=app.paper_surface_material,
 		raised_surface_material=app.raised_surface_material,
 		floating_surface_material=app.floating_surface_material,
@@ -246,6 +249,7 @@ floating_editor_scope_enter :: proc(state: ^Floating_Window_State, rt: ^alicorn.
 	app.relief_workbench_theme = state.relief_workbench_theme
 	app.relief_editor_theme = state.relief_editor_theme
 	app.cool_light_theme = state.cool_light_theme
+	app.charcoal_ink_theme = state.charcoal_ink_theme
 	app.paper_surface_material = state.paper_surface_material
 	app.raised_surface_material = state.raised_surface_material
 	app.floating_surface_material = state.floating_surface_material
@@ -281,6 +285,7 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	state.relief_workbench_theme = app.relief_workbench_theme
 	state.relief_editor_theme = app.relief_editor_theme
 	state.cool_light_theme = app.cool_light_theme
+	state.charcoal_ink_theme = app.charcoal_ink_theme
 	state.paper_surface_material = app.paper_surface_material
 	state.raised_surface_material = app.raised_surface_material
 	state.floating_surface_material = app.floating_surface_material
@@ -346,6 +351,7 @@ floating_editor_scope_leave :: proc(state: ^Floating_Window_State, app: ^App, sc
 	app.relief_workbench_theme = scope.relief_workbench_theme
 	app.relief_editor_theme = scope.relief_editor_theme
 	app.cool_light_theme = scope.cool_light_theme
+	app.charcoal_ink_theme = scope.charcoal_ink_theme
 	app.paper_surface_material = scope.paper_surface_material
 	app.raised_surface_material = scope.raised_surface_material
 	app.floating_surface_material = scope.floating_surface_material

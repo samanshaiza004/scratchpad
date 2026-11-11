@@ -56,11 +56,11 @@ survival, and stderr restoration. The probe is a test fixture, not an app flag.
 
 ## Theme authoring
 
-Scratchpad's Warm workbench and paper palettes are authored in `themes/scratchpad-workbench.json` and `themes/scratchpad-paper.json`; the contrasting Cool Light palette is authored in `themes/scratchpad-cool-light.json`. These themes extend `alicorn.base` and use semantic aliases. The paper theme defines the app-specific paper-surface role and analytic paper material, while the workbench theme authors the selected Tab underline role. The document surface adds no outer padding, so the editor fills its available pane. The sRGB source values round-trip to the existing runtime colors exactly.
+Scratchpad's Warm workbench and paper palettes are authored in `themes/scratchpad-workbench.json` and `themes/scratchpad-paper.json`; Cool Light and Charcoal & Ink are authored in `themes/scratchpad-cool-light.json` and `themes/scratchpad-charcoal-ink.json`. Charcoal & Ink adapts the retired Shirei frontend's charcoal chrome and warm ink palette for Scratchpad's editor and workbench. All palettes extend `alicorn.base` and use semantic aliases. The paper theme defines the app-specific paper-surface role and analytic paper material, while the workbench theme authors the selected Tab underline role. The document surface adds no outer padding, so the editor fills its available pane.
 
-Choose Warm or Cool Light from **View → Use … Theme**, the command palette, or **Settings → Appearance**. Scratchpad stores the choice as a small versioned JSON preference at `%LOCALAPPDATA%\\Scratchpad\\preferences.json` on Windows and `~/Library/Application Support/Scratchpad/preferences.json` on macOS (using the platform configuration directory reported by Odin). A missing, malformed, unsupported-version, or unknown-theme preference falls back to Warm. If writing the preference fails, the selected theme remains active for the current session and Scratchpad reports the save failure.
+Choose Warm, Cool Light, or Charcoal & Ink from **View → Use … Theme**, the command palette, or **Settings → Appearance**. Scratchpad stores the choice as a small versioned JSON preference at `%LOCALAPPDATA%\\Scratchpad\\preferences.json` on Windows and `~/Library/Application Support/Scratchpad/preferences.json` on macOS (using the platform configuration directory reported by Odin). A missing, malformed, unsupported-version, or unknown-theme preference falls back to Warm. If writing the preference fails, the selected theme remains active for the current session and Scratchpad reports the save failure.
 
-The paper and Cool Light themes also author the editor's code syntax palette as
+The paper, Cool Light, and Charcoal & Ink themes also author the editor's code syntax palette as
 `app.scratchpad.syntax.*` extension roles. The editor maps Tree-sitter semantic
 kinds to those named roles; the selected Alicorn theme supplies the colors.
 Modal backdrops use the `app.scratchpad.workbench.modal_backdrop` role as well,
@@ -115,7 +115,7 @@ PNG and QOI files open in normal read-only document tabs, including workspace pr
 
 The editor reads a bounded source window, maps displayed bytes back to source offsets, and keeps edits optimistic while Go remains authoritative. Markdown meaning comes from the Go projection; the frontend renders transported ranges and does not parse Markdown.
 
-Scratchpad installs its bundled Atkinson UI and monospace faces through Alicorn's public application font API, then registers the available platform UI fallback from disk. The empty-editor state uses a small app-owned PNG mark; switching Warm/Cool Light replaces its Runtime image handle and defers release of the old handle until a later build callback, after the replacement presentation has completed. The native host owns GPU textures and rebuilds them from Runtime-owned decoded pixels. Consumer packages include both Atkinson OFL notices in their release manifest.
+Scratchpad installs its bundled Atkinson UI and monospace faces through Alicorn's public application font API, then registers the available platform UI fallback from disk. The empty-editor state uses a small app-owned PNG mark; switching between light and dark themes replaces its Runtime image handle and defers release of the old handle until a later build callback, after the replacement presentation has completed. The native host owns GPU textures and rebuilds them from Runtime-owned decoded pixels. Consumer packages include both Atkinson OFL notices in their release manifest.
 
 ## Current scope
 

@@ -116,6 +116,7 @@ command_palette_aliases :: proc(action_id: string) -> string {
 	case ACTION_VIEW_THEME_COOL_LIGHT: return "appearance theme cool light"
 	case ACTION_VIEW_THEME_FLAT: return "appearance theme flat"
 	case ACTION_VIEW_THEME_RELIEF: return "appearance theme relief depth experimental"
+	case ACTION_VIEW_THEME_CHARCOAL_INK: return "appearance theme dark charcoal ink"
 	case "file.save": return "write"
 	case "edit.select_all": return "select everything"
 	case:
@@ -277,6 +278,7 @@ command_palette_menu_action_name :: proc(app: ^App, id: host.Application_Command
 	case action_id_for(ACTION_VIEW_THEME_COOL_LIGHT): return ACTION_VIEW_THEME_COOL_LIGHT
 	case action_id_for(ACTION_VIEW_THEME_FLAT): return ACTION_VIEW_THEME_FLAT
 	case action_id_for(ACTION_VIEW_THEME_RELIEF): return ACTION_VIEW_THEME_RELIEF
+	case action_id_for(ACTION_VIEW_THEME_CHARCOAL_INK): return ACTION_VIEW_THEME_CHARCOAL_INK
 	case action_id_for(ACTION_WORKSPACE_GO_TO_SYMBOL): return ACTION_WORKSPACE_GO_TO_SYMBOL
 	case action_id_for(ACTION_WORKSPACE_SEARCH_OPEN): return ACTION_WORKSPACE_SEARCH_OPEN
 	case action_id_for(ACTION_DOCUMENT_SHOW_TASKS): return ACTION_DOCUMENT_SHOW_TASKS

@@ -80,6 +80,7 @@ ACTION_VIEW_THEME_WARM :: "view.theme-warm"
 ACTION_VIEW_THEME_COOL_LIGHT :: "view.theme-cool-light"
 ACTION_VIEW_THEME_FLAT :: "view.theme-flat"
 ACTION_VIEW_THEME_RELIEF :: "view.theme-workbench-relief"
+ACTION_VIEW_THEME_CHARCOAL_INK :: "view.theme-charcoal-ink"
 
 App :: struct {
 	pinned: Pinned_Surface,
@@ -93,6 +94,7 @@ App :: struct {
 	warm_editor_theme: alicorn.Style_Theme_ID,
 	relief_workbench_theme, relief_editor_theme: alicorn.Style_Theme_ID,
 	cool_light_theme: alicorn.Style_Theme_ID,
+	charcoal_ink_theme: alicorn.Style_Theme_ID,
 	theme_choice: Scratchpad_Theme_Choice,
 	live_theme: Scratchpad_Live_Theme,
 	live_theme_applied_theme_id: alicorn.Style_Theme_ID,
@@ -400,7 +402,7 @@ App :: struct {
 	edit_items:             [11]host.Application_Menu_Item,
 	workspace_items:        [10]host.Application_Menu_Item,
 	document_items:         [16]host.Application_Menu_Item,
-	view_items:             [15]host.Application_Menu_Item,
+	view_items:             [16]host.Application_Menu_Item,
 	menus:                  [5]host.Application_Menu,
 	smoke:                  bool,
 	smoke_rendered:         bool,

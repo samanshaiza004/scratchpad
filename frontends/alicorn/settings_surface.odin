@@ -131,10 +131,10 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 		settings_form_text(form, "settings-theme-heading", "Workbench appearance", 18, alicorn.FONT_WEIGHT_MEDIUM)
 		style := settings_form_row(form, control_height)
 		if ui != nil {
-			options := [?]alicorn.Select_Option{{key=1, label="Warm"}, {key=2, label="Cool Light"}, {key=3, label="Flat Workbench"}, {key=4, label="Workbench Relief (Experimental)"}}
+			options := [?]alicorn.Select_Option{{key=1, label="Warm"}, {key=2, label="Cool Light"}, {key=3, label="Flat Workbench"}, {key=4, label="Workbench Relief (Experimental)"}, {key=5, label="Charcoal & Ink"}}
 			choice := alicorn.select_control(ui, alicorn.key_string("settings-workbench-appearance"), "Workbench appearance", options[:], u64(app.theme_choice)+1, style=style)
 			if choice.changed {
-				actions := [?]string{ACTION_VIEW_THEME_WARM, ACTION_VIEW_THEME_COOL_LIGHT, ACTION_VIEW_THEME_FLAT, ACTION_VIEW_THEME_RELIEF}
+				actions := [?]string{ACTION_VIEW_THEME_WARM, ACTION_VIEW_THEME_COOL_LIGHT, ACTION_VIEW_THEME_FLAT, ACTION_VIEW_THEME_RELIEF, ACTION_VIEW_THEME_CHARCOAL_INK}
 				if !frame_deferred_action_schedule(app, .Action, actions[choice.selected_key-1]) { set_error(app, "Could not queue the workbench appearance.") }
 			}
 		}

@@ -28,12 +28,12 @@ scratchpad_application_initialize :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 }
 
 scratchpad_brand_mark_replace :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratchpad_Theme_Choice) -> bool {
-    if app == nil || rt == nil || (choice < .Warm || choice > .Workbench_Relief) { return false }
+    if app == nil || rt == nil || (choice < .Warm || choice > .Charcoal_Ink) { return false }
     resolved_choice := choice
     if choice == .Flat || choice == .Workbench_Relief { resolved_choice = .Warm }
     if app.brand_mark != 0 && app.brand_mark_choice == resolved_choice { return true }
     data := SCRATCHPAD_WARM_MARK_DATA
-    if resolved_choice == .Cool_Light { data = SCRATCHPAD_COOL_MARK_DATA }
+    if resolved_choice == .Cool_Light || resolved_choice == .Charcoal_Ink { data = SCRATCHPAD_COOL_MARK_DATA }
     next, err := alicorn.image_load_bytes(rt, data)
     if err != .None { return false }
     if app.brand_mark != 0 {

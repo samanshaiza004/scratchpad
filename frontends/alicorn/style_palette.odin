@@ -18,6 +18,7 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		app.warm_editor_theme = 0
 		app.relief_workbench_theme, app.relief_editor_theme = 0, 0
 		app.cool_light_theme = 0
+		app.charcoal_ink_theme = 0
 		app.paper_surface_material = alicorn.MATERIAL_FLAT
 		app.raised_surface_material = alicorn.MATERIAL_FLAT
 		app.floating_surface_material = alicorn.MATERIAL_FLAT
@@ -38,6 +39,11 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		theme := scratchpad_cool_light_theme()
 		app.cool_light_theme = alicorn.style_theme_register(rt, theme)
 		scratchpad_cool_light_theme_destroy(&theme)
+	}
+	if app.charcoal_ink_theme == 0 {
+		theme := scratchpad_charcoal_ink_theme()
+		app.charcoal_ink_theme = alicorn.style_theme_register(rt, theme)
+		scratchpad_charcoal_ink_theme_destroy(&theme)
 	}
 	if app.paper_surface_material == alicorn.MATERIAL_FLAT {
 		for definition in scratchpad_editor_theme_materials {
@@ -82,11 +88,14 @@ scratchpad_theme_apply_registered :: proc(app: ^App) {
 	case .Cool_Light:
 		app.workbench_theme = app.cool_light_theme
 		app.editor_theme = app.cool_light_theme
+	case .Charcoal_Ink:
+		app.workbench_theme = app.charcoal_ink_theme
+		app.editor_theme = app.charcoal_ink_theme
 	}
 }
 
 scratchpad_theme_select :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratchpad_Theme_Choice) -> bool {
-	if app == nil || rt == nil || (choice < .Warm || choice > .Workbench_Relief) { return false }
+	if app == nil || rt == nil || (choice < .Warm || choice > .Charcoal_Ink) { return false }
 	if app.theme_choice == choice { return true }
 	if !scratchpad_styles_ensure(app, rt) { return false }
 	if choice == .Workbench_Relief {

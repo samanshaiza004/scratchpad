@@ -11,6 +11,7 @@ Scratchpad_Theme_Choice :: enum u8 {
 	Cool_Light,
 	Flat,
 	Workbench_Relief,
+	Charcoal_Ink,
 }
 
 Scratchpad_Theme_Preferences :: struct {
@@ -27,6 +28,7 @@ scratchpad_theme_choice_name :: proc(choice: Scratchpad_Theme_Choice) -> string 
 	case .Cool_Light: return "cool-light"
 	case .Flat: return "flat"
 	case .Workbench_Relief: return "workbench-relief"
+	case .Charcoal_Ink: return "charcoal-ink"
 	}
 	return "warm"
 }
@@ -37,6 +39,7 @@ scratchpad_theme_choice_parse :: proc(name: string) -> (choice: Scratchpad_Theme
 	case "cool-light": return .Cool_Light, true
 	case "flat": return .Flat, true
 	case "workbench-relief": return .Workbench_Relief, true
+	case "charcoal-ink": return .Charcoal_Ink, true
 	}
 	return .Warm, false
 }
@@ -87,7 +90,7 @@ scratchpad_user_preferences_load :: proc(path: string, allocator := context.allo
 }
 
 scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_Theme_Choice, font_family := "", font_size := EDITOR_FONT_SIZE_DEFAULT, semantic_zoom_wheel := Semantic_Zoom_Wheel.Primary_Alt) -> bool {
-	if directory == "" || (choice < .Warm || choice > .Workbench_Relief) { return false }
+	if directory == "" || (choice < .Warm || choice > .Charcoal_Ink) { return false }
 	directory_error := os.mkdir_all(directory)
 	if directory_error != nil && !(directory_error == .Exist && os.is_directory(directory)) { return false }
 	parts := [2]string{directory, "preferences.json"}
