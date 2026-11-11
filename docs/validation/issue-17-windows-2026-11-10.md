@@ -1,45 +1,20 @@
-# Scratchpad #17 — Windows validation evidence
+# Scratchpad #17 — Windows release acceptance
 
 Date: 2026-11-10
 
-Scratchpad candidate: `6a72339e8af3ae22bb25a08a15037e1bbb8dc955`
+Scratchpad candidate: `2f4194670da924c1c1231021c07e6d381f590bba`
 
-Platform: Windows 10 Home 22H2, build 19045, AMD64
+Alicorn: `c7997e750bdc67a454033e4dfd12ae5828451d55`
 
-CPU: AMD Ryzen 5 7600X 6-Core Processor
+Platform: Windows 10 Home 22H2, build 19045, AMD64; AMD Ryzen 5 7600X
 
-Go: `go1.27.1 windows/amd64`
-Odin: `dev-2026-11-nightly:08539cd` (`C:\odin\odin.exe`)
+Go: `go1.27.1 windows/amd64`; Odin: `dev-2026-11-nightly:08539cd`
 
-This record covers automated and packaging work performed on Windows for issue #17. It does not claim physical GUI acceptance; those interactions still need a hands-on run.
+## Automated Windows validation
 
-## Windows package candidate
+`.\tools\alicorn.ps1 test -Odin C:\odin\odin.exe` passed. This ran the Go suite across the Scratchpad modules, bridge tests, and the Odin frontend checks: **241 Odin tests passed**.
 
-Built the source-only `0.2.0` Windows x64 package from the candidate revision above with the repository's packaging script. The generated manifest pins:
-
-- Alicorn: `0c8b44bc0365803ebb2ccc464a64633ff0dcfe73`
-- Caliber: `197cd964cc7265bc60df599a6b8562eac7c75f3a`
-- SDL: `3.4.20`, shared
-
-The packaging checks reported the native dependency audit and relocated archive launch as passed. The package contains the third-party license notices listed in its manifest.
-
-| Artifact | Size | SHA-256 | Signing |
-| --- | ---: | --- | --- |
-| `Scratchpad-v0.2.0-windows-amd64.zip` | 22,531,375 bytes | `b9d0d57dad8b871a04dac656d84c5bbdf00b6a59cb5e846cb469c8ad5f6bd430` | Unsigned (Authenticode: `NotSigned`) |
-
-This is a locally built validation artifact, not a published release asset. Its build inputs are recorded in `release-manifest.json` inside the package.
-
-## Automated checks
-
-Command:
-
-```powershell
-go test -tags treesitter_release ./application
-```
-
-Result: passed (`ok scratchpad/application`, 3.624 s).
-
-The package build also completed its native dependency audit and relocated-archive launch smoke. The latter confirms the extracted package can launch from a relocated directory; it does not exercise editing, save/recovery, screen-reader, or multi-window interactions.
+`.\tools\alicorn.ps1 smoke -Odin C:\odin\odin.exe` passed on the Windows SDL/D3D12 host. The isolated native subprocess smoke verified clean two-document session restoration and a separate unsaved-recovery restart. This is native host/session evidence; its recovery scenario seeds a recovery snapshot and does not simulate forcibly killing a user-driven session.
 
 ## Large-prose semantic zoom planner
 
@@ -51,24 +26,35 @@ go test -tags treesitter_release ./application -run '^$' `
   -benchtime=1x -count=3 -benchmem
 ```
 
-Fixture: 1,000,001 source lines, 1,000 paragraph structures, approximately 19 MB of generated prose. Each sample plans a complete result for the named depth; this measures the synchronous application planner, not the native background worker, UI-to-visible latency, or memory high-water behavior.
+Fixture: 1,000,001 source lines, 1,000 paragraph structures, approximately 19 MB of generated prose. This measures synchronous application plan construction. It does **not** measure the background worker, UI-to-visible latency, worker p50/p95, cancellation latency, peak process memory, or native accessibility serialization.
 
-| Depth | Samples (ms/op) | Median | Allocated per query | Allocations |
-| --- | --- | ---: | ---: | ---: |
-| Focus | 19.102, 18.970, 19.089 | 19.089 ms | 10.40 MB | 4,057–4,058 |
-| Skim | 18.879, 19.074, 18.693 | 18.879 ms | 10.40 MB | 4,058–4,061 |
-| Overview | 19.745, 19.245, 18.961 | 19.245 ms | 10.40 MB | 4,060–4,068 |
+| Depth | Samples (ms/op) | Median | Allocated per query |
+| --- | --- | ---: | ---: |
+| Focus | 18.871, 18.946, 19.222 | 18.946 ms | 10.40 MB |
+| Skim | 19.646, 19.048, 18.853 | 19.048 ms | 10.40 MB |
+| Overview | 19.112, 19.696, 19.249 | 19.249 ms | 10.40 MB |
 
-All samples returned 1,000 folds and a supported plan. This is a machine-specific benchmark, not a cross-platform comparison or an end-to-end responsiveness guarantee. Raw output is retained locally at `out/issue-17-windows-validation/semantic-zoom-benchmark.txt` and is not part of the source repository.
+Every sample returned a supported plan with 1,000 folds. The raw output is retained locally at `out/issue-17-latest-alicorn-windows/semantic-zoom-benchmark.txt` and is not committed.
 
-## Physical Windows checks still required
+## Windows package candidate
 
-No physical editing or recovery interaction was completed during this run. The packaged process was started with an isolated workspace and profile, but the desktop-control interface did not expose it as a target; an explicit app-launch attempt timed out. UI automation was stopped at that point. The following remain unverified on Windows:
+Built from the exact Scratchpad candidate above. The package manifest records Alicorn `c7997e750bdc67a454033e4dfd12ae5828451d55`, Caliber `197cd964cc7265bc60df599a6b8562eac7c75f3a`, and SDL `3.4.20` shared. The native dependency audit and relocated-archive launch passed. The archive includes its declared license notices.
 
-- Semantic zoom while typing, pasting, and composing IME text; verify latest-request behavior, depth/anchor stability, and safe document/window switching or closing while a plan is pending.
-- Ordinary edit, save, close, reopen, source navigation, and stale-reference behavior.
-- Primary and detached-window isolation while navigating and editing.
-- Terminate with an unsaved edit, restart, inspect recovery contents and prompt behavior, then verify source-disk bytes and save-conflict handling.
-- Manually launch, use, quit, and relaunch the exact extracted package from a clean location. The automated relocated-launch smoke is narrower than this acceptance.
+| Artifact | Size | SHA-256 | Signing |
+| --- | ---: | --- | --- |
+| `Scratchpad-v0.2.0-windows-amd64.zip` | 22,563,595 bytes | `c9c3ab03f1999e3c908e44de4cce93ed713e69fd13f77f23651b35af492b3f58` | Unsigned (Authenticode: `NotSigned`) |
+| `Scratchpad.exe` | 8,562,176 bytes | `e4a276a92b072a12bf9c88b50fcf3622a77bfe425886da7d1da946581eccf3b6` | Unsigned |
 
-The issue also requires macOS physical acceptance and release-candidate evidence. This Windows record alone is not sufficient to close #17.
+This is a local candidate artifact, not a published release asset. Manual clean-location use, quit, and relaunch have not been recorded.
+
+## Remaining acceptance
+
+The following physical checks are still open on Windows:
+
+- Measure the native semantic-zoom transitions on the large prose fixture, including when Full source first accepts typing/scrolling, worker p50/p95, cancellation latency, and peak memory.
+- During a pending plan, type and paste, use IME composition where available, change depth/anchor, and switch or close the source. Confirm only the latest generation can publish and Full source stays available.
+- Record ordinary edit/save/reopen, source navigation and stale-reference handling, and primary/detached-window isolation.
+- Force-quit a session with an unsaved edit; verify the recovery prompt/data, unchanged source bytes, conflict handling, and recovery/dismissal.
+- Manually use the exact package from a clean location, then quit and relaunch it.
+
+The issue also requires macOS physical measurements and acceptance. The existing macOS comment is a partial run and does not provide worker percentiles, cancellation latency, peak memory, or the remaining cross-window/recovery-conflict evidence. This report does not justify closing #17.
