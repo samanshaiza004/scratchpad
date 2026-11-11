@@ -1,11 +1,10 @@
 # Changelog
 
 Notable changes to Scratchpad are collected here. The latest published release
-is [v0.1.1](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.1.1);
-work on `main` after that tag is unreleased. The Unreleased section covers the
-145 commits in `v0.1.1..main` through 2026-11-09. Merge commits and duplicate
-integration commits are represented by their resulting changes, not repeated
-as separate entries.
+is [v0.1.1](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.1.1).
+The Unreleased section summarizes v0.2.0 work on `main` through 2026-11-11;
+merge commits and duplicate integration commits are represented by their
+resulting changes, not repeated as separate entries.
 
 ## [Unreleased]
 
@@ -102,8 +101,13 @@ as separate entries.
   status-bar columns in one grapheme pass.
 - Kept image decoding, font catalog work, source projection transport, and
   semantic-view rendering bounded or off the latency-sensitive UI path.
-- The million-line prose semantic-plan fixture measured about 206 ms; the
-  remaining performance decision is tracked in [v0.2.0 issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
+- Moved large semantic-plan construction to a bounded worker over immutable
+  source snapshots, with cooperative cancellation and document-instance,
+  revision, and request-generation checks. Repeated million-line worker results
+  and platform release evidence are recorded in the [Windows](docs/validation/issue-17-windows-2026-11-10.md)
+  and [macOS](docs/validation/issue-17-macos-2026-11-11.md) validation reports.
+  The earlier 206 ms synchronous construction result remains a historical
+  baseline, not a current foreground-latency measurement.
 
 ### Build, packaging, and validation
 
@@ -122,6 +126,8 @@ as separate entries.
   semantic zoom, connected-tab motion, and live-theme dogfood.
 - Added package-launch checks outside the source checkout and removed unused
   implementation code.
+- Completed v0.2.0 release acceptance and recorded the current Windows and
+  macOS test, physical-validation, and package evidence in [issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
 
 ## [0.1.1] — 2026-10-12
 

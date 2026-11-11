@@ -11,14 +11,15 @@ trackpad acceptance was previously confirmed on macOS and Windows and recorded
 in [v0.2.0 issue #17](https://github.com/samanshaiza004/scratchpad/issues/17).
 The Pending entries in the matrix below describe the original 2026-10-24
 validation run; they are not the current physical-acceptance status. The
-historical pathological sentence-scan measurement below motivated a follow-up
-that now builds large plans outside the serialized command path. Current-main
-worker latency, cancellation, and macOS diagnostic-process RSS are recorded in
-the [macOS run](issue-17-macos-2026-11-11.md); Windows worker results are in the
-[Windows run](issue-17-windows-2026-11-10.md). Native UI-to-visible/first-input
-latency and current-candidate physical/package acceptance remain open. The
-historical 206 ms duration is a construction-cost reference, not a current
-foreground or worker-latency measurement.
+historical pathological sentence-scan measurement motivated a worker that now
+builds large plans outside the serialized command path. Current worker latency,
+cancellation, package checks, and the platform acceptance record are linked in
+the [macOS run](issue-17-macos-2026-11-11.md), [Windows run](issue-17-windows-2026-11-10.md),
+and [validation index](README.md). Issue #17 is closed as release acceptance
+complete. Native UI-to-visible/first-input latency and full GUI-process memory
+high-water were not instrumented and are not claimed. The historical 206 ms
+duration is a construction-cost reference, not a current foreground or
+worker-latency measurement.
 
 ## Automated checks
 

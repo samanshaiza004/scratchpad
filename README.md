@@ -7,9 +7,10 @@ recovery; the Odin/Alicorn frontend owns native interaction and presentation
 through the Caliber C ABI.
 
 The latest published release is [v0.1.1](https://github.com/samanshaiza004/scratchpad/releases/tag/v0.1.1).
-The current `main` branch contains unreleased v0.2.0 work. Release status and
-remaining acceptance gates are tracked in the [roadmap](docs/PLAN.md); the full
-release history is in the [changelog](CHANGELOG.md).
+The current `main` branch contains the v0.2.0 release candidate. Its acceptance
+is complete; see the [roadmap](docs/PLAN.md) and [validation records](docs/validation/README.md).
+The full release history is in the [changelog](CHANGELOG.md). v0.2.0 has not
+yet been published.
 
 ## What is in current `main`
 

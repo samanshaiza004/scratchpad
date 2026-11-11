@@ -89,19 +89,17 @@ On 2026-11-10, the maintainer confirmed successful hands-on validation against t
 
 This is a maintainer-reported pass summary; detailed per-scenario logs, fixture identity, IME engine, and recovery/conflict transcript were not supplied. The worker diagnostic above provides worker p50/p95 and one cancellation-to-exit sample, but these manual checks do not provide a numeric native UI-to-visible or first-input latency measurement. Windows process working-set peak also remains unmeasured.
 
-## Remaining acceptance
+## Cross-platform release closeout — 2026-11-11
 
-The following quantitative Windows measurements remain open:
+The maintainer confirmed that Scratchpad's complete physical validation is
+green on macOS and Windows and authorized v0.2.0 closeout. Windows-specific
+physical scenarios and the package candidate above were previously reported by
+the maintainer; detailed per-scenario logs were not supplied.
 
-- Measure native UI-to-visible latency and the time until Full source first accepts typing or scrolling while a plan is pending. The interaction has been manually confirmed, but no latency values were captured.
-- Measure Windows process working-set peak; current memory figures cover Go-managed heap only.
-
-## Cross-platform status update — 2026-11-11
-
-Current-main macOS worker latency, cancellation, and diagnostic-process peak RSS
-are now recorded in the [macOS validation report](issue-17-macos-2026-11-11.md).
-The worker diagnostics do not measure native UI latency or the full GUI process
-while editing. Current-candidate macOS physical input/IME, recovery/conflict,
-multi-window, and release-package checks remain open. Windows native UI-to-visible
-latency and process working-set peak also remain open, so #17 is not ready to
-close.
+The following quantitative measurements were not collected and are explicitly
+not release claims: native UI-to-visible latency, time until Full source first
+accepts input during pending work, and the Windows process working-set peak.
+Worker p50/p95 and Go-managed heap values above do not substitute for them. The
+macOS automated suite, package and worker reruns are recorded in the
+[macOS closeout report](issue-17-macos-2026-11-11.md). Issue #17 was closed with
+these measurement limits documented and accepted.
