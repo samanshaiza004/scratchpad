@@ -226,6 +226,49 @@ test_command_palette_reveals_only_its_decoration_once :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_command_palette_reduce_motion_change_during_reveal_does_not_replay_birth :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 650})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	init_menus(&app)
+	app.accessibility_appearance_override_enabled = true
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
+	command_palette_open_surface(&app, &rt)
+	if !command_palette_motion_test_build(t, &app, &rt) { return }
+	command_palette_restore_focus_after_frame(&app, &rt)
+	accent_id := app.command_palette_motion_accent_node
+	initial_stats := alicorn.motion_diagnostics_stats(&rt)
+	initial := alicorn.motion_diagnostics_owner_snapshot(&rt, accent_id)
+	testing.expect(t, initial.valid && initial.opacity.active && initial_stats.reveals == 1,
+		"the normal-motion palette should begin its single decorative Reveal")
+
+	app.accessibility_appearance.reduce_motion = true
+	alicorn.invalidate_root(&rt, "Reduce Motion changed during command-palette Reveal")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
+	if command_palette_motion_test_build(t, &app, &rt) {
+		command_palette_restore_focus_after_frame(&app, &rt)
+		changed_stats := alicorn.motion_diagnostics_stats(&rt)
+		handle, handle_status := alicorn.motion_owner_begin(&rt, accent_id)
+		presentation := alicorn.motion_presentation(&rt, handle)
+		testing.expect(t, changed_stats.intent_declarations > initial_stats.intent_declarations &&
+			changed_stats.reveals == 1 && handle_status == .Ok && !presentation.active &&
+			presentation.presented_opacity == 1 && presentation.presented_translation == [2]f32{0, 0},
+			"a policy change should settle the existing entrance to its target without replaying Reveal")
+		testing.expect(t, rt.focused == app.command_palette_node,
+			"changing Reduce Motion during the accent entrance should preserve query focus")
+		alicorn.invalidate_root(&rt, "repeat palette description after policy update")
+		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(30_000_000))
+		if command_palette_motion_test_build(t, &app, &rt) {
+			repeated_stats := alicorn.motion_diagnostics_stats(&rt)
+			testing.expect(t, repeated_stats.intent_declarations == changed_stats.intent_declarations &&
+				repeated_stats.reveals == 1,
+				"an unchanged motion policy should not add declarations or repeat the birth Reveal")
+		}
+	}
+	command_palette_close_surface(&app, &rt, false)
+}
+
+@(test)
 test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
 	defer alicorn.destroy_runtime(&rt)

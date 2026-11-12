@@ -356,6 +356,57 @@ connected_titlebar_test_selection_decoration_case :: proc(t: ^testing.T, reduce_
 	testing.expect(t, after_c.intent_declarations == after_b.intent_declarations && alicorn.motion_activity(&rt).active_owners == 0,
 		"rapid selection changes should not create underline motion work")
 
+	// Exercise an actual click on the already-visible selected tab. The tab must
+	// remain a true no-op in the document view, while the same active document
+	// must still be selectable from another workbench presentation.
+	selected_tab := connected_titlebar_test_tab_node(&rt, tab_semantic_ids[2])
+	selected_tab_info, selected_tab_ok := alicorn.node_info(&rt, selected_tab)
+	selection_revision := app.backend.state.revision
+	selection_application_revision := app.backend.state.application_rev
+	if selected_tab_ok {
+		x := selected_tab_info.hit_bounds.x + selected_tab_info.hit_bounds.w*0.5
+		y := selected_tab_info.hit_bounds.y + selected_tab_info.hit_bounds.h*0.5
+		for kind in ([2]alicorn.Pointer_Kind{.Down, .Up}) {
+			event := alicorn.Pointer_Event{kind=kind, x=x, y=y, button=alicorn.POINTER_BUTTON_PRIMARY}
+			target := alicorn.process_pointer(&rt, event)
+			application_pointer(rawptr(&app), &rt, event, target)
+		}
+		_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	}
+	no_op_click_preserved_state := selected_tab_ok && app.backend.state.active == "motion-tab-c" &&
+		app.backend.state.revision == selection_revision &&
+		app.backend.state.application_rev == selection_application_revision &&
+		!app.frame_deferred_action_pending && app.error_message == ""
+	testing.expect(t, no_op_click_preserved_state,
+		"clicking the already-selected tab should submit no selection command or change application state")
+	window := app_workbench_window(&app)
+	group_index := workbench_group_find(window, window.focused_group_id)
+	group_id := window.groups[group_index].id
+	editor_view_id := window.groups[group_index].active_view_id
+	view_noop := scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
+	history_view_id, history_added := workbench_model_view_add(
+		&app.workbench_model,
+		app.primary_workbench_window_id,
+		group_id,
+		.History,
+		Workbench_Resource_Ref{kind=.Repository, id="connected-titlebar-test"},
+	)
+	history_noop := !history_added
+	if history_added {
+		window.groups[group_index].active_view_id = history_view_id
+		history_noop = scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
+		window.groups[group_index].active_view_id = editor_view_id
+		_ = workbench_view_close(window, history_view_id)
+	}
+	app.workspace_search_mode = true
+	search_noop := scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
+	app.workspace_search_mode = false
+	app.pinned.visible, app.pinned.single_pane = true, true
+	pinned_noop := scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
+	app.pinned.visible, app.pinned.single_pane = false, false
+	testing.expect(t, view_noop && !history_noop && !search_noop && !pinned_noop,
+		"the same tab should remain actionable when returning from History, Search, or single-pane Pinned")
+
 	// Re-describe the same selection to model an unrelated application update.
 	alicorn.invalidate_root(&rt, "repeat selected tab description")
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(30_000_000))
@@ -448,16 +499,18 @@ connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion
 
 	// Describe the proposal C→before A without touching the application-owned
 	// document array, matching the state delivered by a live drag target change.
-	app.workspace_drag_kind = .Tabs
-	app.workspace_drag_source_document_id = "reorder-tab-c"
-	app.workspace_drag_target = ids[0]
-	app.workspace_drag_position = .Before
-	alicorn.invalidate_root(&rt, "preview tab reorder C before A")
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Started,
+		drag_type=SCRATCHPAD_DRAG_TABS,
+		source=ids[2],
+		target=ids[0],
+		position=.Before,
+	})
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(10_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
 	first_stats := alicorn.motion_diagnostics_stats(&rt)
-	testing.expect(t, app.document_tab_reorder_motion_active,
-		"moving C before A should retarget neighboring tab translations")
+	testing.expect(t, app.document_tab_reorder_motion_cleanup_needed,
+		"moving C before A should remember that the gesture has displaced neighbors")
 	if reduce_motion {
 		testing.expect(t, alicorn.motion_activity(&rt).active_owners == 0,
 			"reduced motion should apply the proposed tab slot positions immediately")
@@ -485,15 +538,39 @@ connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion
 			"the proposed order must not mutate authoritative Scratchpad document order")
 	}
 
-	// Reverse the pointer quickly, then repeat the same proposal. Retargeting is
-	// proportional to changed slots; the repeated target is a motion no-op.
+	// Return C to its original slot while its neighbors are still moving. The
+	// sampled position and velocity must remain continuous as A retargets to zero.
 	app.workspace_drag_target = ids[1]
-	alicorn.invalidate_root(&rt, "reverse tab reorder toward B")
+	app.workspace_drag_position = .After
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
+	_ = alicorn.motion_tick(&rt, alicorn.Motion_Time(20_000_000))
+	before_retarget := alicorn.motion_diagnostics_owner_snapshot(&rt, tab_nodes[0])
+	alicorn.invalidate_root(&rt, "return dragged tab to its original slot")
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
 	reversed_stats := alicorn.motion_diagnostics_stats(&rt)
-	testing.expect(t, reversed_stats.intent_declarations >= first_stats.intent_declarations,
-		"rapid insertion-slot reversal should safely retarget the existing neighboring motion")
+	after_retarget := alicorn.motion_diagnostics_owner_snapshot(&rt, tab_nodes[0])
+	retarget_behavior := false
+	if reduce_motion {
+		retarget_behavior = before_retarget.valid && after_retarget.valid &&
+			before_retarget.translation.target.x != after_retarget.translation.target.x &&
+			after_retarget.translation.target.x == 0 && after_retarget.translation.presented.x == 0 &&
+			after_retarget.translation.velocity.x == 0 && !after_retarget.translation.active
+	} else {
+		retarget_behavior = before_retarget.valid && after_retarget.valid &&
+			before_retarget.translation.target.x != after_retarget.translation.target.x &&
+			after_retarget.translation.target.x == 0 &&
+			abs(before_retarget.translation.presented.x-after_retarget.translation.presented.x) < 1e-7 &&
+			abs(before_retarget.translation.presented.y-after_retarget.translation.presented.y) < 1e-7 &&
+			abs(before_retarget.translation.velocity.x-after_retarget.translation.velocity.x) < 1e-5 &&
+			abs(before_retarget.translation.velocity.y-after_retarget.translation.velocity.y) < 1e-5
+	}
+	testing.expect(t, reversed_stats.intent_declarations > first_stats.intent_declarations &&
+		retarget_behavior,
+		fmt.tprintf("tab retarget should preserve normal position/velocity or snap immediately for reduced motion: before=%v after=%v",
+			before_retarget.translation, after_retarget.translation))
+	testing.expect(t, app.document_tab_reorder_motion_cleanup_needed,
+		"returning to zero insertion offsets must retain gesture-lifetime cleanup responsibility")
 	alicorn.invalidate_root(&rt, "repeat unchanged tab insertion target")
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(30_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
@@ -504,28 +581,42 @@ connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion
 		connected_titlebar_test_chrome_regions_match(&app, &rt, chrome_regions_before[:], chrome_bounds_before),
 		"rapid reversal must keep selection semantics and caption hit regions stable")
 
-	// A successful drop commits the authoritative order once; zeroing paint
-	// translations against the reordered layout should not leave motion active.
-	app.backend.state.documents[1], app.backend.state.documents[2] =
-		app.backend.state.documents[2], app.backend.state.documents[1]
-	app.workspace_drag_kind = .None
-	app.workspace_drag_source_document_id = ""
-	app.workspace_drag_target = {}
-	app.workspace_drag_position = .None
-	app.workspace_drag_motion_reset_pending = true
-	app.workspace_drag_motion_reset_snap = true
-	alicorn.invalidate_root(&rt, "commit proposed tab order")
+	if !reduce_motion {
+		// Reduce Motion can change while a gesture is in flight. Re-declaring the
+		// unchanged target applies the current policy and snaps without restarting
+		// or leaving a moving visual behind the logical hit geometry.
+		app.accessibility_appearance.reduce_motion = true
+		alicorn.invalidate_root(&rt, "Reduce Motion changed during tab reorder")
+		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(35_000_000))
+		_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+		policy_changed_stats := alicorn.motion_diagnostics_stats(&rt)
+		policy_snapshot := alicorn.motion_diagnostics_owner_snapshot(&rt, tab_nodes[0])
+		testing.expect(t, policy_changed_stats.intent_declarations > repeated_stats.intent_declarations &&
+			alicorn.motion_activity(&rt).active_owners == 0 && policy_snapshot.translation.presented.x == 0,
+			"a mid-flight Reduce Motion change should reapply policy and snap neighbors to their current logical slots")
+	}
+
+	// Cancel after the nonzero→zero reversal. Cleanup must still be queued and
+	// snap before the gesture is retired, even though the latest target is zero.
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Cancelled,
+		drag_type=SCRATCHPAD_DRAG_TABS,
+	})
+	testing.expect(t, app.workspace_drag_motion_reset_pending && app.workspace_drag_motion_reset_snap,
+		"cancel must queue snap cleanup after any displaced target, including a zero-offset reversal")
+	alicorn.invalidate_root(&rt, "cancel reversed tab reorder")
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(40_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
-	testing.expect(t, app.backend.state.documents[0].id == "reorder-tab-a" &&
-		app.backend.state.documents[1].id == "reorder-tab-c" &&
-		app.backend.state.documents[2].id == "reorder-tab-b" &&
-		!app.document_tab_reorder_motion_active && !app.workspace_drag_motion_reset_pending &&
-		alicorn.motion_activity(&rt).active_owners == 0,
-		"drop should commit the displayed order and snap to new logical geometry without residual motion")
+	testing.expect(t, app.workspace_drag_kind == .None &&
+		!app.document_tab_reorder_motion_cleanup_needed && !app.workspace_drag_motion_reset_pending &&
+		alicorn.motion_activity(&rt).active_owners == 0 &&
+		app.backend.state.documents[0].id == authoritative_before[0] &&
+		app.backend.state.documents[1].id == authoritative_before[1] &&
+		app.backend.state.documents[2].id == authoritative_before[2],
+		"cancel should release gesture cleanup, leave no motion, and preserve authoritative tab order")
 
-	// A canceled live gesture clears application drag state and settles the
-	// neighboring tabs back to the unchanged authoritative order.
+	// A successful drop commits the authoritative order once; zeroing paint
+	// translations against the reordered layout should not leave motion active.
 	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
 		kind=.Started,
 		drag_type=SCRATCHPAD_DRAG_TABS,
@@ -535,8 +626,33 @@ connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion
 	})
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(50_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
-	testing.expect(t, app.document_tab_reorder_motion_active,
-		"a second live drag should establish neighbors to settle on cancellation")
+	testing.expect(t, app.document_tab_reorder_motion_cleanup_needed,
+		"the successful-drop fixture should create a live displaced gesture")
+	app.backend.state.documents[1], app.backend.state.documents[2] =
+		app.backend.state.documents[2], app.backend.state.documents[1]
+	workspace_drag_clear(&app, reset_motion=true, snap_motion=true)
+	alicorn.invalidate_root(&rt, "commit proposed tab order")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(60_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	testing.expect(t, app.backend.state.documents[0].id == "reorder-tab-a" &&
+		app.backend.state.documents[1].id == "reorder-tab-c" &&
+		app.backend.state.documents[2].id == "reorder-tab-b" &&
+		!app.document_tab_reorder_motion_cleanup_needed && !app.workspace_drag_motion_reset_pending &&
+		alicorn.motion_activity(&rt).active_owners == 0,
+		"drop should commit the displayed order and snap to new logical geometry without residual motion")
+
+	// A canceled moved gesture snaps neighboring tabs back to the current order.
+	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
+		kind=.Started,
+		drag_type=SCRATCHPAD_DRAG_TABS,
+		source=ids[1],
+		target=ids[0],
+		position=.Before,
+	})
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(70_000_000))
+	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	testing.expect(t, app.document_tab_reorder_motion_cleanup_needed,
+		"a second live drag should establish neighbors to snap on cancellation")
 	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
 		kind=.Cancelled,
 		drag_type=SCRATCHPAD_DRAG_TABS,
@@ -546,15 +662,17 @@ connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion
 		app.backend.state.documents[1].id,
 		app.backend.state.documents[2].id,
 	}
-	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(60_000_000))
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(80_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
 	order_unchanged := app.backend.state.documents[0].id == order_before_cancel_build[0] &&
 		app.backend.state.documents[1].id == order_before_cancel_build[1] &&
 		app.backend.state.documents[2].id == order_before_cancel_build[2]
 	testing.expect(t, app.workspace_drag_kind == .None &&
-		!app.workspace_drag_motion_reset_pending && order_unchanged,
-		fmt.tprintf("cancel should reset transient motion without changing authoritative order (kind=%v pending=%v active=%v order=%s,%s,%s before=%s,%s,%s)",
-			app.workspace_drag_kind, app.workspace_drag_motion_reset_pending, app.document_tab_reorder_motion_active,
+		!app.document_tab_reorder_motion_cleanup_needed && !app.workspace_drag_motion_reset_pending &&
+		alicorn.motion_activity(&rt).active_owners == 0 && order_unchanged,
+		fmt.tprintf("cancel should reset transient motion without changing authoritative order (kind=%v cleanup=%v pending=%v active_owners=%d order=%s,%s,%s before=%s,%s,%s)",
+			app.workspace_drag_kind, app.document_tab_reorder_motion_cleanup_needed,
+			app.workspace_drag_motion_reset_pending, alicorn.motion_activity(&rt).active_owners,
 			app.backend.state.documents[0].id, app.backend.state.documents[1].id, app.backend.state.documents[2].id,
 			order_before_cancel_build[0], order_before_cancel_build[1], order_before_cancel_build[2]))
 	delete(button_bounds_before)

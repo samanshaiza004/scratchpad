@@ -219,6 +219,34 @@ scratchpad_workbench_style_environment :: proc(app: ^App) -> alicorn.Style_Envir
 	return environment
 }
 
+scratchpad_motion_policy_signature :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	theme: alicorn.Style_Theme_ID,
+) -> u64 {
+	policy := alicorn.style_theme_motion_policy(rt, theme)
+	hash: u64 = 14_695_981_039_346_656_037
+	hash = scratchpad_motion_policy_hash_u64(hash, u64(policy.defined))
+	hash = scratchpad_motion_policy_hash_config(hash, policy.translation)
+	hash = scratchpad_motion_policy_hash_config(hash, policy.opacity)
+	hash = scratchpad_motion_policy_hash_u64(hash, u64(policy.reduced_motion))
+	hash = scratchpad_motion_policy_hash_config(hash, policy.reduced_opacity)
+	preferences := scratchpad_modal_accessibility_preferences(app, rt)
+	hash = scratchpad_motion_policy_hash_u64(hash, 1 if preferences.reduce_motion else 0)
+	if hash == 0 { hash = 1 }
+	return hash
+}
+
+scratchpad_motion_policy_hash_config :: proc(hash: u64, config: alicorn.Motion_Config) -> u64 {
+	result := scratchpad_motion_policy_hash_u64(hash, transmute(u64)config.omega)
+	result = scratchpad_motion_policy_hash_u64(result, transmute(u64)config.position_tolerance)
+	return scratchpad_motion_policy_hash_u64(result, transmute(u64)config.velocity_tolerance)
+}
+
+scratchpad_motion_policy_hash_u64 :: proc(hash, value: u64) -> u64 {
+	return (hash ~ value) * 1_099_511_628_211
+}
+
 // The host continues to own integrated title-bar rendering and behavior; this
 // callback only supplies colors from the currently selected workbench theme.
 scratchpad_window_chrome_appearance :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host.Window_Chrome_Appearance {

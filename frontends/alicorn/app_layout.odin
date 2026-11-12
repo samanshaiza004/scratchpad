@@ -834,6 +834,23 @@ scratchpad_document_tabs_build :: proc(
 	)
 }
 
+scratchpad_document_tab_selection_is_noop :: proc(
+	app: ^App,
+	group_id: Pane_Group_ID,
+	view_id: View_ID,
+	document_id: string,
+) -> bool {
+	if app == nil || document_id == "" || app.workspace_search_mode { return false }
+	if app.pinned.visible && app.pinned.single_pane { return false }
+	window := app_workbench_window(app)
+	if window == nil || window.focused_group_id != group_id { return false }
+	group_index := workbench_group_find(window, group_id)
+	view_index := workbench_view_find(window, view_id)
+	if group_index < 0 || view_index < 0 || window.groups[group_index].active_view_id != view_id { return false }
+	view := window.views[view_index]
+	return view.kind == .Editor && view.resource.id == document_id && app.backend.state.active == document_id
+}
+
 scratchpad_document_tabs_reorder_motion :: proc(
 	app: ^App,
 	ui: ^alicorn.UI,
@@ -853,11 +870,10 @@ scratchpad_document_tabs_reorder_motion :: proc(
 				has_translation=true,
 			}, intent)
 		}
-		app.document_tab_reorder_motion_active = false
+		app.document_tab_reorder_motion_cleanup_needed = false
 		app.document_tab_reorder_motion_signature = 0
 		app.workspace_drag_motion_reset_pending = false
 		app.workspace_drag_motion_reset_snap = false
-		return
 	}
 	if !enabled || app.workspace_drag_kind != .Tabs || app.workspace_drag_source_document_id == "" { return }
 
@@ -895,6 +911,10 @@ scratchpad_document_tabs_reorder_motion :: proc(
 		if first_ok && second_ok { stride = second.bounds.x-first.bounds.x }
 	}
 	signature := workspace_tab_reorder_order_signature(order[:], stride)
+	signature = scratchpad_motion_policy_hash_u64(
+		signature,
+		scratchpad_motion_policy_signature(app, rt, app.workbench_theme),
+	)
 	if signature == app.document_tab_reorder_motion_signature { return }
 
 	any_offset := false
@@ -910,7 +930,7 @@ scratchpad_document_tabs_reorder_motion :: proc(
 		}, .Settle)
 	}
 	app.document_tab_reorder_motion_signature = signature
-	app.document_tab_reorder_motion_active = any_offset
+	if any_offset { app.document_tab_reorder_motion_cleanup_needed = true }
 }
 
 workspace_tab_reorder_order_signature :: proc(order: []string, stride: f32) -> u64 {

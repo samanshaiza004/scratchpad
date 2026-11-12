@@ -192,6 +192,10 @@ scratchpad_workbench_group_tabs_build :: proc(
 		}
 		return
 	}
+	if result.action == .Select &&
+		scratchpad_document_tab_selection_is_noop(app, group_id, view.id, view.resource.id) {
+		return
+	}
 	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return }
 	if !app_workbench_activate_view(app, rt, view.id) {
 		set_error(app, "Could not activate the selected workbench view.")

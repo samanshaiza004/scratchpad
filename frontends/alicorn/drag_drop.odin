@@ -26,7 +26,7 @@ application_drag :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Dra
 	if app == nil || rt == nil { return }
 	switch event.kind {
 	case .Started:
-		workspace_drag_clear(app)
+		workspace_drag_clear(app, reset_motion=true, snap_motion=true)
 		if !workspace_drag_capture_source(app, event) {
 			set_error(app, "The dragged item is no longer available.")
 			alicorn.invalidate_root(rt, "Scratchpad could not resolve the stable drag source")
@@ -43,7 +43,7 @@ application_drag :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Dra
 		   floating_window_drag_detached(rt, event) {
 			_ = floating_window_open(app, rt, app.workspace_drag_source_document_id)
 		}
-		workspace_drag_clear(app, reset_motion=true)
+		workspace_drag_clear(app, reset_motion=true, snap_motion=true)
 		alicorn.invalidate_root(rt, "Scratchpad drag canceled")
 	case .Target_Changed:
 		if app.workspace_drag_kind == .Tabs && event.drag_type == SCRATCHPAD_DRAG_TABS {
@@ -247,9 +247,10 @@ workspace_drag_clear :: proc(app: ^App, reset_motion := false, snap_motion := fa
 	app.workspace_drag_target = {}
 	app.workspace_drag_position = .None
 	app.document_tab_reorder_motion_signature = 0
-	if reset_motion && app.document_tab_reorder_motion_active {
+	if reset_motion && app.document_tab_reorder_motion_cleanup_needed {
 		app.workspace_drag_motion_reset_pending = true
 		app.workspace_drag_motion_reset_snap = snap_motion
+		app.document_tab_reorder_motion_cleanup_needed = false
 	}
 }
 
