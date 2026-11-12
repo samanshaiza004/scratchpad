@@ -1719,6 +1719,8 @@ Semantic_View_Window_Destroy :: proc(window: ^Semantic_View_Window, allocator: m
 }
 
 Visible_Window_Request :: struct {
+	view_id:           u64,
+	view_lifecycle_generation: u64,
 	document_id:       string,
 	document_instance_id: u64,
 	application_rev:   u64,
@@ -1746,6 +1748,12 @@ Visible_Window_Lane_Result :: struct {
 	error_owned: bool,
 }
 
+Visible_Window_Latest_Generation :: struct {
+	view_id: u64,
+	view_lifecycle_generation: u64,
+	generation: u64,
+}
+
 Visible_Window_Lane :: struct {
 	backend:            ^Backend,
 	wake:               Application_Wake_Proc,
@@ -1756,20 +1764,21 @@ Visible_Window_Lane :: struct {
 	thread:             ^thread.Thread,
 	stopping:           u32,
 	wake_posted:        bool,
-	pending:            bool,
-	pending_request:    Visible_Window_Request,
+	pending_requests:   [dynamic]Visible_Window_Request,
 	active:             bool,
 	active_request:     Visible_Window_Request,
 	latest_generation:  u64,
-	completed:          Visible_Window_Lane_Result,
-	completed_ready:    bool,
+	latest_by_view:     [dynamic]Visible_Window_Latest_Generation,
+	completed:          [dynamic]Visible_Window_Lane_Result,
 	submitted:          u64,
 	coalesced:          u64,
 	stale_discarded:    u64,
 }
 
 visible_window_request_equal :: proc(a, b: Visible_Window_Request) -> bool {
-	return a.document_id == b.document_id &&
+	return a.view_id == b.view_id &&
+	       a.view_lifecycle_generation == b.view_lifecycle_generation &&
+	       a.document_id == b.document_id &&
 	       a.document_instance_id == b.document_instance_id &&
 	       a.application_rev == b.application_rev &&
 	       a.editor_revision == b.editor_revision &&
@@ -1790,6 +1799,34 @@ visible_window_result_is_current :: proc(stopping: u32, result_generation, lates
 	return stopping == 0 && result_generation != 0 && result_generation == latest_generation
 }
 
+visible_window_lane_latest_index :: proc(lane: ^Visible_Window_Lane, view_id: u64) -> int {
+	if lane == nil { return -1 }
+	for latest, index in lane.latest_by_view {
+		if latest.view_id == view_id { return index }
+	}
+	return -1
+}
+
+visible_window_lane_request_is_current :: proc(
+	lane: ^Visible_Window_Lane,
+	request: Visible_Window_Request,
+) -> bool {
+	if lane == nil || sync.atomic_load(&lane.stopping) != 0 { return false }
+	latest_index := visible_window_lane_latest_index(lane, request.view_id)
+	return latest_index >= 0 &&
+	       lane.latest_by_view[latest_index].generation == request.generation &&
+	       lane.latest_by_view[latest_index].view_lifecycle_generation == request.view_lifecycle_generation
+}
+
+visible_window_lane_clear_completed_for_view :: proc(lane: ^Visible_Window_Lane, view_id: u64) {
+	if lane == nil { return }
+	for index := len(lane.completed)-1; index >= 0; index -= 1 {
+		if lane.completed[index].request.view_id != view_id { continue }
+		visible_window_lane_result_destroy(&lane.completed[index], lane.allocator)
+		ordered_remove(&lane.completed, index)
+	}
+}
+
 visible_window_lane_worker :: proc(t: ^thread.Thread) {
 	lane := cast(^Visible_Window_Lane)t.data
 	for {
@@ -1799,16 +1836,19 @@ visible_window_lane_worker :: proc(t: ^thread.Thread) {
 			sync.mutex_unlock(&lane.mutex)
 			break
 		}
-		if !lane.pending {
+		if len(lane.pending_requests) == 0 {
 			lane.wake_posted = false
 			sync.mutex_unlock(&lane.mutex)
 			continue
 		}
-		lane.active_request = lane.pending_request
-		lane.pending_request = {}
-		lane.pending = false
+		lane.active_request = lane.pending_requests[0]
+		ordered_remove(&lane.pending_requests, 0)
 		lane.active = true
 		lane.wake_posted = false
+		if len(lane.pending_requests) > 0 {
+			lane.wake_posted = true
+			sync.sema_post(&lane.sema)
+		}
 		request := lane.active_request
 		sync.mutex_unlock(&lane.mutex)
 
@@ -1831,30 +1871,29 @@ visible_window_lane_worker :: proc(t: ^thread.Thread) {
 		)
 
 		sync.mutex_lock(&lane.mutex)
-		is_current := visible_window_result_is_current(sync.atomic_load(&lane.stopping), request.generation, lane.latest_generation)
+		is_current := visible_window_lane_request_is_current(lane, request)
 		lane.active = false
 		// request is a shallow ownership copy of active_request. Clear the lane's
-		// view here, then release the single owned string through request below.
+		// view here, then transfer or release the owned identity through request.
 		lane.active_request = {}
 		if is_current {
-			visible_window_lane_result_destroy(&lane.completed, lane.allocator)
-			lane.completed.generation = request.generation
-			lane.completed.request = request
+			visible_window_lane_clear_completed_for_view(lane, request.view_id)
+			completed := Visible_Window_Lane_Result{generation=request.generation, request=request}
 			// The completed result now owns the request identity. It is needed by
 			// the application to suppress retries of a rejected response.
 			request.document_id = ""
 			if result.ok && result.visible_window_owned {
-				lane.completed.window = result.visible_window
-				lane.completed.window.document_instance_id = request.document_instance_id
-				lane.completed.window_owned = true
+				completed.window = result.visible_window
+				completed.window.document_instance_id = completed.request.document_instance_id
+				completed.window_owned = true
 				result.visible_window_owned = false
 			} else {
 				error_text := result.message
 				if error_text == "" { error_text = result.code }
-				lane.completed.error, _ = strings.clone(error_text, lane.allocator)
-				lane.completed.error_owned = len(lane.completed.error) > 0
+				completed.error, _ = strings.clone(error_text, lane.allocator)
+				completed.error_owned = len(completed.error) > 0
 			}
-			lane.completed_ready = true
+			append(&lane.completed, completed)
 		} else {
 			lane.stale_discarded += 1
 		}
@@ -1882,17 +1921,28 @@ visible_window_lane_start :: proc(
 	lane.allocator = allocator
 	lane.stopping = 0
 	lane.wake_posted = false
-	lane.pending = false
+	lane.pending_requests = make([dynamic]Visible_Window_Request, 0, allocator=allocator)
 	lane.active = false
 	lane.latest_generation = 0
-	lane.completed_ready = false
-	lane.completed = {}
+	lane.latest_by_view = make([dynamic]Visible_Window_Latest_Generation, 0, allocator=allocator)
+	lane.completed = make([dynamic]Visible_Window_Lane_Result, 0, allocator=allocator)
 	lane.submitted = 0
 	lane.coalesced = 0
 	lane.stale_discarded = 0
 	lane.sema = {}
 	lane.thread = thread.create(visible_window_lane_worker, name="Scratchpad visible-window lane")
-	if lane.thread == nil { return false }
+	if lane.thread == nil {
+		delete(lane.pending_requests)
+		delete(lane.latest_by_view)
+		delete(lane.completed)
+		lane.pending_requests = {}
+		lane.latest_by_view = {}
+		lane.completed = {}
+		lane.backend = nil
+		lane.wake = nil
+		lane.wake_data = nil
+		return false
+	}
 	lane.thread.data = rawptr(lane)
 	thread.start(lane.thread)
 	return true
@@ -1911,9 +1961,14 @@ visible_window_lane_request :: proc(
 	source_anchor_byte: u64 = 0,
 	source_anchor_line: u64 = 0,
 	document_instance_id: u64 = 0,
+	view_id: u64 = 0,
+	view_lifecycle_generation: u64 = 1,
 ) -> (generation: u64, accepted: bool, message: string) {
 	if lane == nil || lane.thread == nil || len(document_id) == 0 {
 		return 0, false, "visible-window lane is not running or document identity is empty"
+	}
+	if view_id != 0 && view_lifecycle_generation == 0 {
+		return 0, false, "view-scoped visible-window requests require a lifecycle generation"
 	}
 	if max_lines == 0 || max_lines > MAX_VISIBLE_LINES || max_bytes == 0 || max_bytes > MAX_VISIBLE_BYTES {
 		return 0, false, "visible-window request exceeds the bounded line or byte limit"
@@ -1924,7 +1979,9 @@ visible_window_lane_request :: proc(
 		sync.mutex_unlock(&lane.mutex)
 		return 0, false, "visible-window lane is stopping"
 	}
-	if lane.pending && visible_window_request_equal(lane.pending_request, Visible_Window_Request{
+	candidate := Visible_Window_Request{
+		view_id=view_id,
+		view_lifecycle_generation=view_lifecycle_generation,
 		document_id=document_id, document_instance_id=document_instance_id,
 		application_rev=application_rev, editor_revision=editor_revision,
 		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
@@ -1932,20 +1989,17 @@ visible_window_lane_request :: proc(
 		presentation_ready=presentation_ready,
 		has_source_anchor=has_source_anchor, source_anchor_revision=source_anchor_revision,
 		source_anchor_byte=source_anchor_byte, source_anchor_line=source_anchor_line,
-	}) {
-		generation = lane.pending_request.generation
-		sync.mutex_unlock(&lane.mutex)
-		return generation, true, ""
 	}
-	if lane.active && !lane.pending && visible_window_request_equal(lane.active_request, Visible_Window_Request{
-		document_id=document_id, document_instance_id=document_instance_id,
-		application_rev=application_rev, editor_revision=editor_revision,
-		start_line=start_line, anchor_byte=anchor_byte, max_lines=max_lines, max_bytes=max_bytes,
-		include_presentation=include_presentation, presentation_revision=presentation_revision,
-		presentation_ready=presentation_ready,
-		has_source_anchor=has_source_anchor, source_anchor_revision=source_anchor_revision,
-		source_anchor_byte=source_anchor_byte, source_anchor_line=source_anchor_line,
-	}) {
+	for pending, index in lane.pending_requests {
+		if pending.view_id == view_id && visible_window_request_equal(pending, candidate) {
+			generation = pending.generation
+			sync.mutex_unlock(&lane.mutex)
+			return generation, true, ""
+		}
+	}
+	if lane.active && lane.active_request.view_id == view_id &&
+	   visible_window_lane_request_is_current(lane, lane.active_request) &&
+	   visible_window_request_equal(lane.active_request, candidate) {
 		generation = lane.active_request.generation
 		sync.mutex_unlock(&lane.mutex)
 		return generation, true, ""
@@ -1958,13 +2012,30 @@ visible_window_lane_request :: proc(
 	lane.latest_generation += 1
 	if lane.latest_generation == 0 { lane.latest_generation = 1 }
 	generation = lane.latest_generation
-	if lane.pending {
-		delete(lane.pending_request.document_id, lane.allocator)
-		lane.coalesced += 1
-	} else if lane.active {
+	latest_index := visible_window_lane_latest_index(lane, view_id)
+	if latest_index < 0 {
+		append(&lane.latest_by_view, Visible_Window_Latest_Generation{
+			view_id=view_id,
+			view_lifecycle_generation=view_lifecycle_generation,
+			generation=generation,
+		})
+	} else {
+		lane.latest_by_view[latest_index] = Visible_Window_Latest_Generation{
+			view_id=view_id,
+			view_lifecycle_generation=view_lifecycle_generation,
+			generation=generation,
+		}
+	}
+	for index := len(lane.pending_requests)-1; index >= 0; index -= 1 {
+		if lane.pending_requests[index].view_id != view_id { continue }
+		delete(lane.pending_requests[index].document_id, lane.allocator)
+		ordered_remove(&lane.pending_requests, index)
 		lane.coalesced += 1
 	}
-	lane.pending_request = Visible_Window_Request{
+	visible_window_lane_clear_completed_for_view(lane, view_id)
+	request := Visible_Window_Request{
+		view_id=view_id,
+		view_lifecycle_generation=view_lifecycle_generation,
 		document_id=owned_document_id,
 		document_instance_id=document_instance_id,
 		application_rev=application_rev,
@@ -1982,7 +2053,8 @@ visible_window_lane_request :: proc(
 		source_anchor_line=source_anchor_line,
 		generation=generation,
 	}
-	lane.pending = true
+	append(&lane.pending_requests, request)
+	if lane.active { lane.coalesced += 1 }
 	lane.submitted += 1
 	if !lane.wake_posted {
 		lane.wake_posted = true
@@ -1992,16 +2064,32 @@ visible_window_lane_request :: proc(
 	return generation, true, ""
 }
 
+// Invalidates queued, active, and completed source requests for a view. Moving
+// a view between pane groups does not call this; close or resource replacement
+// does. Removing its latest-generation entry also bounds lane bookkeeping.
+visible_window_lane_cancel_view :: proc(lane: ^Visible_Window_Lane, view_id: u64) {
+	if lane == nil || lane.thread == nil { return }
+	sync.mutex_lock(&lane.mutex)
+	latest_index := visible_window_lane_latest_index(lane, view_id)
+	if latest_index >= 0 { ordered_remove(&lane.latest_by_view, latest_index) }
+	for index := len(lane.pending_requests)-1; index >= 0; index -= 1 {
+		if lane.pending_requests[index].view_id != view_id { continue }
+		delete(lane.pending_requests[index].document_id, lane.allocator)
+		ordered_remove(&lane.pending_requests, index)
+	}
+	visible_window_lane_clear_completed_for_view(lane, view_id)
+	sync.mutex_unlock(&lane.mutex)
+}
+
 visible_window_lane_take :: proc(lane: ^Visible_Window_Lane) -> (result: Visible_Window_Lane_Result, found: bool) {
 	if lane == nil { return {}, false }
 	sync.mutex_lock(&lane.mutex)
-	if !lane.completed_ready {
+	if len(lane.completed) == 0 {
 		sync.mutex_unlock(&lane.mutex)
 		return {}, false
 	}
-	result = lane.completed
-	lane.completed = {}
-	lane.completed_ready = false
+	result = lane.completed[0]
+	ordered_remove(&lane.completed, 0)
 	sync.mutex_unlock(&lane.mutex)
 	return result, true
 }
@@ -2018,22 +2106,26 @@ visible_window_lane_stop :: proc(lane: ^Visible_Window_Lane) -> bool {
 	if lane == nil || lane.thread == nil { return true }
 	sync.mutex_lock(&lane.mutex)
 	sync.atomic_store(&lane.stopping, 1)
-	if lane.pending {
-		delete(lane.pending_request.document_id, lane.allocator)
-		lane.pending_request = {}
-		lane.pending = false
+	for &request in lane.pending_requests {
+		delete(request.document_id, lane.allocator)
 	}
+	clear(&lane.pending_requests)
 	sync.mutex_unlock(&lane.mutex)
 	sync.sema_post(&lane.sema)
 	thread.join(lane.thread)
 	thread.destroy(lane.thread)
 	lane.thread = nil
-	visible_window_lane_result_destroy(&lane.completed, lane.allocator)
-	lane.completed_ready = false
+	for &result in lane.completed { visible_window_lane_result_destroy(&result, lane.allocator) }
+	delete(lane.pending_requests)
+	delete(lane.latest_by_view)
+	delete(lane.completed)
+	lane.pending_requests = {}
+	lane.latest_by_view = {}
+	lane.completed = {}
 	lane.backend = nil
 	lane.wake = nil
 	lane.wake_data = nil
-	return !lane.active && !lane.pending
+	return !lane.active && len(lane.pending_requests) == 0
 }
 
 Workspace_Files_Lane_Result :: struct {

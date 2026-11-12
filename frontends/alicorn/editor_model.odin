@@ -130,7 +130,15 @@ Editor_Wrap_Line_Cache_Entry :: struct {
 }
 
 Editor_View_State :: struct {
+	// view_id is presentation identity. Multiple views may carry the same
+	// document_id while retaining independent navigation and layout state.
+	view_id:           u64,
+	// lifecycle_generation changes when this view is rebound to a new resource
+	// instance or closed. Async reads include it so a late response cannot be
+	// installed into a recycled presentation identity.
+	lifecycle_generation: u64,
 	document_id:       string,
+	focused:           bool,
 	document_instance_id: u64,
 	scroll_y:          f32,
 	scroll_x:          f32,
@@ -221,6 +229,12 @@ Editor_View_State :: struct {
 	optimistic_pending_edits: u64,
 	optimistic_line_delta: i64,
 	position_reconcile_pending: bool,
+	source_window: Editor_Window,
+	source_window_ready: bool,
+	source_request_generation: u64,
+	source_request_rejected: bool,
+	source_rejected_request: bridge.Visible_Window_Request,
+	source_window_error: string,
 }
 
 Editor_Document_Edge :: enum { None, Start, End }
@@ -241,10 +255,82 @@ Editor_View_Restore :: struct {
 }
 
 editor_view_find :: proc(views: []Editor_View_State, document_id: string) -> int {
+	first := -1
 	for view, index in views {
-		if view.document_id == document_id { return index }
+		if view.document_id != document_id { continue }
+		if first < 0 { first = index }
+		if view.focused { return index }
+	}
+	return first
+}
+
+editor_view_set_focused :: proc(views: []Editor_View_State, view_id: u64) -> bool {
+	if view_id == 0 { return false }
+	found := false
+	for &view in views {
+		view.focused = view.view_id == view_id
+		found = found || view.focused
+	}
+	return found
+}
+
+editor_view_find_by_id :: proc(views: []Editor_View_State, view_id: u64) -> int {
+	if view_id == 0 { return -1 }
+	for view, index in views {
+		if view.view_id == view_id { return index }
 	}
 	return -1
+}
+
+editor_view_request_is_rejected :: proc(view: ^Editor_View_State, request: bridge.Visible_Window_Request) -> bool {
+	return view != nil && view.source_request_rejected &&
+	       bridge.visible_window_request_equal(view.source_rejected_request, request)
+}
+
+editor_view_request_rejection_clear :: proc(view: ^Editor_View_State, allocator := context.allocator) {
+	if view == nil { return }
+	if len(view.source_rejected_request.document_id) > 0 {
+		delete(view.source_rejected_request.document_id, allocator)
+	}
+	view.source_rejected_request = {}
+	view.source_request_rejected = false
+}
+
+editor_view_request_rejection_set :: proc(
+	view: ^Editor_View_State,
+	request: bridge.Visible_Window_Request,
+	allocator := context.allocator,
+) -> bool {
+	if view == nil { return false }
+	owned_document_id, clone_error := strings.clone(request.document_id, allocator)
+	if clone_error != nil { return false }
+	editor_view_request_rejection_clear(view, allocator)
+	view.source_rejected_request = request
+	view.source_rejected_request.document_id = owned_document_id
+	view.source_request_rejected = true
+	return true
+}
+
+editor_view_ensure_for_id :: proc(
+	views: ^[dynamic]Editor_View_State,
+	view_id: u64,
+	document_id: string,
+	allocator := context.allocator,
+) -> (index: int, ok: bool) {
+	if views == nil || view_id == 0 || document_id == "" { return -1, false }
+	if existing := editor_view_find_by_id(views[:], view_id); existing >= 0 {
+		return existing, views[existing].document_id == document_id
+	}
+	owned_id, clone_err := strings.clone(document_id, allocator)
+	if clone_err != nil { return -1, false }
+	append(views, Editor_View_State{
+		view_id=view_id,
+		lifecycle_generation=1,
+		document_id=owned_id,
+		undo_group_id=1,
+		focused=len(views) == 0,
+	})
+	return len(views)-1, true
 }
 
 editor_view_ensure :: proc(views: ^[dynamic]Editor_View_State, document_id: string, allocator := context.allocator) -> (index: int, ok: bool) {
@@ -252,7 +338,23 @@ editor_view_ensure :: proc(views: ^[dynamic]Editor_View_State, document_id: stri
 	if existing := editor_view_find(views[:], document_id); existing >= 0 { return existing, true }
 	owned_id, clone_err := strings.clone(document_id, allocator)
 	if clone_err != nil { return -1, false }
-	append(views, Editor_View_State{document_id=owned_id, undo_group_id=1})
+	view_id := u64(1)
+	for view in views {
+		if view.view_id >= view_id {
+			if view.view_id == 0xFFFF_FFFF_FFFF_FFFF {
+				delete(owned_id, allocator)
+				return -1, false
+			}
+			view_id = view.view_id+1
+		}
+	}
+	append(views, Editor_View_State{
+		view_id=view_id,
+		lifecycle_generation=1,
+		document_id=owned_id,
+		focused=len(views) == 0,
+		undo_group_id=1,
+	})
 	return len(views)-1, true
 }
 
@@ -338,6 +440,9 @@ editor_view_remove :: proc(views: ^[dynamic]Editor_View_State, index: int, alloc
 	if views[index].optimistic_window_ready {
 		editor_window_destroy(&views[index].optimistic_window, allocator)
 	}
+	if views[index].source_window_ready { editor_window_destroy(&views[index].source_window, allocator) }
+	if len(views[index].source_window_error) > 0 { delete(views[index].source_window_error, allocator) }
+	editor_view_request_rejection_clear(&views[index], allocator)
 	if views[index].wrap_height_index_ready {
 		alicorn.virtual_list_height_index_destroy(&views[index].wrap_height_index)
 	}
@@ -354,6 +459,9 @@ editor_views_destroy :: proc(views: ^[dynamic]Editor_View_State, allocator := co
 		editor_preedit_clear(&view, allocator)
 		editor_reveal_request_clear(&view.reveal_request, allocator)
 		if view.optimistic_window_ready { editor_window_destroy(&view.optimistic_window, allocator) }
+		if view.source_window_ready { editor_window_destroy(&view.source_window, allocator) }
+		if len(view.source_window_error) > 0 { delete(view.source_window_error, allocator) }
+		editor_view_request_rejection_clear(&view, allocator)
 		if view.wrap_height_index_ready { alicorn.virtual_list_height_index_destroy(&view.wrap_height_index) }
 		editor_wrap_line_cache_clear(&view)
 		semantic_zoom_destroy(&view.zoom, allocator)
@@ -673,8 +781,19 @@ editor_window_clone :: proc(source: ^Editor_Window, allocator := context.allocat
 	bytes, allocation_error := make([]u8, len(source.source), allocator=allocator)
 	if allocation_error != nil { return {}, false, "could not retain the bounded optimistic source window" }
 	if len(bytes) > 0 { mem.copy(rawptr(&bytes[0]), rawptr(&source.source[0]), len(bytes)) }
+	spans, spans_error := make([]bridge.Presentation_Record, len(source.presentation_spans), allocator=allocator)
+	if spans_error != nil { delete(bytes, allocator); return {}, false, "could not retain editor presentation spans" }
+	if len(spans) > 0 {
+		mem.copy(rawptr(&spans[0]), rawptr(&source.presentation_spans[0]), len(spans)*size_of(bridge.Presentation_Record))
+	}
+	blocks, blocks_error := make([]bridge.Presentation_Record, len(source.presentation_blocks), allocator=allocator)
+	if blocks_error != nil { delete(bytes, allocator); delete(spans, allocator); return {}, false, "could not retain editor presentation blocks" }
+	if len(blocks) > 0 {
+		mem.copy(rawptr(&blocks[0]), rawptr(&source.presentation_blocks[0]), len(blocks)*size_of(bridge.Presentation_Record))
+	}
 	visible := bridge.Visible_Window{
 		document_id=source.document_id,
+		document_instance_id=source.document_instance_id,
 		application_rev=source.application_rev,
 		editor_revision=source.editor_revision,
 		start_line=source.start_line,
@@ -686,8 +805,22 @@ editor_window_clone :: proc(source: ^Editor_Window, allocator := context.allocat
 		source_anchor_line=source.source_anchor_line,
 		truncated=source.truncated,
 		source=bytes,
+		presentation_revision=source.presentation_revision,
+		presentation_ready=source.presentation_ready,
+		presentation_truncated=source.presentation_truncated,
+		presentation_spans=spans,
+		presentation_blocks=blocks,
 	}
-	return editor_window_from_visible(&visible, allocator)
+	window, ok, message = editor_window_from_visible(&visible, allocator)
+	if !ok {
+		// editor_window_from_visible consumes the source arrays after its first
+		// allocation succeeds. If retaining the document identity failed before
+		// that transfer, release the clones here.
+		if len(visible.source) > 0 { delete(visible.source, allocator) }
+		if len(visible.presentation_spans) > 0 { delete(visible.presentation_spans, allocator) }
+		if len(visible.presentation_blocks) > 0 { delete(visible.presentation_blocks, allocator) }
+	}
+	return
 }
 
 // editor_view_window resolves only an exact edit-authoritative window. It is
@@ -707,6 +840,13 @@ editor_view_window :: proc(
 		   (view.optimistic_pending_edits > 0 || view.optimistic_window.editor_revision == editor_revision) {
 			return &view.optimistic_window, true
 		}
+	}
+	if view != nil && view.source_window_ready &&
+	   view.source_window.document_id == document_id &&
+	   (view.document_instance_id == 0 || view.source_window.document_instance_id == 0 ||
+	    view.source_window.document_instance_id == view.document_instance_id) &&
+	   view.source_window.editor_revision == editor_revision {
+		return &view.source_window, true
 	}
 	if base_ready && base != nil && base.document_id == document_id && base.editor_revision == editor_revision &&
 	   (view == nil || view.document_instance_id == 0 || base.document_instance_id == 0 ||

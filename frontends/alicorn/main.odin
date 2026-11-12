@@ -646,9 +646,112 @@ editor_capture_source_anchor_before_publication :: proc(app: ^App, rt: ^alicorn.
 	view.viewport_anchor_resolved = false
 }
 
+application_install_view_visible_window :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	result: ^bridge.Visible_Window_Lane_Result,
+) -> (installed, changed: bool) {
+	if app == nil || result == nil || result.request.view_id == 0 { return false, false }
+	view_index := editor_view_find_by_id(app.editor_views[:], result.request.view_id)
+	if view_index < 0 { return false, false }
+	view := &app.editor_views[view_index]
+	if result.generation != view.source_request_generation ||
+	   result.request.view_lifecycle_generation != view.lifecycle_generation ||
+	   result.request.document_id != view.document_id {
+		return false, false
+	}
+	document, document_found := find_document(&app.backend.state, result.request.document_id)
+	if !document_found || document.instance_id != result.request.document_instance_id ||
+	   document.editor_revision != result.request.editor_revision {
+		return false, false
+	}
+	if result.window_owned {
+		if result.window.document_id != document.id || result.window.editor_revision != document.editor_revision {
+			return false, false
+		}
+		window, converted, conversion_error := editor_window_from_visible(&result.window)
+		if !converted {
+			if len(view.source_window_error) > 0 { delete(view.source_window_error, context.allocator) }
+			view.source_window_error, _ = strings.clone(conversion_error, context.allocator)
+			return false, true
+		}
+		window.document_instance_id = document.instance_id
+		if result.request.has_source_anchor {
+			if window.has_source_anchor {
+				view.viewport_anchor_byte = window.source_anchor_byte
+				view.viewport_anchor_line = window.source_anchor_line
+				view.viewport_anchor_revision = window.editor_revision
+				view.viewport_anchor_resolved = true
+			} else {
+				view.viewport_anchor_pending = false
+				view.viewport_anchor_resolved = false
+			}
+		}
+		if view.optimistic_pending_edits > 0 {
+			if editor_window_chase_pending_edits(app, &window, view) {
+				editor_window_destroy(&view.optimistic_window)
+				view.optimistic_window = window
+				view.optimistic_window_ready = true
+			} else {
+				_ = editor_view_request_rejection_set(view, result.request)
+				editor_window_destroy(&window)
+				return false, false
+			}
+		} else {
+			if view.authoritative_revision != 0 && view.authoritative_revision != window.editor_revision {
+				editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
+			}
+			view.authoritative_revision = window.editor_revision
+			editor_window_destroy(&view.source_window)
+			view.source_window = window
+			view.source_window_ready = true
+			if view.position_reconcile_pending {
+				_ = editor_view_reconcile_positions(view, &view.source_window)
+			}
+		}
+		if view.focused {
+			visible := &view.source_window
+			if view.optimistic_pending_edits > 0 && view.optimistic_window_ready {
+				visible = &view.optimistic_window
+			}
+			copy, copied, _ := editor_window_clone(visible)
+			if copied {
+				editor_window_destroy(&app.editor_window)
+				app.editor_window = copy
+				app.editor_window_ready = true
+			}
+		}
+		if result.request.include_presentation && editor_metadata_result_should_suppress_retry(result.request, document, result.window) {
+			_ = editor_view_request_rejection_set(view, result.request)
+		} else {
+			editor_view_request_rejection_clear(view)
+		}
+		if len(view.source_window_error) > 0 { delete(view.source_window_error, context.allocator) }
+		view.source_window_error = ""
+		if strings.has_prefix(app.error_message, "Edit was not accepted; reloading authoritative text:") {
+			set_error(app, "")
+		}
+		return true, true
+	}
+	if result.error != "" {
+		if len(view.source_window_error) > 0 { delete(view.source_window_error, context.allocator) }
+		view.source_window_error, _ = strings.clone(result.error, context.allocator)
+		_ = editor_view_request_rejection_set(view, result.request)
+		return false, len(view.source_window_error) > 0
+	}
+	return false, false
+}
+
 application_visible_window_wake :: proc(app: ^App, rt: ^alicorn.Runtime, lane: ^bridge.Visible_Window_Lane) {
-	window_result, window_found := bridge.visible_window_lane_take(lane)
-	if window_found {
+	for {
+		window_result, window_found := bridge.visible_window_lane_take(lane)
+		if !window_found { break }
+		if window_result.request.view_id != 0 {
+			installed, changed := application_install_view_visible_window(app, rt, &window_result)
+			bridge.visible_window_lane_result_destroy(&window_result, lane.allocator)
+			if installed || changed { alicorn.invalidate_root(rt, "Scratchpad view-scoped bounded source window completed") }
+			continue
+		}
 		installed := false
 		visible_error_changed := false
 		active, active_found := find_document(&app.backend.state, app.backend.state.active)
@@ -1486,6 +1589,11 @@ editor_presentation_window :: proc(
 		// window is in flight. This snapshot is presentation-only: callers must
 		// continue to use the strict authority result for editing and hit testing.
 		return &view.optimistic_window, false
+	}
+	if view != nil && view.source_window_ready && view.source_window.document_id == document_id {
+		// Each editor view retains its own bounded range. A different view of the
+		// same resource may have requested another range in the meantime.
+		return &view.source_window, false
 	}
 	if base_ready && base != nil && base.document_id == document_id {
 		// Revision mismatch invalidates interaction authority, not immediately
@@ -2716,6 +2824,12 @@ editor_discard_document_edits :: proc(app: ^App, document_id: string) {
 
 editor_discard_document_instance_edits :: proc(app: ^App, document_id: string, instance_id: u64) {
 	if app == nil { return }
+	for &view in app.editor_views {
+		if view.document_id == document_id &&
+		   (view.document_instance_id == 0 || view.document_instance_id == instance_id) {
+			editor_view_request_rejection_clear(&view)
+		}
+	}
 	if view_index := editor_view_find(app.editor_views[:], document_id); view_index >= 0 {
 		view := &app.editor_views[view_index]
 		if view.document_instance_id == 0 || view.document_instance_id == instance_id {
@@ -3951,6 +4065,8 @@ editor_views_prune :: proc(app: ^App) {
 		if !document_is_open(&app.backend.state, app.editor_views[index].document_id) &&
 		   app.editor_views[index].optimistic_pending_edits == 0 &&
 		   !app.editor_views[index].preedit_recoverable {
+			view := &app.editor_views[index]
+			bridge.visible_window_lane_cancel_view(editor_visible_window_lane(app), view.view_id)
 			editor_view_remove(&app.editor_views, index)
 		}
 	}

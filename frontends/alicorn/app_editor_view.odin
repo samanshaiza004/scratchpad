@@ -178,12 +178,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		return
 	}
 	view := &app.editor_views[view_index]
-	if view.document_instance_id != 0 && view.document_instance_id != document.instance_id {
-		manual_folding_destroy(&view.manual_folding)
-		semantic_zoom_destroy(&view.zoom)
-		view.zoom.depth = 0
-	}
-	view.document_instance_id = document.instance_id
+	previous_document_instance_id := view.document_instance_id
 	if view_created {
 		view.document_instance_id = document.instance_id
 		view.selection_anchor = document.anchor_byte
@@ -193,19 +188,33 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		view.scroll_y = document.scroll_y
 		view.restore_x_pending = document.scroll_x_initialized
 		view.restore_y_pending = document.scroll_y_initialized
-	} else if view.document_instance_id == 0 {
+	} else if previous_document_instance_id == 0 {
 		// Views created by a direct input or projection path are bound when the
 		// authoritative document description first reaches the editor.
 		view.document_instance_id = document.instance_id
-	} else if view.document_instance_id != 0 && view.document_instance_id != document.instance_id {
+	} else if previous_document_instance_id != document.instance_id {
 		// A stable document ID can be reopened as a new source instance with the
 		// same revision. Drop instance-scoped presentation and composition state
 		// before reusing this view; committed recovery text remains available.
+		manual_folding_destroy(&view.manual_folding)
+		semantic_zoom_destroy(&view.zoom)
+		view.zoom.depth = 0
+		view.lifecycle_generation += 1
+		if view.lifecycle_generation == 0 { view.lifecycle_generation = 1 }
+		bridge.visible_window_lane_cancel_view(editor_visible_window_lane(app), view.view_id)
 		editor_preedit_clear_for_document_switch(view)
 		if view.optimistic_window_ready {
 			editor_window_destroy(&view.optimistic_window)
 			view.optimistic_window_ready = false
 		}
+		if view.source_window_ready {
+			editor_window_destroy(&view.source_window)
+			view.source_window_ready = false
+		}
+		if len(view.source_window_error) > 0 { delete(view.source_window_error, context.allocator) }
+		view.source_window_error = ""
+		editor_view_request_rejection_clear(view)
+		view.source_request_generation = 0
 		view.optimistic_pending_edits = 0
 		view.optimistic_line_delta = 0
 		view.authoritative_revision = document.editor_revision
@@ -223,6 +232,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		}
 		editor_window_rejection_clear(app)
 	}
+	view.document_instance_id = document.instance_id
 	markdown_palette := editor_markdown_palette(rt, app.editor_theme)
 	text_scale := editor_text_scale_effective(app)
 	if view.workspace_search_match_active && view.workspace_search_match_revision != document.editor_revision {
@@ -250,7 +260,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			display_line_count += u64(view.optimistic_line_delta)
 		}
 	}
-	if app.editor_window_error != "" { gui.text(ui, fmt.tprintf("Window: %s", app.editor_window_error)) }
+	window_error := view.source_window_error
+	if window_error == "" && view.source_request_generation == 0 { window_error = app.editor_window_error }
+	if window_error != "" { gui.text(ui, fmt.tprintf("Window: %s", window_error)) }
 	if document.status == "conflict" {
 		alicorn.container_begin(ui, .Container, label="document-conflict-actions", key=alicorn.key_string("document-conflict-actions"), style=alicorn.layout_style(.Column, height=68, padding=7, gap=4), color=alicorn.style_color(ui, .Subtle_Surface))
 		gui.text(ui, "This file changed on disk. Your edits are preserved. Reload discards them; Keep Mine overwrites the disk version.")
@@ -504,6 +516,9 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		focus_visual=.Content,
 		restore=scroll_restore,
 	)
+	if alicorn.focused_node(rt) == editor_scroll.id {
+		_ = editor_view_set_focused(app.editor_views[:], view.view_id)
+	}
 	editor_accessibility_build_semantics(app, ui, rt, document, editor_scroll.id, view)
 	list_metrics := alicorn.virtual_list_variable_metrics(
 		geometry_index,
@@ -867,6 +882,8 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			request_anchor = 0
 		}
 		request := bridge.Visible_Window_Request{
+			view_id=view.view_id,
+			view_lifecycle_generation=view.lifecycle_generation,
 			document_id=document.id,
 			document_instance_id=document.instance_id,
 			application_rev=app.backend.state.application_rev,
@@ -883,7 +900,7 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 			source_anchor_byte=view.viewport_anchor_byte,
 			source_anchor_line=view.viewport_anchor_line,
 		}
-		if !editor_window_request_is_rejected(app, request) {
+		if !editor_view_request_is_rejected(view, request) {
 			generation, accepted, request_error := bridge.visible_window_lane_request(
 				editor_visible_window_lane(app),
 				document.id,
@@ -901,15 +918,17 @@ build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 				view.viewport_anchor_byte,
 				view.viewport_anchor_line,
 				document.instance_id,
+				view.view_id,
+				view.lifecycle_generation,
 			)
 			if accepted {
-				app.editor_request_generation = generation
-				editor_window_rejection_clear(app)
-				if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
-				app.editor_window_error = ""
+				view.source_request_generation = generation
+				editor_view_request_rejection_clear(view)
+				if len(view.source_window_error) > 0 { delete(view.source_window_error, context.allocator) }
+				view.source_window_error = ""
 			} else if request_error != "" {
-				if app.editor_window_error != "" { delete(app.editor_window_error, context.allocator) }
-				app.editor_window_error, _ = strings.clone(request_error, context.allocator)
+				if len(view.source_window_error) > 0 { delete(view.source_window_error, context.allocator) }
+				view.source_window_error, _ = strings.clone(request_error, context.allocator)
 			}
 		}
 	}

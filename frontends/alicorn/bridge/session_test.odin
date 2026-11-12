@@ -85,13 +85,35 @@ test_visible_window_requests_deduplicate_and_reject_stale_results :: proc(t: ^te
 	other_chunk.anchor_byte = 4096
 	metadata_request := base
 	metadata_request.include_presentation = true
+	other_view := base
+	other_view.view_id = 10
+	other_lifecycle := other_view
+	other_lifecycle.view_lifecycle_generation = 2
 	testing.expect(t, visible_window_request_equal(base, duplicate), "request identity ignores its assigned generation")
 	testing.expect(t, !visible_window_request_equal(base, other_line), "a different logical window must not deduplicate")
 	testing.expect(t, !visible_window_request_equal(base, other_chunk), "a different long-line byte anchor must not deduplicate")
 	testing.expect(t, !visible_window_request_equal(base, metadata_request), "plain and metadata requests must not deduplicate each other")
+	testing.expect(t, !visible_window_request_equal(base, other_view), "different editor views must not deduplicate their source windows")
+	testing.expect(t, !visible_window_request_equal(other_view, other_lifecycle), "a recycled view lifecycle must not reuse an older request")
 	testing.expect(t, visible_window_result_is_current(0, 7, 7), "latest completed request should be installable")
 	testing.expect(t, !visible_window_result_is_current(0, 6, 7), "stale completion must be rejected")
 	testing.expect(t, !visible_window_result_is_current(1, 7, 7), "completion after lane stop must be rejected")
+	lane := Visible_Window_Lane{
+		latest_generation=12,
+		latest_by_view=make([dynamic]Visible_Window_Latest_Generation, 0, allocator=context.temp_allocator),
+	}
+	defer delete(lane.latest_by_view)
+	append(&lane.latest_by_view, Visible_Window_Latest_Generation{view_id=10, view_lifecycle_generation=3, generation=11})
+	append(&lane.latest_by_view, Visible_Window_Latest_Generation{view_id=20, view_lifecycle_generation=8, generation=12})
+	view_a := Visible_Window_Request{view_id=10, view_lifecycle_generation=3, generation=11}
+	view_b := Visible_Window_Request{view_id=20, view_lifecycle_generation=8, generation=12}
+	stale_lifecycle := view_a
+	stale_lifecycle.view_lifecycle_generation += 1
+	testing.expect(t, visible_window_lane_request_is_current(&lane, view_a) &&
+	               visible_window_lane_request_is_current(&lane, view_b),
+	               "each view keeps an independent current generation")
+	testing.expect(t, !visible_window_lane_request_is_current(&lane, stale_lifecycle),
+	               "a response from an earlier view lifecycle must be rejected")
 }
 
 visible_slice_write_u32 :: proc(data: []u8, offset: int, value: u32) {
@@ -412,11 +434,13 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 	testing.expect(t, open_first_pinned.ok && len(backend.state.documents) == 2, "ordinary open_path should stay pinned and preserve the preview tab")
 	backend_command_result_destroy(&open_first_pinned, context.temp_allocator)
 	first_editor_revision := u64(0)
+	first_document_instance_id := u64(0)
 	first_document_found := false
 	for document in backend.state.documents {
 		if document.id == first_id {
 			first_document_found = true
 			first_editor_revision = document.editor_revision
+			first_document_instance_id = document.instance_id
 			break
 		}
 	}
@@ -479,6 +503,83 @@ exercise_shared_backend_shell_commands :: proc(t: ^testing.T, backend: ^Backend,
 			if !latest_seen { _ = sync.sema_wait_with_timeout(&lane_signal.sema, time.Duration(100_000_000)) }
 		}
 		testing.expect(t, latest_seen, "worker should wake the UI after installing the latest window")
+
+		// Requests for separate views of the same resource have independent
+		// generations. Superseding one view's range must not discard its sibling.
+		view_a_generation, view_a_accepted, view_a_error := visible_window_lane_request(
+			&lane, first_id, backend.state.application_rev, first_editor_revision,
+			0, 256, MAX_VISIBLE_BYTES, document_instance_id=first_document_instance_id,
+			view_id=101, view_lifecycle_generation=4,
+		)
+		view_b_generation, view_b_accepted, view_b_error := visible_window_lane_request(
+			&lane, first_id, backend.state.application_rev, first_editor_revision,
+			1, 256, MAX_VISIBLE_BYTES, document_instance_id=first_document_instance_id,
+			view_id=102, view_lifecycle_generation=7,
+		)
+		view_a_latest_generation, view_a_latest_accepted, view_a_latest_error := visible_window_lane_request(
+			&lane, first_id, backend.state.application_rev, first_editor_revision,
+			2, 256, MAX_VISIBLE_BYTES, document_instance_id=first_document_instance_id,
+			view_id=101, view_lifecycle_generation=4,
+		)
+		testing.expect(t, view_a_accepted && view_b_accepted && view_a_latest_accepted,
+			fmt.tprintf("per-view requests should be accepted: %s %s %s", view_a_error, view_b_error, view_a_latest_error))
+		testing.expect(t, view_a_latest_generation > view_a_generation && view_b_generation != view_a_latest_generation,
+			"a later range supersedes only the same view while retaining an independent sibling generation")
+		view_a_latest_seen, view_b_seen := false, false
+		for attempt in 0..<20 {
+			completed, found := visible_window_lane_take(&lane)
+			if found {
+				if completed.request.view_id == 101 && completed.generation == view_a_latest_generation {
+					view_a_latest_seen = true
+					testing.expect(t, completed.window_owned && completed.window.start_line == 2,
+						"view A should receive its latest requested source range")
+				} else if completed.request.view_id == 102 && completed.generation == view_b_generation {
+					view_b_seen = true
+					testing.expect(t, completed.window_owned && completed.window.start_line == 1,
+						"view B should retain its own source range while view A is superseded")
+				} else {
+					testing.expect(t, false, "a stale or cross-view source response must not be published")
+				}
+				visible_window_lane_result_destroy(&completed, context.temp_allocator)
+				if view_a_latest_seen && view_b_seen { break }
+			}
+			if !view_a_latest_seen || !view_b_seen {
+				_ = sync.sema_wait_with_timeout(&lane_signal.sema, time.Duration(100_000_000))
+			}
+		}
+		testing.expect(t, view_a_latest_seen && view_b_seen,
+			"each view's current request should complete even when another view is coalesced")
+
+		cancelled_generation, cancelled_accepted, cancelled_error := visible_window_lane_request(
+			&lane, first_id, backend.state.application_rev, first_editor_revision,
+			3, 256, MAX_VISIBLE_BYTES, document_instance_id=first_document_instance_id,
+			view_id=103, view_lifecycle_generation=1,
+		)
+		visible_window_lane_cancel_view(&lane, 103)
+		surviving_generation, surviving_accepted, surviving_error := visible_window_lane_request(
+			&lane, first_id, backend.state.application_rev, first_editor_revision,
+			4, 256, MAX_VISIBLE_BYTES, document_instance_id=first_document_instance_id,
+			view_id=104, view_lifecycle_generation=1,
+		)
+		testing.expect(t, cancelled_accepted && surviving_accepted && cancelled_generation != surviving_generation,
+			fmt.tprintf("cancelling a closing view should not prevent a sibling request: %s %s", cancelled_error, surviving_error))
+		surviving_seen := false
+		for attempt in 0..<20 {
+			completed, found := visible_window_lane_take(&lane)
+			if found {
+				if completed.request.view_id == 104 && completed.generation == surviving_generation {
+					surviving_seen = true
+				} else {
+					testing.expect(t, false, "a cancelled view must not publish a late window after its lifecycle ended")
+				}
+				visible_window_lane_result_destroy(&completed, context.temp_allocator)
+				if surviving_seen { break }
+			}
+			if !surviving_seen { _ = sync.sema_wait_with_timeout(&lane_signal.sema, time.Duration(100_000_000)) }
+		}
+		testing.expect(t, surviving_seen,
+			"cancelling one view's active or queued request must leave another view's request runnable")
+
 		// Repeatedly complete real resource reads. Each completion owns one
 		// request ID string and must release it exactly once; this stresses the
 		// ownership path that is exercised when a document is opened natively.
