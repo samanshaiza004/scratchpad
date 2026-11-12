@@ -17,12 +17,16 @@ Deferred_Action_Kind :: enum {
 	Save_Document,
 	Conflict_Reload,
 	Conflict_Keep_Mine,
+	Theme_Select,
+	Theme_Treatment,
+	Theme_Import,
 	Toggle_Semantic_Fold,
 	Toggle_Manual_Fold,
 	Pinned_Action,
 	Git_Refresh,
 	Git_Select_Commit,
 	Git_Open_Diff,
+	Workbench_Open_Beside,
 	Git_Path_Mutation,
 	Git_Commit,
 }
@@ -39,6 +43,7 @@ Deferred_Action :: struct {
 	git_kind: string,
 	git_command: string,
 	git_original_path: string,
+	workbench_content_kind: Workbench_Content_Kind,
 	workspace_mutation_kind: Workspace_Mutation_Kind,
 	source_is_dir: bool,
 	discard:     bool,
@@ -149,6 +154,7 @@ frame_deferred_action_schedule :: proc(
 	git_kind: string = "",
 	git_command: string = "",
 	git_original_path: string = "",
+	workbench_content_kind: Workbench_Content_Kind = .Document,
 	git_untracked := false,
 	git_beside := false,
 ) -> bool {
@@ -189,6 +195,7 @@ frame_deferred_action_schedule :: proc(
 	action.source_start = source_start
 	action.source_end = source_end
 	action.source_line = source_line
+	action.workbench_content_kind = workbench_content_kind
 	action.git_untracked = git_untracked
 	action.git_beside = git_beside
 	app.frame_deferred_action = action
@@ -216,13 +223,24 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		manual_folding_toggle(app, rt, action.document_id, action.source_instance_id, action.editor_revision, action.source_start)
 	case .Pinned_Action:
 		pinned_apply_deferred(app, rt, action)
+	case .Theme_Select:
+		_ = scratchpad_theme_request_select(app, rt, action.value, persist=!app.theme_preview_active)
+	case .Theme_Treatment:
+		treatment, valid := scratchpad_surface_treatment_parse(action.value)
+		if valid { _ = scratchpad_surface_treatment_select(app, rt, treatment, persist=!app.theme_preview_active) }
+	case .Theme_Import:
+		request_theme_import_dialog(app, rt)
 	case .Git_Refresh:
 		git_refresh(app, rt)
 	case .Git_Select_Commit:
 		git_select_commit(app, rt, action.value)
 	case .Git_Open_Diff:
-		git_open_diff(app, rt, action.git_kind, action.path, action.value,
-			untracked=action.git_untracked, beside=action.git_beside)
+		if git_deferred_diff_matches_repository(app, action.document_id) {
+			git_open_diff(app, rt, action.git_kind, action.path, action.value,
+				untracked=action.git_untracked, beside=action.git_beside)
+		}
+	case .Workbench_Open_Beside:
+		git_workbench_open_beside(app, rt, action.workbench_content_kind)
 	case .Git_Path_Mutation:
 		git_path_mutation(app, rt, action.git_command, action.path, action.git_original_path)
 	case .Git_Commit:
@@ -320,13 +338,24 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			manual_folding_toggle(app, rt, action.document_id, action.source_instance_id, action.editor_revision, action.source_start)
 		case .Pinned_Action:
 			pinned_apply_deferred(app, rt, action)
+		case .Theme_Select:
+			_ = scratchpad_theme_request_select(app, rt, action.value, persist=!app.theme_preview_active)
+		case .Theme_Treatment:
+			treatment, valid := scratchpad_surface_treatment_parse(action.value)
+			if valid { _ = scratchpad_surface_treatment_select(app, rt, treatment, persist=!app.theme_preview_active) }
+		case .Theme_Import:
+			request_theme_import_dialog(app, rt)
 		case .Git_Refresh:
 			git_refresh(app, rt)
 		case .Git_Select_Commit:
 			git_select_commit(app, rt, action.value)
 		case .Git_Open_Diff:
-			git_open_diff(app, rt, action.git_kind, action.path, action.value,
-				untracked=action.git_untracked, beside=action.git_beside)
+			if git_deferred_diff_matches_repository(app, action.document_id) {
+				git_open_diff(app, rt, action.git_kind, action.path, action.value,
+					untracked=action.git_untracked, beside=action.git_beside)
+			}
+		case .Workbench_Open_Beside:
+			git_workbench_open_beside(app, rt, action.workbench_content_kind)
 		case .Git_Path_Mutation:
 			git_path_mutation(app, rt, action.git_command, action.path, action.git_original_path)
 		case .Git_Commit:

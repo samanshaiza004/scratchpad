@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 
 SCRATCHPAD_THEME_PREFERENCES_VERSION :: u32(1)
+SCRATCHPAD_USER_PREFERENCES_VERSION :: u32(2)
 
 Scratchpad_Theme_Choice :: enum u8 {
 	Warm,
@@ -17,6 +18,8 @@ Scratchpad_Theme_Choice :: enum u8 {
 Scratchpad_Theme_Preferences :: struct {
 	version: u32   `json:"version"`,
 	theme:   string `json:"theme"`,
+	color_theme: string `json:"color_theme"`,
+	surface_treatment: string `json:"surface_treatment"`,
 	editor_font_family: string `json:"editor_font_family"`,
 	editor_font_size: f32 `json:"editor_font_size"`,
 	semantic_zoom_wheel: Semantic_Zoom_Wheel `json:"semantic_zoom_wheel"`,
@@ -64,7 +67,12 @@ scratchpad_theme_preferences_location :: proc(config_root: string, allocator := 
 
 scratchpad_theme_preferences_load :: proc(path: string) -> (choice: Scratchpad_Theme_Choice, loaded: bool) {
 	preferences, found := scratchpad_user_preferences_load(path, context.temp_allocator)
-	defer { delete(preferences.theme, context.temp_allocator); delete(preferences.editor_font_family, context.temp_allocator) }
+	defer {
+		delete(preferences.theme, context.temp_allocator)
+		delete(preferences.color_theme, context.temp_allocator)
+		delete(preferences.surface_treatment, context.temp_allocator)
+		delete(preferences.editor_font_family, context.temp_allocator)
+	}
 	if !found { return .Warm, false }
 	return scratchpad_theme_choice_parse(preferences.theme)
 }
@@ -77,8 +85,11 @@ scratchpad_user_preferences_load :: proc(path: string, allocator := context.allo
 	data, read_error := os.read_entire_file(path, context.temp_allocator)
 	if read_error != nil { return }
 	defer delete(data, context.temp_allocator)
-	if json.unmarshal(data, &preferences, allocator=allocator) != nil || preferences.version != SCRATCHPAD_THEME_PREFERENCES_VERSION {
+	if json.unmarshal(data, &preferences, allocator=allocator) != nil ||
+		(preferences.version != SCRATCHPAD_THEME_PREFERENCES_VERSION && preferences.version != SCRATCHPAD_USER_PREFERENCES_VERSION) {
 		delete(preferences.theme, allocator)
+		delete(preferences.color_theme, allocator)
+		delete(preferences.surface_treatment, allocator)
 		delete(preferences.editor_font_family, allocator)
 		return Scratchpad_Theme_Preferences{editor_font_size=EDITOR_FONT_SIZE_DEFAULT}, false
 	}
@@ -87,6 +98,44 @@ scratchpad_user_preferences_load :: proc(path: string, allocator := context.allo
 	}
 	if preferences.semantic_zoom_wheel < .Primary_Alt || preferences.semantic_zoom_wheel > .Disabled { preferences.semantic_zoom_wheel = .Primary_Alt }
 	return preferences, true
+}
+
+scratchpad_user_preferences_save :: proc(
+	directory: string,
+	color_theme: string,
+	surface_treatment: Scratchpad_Surface_Treatment,
+	font_family := "",
+	font_size := EDITOR_FONT_SIZE_DEFAULT,
+	semantic_zoom_wheel := Semantic_Zoom_Wheel.Primary_Alt,
+) -> bool {
+	if directory == "" || color_theme == "" || surface_treatment < .Standard || surface_treatment > .Workbench_Relief { return false }
+	directory_error := os.mkdir_all(directory)
+	if directory_error != nil && !(directory_error == .Exist && os.is_directory(directory)) { return false }
+	parts := [2]string{directory, "preferences.json"}
+	path, path_error := os.join_path(parts[:], context.temp_allocator)
+	if path_error != nil { return false }
+	defer delete(path, context.temp_allocator)
+	preferences := Scratchpad_Theme_Preferences{
+		version=SCRATCHPAD_USER_PREFERENCES_VERSION,
+		color_theme=color_theme,
+		surface_treatment=scratchpad_surface_treatment_name(surface_treatment),
+		editor_font_family=font_family,
+		editor_font_size=font_size,
+		semantic_zoom_wheel=semantic_zoom_wheel,
+	}
+	encoded, encode_error := json.marshal(preferences, allocator=context.temp_allocator)
+	if encode_error != nil { return false }
+	defer delete(encoded, context.temp_allocator)
+	temporary_directory, temporary_error := os.make_directory_temp(directory, ".theme-preferences-*", context.temp_allocator)
+	if temporary_error != nil { return false }
+	defer _ = os.remove_all(temporary_directory)
+	temporary_parts := [2]string{temporary_directory, ".tmp"}
+	temporary_path, temporary_path_error := strings.concatenate(temporary_parts[:], context.temp_allocator)
+	if temporary_path_error != nil { return false }
+	defer delete(temporary_path, context.temp_allocator)
+	defer _ = os.remove(temporary_path)
+	if os.write_entire_file(temporary_path, encoded) != nil { return false }
+	return os.rename(temporary_path, path) == nil
 }
 
 scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_Theme_Choice, font_family := "", font_size := EDITOR_FONT_SIZE_DEFAULT, semantic_zoom_wheel := Semantic_Zoom_Wheel.Primary_Alt) -> bool {
@@ -124,8 +173,21 @@ scratchpad_theme_preferences_save :: proc(directory: string, choice: Scratchpad_
 }
 
 scratchpad_preferences_save :: proc(app: ^App) {
-	if app != nil && app.theme_preferences_directory != "" &&
-	   !scratchpad_theme_preferences_save(app.theme_preferences_directory, app.theme_choice, app.editor_font_family, scratchpad_editor_font_size(app), app.semantic_zoom_wheel) {
+	if app == nil || app.theme_preferences_directory == "" { return }
+	color_theme := scratchpad_app_theme_id(app)
+	treatment := app.surface_treatment
+	family := app.editor_font_family
+	if family == "" && app.editor_font_pending_family != "" { family = app.editor_font_pending_family }
+	size := scratchpad_editor_font_size(app)
+	if app.editor_font_pending { size = app.editor_font_pending_size }
+	// Other Settings controls can save while the Appearance page is previewing
+	// a candidate. Keep those preferences, but persist the original committed
+	// color theme and surface treatment until Done accepts the preview.
+	if app.theme_preview_active {
+		if app.theme_preview_original_id != "" { color_theme = app.theme_preview_original_id }
+		treatment = app.theme_preview_original_treatment
+	}
+	if !scratchpad_user_preferences_save(app.theme_preferences_directory, color_theme, treatment, family, size, app.semantic_zoom_wheel) {
 		set_error(app, "Settings changed for this session, but Scratchpad could not save the preference.")
 	}
 }

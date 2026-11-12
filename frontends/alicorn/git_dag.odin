@@ -32,7 +32,7 @@ git_dag_layout :: proc(commits: []bridge.Git_Commit) -> Git_DAG_Layout {
 	layout := Git_DAG_Layout{}
 	layout.nodes = make([dynamic]Git_DAG_Node, 0, len(commits), allocator=context.temp_allocator)
 	layout.edges = make([dynamic]Git_DAG_Edge, 0, allocator=context.temp_allocator)
-	for _ in commits { append(&layout.nodes, {}) }
+	for _ in commits { append(&layout.nodes, Git_DAG_Node{}) }
 	if len(commits) == 0 { return layout }
 
 	row_by_hash := make(map[string]int, allocator=context.temp_allocator)

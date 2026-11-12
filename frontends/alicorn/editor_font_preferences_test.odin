@@ -19,19 +19,31 @@ test_editor_font_preferences_migrate_and_keep_theme_and_typography_together :: p
 	delete(legacy.theme, context.temp_allocator)
 	delete(legacy.editor_font_family, context.temp_allocator)
 
-	app := App{theme_choice=.Cool_Light, theme_preferences_directory=directory, editor_font_family="Consolas", editor_text_scale=1.25}
+	app := App{
+		theme_choice=.Cool_Light,
+		selected_theme_id=SCRATCHPAD_THEME_BUILTIN_COOL,
+		surface_treatment=.Standard,
+		theme_preferences_directory=directory,
+		editor_font_family="Consolas",
+		editor_text_scale=1.25,
+	}
 	scratchpad_preferences_save(&app)
 	custom, custom_loaded := scratchpad_user_preferences_load(path, context.temp_allocator)
-	testing.expect(t, custom_loaded && custom.theme == "cool-light" && custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
+	testing.expect(t, custom_loaded && custom.color_theme == SCRATCHPAD_THEME_BUILTIN_COOL && custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
 		"font family and size should survive atomic persistence alongside the theme")
 	delete(custom.theme, context.temp_allocator)
+	delete(custom.color_theme, context.temp_allocator)
+	delete(custom.surface_treatment, context.temp_allocator)
 	delete(custom.editor_font_family, context.temp_allocator)
 	app.theme_choice = .Warm
+	app.selected_theme_id = SCRATCHPAD_THEME_BUILTIN_WARM
 	scratchpad_preferences_save(&app)
 	custom, custom_loaded = scratchpad_user_preferences_load(path, context.temp_allocator)
-	testing.expect(t, custom_loaded && custom.theme == "warm" && custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
+	testing.expect(t, custom_loaded && custom.color_theme == SCRATCHPAD_THEME_BUILTIN_WARM && custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
 		"switching theme must not erase the selected editor font or size")
 	delete(custom.theme, context.temp_allocator)
+	delete(custom.color_theme, context.temp_allocator)
+	delete(custom.surface_treatment, context.temp_allocator)
 	delete(custom.editor_font_family, context.temp_allocator)
 
 	_ = os.write_entire_file(path, `{"version":1,"theme":"cool-light","editor_font_family":"Removed Font","editor_font_size":-500}`)
@@ -39,5 +51,7 @@ test_editor_font_preferences_migrate_and_keep_theme_and_typography_together :: p
 	testing.expect(t, invalid_loaded && invalid.theme == "cool-light" && invalid.editor_font_size == 16,
 		"an invalid font size should fall back independently without changing the valid theme")
 	delete(invalid.theme, context.temp_allocator)
+	delete(invalid.color_theme, context.temp_allocator)
+	delete(invalid.surface_treatment, context.temp_allocator)
 	delete(invalid.editor_font_family, context.temp_allocator)
 }

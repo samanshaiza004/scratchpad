@@ -181,6 +181,10 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		workspace_mutation_open_create(app, rt, .Create_Folder)
 		return
 	case ACTION_WORKSPACE_SETTINGS:
+		if !scratchpad_theme_preview_begin(app) {
+			set_error(app, "Could not open Settings because the current theme could not be retained for Cancel.")
+			return
+		}
 		app.settings_surface_open = true
 		alicorn.invalidate_root(rt, "Scratchpad Settings opened")
 		return

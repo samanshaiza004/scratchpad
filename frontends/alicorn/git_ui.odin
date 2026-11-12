@@ -139,18 +139,37 @@ git_defer_select_commit :: proc(app: ^App, rt: ^alicorn.Runtime, hash: string) {
 	}
 }
 
+git_defer_workbench_open_beside :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	view: Workbench_Content_Kind,
+) {
+	if !frame_deferred_action_schedule(app, .Workbench_Open_Beside,
+		workbench_content_kind=view) {
+		set_error(app, "Could not queue the pane split until the current view finishes rendering.")
+		alicorn.invalidate_root(rt, "Scratchpad could not queue a pane split")
+	}
+}
+
 git_defer_open_diff :: proc(
 	app: ^App,
 	rt: ^alicorn.Runtime,
 	kind, path, revision: string,
 	untracked := false,
 	beside := false,
-) {
+) -> bool {
 	if !frame_deferred_action_schedule(app, .Git_Open_Diff, value=revision,
+		document_id=app_workbench_repository_identity(app),
 		path=path, git_kind=kind, git_untracked=untracked, git_beside=beside) {
 		set_error(app, "Could not queue the Git diff until the current view finishes rendering.")
 		alicorn.invalidate_root(rt, "Scratchpad could not queue a Git diff")
+		return false
 	}
+	return true
+}
+
+git_deferred_diff_matches_repository :: proc(app: ^App, captured_repository: string) -> bool {
+	return app != nil && captured_repository != "" && captured_repository == app_workbench_repository_identity(app)
 }
 
 git_select_commit :: proc(app: ^App, rt: ^alicorn.Runtime, hash: string) {
@@ -336,7 +355,7 @@ git_sidebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 			git_workbench_select(app, rt, .Git_History)
 		}
 		if gui.button(ui, "↗", key="git-open-history-beside", width=30, height=28, variant=.Toolbar) {
-			git_workbench_open_beside(app, rt, .Git_History)
+			git_defer_workbench_open_beside(app, rt, .Git_History)
 		}
 	}
 	if !app.backend.state.has_workspace {
@@ -468,7 +487,7 @@ git_history_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_
 			git_defer_refresh(app, rt)
 		}
 		if gui.button(ui, "Open Beside", key="git-history-open-beside", width=100, height=30, variant=.Toolbar) {
-			git_workbench_open_beside(app, rt, .Git_History)
+			git_defer_workbench_open_beside(app, rt, .Git_History)
 		}
 	}
 	gui.text(ui, "Filter commits by subject, author, hash, or ref", text_style=alicorn.Text_Style{font_size=11})

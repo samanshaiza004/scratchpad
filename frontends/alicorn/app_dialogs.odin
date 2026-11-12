@@ -177,9 +177,11 @@ application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.Fi
 	app := cast(^App)state
 	if result == nil { return }
 	if result.status == .Error {
+		was_theme_import := app.dialog_action == ACTION_THEME_IMPORT
 		app.dialog_action = ""
 		clear_dialog_document(app)
 		set_error(app, result.error)
+		if was_theme_import { scratchpad_theme_compile_error_set(app, result.error) }
 		alicorn.invalidate_root(rt, "Scratchpad native dialog failed")
 		deferred_actions_run(app, rt)
 		return
@@ -191,6 +193,18 @@ application_dialog :: proc(state: rawptr, rt: ^alicorn.Runtime, result: ^host.Fi
 		return
 	}
 	path := result.paths[0]
+	if app.dialog_action == ACTION_THEME_IMPORT {
+		app.dialog_action = ""
+		if !scratchpad_theme_request_import(app, path) {
+			message := "Could not queue this theme for validation. Check the file size and local theme limit."
+			set_error(app, message)
+			scratchpad_theme_compile_error_set(app, message)
+		} else {
+			set_error(app, "")
+		}
+		alicorn.invalidate_root(rt, "Scratchpad imported color theme selected")
+		return
+	}
 	if app.dialog_action == ACTION_FILE_SAVE_AS {
 		if len(app.editor_edits) > 0 {
 			if !deferred_action_enqueue(app, .Save_As_Path, value=app.dialog_document_id, path=path) {
@@ -372,6 +386,26 @@ request_file_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, kind: host.File_Dia
 		set_error(app, "The native file dialog could not be opened.")
 		alicorn.invalidate_root(rt, "Scratchpad native dialog request failed")
 		deferred_actions_run(app, rt)
+	}
+}
+
+request_theme_import_dialog :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil { return }
+	app.dialog_sequence += 1
+	app.dialog_action = ACTION_THEME_IMPORT
+	request := host.File_Dialog_Request{
+		id=host.Dialog_ID(app.dialog_sequence),
+		kind=.Open_File,
+		title="Import Color Theme",
+		initial_location=app.theme_directory,
+		allow_many=false,
+	}
+	if !host.ShowFileDialog(app.services.dialogs, request) {
+		app.dialog_action = ""
+		message := "The native theme import dialog could not be opened."
+		set_error(app, message)
+		scratchpad_theme_compile_error_set(app, message)
+		alicorn.invalidate_root(rt, "Scratchpad theme dialog request failed")
 	}
 }
 

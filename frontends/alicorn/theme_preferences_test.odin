@@ -441,9 +441,13 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		rt.stats.idle_frames == stats_before_idle.idle_frames+1,
 		"the theme switch should settle into a no-work idle frame")
 
-	choice, loaded := scratchpad_theme_preferences_load(path)
-	testing.expect(t, loaded && choice == .Cool_Light,
+	persisted, loaded := scratchpad_user_preferences_load(path, context.temp_allocator)
+	testing.expect(t, loaded && persisted.color_theme == SCRATCHPAD_THEME_BUILTIN_COOL,
 		"the theme chosen in the application should be persisted for the next launch")
+	delete(persisted.theme, context.temp_allocator)
+	delete(persisted.color_theme, context.temp_allocator)
+	delete(persisted.surface_treatment, context.temp_allocator)
+	delete(persisted.editor_font_family, context.temp_allocator)
 	_ = scratchpad_theme_select(&app, &rt, .Warm)
 	third := theme_switch_test_render(&app, &rt)
 	warm_chrome := scratchpad_window_chrome_appearance(rawptr(&app), &rt)
