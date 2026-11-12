@@ -29,7 +29,9 @@ test_editor_font_preferences_migrate_and_keep_theme_and_typography_together :: p
 	}
 	scratchpad_preferences_save(&app)
 	custom, custom_loaded := scratchpad_user_preferences_load(path, context.temp_allocator)
-	testing.expect(t, custom_loaded && custom.color_theme == SCRATCHPAD_THEME_BUILTIN_COOL && custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
+	testing.expect(t, custom_loaded && custom.version == SCRATCHPAD_USER_PREFERENCES_VERSION &&
+		custom.color_theme == SCRATCHPAD_THEME_BUILTIN_COOL && custom.surface_treatment == "standard" &&
+		custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
 		"font family and size should survive atomic persistence alongside the theme")
 	delete(custom.theme, context.temp_allocator)
 	delete(custom.color_theme, context.temp_allocator)
@@ -39,7 +41,8 @@ test_editor_font_preferences_migrate_and_keep_theme_and_typography_together :: p
 	app.selected_theme_id = SCRATCHPAD_THEME_BUILTIN_WARM
 	scratchpad_preferences_save(&app)
 	custom, custom_loaded = scratchpad_user_preferences_load(path, context.temp_allocator)
-	testing.expect(t, custom_loaded && custom.color_theme == SCRATCHPAD_THEME_BUILTIN_WARM && custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
+	testing.expect(t, custom_loaded && custom.color_theme == SCRATCHPAD_THEME_BUILTIN_WARM &&
+		custom.editor_font_family == "Consolas" && custom.editor_font_size == 20,
 		"switching theme must not erase the selected editor font or size")
 	delete(custom.theme, context.temp_allocator)
 	delete(custom.color_theme, context.temp_allocator)

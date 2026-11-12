@@ -763,10 +763,9 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 			"each Settings page should retain its panel, scroll body and fixed Done action")
 		switch category {
 		case .Appearance:
-			testing.expect(t,
-				settings_test_find_node(&rt, "settings-color-theme", "") != 0 &&
+			testing.expect(t, settings_test_find_node(&rt, "settings-color-theme", "") != 0 &&
 				settings_test_find_node(&rt, "settings-surface-treatment", "") != 0,
-				"Appearance should expose its color-theme and surface-treatment selectors")
+				"Appearance should expose its color theme and independent surface treatment selectors")
 		case .Editor:
 			testing.expect(t, settings_test_find_node(&rt, "settings-editor-font-family", "") != 0, "Editor should expose the font picker")
 		case .Workspace:

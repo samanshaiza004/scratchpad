@@ -5,6 +5,7 @@ import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import json "core:encoding/json"
 import odin_runtime "base:runtime"
 import "core:sync"
 import "core:thread"
@@ -105,6 +106,14 @@ scratchpad_theme_selection_set :: proc(app: ^App, id, name: string) -> bool {
 	delete(app.selected_theme_name, context.allocator)
 	app.selected_theme_id, app.selected_theme_name = new_id, new_name
 	return true
+}
+
+scratchpad_theme_selection_destroy :: proc(app: ^App) {
+	if app == nil { return }
+	delete(app.selected_theme_id, context.allocator)
+	delete(app.selected_theme_name, context.allocator)
+	app.selected_theme_id = ""
+	app.selected_theme_name = ""
 }
 
 scratchpad_theme_preference_fallback :: proc(app: ^App, message: string) {
@@ -871,116 +880,75 @@ scratchpad_theme_install_candidate :: proc(app: ^App, candidate: ^Scratchpad_The
 }
 
 Scratchpad_Theme_Customize_Role :: enum u8 { Paper, Accent, Keyword, Surface }
+Scratchpad_Theme_Customize_Error :: enum u8 {
+	None,
+	Invalid_Role,
+	Invalid_Color,
+	Invalid_JSON,
+	Invalid_Root,
+	Missing_Tokens,
+	Invalid_Tokens,
+	Invalid_Roles,
+	Allocation_Failed,
+	Token_Value_Failed,
+	Role_Value_Failed,
+	Serialization_Failed,
+}
 SCRATCHPAD_THEME_CUSTOMIZE_ROLE_LABELS :: [4]string{"Editor paper", "Accent", "Syntax keyword", "Workbench surface"}
 SCRATCHPAD_THEME_CUSTOMIZE_ROLE_KEYS :: [4]string{"paper", "accent", "keyword", "surface"}
 
-scratchpad_theme_json_space :: proc(value: u8) -> bool {
-	return value == ' ' || value == '\t' || value == '\r' || value == '\n'
+// Theme customization edits a parsed JSON tree so valid whitespace, escaped
+// strings, nested objects, and unknown declarations survive. The stdlib parser
+// owns the tree; inserted keys and values are allocated from the same allocator.
+scratchpad_theme_json_object :: proc(value: json.Value) -> (object: json.Object, ok: bool) {
+	#partial switch member in value {
+	case json.Object:
+		return member, true
+	}
+	return {}, false
 }
 
-scratchpad_theme_json_string_end :: proc(source: string, start, limit: int) -> int {
-	if start < 0 || start >= limit || source[start] != '"' { return -1 }
-	index := start+1
-	for index < limit {
-		if source[index] == '\\' { index += 2; continue }
-		if source[index] == '"' { return index+1 }
-		index += 1
+scratchpad_theme_json_object_set :: proc(object: ^json.Object, key: string, value: json.Value, allocator := context.allocator) -> bool {
+	if object == nil { return false }
+	if existing, found := object^[key]; found {
+		json.destroy_value(existing, allocator)
+		object^[key] = value
+		return true
 	}
-	return -1
+	owned_key, err := strings.clone(key, allocator)
+	if err != nil { return false }
+	object^[owned_key] = value
+	return true
 }
 
-scratchpad_theme_json_value_end :: proc(source: string, start, limit: int) -> int {
-	if start < 0 || start >= limit { return -1 }
-	if source[start] == '"' { return scratchpad_theme_json_string_end(source, start, limit) }
-	if source[start] == '{' || source[start] == '[' {
-		depth_object, depth_array := 0, 0
-		in_string, escaped := false, false
-		for index in start..<limit {
-			byte := source[index]
-			if in_string {
-				if escaped { escaped = false }
-				else if byte == '\\' { escaped = true }
-				else if byte == '"' { in_string = false }
-				continue
-			}
-			if byte == '"' { in_string = true; continue }
-			if byte == '{' { depth_object += 1 }
-			if byte == '}' { depth_object -= 1 }
-			if byte == '[' { depth_array += 1 }
-			if byte == ']' { depth_array -= 1 }
-			if depth_object == 0 && depth_array == 0 { return index+1 }
-		}
-		return -1
+scratchpad_theme_json_object_ensure :: proc(object: ^json.Object, key: string, allocator := context.allocator) -> (child: json.Object, ok: bool) {
+	if object == nil { return {}, false }
+	if existing, found := object^[key]; found { return scratchpad_theme_json_object(existing) }
+	child = make(json.Object, allocator=allocator)
+	child_value: json.Value = child
+	if !scratchpad_theme_json_object_set(object, key, child_value, allocator) {
+		json.destroy_value(child_value, allocator)
+		return {}, false
 	}
-	index := start
-	for index < limit && source[index] != ',' && source[index] != '}' && source[index] != ']' { index += 1 }
-	for index > start && scratchpad_theme_json_space(source[index-1]) { index -= 1 }
-	return index
+	return child, true
 }
 
-scratchpad_theme_json_object_member :: proc(source: string, object_start, object_end: int, key: string) -> (value_start, value_end: int, found: bool) {
-	if object_start < 0 || object_end > len(source) || object_start >= object_end || source[object_start] != '{' { return }
-	index := object_start+1
-	for index < object_end-1 {
-		for index < object_end-1 && (scratchpad_theme_json_space(source[index]) || source[index] == ',') { index += 1 }
-		if index >= object_end-1 || source[index] != '"' { return }
-		key_start := index
-		key_end := scratchpad_theme_json_string_end(source, index, object_end)
-		if key_end < 0 { return }
-		index = key_end
-		for index < object_end && scratchpad_theme_json_space(source[index]) { index += 1 }
-		if index >= object_end || source[index] != ':' { return }
-		index += 1
-		for index < object_end && scratchpad_theme_json_space(source[index]) { index += 1 }
-		value_start = index
-		value_end = scratchpad_theme_json_value_end(source, value_start, object_end)
-		if value_end < 0 { return 0, 0, false }
-		if source[key_start+1:key_end-1] == key { return value_start, value_end, true }
-		index = value_end
+scratchpad_theme_customize_error_message :: proc(error: Scratchpad_Theme_Customize_Error) -> string {
+	switch error {
+	case .None: return ""
+	case .Invalid_Role: return "Choose a supported theme color to customize."
+	case .Invalid_Color: return "Enter a color in #RRGGBB format."
+	case .Invalid_JSON: return "The selected theme contains invalid JSON."
+	case .Invalid_Root: return "The selected theme JSON must contain an object at its root."
+	case .Missing_Tokens: return "The selected theme has no token declarations to customize."
+	case .Invalid_Tokens: return "The selected theme's token declarations are not an object."
+	case .Invalid_Roles: return "The selected theme's role declarations are not an object."
+	case .Allocation_Failed: return "Scratchpad could not allocate memory to customize this theme."
+	case .Token_Value_Failed: return "Scratchpad could not create the customized color token."
+	case .Role_Value_Failed: return "Scratchpad could not create the customized color role."
+	case .Serialization_Failed: return "Scratchpad could not serialize the customized theme."
 	}
-	return 0, 0, false
-}
-
-scratchpad_theme_json_object_set :: proc(source: string, object_start, object_end: int, key, value: string, allocator := context.allocator) -> (updated: string, ok: bool) {
-	if object_start < 0 || object_end > len(source) || object_start >= object_end || source[object_start] != '{' || source[object_end-1] != '}' { return "", false }
-	value_start, value_end, found := scratchpad_theme_json_object_member(source, object_start, object_end, key)
-	if found {
-		parts := [3]string{source[:value_start], value, source[value_end:]}
-		combined, err := strings.concatenate(parts[:], allocator)
-		return combined, err == nil
-	}
-	insert := object_end-1
-	content := object_start+1
-	for content < insert && scratchpad_theme_json_space(source[content]) { content += 1 }
-	separator := ","
-	if content == insert { separator = "" }
-	property := fmt.aprintf("%s\"%s\":%s", separator, key, value, allocator=allocator)
-	defer delete(property, allocator)
-	parts := [3]string{source[:insert], property, source[insert:]}
-	combined, err := strings.concatenate(parts[:], allocator)
-	return combined, err == nil
-}
-
-scratchpad_theme_json_set_role :: proc(source: string, core: bool, key, value: string, allocator := context.allocator) -> (updated: string, ok: bool) {
-	root_start, root_end := 0, len(source)
-	roles_start, roles_end, roles_found := scratchpad_theme_json_object_member(source, root_start, root_end, "roles")
-	if !roles_found {
-		kind := "extensions"
-		if core { kind = "core" }
-		roles := fmt.aprintf("{\"%s\":{\"%s\":%s}}", kind, key, value, allocator=allocator)
-		defer delete(roles, allocator)
-		return scratchpad_theme_json_object_set(source, root_start, root_end, "roles", roles, allocator)
-	}
-	category := "extensions"
-	if core { category = "core" }
-	category_start, category_end, category_found := scratchpad_theme_json_object_member(source, roles_start, roles_end, category)
-	if !category_found {
-		category_source := fmt.aprintf("{\"%s\":%s}", key, value, allocator=allocator)
-		defer delete(category_source, allocator)
-		new_roles, set_ok := scratchpad_theme_json_object_set(source, roles_start, roles_end, category, category_source, allocator)
-		return new_roles, set_ok
-	}
-	return scratchpad_theme_json_object_set(source, category_start, category_end, key, value, allocator)
+	return "Scratchpad could not customize the selected theme."
 }
 
 scratchpad_theme_color_hex :: proc(value: string) -> (r, g, b: f32, ok: bool) {
@@ -1007,45 +975,120 @@ scratchpad_theme_color_override_source :: proc(
 	role: Scratchpad_Theme_Customize_Role,
 	hex: string,
 	allocator := context.allocator,
-) -> (updated: []u8, ok: bool) {
-	if role < .Paper || role > .Surface { return nil, false }
+) -> (updated: []u8, result: Scratchpad_Theme_Customize_Error) {
+	previous_allocator := context.allocator
+	context.allocator = allocator
+	defer context.allocator = previous_allocator
+	if role < .Paper || role > .Surface { return nil, .Invalid_Role }
 	r, g, b, color_ok := scratchpad_theme_color_hex(hex)
-	if !color_ok { return nil, false }
+	if !color_ok { return nil, .Invalid_Color }
+	root_value, parse_error := json.parse_bytes(source, .JSON, parse_integers=true, allocator=allocator)
+	if parse_error != .None {
+		if parse_error == .Out_Of_Memory { return nil, .Allocation_Failed }
+		return nil, .Invalid_JSON
+	}
+	defer json.destroy_value(root_value, allocator)
+	root, root_ok := scratchpad_theme_json_object(root_value)
+	if !root_ok { return nil, .Invalid_Root }
+	// Installable themes control colors only. Warm's built-in workbench source
+	// also carries a tab recipe; the compiled Scratchpad defaults already own
+	// that recipe, so it must not be copied into an installable color theme.
+	if _, found := root["recipes"]; found {
+		_, removed_recipes := delete_key(&root, "recipes")
+		json.destroy_value(removed_recipes, allocator)
+	}
+	tokens_value, tokens_found := root["tokens"]
+	if !tokens_found { return nil, .Missing_Tokens }
+	tokens, tokens_ok := scratchpad_theme_json_object(tokens_value)
+	if !tokens_ok { return nil, .Invalid_Tokens }
+
 	role_keys := SCRATCHPAD_THEME_CUSTOMIZE_ROLE_KEYS
 	key := role_keys[int(role)]
 	token := fmt.aprintf("scratchpad.custom.%s", key, allocator=allocator)
-	defer delete(token, allocator)
-	token_value := fmt.aprintf(
-		"{\"$type\":\"color\",\"$value\":{\"colorSpace\":\"srgb\",\"components\":[%.6f,%.6f,%.6f],\"alpha\":1}}",
-		r, g, b, allocator=allocator,
-	)
-	defer delete(token_value, allocator)
-	text := string(source)
-	tokens_start, tokens_end, tokens_found := scratchpad_theme_json_object_member(text, 0, len(text), "tokens")
-	if !tokens_found { return nil, false }
-	with_token, token_ok := scratchpad_theme_json_object_set(text, tokens_start, tokens_end, token, token_value, allocator)
-	if !token_ok { return nil, false }
-	defer delete(with_token, allocator)
-	alias := fmt.aprintf("{%s}", token, allocator=allocator)
-	defer delete(alias, allocator)
-	with_role: string
-	role_ok := false
-	if role == .Accent || role == .Surface {
-		quoted_alias := fmt.aprintf("\"%s\"", alias, allocator=allocator)
-		defer delete(quoted_alias, allocator)
-		with_role, role_ok = scratchpad_theme_json_set_role(with_token, true, "accent" if role == .Accent else "surface", quoted_alias, allocator)
-	} else {
-		role_name := "app.scratchpad.editor.paper_surface" if role == .Paper else "app.scratchpad.syntax.keyword"
-		extension_value := fmt.aprintf("{\"$type\":\"color\",\"$value\":\"%s\"}", alias, allocator=allocator)
-		defer delete(extension_value, allocator)
-		with_role, role_ok = scratchpad_theme_json_set_role(with_token, false, role_name, extension_value, allocator)
+	if token == "" { return nil, .Allocation_Failed }
+	if _, collision := tokens[token]; collision {
+		delete(token, allocator)
+		token = ""
+		// There are len(tokens)+1 candidate names, so at least one is free.
+		for suffix := 2; suffix <= len(tokens)+2; suffix += 1 {
+			candidate := fmt.aprintf("scratchpad.custom.%s.%d", key, suffix, allocator=allocator)
+			if candidate == "" { return nil, .Allocation_Failed }
+			if _, candidate_collision := tokens[candidate]; !candidate_collision {
+				token = candidate
+				break
+			}
+			delete(candidate, allocator)
+		}
+		if token == "" { return nil, .Allocation_Failed }
 	}
-	if !role_ok { return nil, false }
-	defer delete(with_role, allocator)
-	updated = make([]u8, len(with_role), allocator)
-	if updated == nil { return nil, false }
-	copy(updated, with_role)
-	return updated, true
+	defer delete(token, allocator)
+	r_text := fmt.aprintf("%.6f", r, allocator=allocator)
+	defer delete(r_text, allocator)
+	g_text := fmt.aprintf("%.6f", g, allocator=allocator)
+	defer delete(g_text, allocator)
+	b_text := fmt.aprintf("%.6f", b, allocator=allocator)
+	defer delete(b_text, allocator)
+	token_parts := [7]string{
+		`{"$type":"color","$value":{"colorSpace":"srgb","components":[`,
+		r_text, ",", g_text, ",", b_text, `],"alpha":1}}`,
+	}
+	token_value, token_value_error := strings.concatenate(token_parts[:], allocator)
+	if token_value_error != nil { return nil, .Allocation_Failed }
+	defer delete(token_value, allocator)
+	updated_token, token_error := json.parse_string(token_value, .JSON, parse_integers=true, allocator=allocator)
+	if token_error != .None {
+		if token_error == .Out_Of_Memory { return nil, .Allocation_Failed }
+		return nil, .Token_Value_Failed
+	}
+	if !scratchpad_theme_json_object_set(&tokens, token, updated_token, allocator) {
+		json.destroy_value(updated_token, allocator)
+		return nil, .Allocation_Failed
+	}
+
+	roles, roles_ok := scratchpad_theme_json_object_ensure(&root, "roles", allocator)
+	if !roles_ok { return nil, .Invalid_Roles }
+	category := "extensions"
+	if role == .Accent || role == .Surface { category = "core" }
+	category_object, category_ok := scratchpad_theme_json_object_ensure(&roles, category, allocator)
+	if !category_ok { return nil, .Invalid_Roles }
+	alias_parts := [3]string{"{", token, "}"}
+	alias, alias_error := strings.concatenate(alias_parts[:], allocator)
+	if alias_error != nil { return nil, .Allocation_Failed }
+	defer delete(alias, allocator)
+	role_name: string
+	role_value_source: string
+	role_value_error: odin_runtime.Allocator_Error
+	if role == .Accent || role == .Surface {
+		role_name = "accent" if role == .Accent else "surface"
+		role_value_source = fmt.aprintf("\"%s\"", alias, allocator=allocator)
+	} else {
+		role_name = "app.scratchpad.editor.paper_surface" if role == .Paper else "app.scratchpad.syntax.keyword"
+		role_value_parts := [3]string{`{"$type":"color","$value":"`, alias, `"}`}
+		role_value_source, role_value_error = strings.concatenate(role_value_parts[:], allocator)
+		if role_value_error != nil { return nil, .Allocation_Failed }
+	}
+	defer delete(role_value_source, allocator)
+	role_value, role_parse_error := json.parse_string(role_value_source, .JSON, parse_integers=true, allocator=allocator)
+	if role_parse_error != .None {
+		if role_parse_error == .Out_Of_Memory { return nil, .Allocation_Failed }
+		return nil, .Role_Value_Failed
+	}
+	if !scratchpad_theme_json_object_set(&category_object, role_name, role_value, allocator) {
+		json.destroy_value(role_value, allocator)
+		return nil, .Allocation_Failed
+	}
+	// These maps are returned as value headers. Explicitly publish the nested
+	// copies to the owning objects so a newly-created roles tree is serialized.
+	roles[category] = category_object
+	root["roles"] = roles
+
+	encoded_text, unparse_error := json.unparse(root_value, json.Marshal_Options{spec=.JSON, pretty=true, sort_maps_by_key=true}, allocator=allocator)
+	if unparse_error != nil { return nil, .Serialization_Failed }
+	defer delete(encoded_text, allocator)
+	updated = make([]u8, len(encoded_text), allocator)
+	if updated == nil { return nil, .Allocation_Failed }
+	copy(updated, encoded_text)
+	return updated, .None
 }
 
 scratchpad_theme_customize_source :: proc(app: ^App, id: string, allocator := context.allocator) -> (source: []u8, ok: bool) {
@@ -1107,9 +1150,9 @@ scratchpad_theme_customize_submit :: proc(app: ^App, rt: ^alicorn.Runtime) -> bo
 		return false
 	}
 	defer delete(source, context.allocator)
-	custom_source, custom_ok := scratchpad_theme_color_override_source(source, role, app.theme_customize_hex.text, context.allocator)
-	if !custom_ok {
-		message := "Could not preserve the selected theme's declarations while adding this color."
+	custom_source, customize_error := scratchpad_theme_color_override_source(source, role, app.theme_customize_hex.text, context.allocator)
+	if customize_error != .None {
+		message := scratchpad_theme_customize_error_message(customize_error)
 		set_error(app, message)
 		scratchpad_theme_compile_error_set(app, message)
 		return false
@@ -1164,7 +1207,7 @@ settings_theme_customize_dialog_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^a
 	panel_width := min(600, max(alicorn.viewport_bounds(rt).w-48, 1))
 	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Surface), key=alicorn.key_string("theme-customize-dialog"), label="theme-customize-dialog", style=alicorn.layout_style(.Column, width=panel_width, height=360, padding=20, gap=12), shape=scratchpad_surface_shape(app, 6), material=scratchpad_surface_material(app, app.floating_surface_material), physical_height=scratchpad_surface_height(app, 1), fill=scratchpad_modal_panel_fill(app, rt), backdrop_effect=scratchpad_modal_backdrop_effect(app, rt))
 	gui.text(ui, "Duplicate and customize", key="theme-customize-heading", text_style=alicorn.Text_Style{font_size=22, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
-	gui.text(ui, "The source theme's valid declarations are preserved in the new Alicorn JSON file.")
+	gui.text(ui, "Color declarations are preserved; component styling remains Scratchpad-owned.")
 	if app.theme_compile_error != "" { gui.text(ui, app.theme_compile_error, key="theme-customize-error") }
 	gui.text_field(ui, "Theme name", &app.theme_customize_name, key=alicorn.key_string("theme-customize-name"), style=alicorn.layout_style(.Row, width=-1, height=control_height), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
 	options: [4]alicorn.Select_Option

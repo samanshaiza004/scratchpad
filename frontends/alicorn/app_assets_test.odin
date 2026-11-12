@@ -8,6 +8,7 @@ test_scratchpad_assets_use_public_font_and_image_apis_in_empty_editor :: proc(t:
     rt := alicorn.new_runtime(alicorn.Rect{0, 0, 960, 640})
     defer alicorn.destroy_runtime(&rt)
     app: App
+    defer scratchpad_theme_selection_destroy(&app)
     app.theme_choice = .Warm
     app.backend.started = true
     app.backend.state.has_workspace = true

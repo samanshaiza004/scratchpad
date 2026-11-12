@@ -4343,8 +4343,7 @@ application_stop :: proc(state: rawptr) {
 	if len(app.theme_preferences_directory) > 0 { delete(app.theme_preferences_directory, context.allocator) }
 	if len(app.theme_preferences_path) > 0 { delete(app.theme_preferences_path, context.allocator) }
 	if len(app.theme_directory) > 0 { delete(app.theme_directory, context.allocator) }
-	if len(app.selected_theme_id) > 0 { delete(app.selected_theme_id, context.allocator) }
-	if len(app.selected_theme_name) > 0 { delete(app.selected_theme_name, context.allocator) }
+	scratchpad_theme_selection_destroy(app)
 	if len(app.theme_compile_requested_id) > 0 { delete(app.theme_compile_requested_id, context.allocator) }
 	if len(app.theme_compile_error) > 0 { delete(app.theme_compile_error, context.allocator) }
 	if len(app.theme_preview_original_id) > 0 { delete(app.theme_preview_original_id, context.allocator) }

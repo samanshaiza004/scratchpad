@@ -29,6 +29,7 @@ test_workspace_background_context_menu_targets_root_without_changing_selection :
 	}
 	defer delete(backend_library, context.temp_allocator)
 	app: App
+	defer scratchpad_theme_selection_destroy(&app)
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
