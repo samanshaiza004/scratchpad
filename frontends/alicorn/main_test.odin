@@ -347,8 +347,11 @@ test_macos_content_titlebar_uses_retained_tab_and_drag_regions :: proc(t: ^testi
 	}
 	app: App
 	documents := [1]bridge.State_Document{{id="doc-one", path="/workspace/One.md"}}
+	app.backend.started = true
 	app.backend.state.documents = documents[:]
 	app.backend.state.active = "doc-one"
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "titlebar tabs should use the initialized workbench model")
+	defer scratchpad_workbench_test_destroy(&app)
 	scratchpad_content_titlebar_metrics(rawptr(&app), &rt, host.Window_Chrome_Metrics{
 		header={0, 0, 900, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
 		content_start_x=80,
@@ -685,6 +688,8 @@ test_workbench_cleanup_keeps_actions_in_menus_and_settings :: proc(t: ^testing.T
 	app.backend.started = true
 	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.temp_allocator)
 	defer delete(app.editor_row_targets)
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "workbench cleanup should initialize the empty pane group")
+	defer scratchpad_workbench_test_destroy(&app)
 	init_menus(&app)
 
 	settings_item_found := false
@@ -1266,6 +1271,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 	}}
 	app.backend.state.documents = documents[:]
 	app.backend.state.active = "recipe-doc"
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "recipe dogfood should initialize workbench view identity")
 	app.tree_root_path = app.backend.state.workspace_root
 	app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
 	entries := [?]bridge.Directory_Entry{{name="sample.md", path="sample.md", dir=false}}
@@ -1290,6 +1296,7 @@ test_scratchpad_buttons_use_explicit_recipe_intents :: proc(t: ^testing.T) {
 		display_scale=1,
 	}
 	defer {
+		scratchpad_workbench_test_destroy(&app)
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		editor_views_destroy(&app.editor_views)
 		delete(app.editor_edits)

@@ -7,7 +7,9 @@ import gui "alicorn:ui"
 import bridge "./bridge"
 
 git_workbench_is_document :: proc(app: ^App) -> bool {
-	return app == nil || app.workbench_view == .Document
+	if app == nil { return true }
+	view, found := app_workbench_active_view(app)
+	return !found || view.kind == .Editor
 }
 
 git_workbench_sync_repository :: proc(app: ^App) {
@@ -17,6 +19,15 @@ git_workbench_sync_repository :: proc(app: ^App) {
 	if len(app.git_repository_root) > 0 { delete(app.git_repository_root, context.allocator) }
 	app.git_repository_root = ""
 	if root != "" { app.git_repository_root, _ = strings.clone(root, context.allocator) }
+	if window := app_workbench_window(app); window != nil {
+		repository_identity := app_workbench_repository_identity(app)
+		for view in window.views {
+			if view.kind != .History && view.kind != .Diff { continue }
+			if !app_workbench_view_resource_rebind(app, view.id, repository_identity) {
+				set_error(app, "Could not update a Git workbench view for the active repository.")
+			}
+		}
+	}
 	if len(app.git_selected_commit) > 0 { delete(app.git_selected_commit, context.allocator) }
 	app.git_selected_commit = ""
 	if len(app.git_commit_message) > 0 { delete(app.git_commit_message, context.allocator) }
@@ -27,6 +38,11 @@ git_workbench_sync_repository :: proc(app: ^App) {
 	git_diff_clear(app)
 	app.git_history_graph_payload_node = 0
 	app.git_history_graph_generation = 0
+	app.git_history_scroll_y = 0
+	app.git_history_scroll_restore = false
+	app.git_diff_scroll_x = 0
+	app.git_diff_scroll_y = 0
+	app.git_diff_scroll_restore = false
 }
 
 git_diff_clear :: proc(app: ^App) {
@@ -38,67 +54,57 @@ git_diff_clear :: proc(app: ^App) {
 	app.git_diff_content_width = 0
 	app.git_diff_selected_hunk = 0
 	app.git_diff_scroll_owner = 0
+	app.git_diff_scroll_x = 0
+	app.git_diff_scroll_y = 0
+	app.git_diff_scroll_restore = false
 	clear(&app.git_diff_lines)
 	clear(&app.git_diff_hunks)
 }
 
-git_workbench_select :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_Content_Kind) {
-	if app == nil || rt == nil { return }
-	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return }
-	if app.workbench_split_open && app.workbench_secondary_view == view {
-		app.workbench_split_open = false
-		app.workbench_secondary_view = .Document
+git_workbench_select :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_Content_Kind) -> bool {
+	if app == nil || rt == nil { return false }
+	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return false }
+	kind := Workbench_View_Kind.History if view == .Git_History else Workbench_View_Kind.Diff
+	view_id, ok := app_workbench_view_ensure_kind(app, kind)
+	if !ok || !app_workbench_activate_view(app, rt, view_id) {
+		set_error(app, "Could not activate this workbench view.")
+		return false
 	}
-	app.workbench_view = view
 	if view == .Git_History {
-		app.git_history_tab_open = true
 		if !app.backend.state.git.available && !app.backend.state.git.loading {
-			response := bridge.backend_command(&app.backend, "git_refresh")
-			if !response.ok { set_error(app, response.message) }
-			bridge.backend_command_result_destroy(&response, context.allocator)
+			git_defer_refresh(app, rt)
 		}
 	}
 	alicorn.invalidate_root(rt, "Scratchpad Git workbench view selected")
+	return true
 }
 
-git_workbench_open_beside :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_Content_Kind) {
-	if app == nil || rt == nil || view == .Document { return }
-	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return }
-	if app.workbench_view == view { app.workbench_view = .Document }
-	app.workbench_split_open = true
-	app.workbench_secondary_view = view
+git_workbench_open_beside :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_Content_Kind) -> bool {
+	if app == nil || rt == nil || view == .Document { return false }
+	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return false }
+	kind := Workbench_View_Kind.History if view == .Git_History else Workbench_View_Kind.Diff
+	if !app_workbench_open_kind_beside(app, rt, kind) {
+		set_error(app, "Could not open this workbench view beside the current pane.")
+		return false
+	}
 	if view == .Git_History {
-		app.git_history_tab_open = true
 		if !app.backend.state.git.available && !app.backend.state.git.loading {
-			response := bridge.backend_command(&app.backend, "git_refresh")
-			if !response.ok { set_error(app, response.message) }
-			bridge.backend_command_result_destroy(&response, context.allocator)
+			git_defer_refresh(app, rt)
 		}
 	}
 	alicorn.invalidate_root(rt, "Scratchpad opened a workbench view beside the current view")
-}
-
-git_workbench_close_split :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || rt == nil || !app.workbench_split_open { return }
-	app.workbench_split_open = false
-	app.workbench_secondary_view = .Document
-	alicorn.invalidate_root(rt, "Scratchpad closed the secondary workbench pane")
+	return true
 }
 
 git_open_diff :: proc(app: ^App, rt: ^alicorn.Runtime, kind, path, revision: string, untracked := false, beside := false) {
 	if app == nil || rt == nil { return }
 	if beside {
-		if app.workbench_view == .Git_Diff { app.workbench_view = .Document }
-		app.workbench_split_open = true
-		app.workbench_secondary_view = .Git_Diff
+		if !git_workbench_open_beside(app, rt, .Git_Diff) { return }
 	} else {
-		if app.workbench_split_open && app.workbench_secondary_view == .Git_Diff {
-			app.workbench_split_open = false
-			app.workbench_secondary_view = .Document
-		}
-		app.git_diff_tab_open = true
-		app.workbench_view = .Git_Diff
+		if !git_workbench_select(app, rt, .Git_Diff) { return }
 	}
+	active_view, active_found := app_workbench_active_view(app)
+	if !active_found || active_view.kind != .Diff { return }
 	if app.git_diff_scroll_owner != 0 {
 		_ = alicorn.scroll_region_set_offset(rt, app.git_diff_scroll_owner, 0, "Scratchpad opened a new Git diff")
 	}
@@ -109,6 +115,61 @@ git_open_diff :: proc(app: ^App, rt: ^alicorn.Runtime, kind, path, revision: str
 	if !response.ok { set_error(app, response.message) }
 	bridge.backend_command_result_destroy(&response, context.allocator)
 	alicorn.invalidate_root(rt, "Scratchpad Git diff requested")
+}
+
+git_defer_refresh :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if !frame_deferred_action_schedule(app, .Git_Refresh) {
+		set_error(app, "Could not queue the Git refresh until the current view finishes rendering.")
+		alicorn.invalidate_root(rt, "Scratchpad could not queue a Git refresh")
+	}
+}
+
+git_refresh :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil { return }
+	response := bridge.backend_command(&app.backend, "git_refresh")
+	if !response.ok { set_error(app, response.message) }
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad Git state refreshed")
+}
+
+git_defer_select_commit :: proc(app: ^App, rt: ^alicorn.Runtime, hash: string) {
+	if !frame_deferred_action_schedule(app, .Git_Select_Commit, value=hash) {
+		set_error(app, "Could not queue the selected Git commit.")
+		alicorn.invalidate_root(rt, "Scratchpad could not queue Git commit selection")
+	}
+}
+
+git_defer_workbench_open_beside :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	view: Workbench_Content_Kind,
+) {
+	if !frame_deferred_action_schedule(app, .Workbench_Open_Beside,
+		workbench_content_kind=view) {
+		set_error(app, "Could not queue the pane split until the current view finishes rendering.")
+		alicorn.invalidate_root(rt, "Scratchpad could not queue a pane split")
+	}
+}
+
+git_defer_open_diff :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	kind, path, revision: string,
+	untracked := false,
+	beside := false,
+) -> bool {
+	if !frame_deferred_action_schedule(app, .Git_Open_Diff, value=revision,
+		document_id=app_workbench_repository_identity(app),
+		path=path, git_kind=kind, git_untracked=untracked, git_beside=beside) {
+		set_error(app, "Could not queue the Git diff until the current view finishes rendering.")
+		alicorn.invalidate_root(rt, "Scratchpad could not queue a Git diff")
+		return false
+	}
+	return true
+}
+
+git_deferred_diff_matches_repository :: proc(app: ^App, captured_repository: string) -> bool {
+	return app != nil && captured_repository != "" && captured_repository == app_workbench_repository_identity(app)
 }
 
 git_select_commit :: proc(app: ^App, rt: ^alicorn.Runtime, hash: string) {
@@ -139,10 +200,7 @@ git_select_commit :: proc(app: ^App, rt: ^alicorn.Runtime, hash: string) {
 }
 
 git_history_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: alicorn.Application_Key) -> bool {
-	if app == nil || rt == nil ||
-	   (app.workbench_view != .Git_History && !(app.workbench_split_open && app.workbench_secondary_view == .Git_History)) {
-		return false
-	}
+	if app == nil || rt == nil { return false }
 	#partial switch key {
 	case .Up, .Down, .Page_Up, .Page_Down:
 	case:
@@ -291,15 +349,13 @@ git_sidebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		gui.text(ui, "Source Control", style=alicorn.layout_style(.Row, grow=1),
 			text_style=alicorn.Text_Style{font_size=17, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
 		if gui.button(ui, "↻", key="git-refresh", width=32, height=28, variant=.Toolbar) {
-			response := bridge.backend_command(&app.backend, "git_refresh")
-			if !response.ok { set_error(app, response.message) }
-			bridge.backend_command_result_destroy(&response, context.allocator)
+			git_defer_refresh(app, rt)
 		}
 		if gui.button(ui, "History", key="git-open-history", width=66, height=28, variant=.Toolbar) {
 			git_workbench_select(app, rt, .Git_History)
 		}
 		if gui.button(ui, "↗", key="git-open-history-beside", width=30, height=28, variant=.Toolbar) {
-			git_workbench_open_beside(app, rt, .Git_History)
+			git_defer_workbench_open_beside(app, rt, .Git_History)
 		}
 	}
 	if !app.backend.state.has_workspace {
@@ -362,14 +418,10 @@ git_sidebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		style=alicorn.layout_style(.Row, grow=1, height=34))
 	if gui.button(ui, "Commit Staged Changes", key="git-commit-staged",
 		width=-1, height=34, state=alicorn.Button_State{disabled=staged_count == 0 || state.loading}, variant=.Primary) {
-		response := bridge.backend_command(&app.backend, "git_commit", git_message=app.git_commit_message)
-		if !response.ok { set_error(app, response.message) }
-		else {
-			if len(app.git_commit_submitted_message) > 0 { delete(app.git_commit_submitted_message, context.allocator) }
-			app.git_commit_submitted_message, _ = strings.clone(app.git_commit_message, context.allocator)
-			app.git_commit_clear_pending = true
+		if !frame_deferred_action_schedule(app, .Git_Commit, value=app.git_commit_message) {
+			set_error(app, "Could not queue the Git commit until the current view finishes rendering.")
+			alicorn.invalidate_root(rt, "Scratchpad could not queue a Git commit")
 		}
-		bridge.backend_command_result_destroy(&response, context.allocator)
 	}
 	alicorn.container_end(ui)
 	alicorn.scroll_region_end(ui)
@@ -384,22 +436,45 @@ git_file_row_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, fil
 			text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis})
 		if gui.button(ui, "Diff", key=fmt.tprintf("%s-diff", key), width=42, height=28, variant=.Toolbar) {
 			kind := "staged" if staged else "working"
-			git_open_diff(app, rt, kind, file.path, "", untracked=!staged && file.untracked)
+			git_defer_open_diff(app, rt, kind, file.path, "", untracked=!staged && file.untracked)
 		}
 		if staged {
 			if gui.button(ui, "−", key=fmt.tprintf("%s-unstage", key), width=28, height=28, state=alicorn.Button_State{disabled=app.backend.state.git.loading}, variant=.Toolbar) {
-				git_path_mutation(app, "git_unstage", file.path, file.original_path)
+				git_defer_path_mutation(app, rt, "git_unstage", file.path, file.original_path)
 			}
 		} else if gui.button(ui, "+", key=fmt.tprintf("%s-stage", key), width=28, height=28, state=alicorn.Button_State{disabled=app.backend.state.git.loading}, variant=.Toolbar) {
-				git_path_mutation(app, "git_stage", file.path, file.original_path)
+				git_defer_path_mutation(app, rt, "git_stage", file.path, file.original_path)
 		}
 	}
 }
 
-git_path_mutation :: proc(app: ^App, command, path: string, original_path := "") {
+git_defer_path_mutation :: proc(app: ^App, rt: ^alicorn.Runtime, command, path, original_path: string) {
+	if !frame_deferred_action_schedule(app, .Git_Path_Mutation, path=path,
+		git_command=command, git_original_path=original_path) {
+		set_error(app, "Could not queue the Git path update until the current view finishes rendering.")
+		alicorn.invalidate_root(rt, "Scratchpad could not queue a Git path update")
+	}
+}
+
+git_path_mutation :: proc(app: ^App, rt: ^alicorn.Runtime, command, path, original_path: string) {
+	if app == nil || rt == nil { return }
 	response := bridge.backend_command(&app.backend, command, path=path, git_original_path=original_path)
 	if !response.ok { set_error(app, response.message) }
 	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad Git path updated")
+}
+
+git_commit :: proc(app: ^App, rt: ^alicorn.Runtime, message: string) {
+	if app == nil || rt == nil { return }
+	response := bridge.backend_command(&app.backend, "git_commit", git_message=message)
+	if !response.ok { set_error(app, response.message) }
+	else {
+		if len(app.git_commit_submitted_message) > 0 { delete(app.git_commit_submitted_message, context.allocator) }
+		app.git_commit_submitted_message, _ = strings.clone(message, context.allocator)
+		app.git_commit_clear_pending = true
+	}
+	bridge.backend_command_result_destroy(&response, context.allocator)
+	alicorn.invalidate_root(rt, "Scratchpad Git commit submitted")
 }
 
 git_history_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_scale, available_width: f32) {
@@ -409,12 +484,10 @@ git_history_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_
 		if state.branch != "" { label = fmt.tprintf("%s · History", state.branch) }
 		gui.text(ui, label, style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{font_size=20, font_weight=alicorn.FONT_WEIGHT_SEMIBOLD, overflow=.Ellipsis})
 		if gui.button(ui, "Refresh", key="git-history-refresh", width=76, height=30, variant=.Toolbar) {
-			response := bridge.backend_command(&app.backend, "git_refresh")
-			if !response.ok { set_error(app, response.message) }
-			bridge.backend_command_result_destroy(&response, context.allocator)
+			git_defer_refresh(app, rt)
 		}
-		if !app.workbench_split_open && gui.button(ui, "Beside", key="git-history-open-beside", width=68, height=30, variant=.Toolbar) {
-			git_workbench_open_beside(app, rt, .Git_History)
+		if gui.button(ui, "Open Beside", key="git-history-open-beside", width=100, height=30, variant=.Toolbar) {
+			git_defer_workbench_open_beside(app, rt, .Git_History)
 		}
 	}
 	gui.text(ui, "Filter commits by subject, author, hash, or ref", text_style=alicorn.Text_Style{font_size=11})
@@ -464,7 +537,7 @@ git_history_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_
 			content_style=alicorn.button_content_style(.Start, padding_x=5), variant=.Quiet,
 			text_style=alicorn.Text_Style{font_size=11, overflow=.Ellipsis}) {
 			if app.git_history_filter != "" { find_set_message(&app.git_history_filter, "") }
-			git_select_commit(app, rt, ref.target)
+			git_defer_select_commit(app, rt, ref.target)
 		}
 	}
 	alicorn.virtual_list_end(ui, refs)
@@ -518,7 +591,7 @@ git_history_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_
 			state=alicorn.Button_State{selected=app.git_selected_commit == commit.hash},
 			content_style=alicorn.button_content_style(.Start, padding_x=8), variant=.Quiet,
 			text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis}) {
-			git_select_commit(app, rt, commit.hash)
+			git_defer_select_commit(app, rt, commit.hash)
 			_ = alicorn.virtual_list_ensure_visible(rt, commits.scroll.id, position, "selected Git commit")
 		}
 	}
@@ -547,7 +620,7 @@ git_history_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_
 			style=alicorn.layout_style(.Column, height=72, clip=true), text_style=alicorn.Text_Style{font_size=12, overflow=.Wrap})
 		if detail.body != "" { gui.text(ui, detail.body, style=alicorn.layout_style(.Column, height=64, clip=true), text_style=alicorn.Text_Style{font_size=12, overflow=.Wrap}) }
 		if gui.button(ui, "Open Full Diff Beside", key="git-commit-full-diff", height=32, variant=.Toolbar) {
-			git_open_diff(app, rt, "commit", "", detail.hash, beside=true)
+			git_defer_open_diff(app, rt, "commit", "", detail.hash, beside=true)
 		}
 		gui.text(ui, fmt.tprintf("Changed Files · %d", len(detail.files)), style=alicorn.layout_style(.Row, height=24), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
 		if len(detail.files) > 0 {
@@ -561,7 +634,7 @@ git_history_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, dpi_
 				if gui.button(ui, fmt.tprintf("%s  %s  %s", file.status, stats, file.path), key=fmt.tprintf("git-commit-file-%d-%s", index, file.path),
 					width=-1, height=32, content_style=alicorn.button_content_style(.Start, padding_x=6), variant=.Quiet,
 					text_style=alicorn.Text_Style{font_size=12, overflow=.Ellipsis}) {
-					git_open_diff(app, rt, "commit", file.path, detail.hash, beside=true)
+					git_defer_open_diff(app, rt, "commit", file.path, detail.hash, beside=true)
 				}
 			}
 			alicorn.virtual_list_end(ui, files)
@@ -648,7 +721,7 @@ git_history_commit_matches :: proc(commit: bridge.Git_Commit, query: string) -> 
 	return false
 }
 
-git_diff_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, secondary := false) {
+git_diff_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	state := &app.backend.state.git
 	if gui.row(ui, label="git-diff-toolbar", height=42, gap=10, align=.Center) {
 		label := "Working Tree Diff"
@@ -671,8 +744,8 @@ git_diff_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, seconda
 			state=alicorn.Button_State{disabled=len(app.git_diff_hunks) == 0 || app.git_diff_selected_hunk >= len(app.git_diff_hunks)-1}, variant=.Toolbar) {
 			git_diff_navigate_hunk(app, rt, 1)
 		}
-		if !secondary && gui.button(ui, "Beside", key="git-diff-open-beside", width=68, height=30, variant=.Toolbar) {
-			git_open_diff(app, rt, state.diff_kind, state.diff_path, state.diff_revision,
+		if gui.button(ui, "Open Beside", key="git-diff-open-beside", width=100, height=30, variant=.Toolbar) {
+			git_defer_open_diff(app, rt, state.diff_kind, state.diff_path, state.diff_revision,
 				untracked=app.git_diff_untracked, beside=true)
 		}
 	}

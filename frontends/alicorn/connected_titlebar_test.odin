@@ -36,6 +36,7 @@ connected_titlebar_test_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, documen
 		header={0, 0, width, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
 		content_start_x=80, content_end_x=width-144, display_scale=scale,
 	}
+	if !scratchpad_workbench_test_initialize(app) { return false }
 	init_menus(app)
 	_ = alicorn.set_presentation_scale(rt, scale, scale)
 	return alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
@@ -43,6 +44,7 @@ connected_titlebar_test_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, documen
 }
 
 connected_titlebar_test_destroy :: proc(app: ^App) {
+	scratchpad_workbench_test_destroy(app)
 	if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 	find_presentation_destroy(&app.find_presentation, context.allocator)
@@ -377,15 +379,30 @@ connected_titlebar_test_selection_decoration_case :: proc(t: ^testing.T, reduce_
 		!app.frame_deferred_action_pending && app.error_message == ""
 	testing.expect(t, no_op_click_preserved_state,
 		"clicking the already-selected tab should submit no selection command or change application state")
-	view_noop := scratchpad_document_tab_selection_is_noop(&app, "motion-tab-c")
-	app.workbench_view = .Git_History
-	history_noop := scratchpad_document_tab_selection_is_noop(&app, "motion-tab-c")
-	app.workbench_view = .Document
+	window := app_workbench_window(&app)
+	group_index := workbench_group_find(window, window.focused_group_id)
+	group_id := window.groups[group_index].id
+	editor_view_id := window.groups[group_index].active_view_id
+	view_noop := scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
+	history_view_id, history_added := workbench_model_view_add(
+		&app.workbench_model,
+		app.primary_workbench_window_id,
+		group_id,
+		.History,
+		Workbench_Resource_Ref{kind=.Repository, id="connected-titlebar-test"},
+	)
+	history_noop := !history_added
+	if history_added {
+		window.groups[group_index].active_view_id = history_view_id
+		history_noop = scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
+		window.groups[group_index].active_view_id = editor_view_id
+		_ = workbench_view_close(window, history_view_id)
+	}
 	app.workspace_search_mode = true
-	search_noop := scratchpad_document_tab_selection_is_noop(&app, "motion-tab-c")
+	search_noop := scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
 	app.workspace_search_mode = false
 	app.pinned.visible, app.pinned.single_pane = true, true
-	pinned_noop := scratchpad_document_tab_selection_is_noop(&app, "motion-tab-c")
+	pinned_noop := scratchpad_document_tab_selection_is_noop(&app, group_id, editor_view_id, "motion-tab-c")
 	app.pinned.visible, app.pinned.single_pane = false, false
 	testing.expect(t, view_noop && !history_noop && !search_noop && !pinned_noop,
 		"the same tab should remain actionable when returning from History, Search, or single-pane Pinned")
@@ -647,13 +664,17 @@ connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion
 	}
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(80_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
+	order_unchanged := app.backend.state.documents[0].id == order_before_cancel_build[0] &&
+		app.backend.state.documents[1].id == order_before_cancel_build[1] &&
+		app.backend.state.documents[2].id == order_before_cancel_build[2]
 	testing.expect(t, app.workspace_drag_kind == .None &&
 		!app.document_tab_reorder_motion_cleanup_needed && !app.workspace_drag_motion_reset_pending &&
-		alicorn.motion_activity(&rt).active_owners == 0 &&
-		app.backend.state.documents[0].id == order_before_cancel_build[0] &&
-		app.backend.state.documents[1].id == order_before_cancel_build[1] &&
-		app.backend.state.documents[2].id == order_before_cancel_build[2],
-		"cancel should reset transient motion without changing authoritative document order")
+		alicorn.motion_activity(&rt).active_owners == 0 && order_unchanged,
+		fmt.tprintf("cancel should reset transient motion without changing authoritative order (kind=%v cleanup=%v pending=%v active_owners=%d order=%s,%s,%s before=%s,%s,%s)",
+			app.workspace_drag_kind, app.document_tab_reorder_motion_cleanup_needed,
+			app.workspace_drag_motion_reset_pending, alicorn.motion_activity(&rt).active_owners,
+			app.backend.state.documents[0].id, app.backend.state.documents[1].id, app.backend.state.documents[2].id,
+			order_before_cancel_build[0], order_before_cancel_build[1], order_before_cancel_build[2]))
 	delete(button_bounds_before)
 	delete(chrome_regions_before)
 	delete(chrome_bounds_before)

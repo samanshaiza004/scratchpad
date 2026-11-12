@@ -168,9 +168,9 @@ editor_wrap_viewport_size :: proc(
 	return max(width, 240), max(height, EDITOR_ROW_HEIGHT*text_scale)
 }
 
-// Workbench owns view identity; editor state is keyed by that identity. The UI
-// still renders one group, so this preserves the current document-tab behavior
-// while separating a presentation from its document resource.
+// Workbench owns view identity; editor state is keyed by that identity. New
+// documents join the existing editor group so the current single live editor
+// pipeline remains independent from History and Diff pane groups.
 app_workbench_document_view_ensure :: proc(
 	app: ^App,
 	document_id: string,
@@ -188,10 +188,23 @@ app_workbench_document_view_ensure :: proc(
 			return view.id, true
 		}
 	}
+	target_group_id := app.primary_workbench_group_id
+	if window_index := workbench_model_window_find(&app.workbench_model, app.primary_workbench_window_id); window_index >= 0 {
+		window := &app.workbench_model.windows[window_index]
+		for view in window.views {
+			if view.kind == .Editor {
+				target_group_id = view.group_id
+				break
+			}
+		}
+		if workbench_group_find(window, target_group_id) < 0 && workbench_group_find(window, window.focused_group_id) >= 0 {
+			target_group_id = window.focused_group_id
+		}
+	}
 	view_id, ok = workbench_model_view_add(
 		&app.workbench_model,
 		app.primary_workbench_window_id,
-		app.primary_workbench_group_id,
+		target_group_id,
 		.Editor,
 		Workbench_Resource_Ref{kind=.Document, id=document_id, instance_id=instance_id},
 	)
@@ -203,44 +216,62 @@ app_workbench_sync_open_documents :: proc(app: ^App) {
 	if app == nil || !app.workbench_model_ready || !app.backend.started { return }
 	state := &app.backend.state
 	if !app.workbench_documents_synced || app.workbench_synced_application_revision != state.application_rev {
+		all_documents_retained := true
 		for document in state.documents {
 			if _, ok := app_workbench_document_view_ensure(app, document.id, document.instance_id); !ok {
+				all_documents_retained = false
 				set_error(app, "Could not retain a document view in the workbench.")
 			}
 		}
-		window_index := workbench_model_window_find(&app.workbench_model, app.primary_workbench_window_id)
-		if window_index >= 0 {
-			window := &app.workbench_model.windows[window_index]
-			for view_index := len(window.views)-1; view_index >= 0; view_index -= 1 {
-				view := window.views[view_index]
-				if view.group_id != app.primary_workbench_group_id || view.resource.kind != .Document { continue }
-				if document_is_open(state, view.resource.id) ||
-				   editor_view_find_by_id(app.editor_views[:], u64(view.id)) >= 0 { continue }
-				_ = workbench_model_view_close(&app.workbench_model, view.id)
+		if all_documents_retained {
+			for &window in app.workbench_model.windows {
+				for view_index := len(window.views)-1; view_index >= 0; view_index -= 1 {
+					view := window.views[view_index]
+					if view.kind != .Editor || view.resource.kind != .Document { continue }
+					if document_is_open(state, view.resource.id) ||
+					   editor_view_find_by_id(app.editor_views[:], u64(view.id)) >= 0 { continue }
+					_ = workbench_model_view_close(&app.workbench_model, view.id)
+				}
 			}
+			app.workbench_synced_application_revision = state.application_rev
+			app.workbench_documents_synced = true
+		} else {
+			// Keep retrying this revision on the next build. In particular, do not
+			// cache a partial sync: a failed allocation must not make an open
+			// document permanently disappear from the workbench.
+			app.workbench_documents_synced = false
 		}
-		app.workbench_synced_application_revision = state.application_rev
-		app.workbench_documents_synced = true
 	}
 
 	active_document_id := state.active
-	if active_document_id == "" { return }
-	document, found := find_document(state, active_document_id)
-	if !found { return }
-	active_view_id, view_ok := app_workbench_document_view_ensure(app, document.id, document.instance_id)
-	if !view_ok { return }
-	// Ensure may append to the model's window array, so resolve the window and
-	// group only after the active resource has been synchronized.
-	window_index := workbench_model_window_find(&app.workbench_model, app.primary_workbench_window_id)
-	if window_index < 0 { return }
-	window := &app.workbench_model.windows[window_index]
-	group_index := workbench_group_find(window, app.primary_workbench_group_id)
-	if group_index < 0 { return }
-	active_view_index := workbench_view_find(window, window.groups[group_index].active_view_id)
-	active_view_matches := active_view_index >= 0 &&
-		window.views[active_view_index].resource.id == active_document_id
-	if !active_view_matches {
-		_ = workbench_group_activate_view(window, app.primary_workbench_group_id, active_view_id)
+	if app.workbench_last_active_document_id != active_document_id {
+		if active_document_id == "" {
+			if len(app.workbench_last_active_document_id) > 0 {
+				delete(app.workbench_last_active_document_id, app.workbench_model.allocator)
+			}
+			app.workbench_last_active_document_id = ""
+			return
+		}
+		document, found := find_document(state, active_document_id)
+		if !found { return }
+		active_view_id, view_ok := app_workbench_document_view_ensure(app, document.id, document.instance_id)
+		if !view_ok { return }
+		activated := false
+		for &window in app.workbench_model.windows {
+			if view_index := workbench_view_find(&window, active_view_id); view_index >= 0 {
+				if !workbench_group_activate_view(&window, window.views[view_index].group_id, active_view_id) { return }
+				if !workbench_model_focus_window(&app.workbench_model, window.window_id) { return }
+				activated = true
+				break
+			}
+		}
+		if !activated { return }
+		owned_active_id, clone_error := strings.clone(active_document_id, app.workbench_model.allocator)
+		if clone_error != nil { return }
+		if len(app.workbench_last_active_document_id) > 0 {
+			delete(app.workbench_last_active_document_id, app.workbench_model.allocator)
+		}
+		app.workbench_last_active_document_id = owned_active_id
 	}
 }
 

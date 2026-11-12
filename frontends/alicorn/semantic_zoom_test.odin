@@ -22,6 +22,7 @@ Semantic_Zoom_Test_Editor :: struct {
 
 semantic_zoom_test_destroy :: proc(f: ^Semantic_Zoom_Test_Editor, t: ^testing.T) {
 	app := &f.app
+	scratchpad_workbench_test_destroy(app)
 	_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
 	_ = bridge.editor_edit_lane_stop(&app.editor_edit_lane)
 	if app.backend.started {
@@ -106,6 +107,10 @@ semantic_zoom_test_open :: proc(f: ^Semantic_Zoom_Test_Editor, t: ^testing.T, ex
 	bridge.backend_command_result_destroy(&opened, context.allocator)
 	if !open_ok { testing.expect(t, false, "the staged backend must open the source fixture"); return false }
 	f.document_id, _ = strings.clone(f.app.backend.state.active)
+	if !scratchpad_workbench_test_initialize(&f.app) {
+		testing.expect(t, false, "semantic zoom fixture should initialize its workbench editor view")
+		return false
+	}
 	if !semantic_zoom_test_load_window(f, t) { return false }
 	// Opting into presentation starts the real derived-projection coordinator.
 	if !semantic_zoom_test_wait_ready(f, t) { return false }

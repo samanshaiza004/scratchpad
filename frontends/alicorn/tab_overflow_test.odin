@@ -17,10 +17,16 @@ test_compact_document_tabs_overflow_and_preview_presentation :: proc(t: ^testing
 		{id="tab-7", path="macos_build_test.go", view_kind="text"},
 	}
 	app := App{}
+	app.backend.started = true
 	app.backend.state.documents = documents[:]
 	app.backend.state.active = documents[len(documents)-1].id
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the tab fixture should initialize its workbench model")
+	app_workbench_sync_open_documents(&app)
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 48})
-	defer alicorn.destroy_runtime(&rt)
+	defer {
+		scratchpad_workbench_test_destroy(&app)
+		alicorn.destroy_runtime(&rt)
+	}
 
 	ui, should_build := alicorn.begin_frame(&rt)
 	if !should_build {

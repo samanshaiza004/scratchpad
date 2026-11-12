@@ -407,6 +407,7 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	}
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
 	defer {
+		scratchpad_workbench_test_destroy(&app)
 		if app.backend.started {
 			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
 			for _ in 0..<128 { sync.sema_post(&gate) }
@@ -441,6 +442,7 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	selected_typing := bridge.backend_command(&app.backend, "select_document", document_id=typing_document_id, allocator=context.temp_allocator)
 	testing.expect(t, selected_typing.ok, "the typing document should be active before committed input begins")
 	bridge.backend_command_result_destroy(&selected_typing, context.temp_allocator)
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the optimistic editor fixture should initialize its workbench view")
 	document, document_found := find_document(&app.backend.state, app.backend.state.active)
 	if !document_found { testing.expect(t, false, "opened source document should have authoritative state"); return }
 	base_editor_revision := document.editor_revision
@@ -487,34 +489,46 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	other_document_id_for_navigation := app.backend.state.documents[1].id
 	testing.expect(t, alicorn.focus(&rt, app.editor_scroll_owner),
 		"the editor owner should accept focus before testing document shortcuts")
-	testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Next) &&
-		app.backend.state.active == other_document_id_for_navigation,
-		"Tab_Next should select the next open document")
+	testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Next),
+		"Tab_Next should activate the next workbench view")
 	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	testing.expect(t, app.backend.state.active == other_document_id_for_navigation,
+		"the next document should become active after its workbench frame transition")
 	testing.expect(t, alicorn.focused_node(&rt) == app.editor_scroll_owner,
 		"switching documents with the editor focused should keep focus in the editor")
-	testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Previous) &&
-		app.backend.state.active == typing_document_id,
-		"Tab_Previous should wrap back to the prior document")
+	testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Previous),
+		"Tab_Previous should activate the prior workbench view")
 	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+	testing.expect(t, app.backend.state.active == typing_document_id,
+		"the prior document should become active after its workbench frame transition")
 	testing.expect(t, alicorn.focused_node(&rt) == app.editor_scroll_owner,
 		"reverse document navigation should also preserve editor focus")
 	tree_focus_owner := app.tree_scroll_owner
 	testing.expect(t, tree_focus_owner != 0 && alicorn.focus(&rt, tree_focus_owner),
 		"the workspace tree should accept focus before checking non-editor tab cycling")
 	if tree_focus_owner != 0 {
-		testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Next) &&
-			app.backend.state.active == other_document_id_for_navigation,
-			"Tab_Next should also work while the workspace tree has focus")
+		testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Next),
+			"Tab_Next should activate the next workbench view from the workspace tree")
 		_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
-		testing.expect(t, alicorn.focused_node(&rt) == app.tree_scroll_owner,
-			"tab cycling from the workspace tree should not steal focus into the editor")
-		testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Previous) &&
-			app.backend.state.active == typing_document_id,
-			"Tab_Previous should return to the original document from the workspace tree")
 		_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+		testing.expect(t, app.backend.state.active == other_document_id_for_navigation,
+			"the next document should become active after tree-originated tab navigation")
 		testing.expect(t, alicorn.focused_node(&rt) == app.tree_scroll_owner,
-			"reverse tab cycling from the workspace tree should preserve its focus role")
+			fmt.tprintf("tab cycling from the workspace tree should not steal focus into the editor (focused=%d tree=%d editor=%d pending_view=%d editor_pending=%v)",
+				alicorn.focused_node(&rt), app.tree_scroll_owner, app.editor_scroll_owner,
+				u64(app.workbench_pending_view_focus_id), app.editor_focus_pending))
+		testing.expect(t, application_key(rawptr(&app), &rt, .Tab_Previous),
+			"Tab_Previous should activate the prior workbench view from the workspace tree")
+		_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+		_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
+		testing.expect(t, app.backend.state.active == typing_document_id,
+			"the prior document should become active after reverse tree-originated navigation")
+		testing.expect(t, alicorn.focused_node(&rt) == app.tree_scroll_owner,
+			fmt.tprintf("reverse tab cycling from the workspace tree should preserve its focus role (focused=%d tree=%d editor=%d pending_view=%d editor_pending=%v)",
+				alicorn.focused_node(&rt), app.tree_scroll_owner, app.editor_scroll_owner,
+				u64(app.workbench_pending_view_focus_id), app.editor_focus_pending))
 	}
 	_ = alicorn.focus(&rt, app.editor_scroll_owner)
 	base_application_revision = app.backend.state.application_rev
@@ -663,6 +677,10 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 	// authoritative document before the next serialized request is dispatched.
 	// The optimistic chain is discarded, but committed input is kept recoverable.
 	select_document(&app, &rt, typing_document_id)
+	// Model the frame boundary after selecting a tab. The backend selection is
+	// authoritative immediately, while the retained workbench/editor owner is
+	// synchronized by the next application description.
+	_ = build_app(rawptr(&app), &rt, 1000, 700, 1)
 	document_before_stale, found_before_stale := find_document(&app.backend.state, typing_document_id)
 	testing.expect(t, found_before_stale, "the source document should be active for stale-chain recovery")
 	if !found_before_stale { return }
@@ -810,13 +828,18 @@ test_optimistic_replacements_converge_and_stale_chain_recovers :: proc(t: ^testi
 		allocator=context.temp_allocator,
 	)
 	final_expected := fmt.tprintf("%sz", recovered_expected)
-	testing.expect(t, len(app.editor_edits) == 0 && view.optimistic_pending_edits == 0 &&
+	final_matches := len(app.editor_edits) == 0 && view.optimistic_pending_edits == 0 &&
 		final_found && final_document.editor_revision == recovered_revision+1 &&
 		view.authoritative_revision == final_document.editor_revision &&
 		canonical_final.ok && canonical_final.visible_window_owned &&
 		string(canonical_final.visible_window.source) == final_expected &&
-		string(view.optimistic_window.source) == string(canonical_final.visible_window.source),
-		"post-recovery editing should converge with no pending edits and identical optimistic/canonical bytes")
+		string(view.optimistic_window.source) == string(canonical_final.visible_window.source)
+	testing.expect(t, final_matches,
+		fmt.tprintf("post-recovery edit should converge (queued=%d pending=%d found=%v revision=%d expected_revision=%d authoritative=%d canonical_ok=%v canonical_owned=%v optimistic=%s canonical=%s expected=%s)",
+			len(app.editor_edits), view.optimistic_pending_edits, final_found,
+			final_document.editor_revision, recovered_revision+1, view.authoritative_revision,
+			canonical_final.ok, canonical_final.visible_window_owned,
+			string(view.optimistic_window.source), string(canonical_final.visible_window.source), final_expected))
 	bridge.backend_command_result_destroy(&canonical_final, context.temp_allocator)
 	testing.expect(t, app.backend.state_leases == 0 && app.backend.resource_leases == 0,
 		"the success and stale-recovery paths should leave no Caliber publication or resource leases outstanding")

@@ -23,19 +23,20 @@ Image previews and the Quick Open blur treatment are additional product work on 
 ## Post-v0.2.0 development — local Git workbench
 
 The next product increment is integrating the useful local review and source
-control workflows from Alicorn History into Scratchpad. The current branch
-implements a Source Control sidebar, commit staging and creation, bounded
-repository history and refs, a commit graph, commit details, and read-only
-working/staged/historical diffs. These capabilities are unreleased and are not
-included in the v0.2.0 packages.
+control workflows from Alicorn History into Scratchpad. The unreleased
+implementation includes a Source Control sidebar, commit staging and creation,
+bounded repository history and refs, a commit graph, commit details, and
+read-only working/staged/historical diffs. These capabilities are not included
+in the v0.2.0 packages.
 
-The integration uses the existing workbench and shared Go backend. Documents,
-History, and Diff can occupy the two sides of a focused split; History's refs,
-commits, and details are resizable within their view. A general multi-pane
-layout and arbitrary view movement are still future work. The backend owns
-repository operations independently of which Git view is visible; historical
-snapshots never enter the writable document model. Current limits and safety
-boundaries are documented in the [Git client guide](GIT-CLIENT.md).
+The integration uses the shared Go backend and a recursive pane-group
+workbench. Editor, History, and Diff views can be arranged across split groups;
+tabs can be moved and reordered, and History's refs, commits, and details are
+resizable within its view. The backend owns repository operations independently
+of which Git view is visible; historical snapshots never enter the writable
+document model. Current limits and safety boundaries are documented in the
+[Git client guide](GIT-CLIENT.md). In particular, duplicate editor views,
+persisted pane layouts, and terminal sessions remain future work.
 
 ## Longer-term questions
 

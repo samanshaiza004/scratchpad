@@ -437,6 +437,65 @@ workbench_view_move :: proc(state: ^Workbench_State, view_id: View_ID, target_gr
 	return true
 }
 
+workbench_view_drop_relative :: proc(
+	state: ^Workbench_State,
+	source_view_id, target_view_id: View_ID,
+	after: bool,
+) -> bool {
+	if state == nil || source_view_id == target_view_id || !workbench_state_valid(state) { return false }
+	source_index := workbench_view_find(state, source_view_id)
+	target_index := workbench_view_find(state, target_view_id)
+	if source_index < 0 || target_index < 0 { return false }
+	target_group_id := state.views[target_index].group_id
+	if state.views[source_index].group_id != target_group_id &&
+	   !workbench_view_move(state, source_view_id, target_group_id) {
+		return false
+	}
+	target_index = workbench_view_find(state, target_view_id)
+	source_index = workbench_view_find(state, source_view_id)
+	if source_index < 0 || target_index < 0 { return false }
+	group_index := workbench_group_find(state, target_group_id)
+	if group_index < 0 { return false }
+
+	ordered := make([dynamic]View_ID, 0, len(state.views), allocator=context.temp_allocator)
+	defer delete(ordered)
+	for view in state.views {
+		if view.group_id == target_group_id { append(&ordered, view.id) }
+	}
+	// Sort the small group list by its explicit tab order before applying the drop.
+	for i := 1; i < len(ordered); i += 1 {
+		j := i
+		for j > 0 {
+			left := workbench_view_find(state, ordered[j-1])
+			right := workbench_view_find(state, ordered[j])
+			if left < 0 || right < 0 || state.views[left].tab_order <= state.views[right].tab_order { break }
+			ordered[j-1], ordered[j] = ordered[j], ordered[j-1]
+			j -= 1
+		}
+	}
+	source_position, destination := -1, -1
+	for id, index in ordered {
+		if id == source_view_id { source_position = index }
+		if id == target_view_id { destination = index }
+	}
+	if source_position < 0 || destination < 0 { return false }
+	ordered_remove(&ordered, source_position)
+	if source_position < destination { destination -= 1 }
+	if after { destination += 1 }
+	destination = clamp(destination, 0, len(ordered))
+	append(&ordered, source_view_id)
+	for index := len(ordered)-1; index > destination; index -= 1 {
+		ordered[index] = ordered[index-1]
+	}
+	ordered[destination] = source_view_id
+	for id, order in ordered {
+		index := workbench_view_find(state, id)
+		if index >= 0 { state.views[index].tab_order = u64(order+1) }
+	}
+	state.groups[group_index].next_tab_order = u64(len(ordered)+1)
+	return workbench_state_valid(state)
+}
+
 workbench_view_close :: proc(state: ^Workbench_State, view_id: View_ID) -> bool {
 	view_index := workbench_view_find(state, view_id)
 	if view_index < 0 { return false }
@@ -617,6 +676,182 @@ workbench_model_view_split :: proc(
 	model.next_group_id = window.next_group_id
 	model.next_node_id = window.next_node_id
 	return
+}
+
+// Move a live view into a new sibling pane. The source group must retain at
+// least one view, so a split never publishes an invalid empty group. The view
+// keeps its ID and all type-specific presentation state.
+workbench_state_view_move_to_new_group :: proc(
+	state: ^Workbench_State,
+	view_id: View_ID,
+	axis: Workbench_Split_Axis,
+	preferred_position: f32 = 0.5,
+) -> (group_id: Pane_Group_ID, ok: bool) {
+	if state == nil || !workbench_state_valid(state) { return {}, false }
+	view_index := workbench_view_find(state, view_id)
+	if view_index < 0 { return {}, false }
+	view := state.views[view_index]
+	source_group_index := workbench_group_find(state, view.group_id)
+	if source_group_index < 0 { return {}, false }
+	views_remaining := 0
+	for candidate in state.views {
+		if candidate.group_id == view.group_id && candidate.id != view_id { views_remaining += 1 }
+	}
+	if views_remaining == 0 { return {}, false }
+	source_leaf_index := workbench_node_find(state, state.groups[source_group_index].node_id)
+	if source_leaf_index < 0 || state.nodes[source_leaf_index].kind != .Group { return {}, false }
+	old_leaf := state.nodes[source_leaf_index]
+	parent_index := -1
+	if u64(old_leaf.parent_id) != 0 {
+		parent_index = workbench_node_find(state, old_leaf.parent_id)
+		if parent_index < 0 || state.nodes[parent_index].kind != .Split ||
+		   (state.nodes[parent_index].first_child_id != old_leaf.id && state.nodes[parent_index].second_child_id != old_leaf.id) {
+			return {}, false
+		}
+	}
+	group_id = workbench_group_id_next(state)
+	new_leaf_id := workbench_node_id_next(state)
+	parent_id := workbench_node_id_next(state)
+	if u64(group_id) == 0 || u64(new_leaf_id) == 0 || u64(parent_id) == 0 { return {}, false }
+
+	append(&state.groups, Workbench_Pane_Group{id=group_id, node_id=new_leaf_id, active_view_id=view_id, next_tab_order=2})
+	append(&state.nodes, Workbench_Pane_Node{id=new_leaf_id, parent_id=parent_id, kind=.Group, group_id=group_id})
+	append(&state.nodes, Workbench_Pane_Node{
+		id=parent_id, parent_id=old_leaf.parent_id, kind=.Split,
+		first_child_id=old_leaf.id, second_child_id=new_leaf_id,
+		axis=axis, preferred_position=clamp(preferred_position, 0.1, 0.9),
+	})
+	if parent_index < 0 {
+		state.root_node_id = parent_id
+	} else if state.nodes[parent_index].first_child_id == old_leaf.id {
+		state.nodes[parent_index].first_child_id = parent_id
+	} else {
+		state.nodes[parent_index].second_child_id = parent_id
+	}
+	state.nodes[source_leaf_index].parent_id = parent_id
+	state.views[view_index].group_id = group_id
+	state.views[view_index].tab_order = 1
+	if state.groups[source_group_index].active_view_id == view_id {
+		state.groups[source_group_index].active_view_id = workbench_group_first_view(state, view.group_id)
+	}
+	state.focused_group_id = group_id
+	assert(workbench_state_valid(state), "moving a view into a sibling group must preserve workbench topology")
+	return group_id, true
+}
+
+// Create a sibling pane containing a new view. Resource data is copied before
+// topology mutation, so allocation failure leaves the current tree unchanged.
+workbench_state_group_split_add_view :: proc(
+	state: ^Workbench_State,
+	source_group_id: Pane_Group_ID,
+	kind: Workbench_View_Kind,
+	resource: Workbench_Resource_Ref,
+	axis: Workbench_Split_Axis,
+	preferred_position: f32 = 0.5,
+) -> (view_id: View_ID, group_id: Pane_Group_ID, ok: bool) {
+	if state == nil || !workbench_state_valid(state) || resource.id == "" { return {}, {}, false }
+	source_group_index := workbench_group_find(state, source_group_id)
+	if source_group_index < 0 { return {}, {}, false }
+	source_leaf_index := workbench_node_find(state, state.groups[source_group_index].node_id)
+	if source_leaf_index < 0 || state.nodes[source_leaf_index].kind != .Group { return {}, {}, false }
+	old_leaf := state.nodes[source_leaf_index]
+	parent_index := -1
+	if u64(old_leaf.parent_id) != 0 {
+		parent_index = workbench_node_find(state, old_leaf.parent_id)
+		if parent_index < 0 || state.nodes[parent_index].kind != .Split ||
+		   (state.nodes[parent_index].first_child_id != old_leaf.id && state.nodes[parent_index].second_child_id != old_leaf.id) {
+			return {}, {}, false
+		}
+	}
+	owned_resource_id, clone_error := strings.clone(resource.id, state.allocator)
+	if clone_error != nil { return {}, {}, false }
+	group_id = workbench_group_id_next(state)
+	new_leaf_id := workbench_node_id_next(state)
+	parent_id := workbench_node_id_next(state)
+	view_id = workbench_view_id_next(state)
+	if u64(group_id) == 0 || u64(new_leaf_id) == 0 || u64(parent_id) == 0 || u64(view_id) == 0 {
+		delete(owned_resource_id, state.allocator)
+		return {}, {}, false
+	}
+
+	append(&state.groups, Workbench_Pane_Group{id=group_id, node_id=new_leaf_id, active_view_id=view_id, next_tab_order=2})
+	append(&state.nodes, Workbench_Pane_Node{id=new_leaf_id, parent_id=parent_id, kind=.Group, group_id=group_id})
+	append(&state.nodes, Workbench_Pane_Node{
+		id=parent_id, parent_id=old_leaf.parent_id, kind=.Split,
+		first_child_id=old_leaf.id, second_child_id=new_leaf_id,
+		axis=axis, preferred_position=clamp(preferred_position, 0.1, 0.9),
+	})
+	if parent_index < 0 {
+		state.root_node_id = parent_id
+	} else if state.nodes[parent_index].first_child_id == old_leaf.id {
+		state.nodes[parent_index].first_child_id = parent_id
+	} else {
+		state.nodes[parent_index].second_child_id = parent_id
+	}
+	state.nodes[source_leaf_index].parent_id = parent_id
+	append(&state.views, Workbench_View{
+		id=view_id, group_id=group_id, kind=kind,
+		resource=Workbench_Resource_Ref{kind=resource.kind, id=owned_resource_id, instance_id=resource.instance_id},
+		lifecycle_generation=1, tab_order=1,
+	})
+	state.focused_group_id = group_id
+	assert(workbench_state_valid(state), "adding a view to a sibling group must preserve workbench topology")
+	return view_id, group_id, true
+}
+
+workbench_model_view_move_to_new_group :: proc(
+	model: ^Workbench_Model,
+	window_id: Window_ID,
+	view_id: View_ID,
+	axis: Workbench_Split_Axis,
+	preferred_position: f32 = 0.5,
+) -> (group_id: Pane_Group_ID, ok: bool) {
+	window_index := workbench_model_window_find(model, window_id)
+	if model == nil || window_index < 0 || model.next_group_id == 0 || model.next_node_id == 0 { return {}, false }
+	window := &model.windows[window_index]
+	window.next_group_id = model.next_group_id
+	window.next_node_id = model.next_node_id
+	group_id, ok = workbench_state_view_move_to_new_group(window, view_id, axis, preferred_position)
+	model.next_group_id = window.next_group_id
+	model.next_node_id = window.next_node_id
+	return
+}
+
+workbench_model_group_split_add_view :: proc(
+	model: ^Workbench_Model,
+	window_id: Window_ID,
+	source_group_id: Pane_Group_ID,
+	kind: Workbench_View_Kind,
+	resource: Workbench_Resource_Ref,
+	axis: Workbench_Split_Axis,
+	preferred_position: f32 = 0.5,
+) -> (view_id: View_ID, group_id: Pane_Group_ID, ok: bool) {
+	window_index := workbench_model_window_find(model, window_id)
+	if model == nil || window_index < 0 || model.next_group_id == 0 || model.next_node_id == 0 || model.next_view_id == 0 { return {}, {}, false }
+	window := &model.windows[window_index]
+	window.next_group_id = model.next_group_id
+	window.next_node_id = model.next_node_id
+	window.next_view_id = model.next_view_id
+	view_id, group_id, ok = workbench_state_group_split_add_view(
+		window, source_group_id, kind, resource, axis, preferred_position,
+	)
+	model.next_group_id = window.next_group_id
+	model.next_node_id = window.next_node_id
+	model.next_view_id = window.next_view_id
+	return
+}
+
+workbench_model_view_drop_relative :: proc(
+	model: ^Workbench_Model,
+	window_id: Window_ID,
+	source_view_id, target_view_id: View_ID,
+	after: bool,
+) -> bool {
+	window_index := workbench_model_window_find(model, window_id)
+	if model == nil || window_index < 0 { return false }
+	return workbench_view_drop_relative(
+		&model.windows[window_index], source_view_id, target_view_id, after,
+	)
 }
 
 workbench_model_view_move :: proc(

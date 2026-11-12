@@ -23,6 +23,12 @@ Deferred_Action_Kind :: enum {
 	Toggle_Semantic_Fold,
 	Toggle_Manual_Fold,
 	Pinned_Action,
+	Git_Refresh,
+	Git_Select_Commit,
+	Git_Open_Diff,
+	Workbench_Open_Beside,
+	Git_Path_Mutation,
+	Git_Commit,
 }
 
 Deferred_Action :: struct {
@@ -34,9 +40,15 @@ Deferred_Action :: struct {
 	name:        string,
 	disposition: string,
 	workspace_root: string,
+	git_kind: string,
+	git_command: string,
+	git_original_path: string,
+	workbench_content_kind: Workbench_Content_Kind,
 	workspace_mutation_kind: Workspace_Mutation_Kind,
 	source_is_dir: bool,
 	discard:     bool,
+	git_untracked: bool,
+	git_beside: bool,
 	editor_revision: u64,
 	source_instance_id: u64,
 	source_start: u64,
@@ -122,6 +134,9 @@ deferred_action_destroy :: proc(action: ^Deferred_Action) {
 	if len(action.name) > 0 { delete(action.name, context.allocator) }
 	if len(action.disposition) > 0 { delete(action.disposition, context.allocator) }
 	if len(action.workspace_root) > 0 { delete(action.workspace_root, context.allocator) }
+	if len(action.git_kind) > 0 { delete(action.git_kind, context.allocator) }
+	if len(action.git_command) > 0 { delete(action.git_command, context.allocator) }
+	if len(action.git_original_path) > 0 { delete(action.git_original_path, context.allocator) }
 	action^ = Deferred_Action{}
 }
 
@@ -135,6 +150,13 @@ frame_deferred_action_schedule :: proc(
 	source_start: u64 = 0,
 	source_end: u64 = 0,
 	source_line: u64 = 0,
+	path: string = "",
+	git_kind: string = "",
+	git_command: string = "",
+	git_original_path: string = "",
+	workbench_content_kind: Workbench_Content_Kind = .Document,
+	git_untracked := false,
+	git_beside := false,
 ) -> bool {
 	if app == nil || app.frame_deferred_action_pending { return false }
 	action := Deferred_Action{kind=kind}
@@ -148,11 +170,34 @@ frame_deferred_action_schedule :: proc(
 		if err != nil { deferred_action_destroy(&action); return false }
 		action.document_id = copy
 	}
+	if len(path) > 0 {
+		copy, err := strings.clone(path, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.path = copy
+	}
+	if len(git_kind) > 0 {
+		copy, err := strings.clone(git_kind, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.git_kind = copy
+	}
+	if len(git_command) > 0 {
+		copy, err := strings.clone(git_command, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.git_command = copy
+	}
+	if len(git_original_path) > 0 {
+		copy, err := strings.clone(git_original_path, context.allocator)
+		if err != nil { deferred_action_destroy(&action); return false }
+		action.git_original_path = copy
+	}
 	action.editor_revision = editor_revision
 	action.source_instance_id = source_instance_id
 	action.source_start = source_start
 	action.source_end = source_end
 	action.source_line = source_line
+	action.workbench_content_kind = workbench_content_kind
+	action.git_untracked = git_untracked
+	action.git_beside = git_beside
 	app.frame_deferred_action = action
 	app.frame_deferred_action_pending = true
 	return true
@@ -185,6 +230,21 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		if valid { _ = scratchpad_surface_treatment_select(app, rt, treatment, persist=!app.theme_preview_active) }
 	case .Theme_Import:
 		request_theme_import_dialog(app, rt)
+	case .Git_Refresh:
+		git_refresh(app, rt)
+	case .Git_Select_Commit:
+		git_select_commit(app, rt, action.value)
+	case .Git_Open_Diff:
+		if git_deferred_diff_matches_repository(app, action.document_id) {
+			git_open_diff(app, rt, action.git_kind, action.path, action.value,
+				untracked=action.git_untracked, beside=action.git_beside)
+		}
+	case .Workbench_Open_Beside:
+		git_workbench_open_beside(app, rt, action.workbench_content_kind)
+	case .Git_Path_Mutation:
+		git_path_mutation(app, rt, action.git_command, action.path, action.git_original_path)
+	case .Git_Commit:
+		git_commit(app, rt, action.value)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -278,6 +338,28 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			manual_folding_toggle(app, rt, action.document_id, action.source_instance_id, action.editor_revision, action.source_start)
 		case .Pinned_Action:
 			pinned_apply_deferred(app, rt, action)
+		case .Theme_Select:
+			_ = scratchpad_theme_request_select(app, rt, action.value, persist=!app.theme_preview_active)
+		case .Theme_Treatment:
+			treatment, valid := scratchpad_surface_treatment_parse(action.value)
+			if valid { _ = scratchpad_surface_treatment_select(app, rt, treatment, persist=!app.theme_preview_active) }
+		case .Theme_Import:
+			request_theme_import_dialog(app, rt)
+		case .Git_Refresh:
+			git_refresh(app, rt)
+		case .Git_Select_Commit:
+			git_select_commit(app, rt, action.value)
+		case .Git_Open_Diff:
+			if git_deferred_diff_matches_repository(app, action.document_id) {
+				git_open_diff(app, rt, action.git_kind, action.path, action.value,
+					untracked=action.git_untracked, beside=action.git_beside)
+			}
+		case .Workbench_Open_Beside:
+			git_workbench_open_beside(app, rt, action.workbench_content_kind)
+		case .Git_Path_Mutation:
+			git_path_mutation(app, rt, action.git_command, action.path, action.git_original_path)
+		case .Git_Commit:
+			git_commit(app, rt, action.value)
 		case .Workspace_Mutation:
 			app.workspace_mutation_queued = false
 			workspace_mutation_execute(
@@ -298,13 +380,6 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		case .Cancel_Close_Prompt:
 			clear_close_prompt(app)
 			alicorn.invalidate_root(rt, "dirty close cancelled")
-		case .Theme_Select:
-			_ = scratchpad_theme_request_select(app, rt, action.value, persist=!app.theme_preview_active)
-		case .Theme_Treatment:
-			treatment, valid := scratchpad_surface_treatment_parse(action.value)
-			if valid { _ = scratchpad_surface_treatment_select(app, rt, treatment, persist=!app.theme_preview_active) }
-		case .Theme_Import:
-			request_theme_import_dialog(app, rt)
 		}
 		deferred_action_destroy(&action)
 		if app.dialog_action != "" || app.close_document_id != "" || app.save_as_confirmation_open || app.workspace_mutation_kind != .None { break }
