@@ -2,6 +2,7 @@ package main
 
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
+import "core:strings"
 
 SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE :: alicorn.Text_Style{
 	font_weight=alicorn.FONT_WEIGHT_REGULAR,
@@ -19,6 +20,7 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		app.relief_workbench_theme, app.relief_editor_theme = 0, 0
 		app.cool_light_theme = 0
 		app.charcoal_ink_theme = 0
+		app.custom_theme_id = 0
 		app.paper_surface_material = alicorn.MATERIAL_FLAT
 		app.raised_surface_material = alicorn.MATERIAL_FLAT
 		app.floating_surface_material = alicorn.MATERIAL_FLAT
@@ -44,6 +46,9 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		theme := scratchpad_charcoal_ink_theme()
 		app.charcoal_ink_theme = alicorn.style_theme_register(rt, theme)
 		scratchpad_charcoal_ink_theme_destroy(&theme)
+	}
+	if app.custom_theme_ready && app.custom_theme_id == 0 {
+		app.custom_theme_id = alicorn.style_theme_register(rt, app.custom_theme_style)
 	}
 	if app.paper_surface_material == alicorn.MATERIAL_FLAT {
 		for definition in scratchpad_editor_theme_materials {
@@ -78,6 +83,18 @@ scratchpad_styles_ensure :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 
 scratchpad_theme_apply_registered :: proc(app: ^App) {
 	if app == nil { return }
+	if (strings.has_prefix(app.selected_theme_id, "user:") || app.selected_theme_id == SCRATCHPAD_THEME_BUILTIN_MOCHA) && app.custom_theme_ready && app.custom_theme_id != 0 {
+		app.workbench_theme, app.editor_theme = app.custom_theme_id, app.custom_theme_id
+		return
+	}
+	if app.selected_theme_id == SCRATCHPAD_THEME_BUILTIN_COOL {
+		app.workbench_theme, app.editor_theme = app.cool_light_theme, app.cool_light_theme
+		return
+	}
+	if app.selected_theme_id == SCRATCHPAD_THEME_BUILTIN_CHARCOAL {
+		app.workbench_theme, app.editor_theme = app.charcoal_ink_theme, app.charcoal_ink_theme
+		return
+	}
 	switch app.theme_choice {
 	case .Warm, .Flat:
 		app.workbench_theme = app.warm_workbench_theme
@@ -94,20 +111,54 @@ scratchpad_theme_apply_registered :: proc(app: ^App) {
 	}
 }
 
-scratchpad_theme_select :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratchpad_Theme_Choice) -> bool {
+scratchpad_theme_select :: proc(app: ^App, rt: ^alicorn.Runtime, choice: Scratchpad_Theme_Choice, persist := true) -> bool {
 	if app == nil || rt == nil || (choice < .Warm || choice > .Charcoal_Ink) { return false }
-	if app.theme_choice == choice { return true }
+	// A synchronous built-in selection supersedes any queued user-theme import
+	// or preview, including a stale candidate already waiting for the UI wake.
+	scratchpad_theme_compiler_invalidate(&app.theme_compiler)
+	app.theme_compile_pending = false
+	delete(app.theme_compile_requested_id, context.allocator)
+	app.theme_compile_requested_id = ""
+	scratchpad_theme_compile_error_set(app, "")
+	if choice == .Flat { return scratchpad_surface_treatment_select(app, rt, .Flat, persist) }
+	if choice == .Workbench_Relief { return scratchpad_surface_treatment_select(app, rt, .Workbench_Relief, persist) }
+	selected_id := scratchpad_theme_id_for_choice(choice)
+	if app.theme_choice == choice && app.selected_theme_id == selected_id { return true }
 	if !scratchpad_styles_ensure(app, rt) { return false }
-	if choice == .Workbench_Relief {
+	app.theme_choice = choice
+	if len(app.selected_theme_id) > 0 { delete(app.selected_theme_id, context.allocator) }
+	if len(app.selected_theme_name) > 0 { delete(app.selected_theme_name, context.allocator) }
+	app.selected_theme_name, _ = strings.clone(scratchpad_theme_choice_name(choice), context.allocator)
+	app.selected_theme_id, _ = strings.clone(selected_id, context.allocator)
+	if app.brand_mark != 0 { _ = scratchpad_brand_mark_replace(app, rt, choice) }
+	scratchpad_theme_apply_registered(app)
+	if persist { scratchpad_preferences_save(app) }
+	alicorn.invalidate_root(rt, "Scratchpad theme preference changed")
+	return true
+}
+
+scratchpad_surface_treatment_select :: proc(app: ^App, rt: ^alicorn.Runtime, treatment: Scratchpad_Surface_Treatment, persist := true) -> bool {
+	if app == nil || rt == nil || treatment < .Standard || treatment > .Workbench_Relief { return false }
+	if app.surface_treatment == treatment { return true }
+	if !scratchpad_styles_ensure(app, rt) { return false }
+	if treatment == .Workbench_Relief {
 		if app.relief_workbench_theme == 0 { app.relief_workbench_theme = scratchpad_relief_theme(app, rt, false) }
 		if app.relief_editor_theme == 0 { app.relief_editor_theme = scratchpad_relief_theme(app, rt, true) }
 		if app.relief_workbench_theme == 0 || app.relief_editor_theme == 0 { return false }
 	}
-	app.theme_choice = choice
-	if app.brand_mark != 0 { _ = scratchpad_brand_mark_replace(app, rt, choice) }
+	app.surface_treatment = treatment
+	if treatment == .Workbench_Relief { app.theme_choice = .Workbench_Relief
+	} else if treatment == .Flat { app.theme_choice = .Flat
+	} else if app.theme_choice == .Workbench_Relief || app.theme_choice == .Flat {
+		switch app.selected_theme_id {
+		case SCRATCHPAD_THEME_BUILTIN_COOL: app.theme_choice = .Cool_Light
+		case SCRATCHPAD_THEME_BUILTIN_CHARCOAL: app.theme_choice = .Charcoal_Ink
+		case: app.theme_choice = .Warm
+		}
+	}
 	scratchpad_theme_apply_registered(app)
-	scratchpad_preferences_save(app)
-	alicorn.invalidate_root(rt, "Scratchpad theme preference changed")
+	if persist { scratchpad_preferences_save(app) }
+	alicorn.invalidate_root(rt, "Scratchpad surface treatment changed")
 	return true
 }
 

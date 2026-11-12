@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -589,11 +590,40 @@ func generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg str
 			return fmt.Errorf("generate static theme data from %s: %w", item.file, err)
 		}
 	}
+	if err := generateScratchpadThemeDefaults(root); err != nil {
+		return err
+	}
 	// Remove output from the retired Scratchpad-specific serializer after both
 	// first-party compiler invocations succeeded.
 	legacyOutput := filepath.Join(root, "frontends", "alicorn", "style_palette_generated.odin")
 	if err := os.Remove(legacyOutput); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stale Scratchpad-specific theme output: %w", err)
+	}
+	return nil
+}
+
+// generateScratchpadThemeDefaults embeds the application-owned default
+// palette sources so runtime user themes can compile as a sparse overlay over
+// Alicorn and Scratchpad defaults without shipping filesystem dependencies.
+func generateScratchpadThemeDefaults(root string) error {
+	var source strings.Builder
+	source.WriteString("package main\n\n")
+	for _, item := range []struct{ file, symbol string }{
+		{"scratchpad-workbench.json", "SCRATCHPAD_DEFAULT_WORKBENCH_THEME_JSON"},
+		{"scratchpad-paper.json", "SCRATCHPAD_DEFAULT_PAPER_THEME_JSON"},
+		{"scratchpad-cool-light.json", "SCRATCHPAD_COOL_LIGHT_THEME_JSON"},
+		{"scratchpad-charcoal-ink.json", "SCRATCHPAD_CHARCOAL_INK_THEME_JSON"},
+		{"catppuccin-mocha.json", "SCRATCHPAD_CATPPUCCIN_MOCHA_THEME_JSON"},
+	} {
+		data, err := os.ReadFile(filepath.Join(root, "themes", item.file))
+		if err != nil {
+			return fmt.Errorf("read Scratchpad default theme %s: %w", item.file, err)
+		}
+		fmt.Fprintf(&source, "%s :: %s\n", item.symbol, strconv.Quote(string(data)))
+	}
+	output := filepath.Join(root, "frontends", "alicorn", "theme_defaults_generated.odin")
+	if err := os.WriteFile(output, []byte(source.String()), 0o644); err != nil {
+		return fmt.Errorf("write generated Scratchpad theme defaults: %w", err)
 	}
 	return nil
 }

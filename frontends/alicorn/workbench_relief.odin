@@ -39,8 +39,10 @@ scratchpad_optical_height :: proc(relationship: Scratchpad_Optical_Relationship)
 }
 
 scratchpad_surface_material :: proc(app: ^App, original: alicorn.Material_ID) -> alicorn.Material_ID {
-	if app != nil && app.theme_choice == .Flat { return alicorn.MATERIAL_FLAT }
-	if app != nil && app.theme_choice == .Workbench_Relief {
+	flat := app != nil && (app.surface_treatment == .Flat || app.theme_choice == .Flat)
+	relief := app != nil && (app.surface_treatment == .Workbench_Relief || app.theme_choice == .Workbench_Relief)
+	if flat { return alicorn.MATERIAL_FLAT }
+	if relief {
 		if original == app.paper_surface_material { return app.relief_materials.recessed }
 		if original == app.raised_surface_material { return app.relief_materials.mounted }
 		if original == app.floating_surface_material { return app.relief_materials.floating }
@@ -49,7 +51,7 @@ scratchpad_surface_material :: proc(app: ^App, original: alicorn.Material_ID) ->
 }
 
 scratchpad_surface_height :: proc(app: ^App, original: f32) -> f32 {
-	if app == nil || app.theme_choice != .Workbench_Relief { return original }
+	if app == nil || (app.surface_treatment != .Workbench_Relief && app.theme_choice != .Workbench_Relief) { return original }
 	if original < 0 { return scratchpad_optical_height(.Recessed) }
 	if original >= 1 { return scratchpad_optical_height(.Floating) }
 	if original > 0 { return scratchpad_optical_height(.Mounted) }
@@ -86,14 +88,14 @@ scratchpad_relief_theme :: proc(app: ^App, rt: ^alicorn.Runtime, editor: bool) -
 // New structural surfaces are flush in existing themes. Only the experimental
 // appearance opts into a recess; the editor's text surface stays calm.
 scratchpad_structural_material :: proc(app: ^App) -> alicorn.Material_ID {
-	if app != nil && app.theme_choice == .Workbench_Relief { return app.relief_materials.recessed }
+	if app != nil && (app.surface_treatment == .Workbench_Relief || app.theme_choice == .Workbench_Relief) { return app.relief_materials.recessed }
 	return alicorn.MATERIAL_FLAT
 }
 
 // Workbench Relief opts selected controls and small overlay surfaces into
 // uniform radii. Structural pane boundaries and the document canvas stay square.
 scratchpad_surface_shape :: proc(app: ^App, radius: f32) -> alicorn.Surface_Shape {
-	if app != nil && app.theme_choice == .Workbench_Relief {
+	if app != nil && (app.surface_treatment == .Workbench_Relief || app.theme_choice == .Workbench_Relief) {
 		return alicorn.Surface_Shape{kind=.Rounded_Rectangle, corner_radius=radius}
 	}
 	return alicorn.Surface_Shape{kind=.Rectangle}

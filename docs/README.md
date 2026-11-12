@@ -9,6 +9,7 @@
 - [Alicorn coverage](frontends/alicorn/PARITY.md) — implemented frontend capabilities and known limits.
 - [Git client](GIT-CLIENT.md) — local source control, repository history, diff behavior, and current scope.
 - [Session restoration](SESSION-RESTORATION.md) — persisted session, recent workspaces, and recovery boundaries.
+- [Color themes](THEMES.md) — built-in and installed palettes, import limits, inheritance, and customization.
 
 ## Frontend contracts and design
 

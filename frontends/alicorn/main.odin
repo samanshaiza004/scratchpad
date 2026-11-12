@@ -4,8 +4,10 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import odin_runtime "base:runtime"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
+import theme "alicorn:theme"
 import bridge "./bridge"
 
 ACTION_FILE_OPEN       :: "file.open"
@@ -81,6 +83,7 @@ ACTION_VIEW_THEME_COOL_LIGHT :: "view.theme-cool-light"
 ACTION_VIEW_THEME_FLAT :: "view.theme-flat"
 ACTION_VIEW_THEME_RELIEF :: "view.theme-workbench-relief"
 ACTION_VIEW_THEME_CHARCOAL_INK :: "view.theme-charcoal-ink"
+ACTION_THEME_IMPORT :: "theme.import"
 
 Workbench_Content_Kind :: enum {
 	Document,
@@ -116,6 +119,27 @@ App :: struct {
 	cool_light_theme: alicorn.Style_Theme_ID,
 	charcoal_ink_theme: alicorn.Style_Theme_ID,
 	theme_choice: Scratchpad_Theme_Choice,
+	surface_treatment: Scratchpad_Surface_Treatment,
+	selected_theme_id: string,
+	selected_theme_name: string,
+	theme_directory: string,
+	installed_themes: [dynamic]Scratchpad_Installed_Theme,
+	custom_theme_style: alicorn.Style_Theme,
+	custom_theme_ready: bool,
+	custom_theme_id: alicorn.Style_Theme_ID,
+	theme_preview_active: bool,
+	theme_preview_original_treatment: Scratchpad_Surface_Treatment,
+	theme_preview_original_id: string,
+	theme_preview_original_name: string,
+	theme_compiler: Scratchpad_Theme_Compiler,
+	theme_compile_pending: bool,
+	theme_compile_requested_id: string,
+	theme_compile_error: string,
+	theme_preview_restore_pending: bool,
+	theme_customize_open: bool,
+	theme_customize_name: alicorn.Text_Field_Buffer,
+	theme_customize_hex: alicorn.Text_Field_Buffer,
+	theme_customize_role: u64,
 	live_theme: Scratchpad_Live_Theme,
 	live_theme_applied_theme_id: alicorn.Style_Theme_ID,
 	live_theme_applied_signature: u64,
@@ -649,7 +673,19 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	app := cast(^App)state
 	app.waker = waker
+	app.theme_compiler.waker = waker
 	start_backend(app)
+	if app.selected_theme_id == SCRATCHPAD_THEME_BUILTIN_MOCHA {
+		if !scratchpad_theme_compile_mocha_request(app) || !scratchpad_theme_pending_set(app, app.selected_theme_id) {
+			scratchpad_theme_compiler_invalidate(&app.theme_compiler)
+			scratchpad_theme_preference_fallback(app, "The saved theme could not be queued; Warm was restored.")
+		}
+	} else if strings.has_prefix(app.selected_theme_id, "user:") {
+		if !scratchpad_theme_compile_installed_request(app, app.selected_theme_id) || !scratchpad_theme_pending_set(app, app.selected_theme_id) {
+			scratchpad_theme_compiler_invalidate(&app.theme_compiler)
+			scratchpad_theme_preference_fallback(app, "The selected theme is missing or could not be queued; Warm was restored.")
+		}
+	}
 	if app.backend.started && app.live_theme.path != "" {
 		scratchpad_live_theme_start(&app.live_theme, waker)
 	}
@@ -968,6 +1004,46 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^App)state
 	if !app.backend.started { return }
 	app.smoke_wake_observed = true
+	if candidate, found := scratchpad_theme_compiler_take(&app.theme_compiler); found {
+		app.theme_compile_pending = false
+		if candidate.valid {
+			if candidate.install && !scratchpad_theme_install_candidate(app, &candidate) {
+				message := "The theme compiled, but Scratchpad could not install it in the local theme folder."
+				set_error(app, message)
+				scratchpad_theme_compile_error_set(app, message)
+			} else if scratchpad_theme_candidate_apply(app, rt, &candidate) {
+				scratchpad_theme_compile_error_set(app, "")
+				if !app.theme_preview_active { scratchpad_preferences_save(app) }
+				if app.theme_preview_restore_pending {
+					app.theme_preview_restore_pending = false
+					settings_surface_close(app, rt, accept_preview=true)
+				}
+			} else {
+				message := "Alicorn could not safely apply the selected theme to every open window."
+				set_error(app, message)
+				scratchpad_theme_compile_error_set(app, message)
+				if !app.custom_theme_ready && candidate.id == app.theme_compile_requested_id {
+					scratchpad_theme_preference_fallback(app, "The saved theme could not be applied; Warm was restored.")
+				}
+			}
+		} else {
+			set_error(app, candidate.diagnostic)
+			scratchpad_theme_compile_error_set(app, candidate.diagnostic)
+			if !app.custom_theme_ready && app.selected_theme_id == candidate.id {
+				scratchpad_theme_preference_fallback(app, "The saved theme could not be loaded; Warm was restored.")
+			}
+			if app.theme_preview_restore_pending {
+				app.theme_preview_restore_pending = false
+				app.theme_preview_active = false
+				set_error(app, "The previous theme could not be restored; Scratchpad kept the last valid appearance.")
+				settings_surface_close(app, rt, accept_preview=false)
+			}
+		}
+		if len(app.theme_compile_requested_id) > 0 { delete(app.theme_compile_requested_id, context.allocator) }
+		app.theme_compile_requested_id = ""
+		scratchpad_theme_candidate_destroy(&candidate, odin_runtime.heap_allocator())
+		alicorn.invalidate_root(rt, "Scratchpad theme compilation completed")
+	}
 	if app.live_theme.path != "" {
 		scratchpad_live_theme_adopt(&app.live_theme)
 		_ = scratchpad_live_theme_apply(
@@ -4152,6 +4228,7 @@ set_startup_error :: proc(app: ^App, message: string) {
 
 application_stop :: proc(state: rawptr) {
 	app := cast(^App)state
+	scratchpad_theme_compiler_stop(&app.theme_compiler)
 	scratchpad_live_theme_stop(&app.live_theme)
 	editor_row_trace_finish(&app.editor_row_trace)
 	if len(app.smoke_session_mode) > 0 {
@@ -4255,8 +4332,20 @@ application_stop :: proc(state: rawptr) {
 	find_set_message(&app.workspace_search_error, "")
 	if len(app.theme_preferences_directory) > 0 { delete(app.theme_preferences_directory, context.allocator) }
 	if len(app.theme_preferences_path) > 0 { delete(app.theme_preferences_path, context.allocator) }
+	if len(app.theme_directory) > 0 { delete(app.theme_directory, context.allocator) }
+	if len(app.selected_theme_id) > 0 { delete(app.selected_theme_id, context.allocator) }
+	if len(app.selected_theme_name) > 0 { delete(app.selected_theme_name, context.allocator) }
+	if len(app.theme_compile_requested_id) > 0 { delete(app.theme_compile_requested_id, context.allocator) }
+	if len(app.theme_compile_error) > 0 { delete(app.theme_compile_error, context.allocator) }
+	if len(app.theme_preview_original_id) > 0 { delete(app.theme_preview_original_id, context.allocator) }
+	if len(app.theme_preview_original_name) > 0 { delete(app.theme_preview_original_name, context.allocator) }
+	alicorn.text_field_buffer_destroy(&app.theme_customize_name)
+	alicorn.text_field_buffer_destroy(&app.theme_customize_hex)
+	scratchpad_theme_catalog_clear(app)
+	if app.custom_theme_ready { theme.theme_runtime_style_theme_destroy(&app.custom_theme_style, odin_runtime.heap_allocator()) }
 	app.theme_preferences_directory = ""
 	app.theme_preferences_path = ""
+	app.theme_directory = ""
 }
 
 main :: proc() {
@@ -4273,6 +4362,10 @@ main :: proc() {
 	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
 	app.editor_text_scale = 1
 	app.workbench_view = .Document
+	app.theme_choice = .Warm
+	app.surface_treatment = .Standard
+	app.selected_theme_id, _ = strings.clone(SCRATCHPAD_THEME_BUILTIN_WARM, context.allocator)
+	app.selected_theme_name, _ = strings.clone("Warm", context.allocator)
 	if !workbench_model_init(&app.workbench_model) {
 		fmt.eprintln("Could not initialize Scratchpad's workbench model.")
 		os.exit(1)
@@ -4293,14 +4386,77 @@ main :: proc() {
 		if ok {
 			app.theme_preferences_directory = preferences_directory
 			app.theme_preferences_path = preferences_path
+			theme_parts := [2]string{preferences_directory, "themes"}
+			app.theme_directory, _ = os.join_path(theme_parts[:], context.allocator)
+			_ = scratchpad_theme_catalog_reload(&app)
 			if preferences, found := scratchpad_user_preferences_load(preferences_path, context.allocator); found {
-				app.theme_choice, _ = scratchpad_theme_choice_parse(preferences.theme)
+				theme_preference_fallback := false
+				if preferences.version == SCRATCHPAD_USER_PREFERENCES_VERSION {
+					name := "Warm"
+					selected_theme_id := preferences.color_theme
+					theme_found := false
+					switch preferences.color_theme {
+					case SCRATCHPAD_THEME_BUILTIN_WARM: app.theme_choice, name, theme_found = .Warm, "Warm", true
+					case SCRATCHPAD_THEME_BUILTIN_COOL: app.theme_choice, name, theme_found = .Cool_Light, "Cool Light", true
+					case SCRATCHPAD_THEME_BUILTIN_CHARCOAL: app.theme_choice, name, theme_found = .Charcoal_Ink, "Charcoal & Ink", true
+					case SCRATCHPAD_THEME_BUILTIN_MOCHA: app.theme_choice, name, theme_found = .Warm, "Catppuccin Mocha", true
+				case:
+					app.theme_choice = .Warm
+					if strings.has_prefix(preferences.color_theme, "user:") {
+						for entry in app.installed_themes {
+							if entry.id == preferences.color_theme { name, theme_found = entry.name, true; break }
+						}
+					}
+					}
+					if !theme_found {
+						selected_theme_id = SCRATCHPAD_THEME_BUILTIN_WARM
+						name = "Warm"
+						app.theme_choice = .Warm
+						theme_preference_fallback = true
+					}
+					_ = scratchpad_theme_selection_set(&app, selected_theme_id, name)
+					if treatment, valid := scratchpad_surface_treatment_parse(preferences.surface_treatment); valid {
+						app.surface_treatment = treatment
+						if treatment == .Flat { app.theme_choice = .Flat }
+						if treatment == .Workbench_Relief { app.theme_choice = .Workbench_Relief }
+					}
+				} else {
+					legacy_choice, _ := scratchpad_theme_choice_parse(preferences.theme)
+					switch legacy_choice {
+					case .Warm:
+						app.theme_choice = .Warm
+						_ = scratchpad_theme_selection_set(&app, SCRATCHPAD_THEME_BUILTIN_WARM, "Warm")
+					case .Cool_Light:
+						app.theme_choice = .Cool_Light
+						_ = scratchpad_theme_selection_set(&app, SCRATCHPAD_THEME_BUILTIN_COOL, "Cool Light")
+					case .Charcoal_Ink:
+						app.theme_choice = .Charcoal_Ink
+						_ = scratchpad_theme_selection_set(&app, SCRATCHPAD_THEME_BUILTIN_CHARCOAL, "Charcoal & Ink")
+					case .Flat:
+						app.theme_choice, app.surface_treatment = .Warm, .Flat
+						_ = scratchpad_theme_selection_set(&app, SCRATCHPAD_THEME_BUILTIN_WARM, "Warm")
+					case .Workbench_Relief:
+						app.theme_choice, app.surface_treatment = .Warm, .Workbench_Relief
+						_ = scratchpad_theme_selection_set(&app, SCRATCHPAD_THEME_BUILTIN_WARM, "Warm")
+					case:
+						app.theme_choice = .Warm
+						_ = scratchpad_theme_selection_set(&app, SCRATCHPAD_THEME_BUILTIN_WARM, "Warm")
+					}
+				}
 				app.editor_text_scale = preferences.editor_font_size/EDITOR_FONT_SIZE_DEFAULT
 				app.semantic_zoom_wheel = preferences.semantic_zoom_wheel
 				app.editor_font_pending_family = preferences.editor_font_family
+				preferences.editor_font_family = "" // Ownership transferred to the pending font selection.
 				app.editor_font_pending_size = preferences.editor_font_size
-				app.editor_font_pending = preferences.editor_font_family != ""
+				app.editor_font_pending = app.editor_font_pending_family != ""
+				if theme_preference_fallback {
+					set_error(&app, "The saved color theme was unavailable; Warm was restored.")
+					scratchpad_preferences_save(&app)
+				}
 				delete(preferences.theme, context.allocator)
+				delete(preferences.color_theme, context.allocator)
+				delete(preferences.surface_treatment, context.allocator)
+				delete(preferences.editor_font_family, context.allocator)
 			}
 		}
 	}

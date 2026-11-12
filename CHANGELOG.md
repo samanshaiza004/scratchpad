@@ -10,6 +10,9 @@ as separate entries.
 
 ### Added
 
+- Added local Alicorn color-theme import, preview, persistence, and duplicate-
+  and-customize controls in Settings, with built-in Catppuccin Mocha and
+  layered Scratchpad defaults.
 - Added a local Git Source Control sidebar with branch/upstream status, staged
   and unstaged file groups, file staging and unstaging, and local commits.
 - Added workbench History and read-only Diff views with bounded recent history,

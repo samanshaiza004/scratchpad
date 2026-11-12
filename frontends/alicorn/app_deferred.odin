@@ -17,6 +17,9 @@ Deferred_Action_Kind :: enum {
 	Save_Document,
 	Conflict_Reload,
 	Conflict_Keep_Mine,
+	Theme_Select,
+	Theme_Treatment,
+	Theme_Import,
 	Toggle_Semantic_Fold,
 	Toggle_Manual_Fold,
 	Pinned_Action,
@@ -175,6 +178,13 @@ frame_deferred_action_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		manual_folding_toggle(app, rt, action.document_id, action.source_instance_id, action.editor_revision, action.source_start)
 	case .Pinned_Action:
 		pinned_apply_deferred(app, rt, action)
+	case .Theme_Select:
+		_ = scratchpad_theme_request_select(app, rt, action.value, persist=!app.theme_preview_active)
+	case .Theme_Treatment:
+		treatment, valid := scratchpad_surface_treatment_parse(action.value)
+		if valid { _ = scratchpad_surface_treatment_select(app, rt, treatment, persist=!app.theme_preview_active) }
+	case .Theme_Import:
+		request_theme_import_dialog(app, rt)
 	case .Close_After_Save:
 		close_after_save(app, rt)
 	case .Close_With_Discard:
@@ -288,6 +298,13 @@ deferred_actions_run :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		case .Cancel_Close_Prompt:
 			clear_close_prompt(app)
 			alicorn.invalidate_root(rt, "dirty close cancelled")
+		case .Theme_Select:
+			_ = scratchpad_theme_request_select(app, rt, action.value, persist=!app.theme_preview_active)
+		case .Theme_Treatment:
+			treatment, valid := scratchpad_surface_treatment_parse(action.value)
+			if valid { _ = scratchpad_surface_treatment_select(app, rt, treatment, persist=!app.theme_preview_active) }
+		case .Theme_Import:
+			request_theme_import_dialog(app, rt)
 		}
 		deferred_action_destroy(&action)
 		if app.dialog_action != "" || app.close_document_id != "" || app.save_as_confirmation_open || app.workspace_mutation_kind != .None { break }

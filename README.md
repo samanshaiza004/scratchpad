@@ -23,7 +23,8 @@ describe its scope and platform evidence. The full release history is in the
   Symbols tools, detachable text-document windows, and read-only PNG/QOI
   previews.
 - Restore clean sessions and recent workspaces, recover unsaved edits after a
-  crash, choose an editor font and size, and switch persisted themes.
+  crash, choose an editor font and size, and import, customize, preview, and
+  persist color themes.
 
 These capabilities are included in the v0.2.0 packages. See the
 [release notes](CHANGELOG.md) for the complete list of changes.
@@ -77,6 +78,7 @@ go test -tags treesitter_release ./...
   validation records.
 - [Alicorn coverage](docs/frontends/alicorn/PARITY.md) — current capabilities
   and known limits.
+- [Color themes](docs/THEMES.md) — install, customize, and share local themes.
 - [Changelog](CHANGELOG.md) — consolidated v0.1.0, v0.1.1, v0.2.0, and
   Unreleased notes.
 

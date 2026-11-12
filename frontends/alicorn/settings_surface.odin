@@ -114,11 +114,17 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 		alicorn.scroll_region_end(ui)
 	}
 	if gui.row(ui, label="scratchpad-settings-footer", height=control_height, gap=12, align=.Center) {
-		gui.text(ui, "Changes apply immediately", key="settings-save-note", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
-		if gui.button(ui, "Done", key="settings-done", width=max(96, 80*scale), height=control_height) { settings_surface_close(app, rt) }
+		gui.text(ui, "Theme previews are saved when you choose Done", key="settings-save-note", style=alicorn.layout_style(.Row, grow=1), text_style=alicorn.Text_Style{overflow=.Ellipsis})
+		if gui.button(ui, "Cancel", key="settings-cancel", width=max(96, 80*scale), height=control_height, variant=.Quiet) {
+			settings_surface_cancel(app, rt)
+		}
+		done_label := "Done"
+		if app.theme_compile_pending { done_label = "Applying…" }
+		if gui.button(ui, done_label, key="settings-done", width=max(96, 80*scale), height=control_height, state=alicorn.Button_State{disabled=app.theme_compile_pending}) { settings_surface_close(app, rt) }
 	}
 	alicorn.surface_end(ui)
 	alicorn.modal_overlay_end(ui)
+	if app.theme_customize_open { settings_theme_customize_dialog_build(app, ui, rt, control_height) }
 }
 
 settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
@@ -128,17 +134,71 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 	case .Appearance:
 		settings_form_text(form, "settings-page-title", "Appearance", 24, alicorn.FONT_WEIGHT_SEMIBOLD)
 		settings_form_text(form, "settings-appearance-note", "Choose the colors and surface treatment used by the workbench and document editor.")
-		settings_form_text(form, "settings-theme-heading", "Workbench appearance", 18, alicorn.FONT_WEIGHT_MEDIUM)
+		settings_form_text(form, "settings-theme-heading", "Color theme", 18, alicorn.FONT_WEIGHT_MEDIUM)
 		style := settings_form_row(form, control_height)
 		if ui != nil {
-			options := [?]alicorn.Select_Option{{key=1, label="Warm"}, {key=2, label="Cool Light"}, {key=3, label="Flat Workbench"}, {key=4, label="Workbench Relief (Experimental)"}, {key=5, label="Charcoal & Ink"}}
-			choice := alicorn.select_control(ui, alicorn.key_string("settings-workbench-appearance"), "Workbench appearance", options[:], u64(app.theme_choice)+1, style=style)
+			options := make([]alicorn.Select_Option, 4+len(app.installed_themes), context.temp_allocator)
+			options[0] = {key=1, label="Warm"}
+			options[1] = {key=2, label="Cool Light"}
+			options[2] = {key=3, label="Charcoal & Ink"}
+			options[3] = {key=4, label="Catppuccin Mocha"}
+			for entry, index in app.installed_themes {
+				options[4+index] = {key=u64(5+index), label=entry.name}
+			}
+			selected_id := app.selected_theme_id
+			if app.theme_compile_pending && app.theme_compile_requested_id != "" { selected_id = app.theme_compile_requested_id }
+			selected_key: u64 = 1
+			for index in 0..<4 {
+				ids := [?]string{SCRATCHPAD_THEME_BUILTIN_WARM, SCRATCHPAD_THEME_BUILTIN_COOL, SCRATCHPAD_THEME_BUILTIN_CHARCOAL, SCRATCHPAD_THEME_BUILTIN_MOCHA}
+				if selected_id == ids[index] { selected_key = u64(index+1) }
+			}
+			for entry, index in app.installed_themes { if selected_id == entry.id { selected_key = u64(index+5) } }
+			choice := alicorn.select_control(ui, alicorn.key_string("settings-color-theme"), "Color theme", options, selected_key, style=style)
 			if choice.changed {
-				actions := [?]string{ACTION_VIEW_THEME_WARM, ACTION_VIEW_THEME_COOL_LIGHT, ACTION_VIEW_THEME_FLAT, ACTION_VIEW_THEME_RELIEF, ACTION_VIEW_THEME_CHARCOAL_INK}
-				if !frame_deferred_action_schedule(app, .Action, actions[choice.selected_key-1]) { set_error(app, "Could not queue the workbench appearance.") }
+				selected := ""
+				if choice.selected_key >= 1 && choice.selected_key <= 4 {
+					ids := [?]string{SCRATCHPAD_THEME_BUILTIN_WARM, SCRATCHPAD_THEME_BUILTIN_COOL, SCRATCHPAD_THEME_BUILTIN_CHARCOAL, SCRATCHPAD_THEME_BUILTIN_MOCHA}
+					selected = ids[choice.selected_key-1]
+				} else {
+					index := int(choice.selected_key-5)
+					if index >= 0 && index < len(app.installed_themes) { selected = app.installed_themes[index].id }
+				}
+				if selected != "" && !frame_deferred_action_schedule(app, .Theme_Select, selected) { set_error(app, "Could not queue the selected color theme.") }
 			}
 		}
-		settings_form_text(form, "settings-theme-persistence-note", "Your theme is saved for the next time you open Scratchpad.")
+		if app.theme_compile_pending {
+			pending_name := app.theme_compile_requested_id
+			pending_label := fmt.tprintf("Loading theme… %s", pending_name)
+			settings_form_text(form, "settings-theme-pending", pending_label)
+		}
+		if app.theme_compile_error != "" { settings_form_text(form, "settings-theme-error", app.theme_compile_error) }
+		settings_form_text(form, "settings-surface-treatment-heading", "Surface treatment", 18, alicorn.FONT_WEIGHT_MEDIUM)
+		style = settings_form_row(form, control_height)
+		if ui != nil {
+			options := [?]alicorn.Select_Option{{key=1, label="Standard"}, {key=2, label="Flat"}, {key=3, label="Workbench Relief"}}
+			choice := alicorn.select_control(ui, alicorn.key_string("settings-surface-treatment"), "Surface treatment", options[:], u64(app.surface_treatment)+1, style=style)
+			if choice.changed {
+				values := [?]string{"standard", "flat", "workbench-relief"}
+				if !frame_deferred_action_schedule(app, .Theme_Treatment, values[choice.selected_key-1]) { set_error(app, "Could not queue the surface treatment.") }
+			}
+		}
+		settings_form_text(form, "settings-theme-treatment-note", "Color themes and surface depth are independent. Installed themes are local JSON files.")
+		style = settings_form_row(form, control_height)
+		if ui != nil {
+			if gui.row(ui, label="settings-theme-actions", height=control_height, gap=8, align=.Start) {
+				if gui.button(ui, "Reload themes", key="settings-theme-reload", height=control_height) {
+					if scratchpad_theme_catalog_reload(app) { alicorn.invalidate_root(rt, "Scratchpad installed theme catalog reloaded") }
+					else { set_error(app, "Could not reload the local theme folder.") }
+				}
+				if gui.button(ui, "Import…", key="settings-theme-import", height=control_height) {
+					if !frame_deferred_action_schedule(app, .Theme_Import) { set_error(app, "Could not open the theme import dialog.") }
+				}
+				if gui.button(ui, "Duplicate & customize…", key="settings-theme-customize", height=control_height) {
+					settings_theme_customize_open(app)
+				}
+			}
+		}
+		settings_form_text(form, "settings-theme-format-note", "Themes use Alicorn's versioned JSON color format. Scratchpad ignores surface materials so Flat and Relief remain independent.")
 	case .Editor:
 		settings_form_text(form, "settings-page-title", "Editor", 24, alicorn.FONT_WEIGHT_SEMIBOLD)
 		settings_form_text(form, "settings-semantic-zoom-label", "Semantic zoom wheel gesture", 18, alicorn.FONT_WEIGHT_MEDIUM)
@@ -230,14 +290,33 @@ settings_page_build :: proc(app: ^App, form: ^Settings_Form) {
 	}
 }
 
-settings_surface_close :: proc(app: ^App, rt: ^alicorn.Runtime) {
+settings_surface_close :: proc(app: ^App, rt: ^alicorn.Runtime, accept_preview := true) {
 	if app == nil || !app.settings_surface_open { return }
+	if accept_preview && app.theme_compile_pending { return }
+	if accept_preview { scratchpad_theme_preview_accept(app) }
+	else if app.theme_preview_active {
+		app.theme_preview_active = false
+		delete(app.theme_preview_original_id, context.allocator)
+		delete(app.theme_preview_original_name, context.allocator)
+		app.theme_preview_original_id, app.theme_preview_original_name = "", ""
+	}
 	app.settings_surface_open = false
 	alicorn.invalidate_root(rt, "Scratchpad Settings closed")
 }
 
+settings_surface_cancel :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil || !app.settings_surface_open { return }
+	if app.theme_customize_open {
+		app.theme_customize_open = false
+		alicorn.invalidate_root(rt, "Scratchpad theme customization cancelled")
+		return
+	}
+	scratchpad_theme_preview_cancel(app, rt)
+	if !app.theme_preview_restore_pending { settings_surface_close(app, rt, accept_preview=false) }
+}
+
 settings_surface_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
 	if app == nil || !app.settings_surface_open { return false }
-	if key == .Escape { settings_surface_close(app, rt) }
+	if key == .Escape { settings_surface_cancel(app, rt) }
 	return true
 }
