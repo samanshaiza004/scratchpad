@@ -28,6 +28,14 @@ describe its scope and platform evidence. The full release history is in the
 These capabilities are included in the v0.2.0 packages. See the
 [release notes](CHANGELOG.md) for the complete list of changes.
 
+## In development after v0.2.0
+
+Scratchpad is adding local Git source control to the workbench. The current
+development branch has a Source Control sidebar for status, staging, and local
+commits, plus History and read-only Diff views that can open beside a document.
+This work is not part of the v0.2.0 release package. See the [Git client scope
+and architecture](docs/GIT-CLIENT.md) for current capabilities and limits.
+
 ## Run from source
 
 The wrappers synchronize the pinned Alicorn and Caliber revisions before

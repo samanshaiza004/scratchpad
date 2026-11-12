@@ -1,6 +1,6 @@
 # Scratchpad Alicorn
 
-Alicorn is Scratchpad's supported desktop frontend. The Odin/Runa frontend owns transient interaction and presentation; the Go application remains authoritative for document bytes, commands, workspace operations, saving, conflict handling, and crash recovery. The two run in one native process through the Caliber C ABI. The latest published release is v0.1.1; the current development line and its limits are summarized in [frontend coverage](../../docs/frontends/alicorn/PARITY.md).
+Alicorn is Scratchpad's supported desktop frontend. The Odin/Runa frontend owns transient interaction and presentation; the Go application remains authoritative for document bytes, commands, workspace operations, saving, conflict handling, and crash recovery. The two run in one native process through the Caliber C ABI. The latest published release is v0.2.0; the current development line and its limits are summarized in [frontend coverage](../../docs/frontends/alicorn/PARITY.md).
 
 Ordinary production text, buttons, and simple layout scopes use Alicorn's public `alicorn:ui` helpers; advanced retained controls continue to use the runtime API where they need exact identity, scrolling, text-input, or native behavior. See the [UI API dogfood report](../../docs/frontends/alicorn/UI-API-DOGFOOD.md) for the migration scope, before/after source counts, retained-output comparison, and validation results.
 
@@ -119,7 +119,7 @@ Scratchpad installs its bundled Atkinson UI and monospace faces through Alicorn'
 
 ## Current scope
 
-The frontend includes source-connected Full, Focus, Skim, and Overview views; local source folding; semantic selection; pinned ranges; editable workspace Search; task, symbol, heading, and link navigation; session restoration; editor font controls; persisted themes; and PNG/QOI previews. See [semantic zoom and folding](../../docs/SEMANTIC_VIEWS.md) for the interaction contract and [frontend coverage](../../docs/frontends/alicorn/PARITY.md) for known limits. v0.2.0 is not released; the [roadmap](../../docs/PLAN.md) describes its current release gate.
+The frontend includes source-connected Full, Focus, Skim, and Overview views; local source folding; semantic selection; pinned ranges; editable workspace Search; task, symbol, heading, and link navigation; session restoration; editor font controls; persisted themes; and PNG/QOI previews. These capabilities shipped in v0.2.0. See [semantic zoom and folding](../../docs/SEMANTIC_VIEWS.md) for the interaction contract and [frontend coverage](../../docs/frontends/alicorn/PARITY.md) for known limits. The [roadmap](../../docs/PLAN.md) describes current post-release development.
 
 The retired Shirei and GPUI source is preserved at Git ref `archive/pre-v0.1.0-frontends`; it is no longer an active build target.
 

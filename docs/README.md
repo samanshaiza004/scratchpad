@@ -7,6 +7,7 @@
 - [Changelog](../CHANGELOG.md) — consolidated changes from v0.1.0 through Unreleased.
 - [Architecture](ARCHITECTURE.md) — ownership, document model, package boundaries, and persistence.
 - [Alicorn coverage](frontends/alicorn/PARITY.md) — implemented frontend capabilities and known limits.
+- [Git client](GIT-CLIENT.md) — local source control, repository history, diff behavior, and current scope.
 - [Session restoration](SESSION-RESTORATION.md) — persisted session, recent workspaces, and recovery boundaries.
 
 ## Frontend contracts and design

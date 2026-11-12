@@ -58,6 +58,14 @@ type Runtime struct {
 	recoveryProfileLock           *recoveryProfileLock
 	startupNotice                 string
 	watcher                       *workspace.OSWatcher
+	gitState                      GitState
+	gitDiff                       GitDiff
+	gitJobs                       chan gitJob
+	gitStop                       chan struct{}
+	gitContext                    context.Context
+	gitCancel                     context.CancelFunc
+	gitGeneration                 uint64
+	gitRefreshPending             bool
 	stateDirOverride              string
 }
 
@@ -126,6 +134,9 @@ func (r *Runtime) watchWorkspace(generation uint64, app *application.Application
 		}
 		app.HandleWatchEvent(event)
 		app.ReconcileStale()
+		if err := r.requestGitRefreshLocked(); err != nil {
+			r.asyncError = joinStartupNotice(r.asyncError, fmt.Sprintf("Could not refresh Git status: %v", err))
+		}
 		next := stateFromApplication(r.revision+1, app.Snapshot(), r.presentationEnabled)
 		next.StartupNotice = r.startupNotice
 		if !samePublishedDocuments(r.state, next) {
@@ -307,6 +318,14 @@ func (r *Runtime) Start(input []byte) []byte {
 	r.semanticZoomSupersededThrough = 0
 	r.pendingSaveAs = nil
 	r.nextSaveAsToken = 0
+	r.gitGeneration = 0
+	r.gitRefreshPending = false
+	r.gitState = GitState{}
+	r.gitDiff = GitDiff{}
+	r.startGitWorkerLocked()
+	if app.HasWorkspace {
+		_ = r.requestGitRefreshLocked()
+	}
 	if err := r.publishApplicationState(); err != nil {
 		if r.watcher != nil {
 			_ = r.watcher.Close()
@@ -318,6 +337,7 @@ func (r *Runtime) Start(input []byte) []byte {
 		_ = r.recoveryProfileLock.Close()
 		r.recoveryProfileLock = nil
 		r.lifecycle = lifecycleStopped
+		r.stopGitWorkerLocked()
 		return marshalResponse(errorResponse(request.RequestID, lifecycleStopped, "caliber_error", err.Error(), true))
 	}
 	if watcher != nil {
@@ -367,6 +387,7 @@ func (r *Runtime) Stop(input []byte) []byte {
 	}
 	r.cancelRecoveryTimerLocked()
 	r.generation++
+	r.stopGitWorkerLocked()
 	r.cancelWorkspaceSearchLocked()
 	r.cancelSemanticZoomLocked()
 	if r.semanticZoomStop != nil {
@@ -762,6 +783,16 @@ func (r *Runtime) CaliberContextPointer() unsafe.Pointer {
 }
 
 func (r *Runtime) applyCommand(request CommandRequest) Response {
+	if strings.HasPrefix(request.Command, "git_") {
+		response := r.applyGitCommand(request)
+		if response.OK && request.Command != "git_read_diff" {
+			if err := r.publishApplicationState(); err != nil {
+				return commandError(request, "caliber_error", err)
+			}
+			response.Revision = r.revision
+		}
+		return response
+	}
 	if strings.HasPrefix(request.Command, "pinned_") {
 		return r.applyPinnedCommand(request)
 	}
@@ -899,6 +930,12 @@ func (r *Runtime) applyCommand(request CommandRequest) Response {
 		}
 		if err := r.app.OpenWorkspace(destination.Root); err != nil {
 			return commandError(request, "workspace_open_failed", err)
+		}
+		r.gitState = GitState{}
+		r.gitDiff = GitDiff{}
+		r.gitRefreshPending = false
+		if err := r.requestGitRefreshLocked(); err != nil {
+			r.asyncError = fmt.Sprintf("Could not refresh Git status: %v", err)
 		}
 	case "browse_directory":
 		browse, err := browseWorkspaceDirectories(request.Path, request.BasePath)
@@ -1533,6 +1570,7 @@ func (r *Runtime) publishApplicationState() error {
 	snapshot := r.app.Snapshot()
 	state := stateFromApplication(r.revision+1, snapshot, r.presentationEnabled)
 	state.StartupNotice = r.startupNotice
+	state.Git = gitStateClone(r.gitState)
 	if session := r.semanticZoom; session != nil {
 		state.SemanticZoomGeneration = session.generation
 		state.SemanticZoomReady = session.done

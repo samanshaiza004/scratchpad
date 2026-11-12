@@ -265,6 +265,83 @@ State_Envelope :: struct {
 	semantic_zoom_generation:    u64  `json:"semantic_zoom_generation"`,
 	semantic_zoom_ready:         bool `json:"semantic_zoom_ready"`,
 	semantic_zoom_superseded_through: u64 `json:"semantic_zoom_superseded_through"`,
+	git: Git_State `json:"git"`,
+}
+
+Git_State :: struct {
+	available: bool `json:"available"`,
+	generation: u64 `json:"generation"`,
+	history_generation: u64 `json:"history_generation"`,
+	history_loading: bool `json:"history_loading"`,
+	history_error: string `json:"history_error"`,
+	loading: bool `json:"loading"`,
+	root: string `json:"root"`,
+	branch: string `json:"branch"`,
+	head: string `json:"head"`,
+	upstream: string `json:"upstream"`,
+	ahead: int `json:"ahead"`,
+	behind: int `json:"behind"`,
+	error: string `json:"error"`,
+	files: []Git_File `json:"files"`,
+	commits: []Git_Commit `json:"commits"`,
+	refs: []Git_Ref `json:"refs"`,
+	diff_generation: u64 `json:"diff_generation"`,
+	diff_loading: bool `json:"diff_loading"`,
+	diff_ready: bool `json:"diff_ready"`,
+	diff_kind: string `json:"diff_kind"`,
+	diff_path: string `json:"diff_path"`,
+	diff_revision: string `json:"diff_revision"`,
+	diff_error: string `json:"diff_error"`,
+	detail_generation: u64 `json:"detail_generation"`,
+	detail_loading: bool `json:"detail_loading"`,
+	detail_ready: bool `json:"detail_ready"`,
+	detail_error: string `json:"detail_error"`,
+	detail: Git_Commit_Detail `json:"detail"`,
+}
+
+Git_File :: struct {
+	path: string `json:"path"`,
+	original_path: string `json:"original_path"`,
+	status: string `json:"status"`,
+	staged: bool `json:"staged"`,
+	unstaged: bool `json:"unstaged"`,
+	untracked: bool `json:"untracked"`,
+	conflict: bool `json:"conflict"`,
+}
+
+Git_Commit :: struct {
+	hash: string `json:"hash"`,
+	parents: []string `json:"parents"`,
+	author: string `json:"author"`,
+	date: string `json:"date"`,
+	subject: string `json:"subject"`,
+	refs: string `json:"refs"`,
+}
+
+Git_Ref :: struct {
+	full_name: string `json:"full_name"`,
+	name: string `json:"name"`,
+	kind: string `json:"kind"`,
+	target: string `json:"target"`,
+	head: bool `json:"head"`,
+}
+
+Git_Commit_Detail :: struct {
+	hash: string `json:"hash"`,
+	parents: []string `json:"parents"`,
+	author: string `json:"author"`,
+	email: string `json:"email"`,
+	date: string `json:"date"`,
+	subject: string `json:"subject"`,
+	body: string `json:"body"`,
+	files: []Git_Changed_File `json:"files"`,
+}
+
+Git_Changed_File :: struct {
+	path: string `json:"path"`,
+	status: string `json:"status"`,
+	additions: int `json:"additions"`,
+	deletions: int `json:"deletions"`,
 }
 
 Backend_Outcome :: struct {
@@ -298,6 +375,12 @@ Backend_Response :: struct {
 	semantic_view_window: Semantic_View_Window `json:"semantic_view_window"`,
 	semantic_zoom: Semantic_Zoom_Plan `json:"semantic_zoom"`,
 	editor_folds: Editor_Fold_Plan `json:"editor_folds"`,
+	git_diff: Git_Diff `json:"git_diff"`,
+}
+
+Git_Diff :: struct {
+	text: string `json:"text"`,
+	truncated: bool `json:"truncated"`,
 }
 
 Semantic_View_Window :: struct {
@@ -510,6 +593,12 @@ Backend_Command_Request :: struct {
 	projection_first: u64 `json:"projection_first"`,
 	projection_limit: u64 `json:"projection_limit,omitempty"`,
 	zoom_depth: int `json:"zoom_depth"`,
+	git_kind: string `json:"git_kind,omitempty"`,
+	git_revision: string `json:"git_revision,omitempty"`,
+	git_original_path: string `json:"git_original_path,omitempty"`,
+	git_message: string `json:"git_message,omitempty"`,
+	git_diff_generation: u64 `json:"git_diff_generation,omitempty"`,
+	git_untracked: bool `json:"git_untracked,omitempty"`,
 }
 
 decode_state_envelope :: proc(data: []u8, allocator := context.allocator) -> (state: State_Envelope, ok: bool, message: string) {
@@ -564,6 +653,53 @@ state_destroy :: proc(state: ^State_Envelope, allocator: mem.Allocator) {
 		delete(action.bindings, allocator)
 	}
 	delete(state.actions, allocator)
+	delete(state.git.root, allocator)
+	delete(state.git.branch, allocator)
+	delete(state.git.head, allocator)
+	delete(state.git.upstream, allocator)
+	delete(state.git.error, allocator)
+	delete(state.git.history_error, allocator)
+	for &file in state.git.files {
+		delete(file.path, allocator)
+		delete(file.original_path, allocator)
+		delete(file.status, allocator)
+	}
+	delete(state.git.files, allocator)
+	for &commit in state.git.commits {
+		delete(commit.hash, allocator)
+		for &parent in commit.parents { delete(parent, allocator) }
+		delete(commit.parents, allocator)
+		delete(commit.author, allocator)
+		delete(commit.date, allocator)
+		delete(commit.subject, allocator)
+		delete(commit.refs, allocator)
+	}
+	delete(state.git.commits, allocator)
+	for &ref in state.git.refs {
+		delete(ref.full_name, allocator)
+		delete(ref.name, allocator)
+		delete(ref.kind, allocator)
+		delete(ref.target, allocator)
+	}
+	delete(state.git.refs, allocator)
+	delete(state.git.diff_kind, allocator)
+	delete(state.git.diff_path, allocator)
+	delete(state.git.diff_revision, allocator)
+	delete(state.git.diff_error, allocator)
+	delete(state.git.detail_error, allocator)
+	delete(state.git.detail.hash, allocator)
+	for &parent in state.git.detail.parents { delete(parent, allocator) }
+	delete(state.git.detail.parents, allocator)
+	delete(state.git.detail.author, allocator)
+	delete(state.git.detail.email, allocator)
+	delete(state.git.detail.date, allocator)
+	delete(state.git.detail.subject, allocator)
+	delete(state.git.detail.body, allocator)
+	for &file in state.git.detail.files {
+		delete(file.path, allocator)
+		delete(file.status, allocator)
+	}
+	delete(state.git.detail.files, allocator)
 	state^ = {}
 }
 
@@ -1257,6 +1393,7 @@ Backend_Command_Result :: struct {
 	semantic_view_window: Semantic_View_Window,
 	semantic_zoom: Semantic_Zoom_Plan,
 	editor_folds: Editor_Fold_Plan,
+	git_diff: Git_Diff,
 	code_owned:     bool,
 	message_owned:  bool,
 	command_outcome_owned: bool,
@@ -1275,6 +1412,7 @@ Backend_Command_Result :: struct {
 	workspace_files_owned: bool,
 	workspace_browse_owned: bool,
 	save_as_conflict_path_owned: bool,
+	git_diff_owned: bool,
 }
 
 backend_command :: proc(
@@ -1329,6 +1467,12 @@ backend_command :: proc(
 	projection_first: u64 = 0,
 	projection_limit: u64 = 0,
 	zoom_depth: int = 0,
+	git_kind := "",
+	git_revision := "",
+	git_original_path := "",
+	git_message := "",
+	git_diff_generation: u64 = 0,
+	git_untracked := false,
 	pin_id: u64 = 0,
 	pin_epoch: u64 = 0,
 	pin_revision: u64 = 0,
@@ -1402,6 +1546,12 @@ backend_command :: proc(
 		projection_first=projection_first,
 		projection_limit=projection_limit,
 		zoom_depth=zoom_depth,
+		git_kind=git_kind,
+		git_revision=git_revision,
+		git_original_path=git_original_path,
+		git_message=git_message,
+		git_diff_generation=git_diff_generation,
+		git_untracked=git_untracked,
 		pin_id=pin_id, pin_epoch=pin_epoch, pin_revision=pin_revision, source_instance=source_instance, pin_delta=pin_delta,
 		has_target_byte=has_target_byte,
 		target_byte=target_byte,
@@ -1579,8 +1729,19 @@ backend_command :: proc(
 		}
 		result.editor_folds, result.editor_folds_owned = plan, true
 	}
+	if response.ok && command == "git_read_diff" && response.git_diff.text != "" {
+		text, clone_err := strings.clone(response.git_diff.text, allocator)
+		if clone_err != nil {
+			backend_response_destroy(&response, allocator)
+			backend_command_result_destroy(&result, allocator)
+			return Backend_Command_Result{code="allocation_failed", message="could not retain the bounded Git diff"}
+		}
+		result.git_diff = response.git_diff
+		result.git_diff.text = text
+		result.git_diff_owned = true
+	}
 	backend_response_destroy(&response, allocator)
-	if command == "read_visible_lines" || command == "read_image" || command == "read_view_window" || command == "read_semantic_zoom" || command == "read_editor_folds" { return result }
+	if command == "read_visible_lines" || command == "read_image" || command == "read_view_window" || command == "read_semantic_zoom" || command == "read_editor_folds" || command == "git_read_diff" { return result }
 	if !read_latest_after {
 		if !result.ok && result.message == "" { result.message = result.code }
 		return result
@@ -1627,6 +1788,7 @@ backend_command_result_destroy :: proc(result: ^Backend_Command_Result, allocato
 	if result.workspace_files_owned { workspace_files_destroy(&result.workspace_files, allocator) }
 	if result.workspace_browse_owned { workspace_browse_destroy(&result.workspace_browse, allocator) }
 	if result.save_as_conflict_path_owned { delete(result.save_as_conflict.path, allocator) }
+	if result.git_diff_owned { delete(result.git_diff.text, allocator) }
 	result^ = {}
 }
 
@@ -2813,6 +2975,7 @@ backend_response_destroy :: proc(response: ^Backend_Response, allocator: mem.All
 	delete(response.command_outcome, allocator)
 	delete(response.close_decision.document_id, allocator)
 	delete(response.save_as_conflict.path, allocator)
+	delete(response.git_diff.text, allocator)
 	delete(response.editor_selection.document_id, allocator)
 	delete(response.resource.document_id, allocator)
 	delete(response.edit.document_id, allocator)
