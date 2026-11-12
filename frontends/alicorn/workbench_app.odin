@@ -49,10 +49,11 @@ app_workbench_active_content_kind :: proc(app: ^App) -> Workbench_Content_Kind {
 	view, found := app_workbench_active_view(app)
 	if !found { return .Document }
 	switch view.kind {
+	case .Editor: return .Document
 	case .History: return .Git_History
 	case .Diff: return .Git_Diff
-	case: return .Document
 	}
+	return .Document
 }
 
 app_workbench_view_move_allowed :: proc(
