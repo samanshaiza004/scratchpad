@@ -214,7 +214,7 @@ Load command 13
 			name:            "unrelocated Caliber dependency",
 			loadCommands:    validLoadCommands,
 			linkedLibraries: "\t/old/build/path/libcaliber_ffi.dylib (compatibility version 0.0.0, current version 0.0.0)\n",
-			wantError:       "@rpath/libcaliber_ffi.dylib",
+			wantError:       "/old/build/path/libcaliber_ffi.dylib",
 		},
 	}
 	for _, test := range tests {

@@ -761,7 +761,10 @@ func validateDarwinBackendArtifact(loadCommands, linkedLibraries string) error {
 			return nil
 		}
 	}
-	return errors.New("backend does not link @rpath/libcaliber_ffi.dylib")
+	return fmt.Errorf(
+		"backend does not link @rpath/libcaliber_ffi.dylib; otool -L reported:\n%s",
+		strings.TrimSpace(linkedLibraries),
+	)
 }
 
 func darwinRuntimePaths(loadCommands string) []string {
