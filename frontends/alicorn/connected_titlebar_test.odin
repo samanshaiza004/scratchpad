@@ -36,6 +36,7 @@ connected_titlebar_test_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, documen
 		header={0, 0, width, SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT},
 		content_start_x=80, content_end_x=width-144, display_scale=scale,
 	}
+	if !scratchpad_workbench_test_initialize(app) { return false }
 	init_menus(app)
 	_ = alicorn.set_presentation_scale(rt, scale, scale)
 	return alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
@@ -43,6 +44,7 @@ connected_titlebar_test_prepare :: proc(app: ^App, rt: ^alicorn.Runtime, documen
 }
 
 connected_titlebar_test_destroy :: proc(app: ^App) {
+	scratchpad_workbench_test_destroy(app)
 	if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 	if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
 	find_presentation_destroy(&app.find_presentation, context.allocator)
@@ -546,12 +548,15 @@ connected_titlebar_test_reorder_motion_case :: proc(t: ^testing.T, reduce_motion
 	}
 	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(60_000_000))
 	_ = build_app(rawptr(&app), &rt, 1200, 760, 1)
-	testing.expect(t, app.workspace_drag_kind == .None &&
-		!app.workspace_drag_motion_reset_pending &&
-		app.backend.state.documents[0].id == order_before_cancel_build[0] &&
+	order_unchanged := app.backend.state.documents[0].id == order_before_cancel_build[0] &&
 		app.backend.state.documents[1].id == order_before_cancel_build[1] &&
-		app.backend.state.documents[2].id == order_before_cancel_build[2],
-		"cancel should reset transient motion without changing authoritative document order")
+		app.backend.state.documents[2].id == order_before_cancel_build[2]
+	testing.expect(t, app.workspace_drag_kind == .None &&
+		!app.workspace_drag_motion_reset_pending && order_unchanged,
+		fmt.tprintf("cancel should reset transient motion without changing authoritative order (kind=%v pending=%v active=%v order=%s,%s,%s before=%s,%s,%s)",
+			app.workspace_drag_kind, app.workspace_drag_motion_reset_pending, app.document_tab_reorder_motion_active,
+			app.backend.state.documents[0].id, app.backend.state.documents[1].id, app.backend.state.documents[2].id,
+			order_before_cancel_build[0], order_before_cancel_build[1], order_before_cancel_build[2]))
 	delete(button_bounds_before)
 	delete(chrome_regions_before)
 	delete(chrome_bounds_before)

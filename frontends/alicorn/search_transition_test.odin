@@ -59,6 +59,10 @@ test_search_result_actions_complete_outside_description_loop :: proc(t: ^testing
 	}
 	handle_command_result(&app, &rt, &keep_open)
 	bridge.backend_command_result_destroy(&keep_open, context.allocator)
+	if !scratchpad_workbench_test_initialize(&app) {
+		testing.expect(t, false, "search transition fixture should initialize its active editor view")
+		return
+	}
 	active_document_before := app.backend.state.active
 	testing.expect(t, active_document_before != "", "fixture must begin with an active editor document")
 	app.workspace_search_mode = true

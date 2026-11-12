@@ -4,6 +4,22 @@ import "core:mem"
 import "core:testing"
 import bridge "./bridge"
 
+scratchpad_workbench_test_initialize :: proc(app: ^App) -> bool {
+	if !app_workbench_initialize(app, context.allocator) { return false }
+	if app.backend.started { app_workbench_sync_open_documents(app) }
+	return true
+}
+
+scratchpad_workbench_test_destroy :: proc(app: ^App) {
+	if app == nil || !app.workbench_model_ready { return }
+	if len(app.workbench_last_active_document_id) > 0 {
+		delete(app.workbench_last_active_document_id, app.workbench_model.allocator)
+		app.workbench_last_active_document_id = ""
+	}
+	workbench_model_destroy(&app.workbench_model)
+	app.workbench_model_ready = false
+}
+
 workbench_test_fail_alloc :: proc(
 	data: rawptr,
 	mode: mem.Allocator_Mode,

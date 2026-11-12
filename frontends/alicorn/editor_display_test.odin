@@ -289,6 +289,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	if !started { return }
 	rt: alicorn.Runtime
 	defer {
+		scratchpad_workbench_test_destroy(&app)
 		if app.backend.started { _, _ = bridge.backend_stop(&app.backend, context.allocator) }
 		editor_window_destroy(&app.editor_window, context.allocator)
 		editor_views_destroy(&app.editor_views, context.allocator)
@@ -303,6 +304,7 @@ test_read_only_editor_emits_only_realized_monospace_rows :: proc(t: ^testing.T) 
 	testing.expect(t, active_found && active.line_count > 26_000 && len(content) > 10*1024*1024,
 		"10 MiB fixture should expose real logical-line metadata without a whole-document frontend copy")
 	if !active_found { return }
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the large-document fixture should initialize its editor view")
 	testing.expect(t, active.language == "go", "the long-line fixture should exercise the source-code no-wrap policy")
 	visible := bridge.backend_command(
 		&app.backend,

@@ -247,7 +247,7 @@ app_workbench_sync_open_documents :: proc(app: ^App) {
 	if app.workbench_last_active_document_id != active_document_id {
 		if active_document_id == "" {
 			if len(app.workbench_last_active_document_id) > 0 {
-				delete(app.workbench_last_active_document_id, context.allocator)
+				delete(app.workbench_last_active_document_id, app.workbench_model.allocator)
 			}
 			app.workbench_last_active_document_id = ""
 			return
@@ -266,10 +266,10 @@ app_workbench_sync_open_documents :: proc(app: ^App) {
 			}
 		}
 		if !activated { return }
-		owned_active_id, clone_error := strings.clone(active_document_id, context.allocator)
+		owned_active_id, clone_error := strings.clone(active_document_id, app.workbench_model.allocator)
 		if clone_error != nil { return }
 		if len(app.workbench_last_active_document_id) > 0 {
-			delete(app.workbench_last_active_document_id, context.allocator)
+			delete(app.workbench_last_active_document_id, app.workbench_model.allocator)
 		}
 		app.workbench_last_active_document_id = owned_active_id
 	}

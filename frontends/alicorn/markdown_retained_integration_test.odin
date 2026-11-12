@@ -110,6 +110,7 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 	if !window_lane_started { _, _ = bridge.backend_stop(&app.backend, context.allocator); return }
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 680})
 	defer {
+		scratchpad_workbench_test_destroy(&app)
 		if app.backend.started {
 			_ = bridge.visible_window_lane_stop(&app.visible_window_lane)
 			_, _ = bridge.backend_stop(&app.backend, context.allocator)
@@ -129,6 +130,7 @@ test_markdown_metadata_pending_to_ready_keeps_retained_row_geometry :: proc(t: ^
 	                alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
 	testing.expect(t, fonts_loaded, "retained Markdown styling test should load its UI and monospace font roles")
 	if !fonts_loaded { return }
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the retained Markdown fixture should initialize its editor view")
 	_ = build_app(rawptr(&app), &rt, 1000, 680, 1)
 	pending_installed := false
 	for _ in 0..<100 {

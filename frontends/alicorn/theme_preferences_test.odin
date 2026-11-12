@@ -192,9 +192,11 @@ test_live_editor_theme_replacement_preserves_document_interaction_and_scroll :: 
 	app.editor_window = window
 	app.editor_window_ready = true
 	source = {}
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the live-theme fixture should initialize its editor view")
 
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
 	defer {
+		scratchpad_workbench_test_destroy(&app)
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		editor_window_destroy(&app.editor_window, context.allocator)
 		editor_views_destroy(&app.editor_views, context.allocator)
@@ -493,6 +495,7 @@ test_full_application_theme_switch_preserves_modal_tab_syntax_and_caret :: proc(
 		display_scale=1,
 	}
 	defer {
+		scratchpad_workbench_test_destroy(&app)
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		editor_window_destroy(&app.editor_window, context.allocator)
 		editor_views_destroy(&app.editor_views)
@@ -540,6 +543,7 @@ test_full_application_theme_switch_preserves_modal_tab_syntax_and_caret :: proc(
 	}
 	app.editor_window = window
 	app.editor_window_ready = true
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the full-app theme fixture should initialize its editor view")
 	fonts_loaded := alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) &&
 		alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA)
 	testing.expect(t, fonts_loaded, "the full-app theme smoke should load UI and source fonts")

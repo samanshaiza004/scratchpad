@@ -179,6 +179,7 @@ test_editor_reveal_after_frame_resolves_shaped_source_geometry :: proc(t: ^testi
 		line_count=u64(line_count),
 		byte_length=u64(source_length),
 	}
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the reveal fixture should initialize its editor view")
 	app.editor_window = window
 	app.editor_window_ready = true
 	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
@@ -207,6 +208,7 @@ test_editor_reveal_after_frame_resolves_shaped_source_geometry :: proc(t: ^testi
 	init_menus(&app)
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 420})
 	defer {
+		scratchpad_workbench_test_destroy(&app)
 		editor_window_destroy(&app.editor_window, context.allocator)
 		editor_views_destroy(&app.editor_views, context.allocator)
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }

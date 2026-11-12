@@ -23,7 +23,11 @@ test_tab_drag_beyond_strip_requests_window :: proc(t: ^testing.T) {
 	app.backend.started = true
 	app.backend.state.documents = documents[:]
 	app.backend.state.active = documents[0].id
-	defer workspace_drag_clear(&app)
+	testing.expect(t, scratchpad_workbench_test_initialize(&app), "the tab fixture should initialize its workbench model")
+	defer {
+		workspace_drag_clear(&app)
+		scratchpad_workbench_test_destroy(&app)
+	}
 	requests := 0
 	app.services.windows = host.Application_Window_Service{data=rawptr(&requests), open=tab_detach_test_open}
 	ui, should_build := alicorn.begin_frame(&rt)

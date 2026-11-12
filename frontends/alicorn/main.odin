@@ -4192,7 +4192,7 @@ application_stop :: proc(state: rawptr) {
 	tree_clear_focused_path(app)
 	app.tree_scroll_owner = 0
 	if len(app.workbench_last_active_document_id) > 0 {
-		delete(app.workbench_last_active_document_id, context.allocator)
+		delete(app.workbench_last_active_document_id, app.workbench_model.allocator)
 	}
 	app.workbench_last_active_document_id = ""
 	editor_window_destroy(&app.editor_window)
@@ -4281,19 +4281,10 @@ main :: proc() {
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
 	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
 	app.editor_text_scale = 1
-	if !workbench_model_init(&app.workbench_model) {
-		fmt.eprintln("Could not initialize Scratchpad's workbench model.")
-		os.exit(1)
-	}
-	primary_window_id, primary_group_id, workbench_window_ok := workbench_model_window_add(&app.workbench_model)
-	if !workbench_window_ok {
-		workbench_model_destroy(&app.workbench_model)
+	if !app_workbench_initialize(&app) {
 		fmt.eprintln("Could not create Scratchpad's primary workbench window.")
 		os.exit(1)
 	}
-	app.primary_workbench_window_id = primary_window_id
-	app.primary_workbench_group_id = primary_group_id
-	app.workbench_model_ready = true
 	init_menus(&app)
 	if config_root, config_error := os.user_config_dir(context.allocator); config_error == nil {
 		preferences_directory, preferences_path, ok := scratchpad_theme_preferences_location(config_root, context.allocator)

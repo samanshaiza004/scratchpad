@@ -16,10 +16,12 @@ test_scratchpad_assets_use_public_font_and_image_apis_in_empty_editor :: proc(t:
     app.tree_directories = make([dynamic]Tree_Directory, 0, allocator=context.allocator)
     app.retired_brand_marks = make([dynamic]Scratchpad_Image_Retirement, 0, allocator=context.allocator)
     defer {
+        scratchpad_workbench_test_destroy(&app)
         delete(app.tree_directories)
         delete(app.retired_brand_marks)
     }
     init_menus(&app)
+    testing.expect(t, scratchpad_workbench_test_initialize(&app), "the empty editor fixture should initialize its workbench pane")
 
     scratchpad_application_initialize(rawptr(&app), &rt)
     testing.expect(t, rt.text_engine.application_primary_font[.UI] &&

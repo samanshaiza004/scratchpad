@@ -125,6 +125,7 @@ scratchpad_workbench_group_tabs_build :: proc(
 	options.height = height
 	options.close_policy = .Selected_Or_Hover
 	options.drag_type = SCRATCHPAD_DRAG_TABS
+	options.animate_drag_reorder = true
 	if !app.find_open && app.floating_window == nil {
 		options.drag_tracking = alicorn.DRAG_TRACKING_HORIZONTAL_MAGNETIC
 	}
@@ -321,8 +322,10 @@ workbench_group_render :: proc(
 	}
 	view := window.views[view_index]
 	content_key := alicorn.key_string(fmt.tprintf("workbench-content-%d", u64(group_id)))
+	content_label := "workbench-view-content"
+	if view.kind == .Editor { content_label = "document-surface" }
 	content := alicorn.surface_begin(ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()),
-		key=content_key, label="workbench-view-content",
+		key=content_key, label=content_label,
 		style=alicorn.layout_style(.Column, grow=1, align=.Start, clip=true),
 		material=scratchpad_surface_material(app, app.paper_surface_material),
 		physical_height=scratchpad_surface_height(app, -0.75),

@@ -18,6 +18,10 @@ build_app :: proc(
 	dpi_scale: f32,
 ) -> alicorn.Node_ID {
 	app := cast(^App)state
+	if app == nil || (app.backend.started && !app.workbench_model_ready) {
+		fmt.eprintln("Scratchpad's workbench model must be initialized before building the active application.")
+		return 0
+	}
 	scratchpad_editor_font_apply_pending(app, rt)
 	scratchpad_application_assets_release_retired(app, rt)
 	scratchpad_image_preview_sync(app, rt)

@@ -49,6 +49,11 @@ navigate_tab :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) {
 
 workbench_navigate_tab :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) -> bool {
 	if app == nil || rt == nil { return false }
+	// Match the legacy document-tab behavior: cycling tabs keeps keyboard
+	// focus in the editor only when the editor owned focus before navigation.
+	// In particular, Ctrl+Tab from the workspace tree must not steal focus.
+	focus_after_navigation := app.editor_scroll_owner != 0 &&
+		alicorn.focused_node(rt) == app.editor_scroll_owner
 	window := app_workbench_window(app)
 	if window == nil { return false }
 	group_index := workbench_group_find(window, window.focused_group_id)
@@ -90,9 +95,11 @@ workbench_navigate_tab :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) 
 		return true
 	}
 	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return true }
-	if !app_workbench_activate_view(app, rt, entry.view_id) { return false }
+	if !app_workbench_activate_view(app, rt, entry.view_id, focus_after_navigation) { return false }
 	if view_index := workbench_view_find(window, entry.view_id); view_index >= 0 {
-		if window.views[view_index].kind == .Editor { app.editor_focus_pending = true }
+		if focus_after_navigation && window.views[view_index].kind == .Editor {
+			app.editor_focus_pending = true
+		}
 	}
 	alicorn.invalidate_root(rt, "Scratchpad navigated workbench tabs")
 	return true

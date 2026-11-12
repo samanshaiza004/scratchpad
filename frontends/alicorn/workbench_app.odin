@@ -6,6 +6,21 @@ import alicorn "alicorn:runtime"
 WORKBENCH_TAB_SEMANTIC_NAMESPACE :: u64(0x574F524B54414231)
 WORKBENCH_GROUP_SEMANTIC_NAMESPACE :: u64(0x574F524B47525031)
 
+app_workbench_initialize :: proc(app: ^App, allocator := context.allocator) -> bool {
+	if app == nil { return false }
+	if app.workbench_model_ready { return true }
+	if !workbench_model_init(&app.workbench_model, allocator) { return false }
+	window_id, group_id, ok := workbench_model_window_add(&app.workbench_model)
+	if !ok {
+		workbench_model_destroy(&app.workbench_model)
+		return false
+	}
+	app.primary_workbench_window_id = window_id
+	app.primary_workbench_group_id = group_id
+	app.workbench_model_ready = true
+	return true
+}
+
 workbench_view_semantic_id :: proc(view_id: View_ID) -> alicorn.Semantic_ID {
 	return alicorn.Semantic_ID{namespace=WORKBENCH_TAB_SEMANTIC_NAMESPACE, value=u64(view_id)}
 }
@@ -183,14 +198,19 @@ app_workbench_view_ensure_kind :: proc(app: ^App, kind: Workbench_View_Kind) -> 
 	)
 }
 
-app_workbench_activate_view :: proc(app: ^App, rt: ^alicorn.Runtime, view_id: View_ID) -> bool {
+app_workbench_activate_view :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	view_id: View_ID,
+	focus_after_frame := true,
+) -> bool {
 	window := app_workbench_window(app)
 	if window == nil || rt == nil { return false }
 	view_index := workbench_view_find(window, view_id)
 	if view_index < 0 { return false }
 	view := window.views[view_index]
 	if !workbench_group_activate_view(window, view.group_id, view_id) { return false }
-	app.workbench_pending_view_focus_id = view_id
+	app.workbench_pending_view_focus_id = view_id if focus_after_frame else {}
 	if view.kind == .Editor && app.backend.started && app.backend.state.active != view.resource.id {
 		if !frame_deferred_action_schedule(app, .Select_Document, view.resource.id) {
 			set_error(app, "Could not queue the document view selection until the current frame is complete.")
