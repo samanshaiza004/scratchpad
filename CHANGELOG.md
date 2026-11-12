@@ -102,6 +102,10 @@ for platform downloads, package manifests, and checksums.
   font-file discovery.
 - Fixed recent-workspace persistence being coupled to session restore, tree
   focus leaking across workspace switches, and watcher races in live UI dogfood.
+- Fixed Duplicate & Customize for valid themes with trailing whitespace and
+  sparse role declarations by editing parsed JSON while preserving color
+  declarations; generated color-token names avoid collisions, and errors now
+  identify the failing customization stage.
 - Deferred semantic-view changes until safe frame boundaries; corrected
   selection, clipboard, whitespace-fold, source-anchor, and hidden-range
   navigation behavior.

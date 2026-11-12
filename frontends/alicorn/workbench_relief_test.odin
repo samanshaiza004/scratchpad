@@ -52,7 +52,7 @@ test_workbench_relief_retains_settings_semantics_geometry_and_measurements :: pr
 		testing.expect(t, fonts, "relief fixture requires the bundled UI font")
 		if !fonts { alicorn.destroy_runtime(&rt); continue }
 		_ = settings_test_build(&app, &rt, scale)
-		field := settings_test_find_node(&rt, "settings-workbench-appearance", "")
+		field := settings_test_find_node(&rt, "settings-surface-treatment", "")
 		done := settings_test_find_node(&rt, "settings-done", "")
 		testing.expect(t, field != 0 && done != 0, "the real Settings scene should expose its selector and Done action")
 		if field == 0 || done == 0 { alicorn.destroy_runtime(&rt); continue }

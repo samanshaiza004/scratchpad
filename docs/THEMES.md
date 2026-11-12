@@ -67,10 +67,12 @@ signals, and **Standard / Flat / Workbench Relief** surface treatment remain
 owned by Scratchpad and Alicorn, not by a color-theme file. Existing app roles
 inherit Scratchpad's complete built-in defaults when omitted.
 
-**Duplicate & customize…** preserves the selected source's declarations and
-adds a color token and role binding for one of four commonly used colors:
-Editor paper, Accent, Syntax keyword, or Workbench surface. The result is an
-ordinary local Alicorn JSON theme that can be edited or shared as a file.
+**Duplicate & customize…** preserves the selected source's color tokens and
+role bindings and adds a color token and role binding for one of four commonly
+used colors: Editor paper, Accent, Syntax keyword, or Workbench surface. A
+bundled component recipe is left to Scratchpad's built-in defaults. The result
+is an ordinary local Alicorn JSON color theme that can be edited or shared as
+a file.
 
 The bundled **Catppuccin Mocha** palette is available alongside Warm, Cool
 Light, and Charcoal & Ink. Theme selection is stored in the versioned

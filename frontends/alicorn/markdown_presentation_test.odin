@@ -24,6 +24,7 @@ test_markdown_inline_code_changes_with_selected_theme :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
 	defer alicorn.destroy_runtime(&rt)
 	app := App{theme_choice=.Cool_Light}
+	defer scratchpad_theme_selection_destroy(&app)
 	if !scratchpad_styles_ensure(&app, &rt) {
 		testing.expect(t, false, "theme-aware Markdown fixture should register Scratchpad themes")
 		return
@@ -403,6 +404,7 @@ test_code_syntax_colors_follow_compiled_theme_roles_and_core_fallbacks :: proc(t
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
 	defer alicorn.destroy_runtime(&rt)
 	app := App{theme_choice=.Warm}
+	defer scratchpad_theme_selection_destroy(&app)
 	if !scratchpad_styles_ensure(&app, &rt) {
 		testing.expect(t, false, "syntax palette fixture should register Scratchpad themes")
 		return

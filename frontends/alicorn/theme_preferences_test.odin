@@ -366,6 +366,7 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		return
 	}
 	app: App
+	defer scratchpad_theme_selection_destroy(&app)
 	if !scratchpad_styles_ensure(&app, &rt) {
 		testing.expect(t, false, "theme-switch test should register both theme choices")
 		return
@@ -439,9 +440,13 @@ test_theme_switch_is_paint_only_and_preserves_focus_and_identity :: proc(t: ^tes
 		rt.stats.idle_frames == stats_before_idle.idle_frames+1,
 		"the theme switch should settle into a no-work idle frame")
 
-	choice, loaded := scratchpad_theme_preferences_load(path)
-	testing.expect(t, loaded && choice == .Cool_Light,
+	preferences, loaded := scratchpad_user_preferences_load(path, context.temp_allocator)
+	testing.expect(t, loaded && preferences.color_theme == SCRATCHPAD_THEME_BUILTIN_COOL,
 		"the theme chosen in the application should be persisted for the next launch")
+	delete(preferences.theme, context.temp_allocator)
+	delete(preferences.color_theme, context.temp_allocator)
+	delete(preferences.surface_treatment, context.temp_allocator)
+	delete(preferences.editor_font_family, context.temp_allocator)
 	_ = scratchpad_theme_select(&app, &rt, .Warm)
 	third := theme_switch_test_render(&app, &rt)
 	warm_chrome := scratchpad_window_chrome_appearance(rawptr(&app), &rt)
@@ -495,6 +500,7 @@ test_full_application_theme_switch_preserves_modal_tab_syntax_and_caret :: proc(
 	defer {
 		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
 		editor_window_destroy(&app.editor_window, context.allocator)
+		scratchpad_theme_selection_destroy(&app)
 		editor_views_destroy(&app.editor_views)
 		delete(app.editor_edits)
 		delete(app.editor_row_targets)
