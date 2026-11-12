@@ -354,6 +354,7 @@ command_palette_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	app.command_palette_node = 0
 	app.command_palette_motion_accent_node = 0
 	app.command_palette_reveal_pending = true
+	app.command_palette_motion_policy_signature = 0
 	app.command_palette_results_scroll_node = 0
 	app.command_palette_selected_index = 0
 	find_set_message(&app.command_palette_query, "")
@@ -368,6 +369,7 @@ command_palette_close_surface :: proc(app: ^App, rt: ^alicorn.Runtime, restore_f
 	app.command_palette_node = 0
 	app.command_palette_motion_accent_node = 0
 	app.command_palette_reveal_pending = false
+	app.command_palette_motion_policy_signature = 0
 	app.command_palette_results_scroll_node = 0
 	find_set_message(&app.command_palette_query, "")
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad command palette closed") }
@@ -509,15 +511,27 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 			label="scratchpad-command-palette-motion-accent",
 		)
 		alicorn.surface_end(ui)
-		if app.command_palette_reveal_pending && app.command_palette_motion_accent_node != 0 {
-			status := gui.motion(
-				ui,
-				app.command_palette_motion_accent_node,
-				gui.Motion_Target{opacity=1, has_opacity=true, has_translation=true},
-				.Reveal,
-				gui.Motion_Vector2{y=-6},
-			)
-			if status == .Ok { app.command_palette_reveal_pending = false }
+		if app.command_palette_motion_accent_node != 0 {
+			policy_signature := scratchpad_motion_policy_signature(app, rt, app.workbench_theme)
+			intent := gui.Motion_Intent.Settle
+			should_declare := app.command_palette_motion_policy_signature != policy_signature
+			if app.command_palette_reveal_pending {
+				intent = .Reveal
+				should_declare = true
+			}
+			if should_declare {
+				status := gui.motion(
+					ui,
+					app.command_palette_motion_accent_node,
+					gui.Motion_Target{opacity=1, has_opacity=true, has_translation=true},
+					intent,
+					gui.Motion_Vector2{y=-6},
+				)
+				if status == .Ok {
+					app.command_palette_motion_policy_signature = policy_signature
+					if intent == .Reveal { app.command_palette_reveal_pending = false }
+				}
+			}
 		}
 		gui.text(ui, ">", style=alicorn.layout_style(.Row, width=16, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
 		app.command_palette_node = alicorn.text_field(
