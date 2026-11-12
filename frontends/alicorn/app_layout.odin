@@ -22,6 +22,7 @@ build_app :: proc(
 	scratchpad_application_assets_release_retired(app, rt)
 	scratchpad_image_preview_sync(app, rt)
 	session_ui_prepare(app, rt)
+	app_workbench_sync_open_documents(app)
 	pinned_refresh(app,rt)
 	pinned_appearance_fixture_prepare(app,rt)
 	ui, should_build := alicorn.begin_frame(rt)

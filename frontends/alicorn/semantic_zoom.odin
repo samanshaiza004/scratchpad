@@ -253,7 +253,7 @@ semantic_zoom_set_depth :: proc(app: ^App, rt: ^alicorn.Runtime, depth: int, sou
 	if app == nil || rt == nil || !app.backend.started { return false }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found || document.view_kind == "image" || document.view_kind == "unsupported" { return false }
-	index, ok := editor_view_ensure(&app.editor_views, document.id)
+	index, ok := app_editor_view_ensure(app, document.id)
 	if !ok { return false }
 	view := &app.editor_views[index]
 	if view.zoom.depth > 0 && !semantic_zoom_plan_matches(view, document) {

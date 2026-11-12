@@ -351,7 +351,7 @@ find_capture_editor_selection :: proc(app: ^App) {
 	if app == nil || !app.backend.started { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
 	document_id, clone_error := strings.clone(document.id, context.allocator)
@@ -584,7 +584,7 @@ find_apply_active_match :: proc(app: ^App, rt: ^alicorn.Runtime, reveal := true)
 	if match.start < 0 || match.end < match.start || match.line < 0 { return false }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found || document.id != presentation.document_id { return false }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
 	editor_undo_group_break(view)
@@ -1233,7 +1233,7 @@ workspace_search_edit_begin :: proc(app: ^App, rt: ^alicorn.Runtime, result_inde
 		alicorn.invalidate_root(rt, "Scratchpad rejected a stale bounded search projection context")
 		return true
 	}
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok {
 		find_set_message(&app.workspace_search_error, "Could not retain the source document's editor state.")
 		return true
@@ -1474,7 +1474,7 @@ find_refresh_if_needed :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || !app.backend.started { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return }
 	if app.find_presentation.document_id == document.id &&
 	   app.find_presentation.editor_revision == document.editor_revision &&
@@ -1745,7 +1745,7 @@ workspace_search_activate_result :: proc(app: ^App, rt: ^alicorn.Runtime, result
 		if response.editor_selection.document_id != "" {
 			editor_apply_backend_selection(app, rt, response.editor_selection)
 			if target_byte < 0 && result.start_byte >= 0 && result.end_byte > result.start_byte && result.line >= 0 {
-				view_index, view_ok := editor_view_ensure(&app.editor_views, response.editor_selection.document_id)
+				view_index, view_ok := app_editor_view_ensure(app, response.editor_selection.document_id)
 				if view_ok {
 					view := &app.editor_views[view_index]
 					document, document_found := find_document(&app.backend.state, response.editor_selection.document_id)

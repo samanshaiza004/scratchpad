@@ -102,7 +102,7 @@ editor_toggle_wrap_mode :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil || !app.backend.started { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { set_error(app, "Could not retain this document's wrap preference."); return }
 	view := &app.editor_views[view_index]
 	switch view.wrap_mode {
@@ -293,7 +293,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		 ACTION_MARKDOWN_TABLE_NEXT, ACTION_MARKDOWN_TABLE_PREVIOUS, ACTION_MARKDOWN_TABLE_ENTER:
 		document, found := find_document(&app.backend.state, app.backend.state.active)
 		if !found { break }
-		view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+		view_index, view_ok := app_editor_view_ensure(app, document.id)
 		if !view_ok {
 			set_error(app, "Could not retain the active editor selection for the command.")
 			break

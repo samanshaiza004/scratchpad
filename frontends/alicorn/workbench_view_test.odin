@@ -1,7 +1,20 @@
 package main
 
+import "core:mem"
 import "core:testing"
 import bridge "./bridge"
+
+workbench_test_fail_alloc :: proc(
+	data: rawptr,
+	mode: mem.Allocator_Mode,
+	size, alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	location := #caller_location,
+) -> ([]u8, mem.Allocator_Error) {
+	if mode == .Alloc || mode == .Alloc_Non_Zeroed { return nil, .Out_Of_Memory }
+	return context.allocator.procedure(context.allocator.data, mode, size, alignment, old_memory, old_size, location)
+}
 
 @(test)
 test_two_editor_view_ids_keep_independent_state_for_one_document :: proc(t: ^testing.T) {
@@ -154,4 +167,93 @@ test_workbench_model_ids_and_cross_window_move_are_stable :: proc(t: ^testing.T)
 	testing.expect(t, workbench_model_focus_window(&model, second_window) && model.focused_window_id == second_window,
 		"native focus should change through an explicit window-focus transition")
 	testing.expect(t, workbench_model_state_valid(&model), "the multi-window model should satisfy global identity invariants")
+}
+
+@(test)
+test_workbench_failed_moves_leave_source_and_destination_unchanged :: proc(t: ^testing.T) {
+	model: Workbench_Model
+	initialized := workbench_model_init(&model)
+	testing.expect(t, initialized, "the application workbench should initialize")
+	if !initialized { return }
+	defer workbench_model_destroy(&model)
+
+	source_window_id, source_group_id, source_ok := workbench_model_window_add(&model)
+	target_window_id, target_group_id, target_ok := workbench_model_window_add(&model)
+	if !source_ok || !target_ok { testing.expect(t, false, "move fixture windows should initialize"); return }
+	view_id, view_ok := workbench_model_view_add(&model, source_window_id, source_group_id, .Editor,
+		Workbench_Resource_Ref{kind=.Document, id="shared-resource", instance_id=8})
+	if !view_ok { testing.expect(t, false, "move fixture view should initialize"); return }
+
+	source_index := workbench_model_window_find(&model, source_window_id)
+	target_index := workbench_model_window_find(&model, target_window_id)
+	source_view_index := workbench_view_find(&model.windows[source_index], view_id)
+	invalid_target_moved := workbench_model_view_move(&model, view_id, target_window_id, Pane_Group_ID(999))
+	testing.expect(t, !invalid_target_moved && workbench_model_state_valid(&model),
+		"an invalid destination group should be rejected without changing topology")
+	testing.expect(t,
+		len(model.windows[source_index].views) == 1 &&
+		model.windows[source_index].views[source_view_index].group_id == source_group_id &&
+		len(model.windows[target_index].views) == 0,
+		"failed destination validation should leave both windows and the source view unchanged")
+
+	original_target_allocator := model.windows[target_index].allocator
+	model.windows[target_index].allocator = mem.Allocator{procedure=workbench_test_fail_alloc}
+	copy_failed_move := workbench_model_view_move(&model, view_id, target_window_id, target_group_id)
+	model.windows[target_index].allocator = original_target_allocator
+	testing.expect(t, !copy_failed_move && workbench_model_state_valid(&model),
+		"a resource-reference copy failure should be rejected while preserving valid topology")
+	testing.expect(t,
+		len(model.windows[source_index].views) == 1 &&
+		model.windows[source_index].views[0].id == view_id &&
+		model.windows[source_index].views[0].group_id == source_group_id &&
+		len(model.windows[target_index].views) == 0,
+		"resource-copy failure must not remove the source or add a partial destination view")
+}
+
+@(test)
+test_app_editor_state_uses_workbench_view_identity :: proc(t: ^testing.T) {
+	app: App
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	defer editor_views_destroy(&app.editor_views)
+	if !workbench_model_init(&app.workbench_model) {
+		testing.expect(t, false, "the app workbench model should initialize")
+		return
+	}
+	defer workbench_model_destroy(&app.workbench_model)
+	window_id, group_id, window_ok := workbench_model_window_add(&app.workbench_model)
+	if !window_ok { testing.expect(t, false, "the app workbench should have one initial window and group"); return }
+	app.primary_workbench_window_id = window_id
+	app.primary_workbench_group_id = group_id
+	app.workbench_model_ready = true
+
+	workbench_view_id, view_ok := app_workbench_document_view_ensure(&app, "notes.md", 41)
+	state_index, state_ok := app_editor_view_ensure(&app, "notes.md")
+	testing.expect(t, view_ok && state_ok && u64(workbench_view_id) == app.editor_views[state_index].view_id,
+		"the editor presentation should use the stable View ID owned by the workbench")
+	if !view_ok || !state_ok { return }
+
+	same_view_id, same_view_ok := app_workbench_document_view_ensure(&app, "notes.md", 41)
+	second_state_index, second_state_ok := app_editor_view_ensure(&app, "notes.md")
+	testing.expect(t, same_view_ok && second_state_ok && same_view_id == workbench_view_id &&
+	               second_state_index == state_index && len(app.workbench_model.windows[0].views) == 1,
+		"reconciling one open document should reuse one workbench view and its editor presentation")
+
+	future_view_id, future_view_ok := workbench_model_view_add(&app.workbench_model, window_id, group_id, .Editor,
+		Workbench_Resource_Ref{kind=.Document, id="future.md", instance_id=42})
+	transient_index, transient_ok := app_editor_transient_view_ensure(&app, "pinned-only.md")
+	future_state_index, future_state_ok := app_editor_view_ensure(&app, "future.md")
+	testing.expect(t, future_view_ok && transient_ok && future_state_ok &&
+	               app.editor_views[transient_index].view_id >= 0x8000_0000_0000_0000 &&
+	               app.editor_views[future_state_index].view_id == u64(future_view_id),
+		"transient pinned/recovery state must not collide with workbench IDs that have not instantiated editor caches yet")
+
+	rekeyed := app_workbench_view_resource_rekey(&app, u64(workbench_view_id), "renamed-notes.md", 43)
+	first_window := workbench_model_window_find(&app.workbench_model, window_id)
+	rekeyed_view_index := workbench_view_find(&app.workbench_model.windows[first_window], workbench_view_id)
+	testing.expect(t, rekeyed && rekeyed_view_index >= 0 &&
+	               app.workbench_model.windows[first_window].views[rekeyed_view_index].resource.id == "renamed-notes.md" &&
+	               app.workbench_model.windows[first_window].views[rekeyed_view_index].resource.instance_id == 43,
+		"a path rekey should preserve the Workbench View ID while updating its authoritative resource reference")
+	testing.expect(t, workbench_model_state_valid(&app.workbench_model),
+		"the app-attached one-group model should preserve topology invariants")
 }

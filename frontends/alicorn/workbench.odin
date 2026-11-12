@@ -406,6 +406,9 @@ workbench_first_group_in_subtree :: proc(state: ^Workbench_State, node_id: Pane_
 }
 
 workbench_view_move :: proc(state: ^Workbench_State, view_id: View_ID, target_group_id: Pane_Group_ID) -> bool {
+	// The move and empty-group collapse below are failure-atomic for a valid
+	// topology: validate the source tree before changing ownership or tab order.
+	if !workbench_state_valid(state) { return false }
 	view_index := workbench_view_find(state, view_id)
 	target_index := workbench_group_find(state, target_group_id)
 	if view_index < 0 || target_index < 0 { return false }
@@ -429,7 +432,9 @@ workbench_view_move :: proc(state: ^Workbench_State, view_id: View_ID, target_gr
 		state.groups[target_index].active_view_id = view_id
 		state.focused_group_id = target_group_id
 	}
-	return workbench_group_collapse_if_empty(state, source_group_id)
+	collapsed := workbench_group_collapse_if_empty(state, source_group_id)
+	assert(collapsed, "valid workbench topology must allow its emptied group to collapse")
+	return true
 }
 
 workbench_view_close :: proc(state: ^Workbench_State, view_id: View_ID) -> bool {
@@ -620,7 +625,7 @@ workbench_model_view_move :: proc(
 	target_window_id: Window_ID,
 	target_group_id: Pane_Group_ID,
 ) -> bool {
-	if model == nil || u64(view_id) == 0 { return false }
+	if model == nil || u64(view_id) == 0 || !workbench_model_state_valid(model) { return false }
 	target_window_index := workbench_model_window_find(model, target_window_id)
 	if target_window_index < 0 { return false }
 	target_window := &model.windows[target_window_index]
@@ -638,7 +643,9 @@ workbench_model_view_move :: proc(
 	}
 	if source_view_index < 0 { return false }
 	if source_window_index == target_window_index {
-		return workbench_view_move(target_window, view_id, target_group_id)
+		moved := workbench_view_move(target_window, view_id, target_group_id)
+		assert(moved, "a prevalidated in-window move must complete")
+		return true
 	}
 	source_window := &model.windows[source_window_index]
 	source_view := source_window.views[source_view_index]
@@ -667,8 +674,11 @@ workbench_model_view_move :: proc(
 		target_window.groups[target_group_index].active_view_id = view_id
 		target_window.focused_group_id = target_group_id
 	}
-	if !workbench_group_collapse_if_empty(source_window, source_view.group_id) { return false }
-	return workbench_state_valid(source_window) && workbench_state_valid(target_window)
+	collapsed := workbench_group_collapse_if_empty(source_window, source_view.group_id)
+	assert(collapsed, "valid source topology must allow its emptied group to collapse")
+	assert(workbench_state_valid(source_window) && workbench_state_valid(target_window),
+		"a prevalidated cross-window move must preserve both topology invariants")
+	return true
 }
 
 workbench_model_view_close :: proc(model: ^Workbench_Model, view_id: View_ID) -> bool {

@@ -319,7 +319,8 @@ editor_view_ensure_for_id :: proc(
 ) -> (index: int, ok: bool) {
 	if views == nil || view_id == 0 || document_id == "" { return -1, false }
 	if existing := editor_view_find_by_id(views[:], view_id); existing >= 0 {
-		return existing, views[existing].document_id == document_id
+		if views[existing].document_id != document_id { return -1, false }
+		return existing, true
 	}
 	owned_id, clone_err := strings.clone(document_id, allocator)
 	if clone_err != nil { return -1, false }

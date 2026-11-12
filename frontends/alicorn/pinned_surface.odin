@@ -474,7 +474,7 @@ pinned_edit_begin :: proc(
 		app.pinned.force_refresh = true
 		return
 	}
-	view_index, view_ok := editor_view_ensure(&app.editor_views, pin.document_id)
+	view_index, view_ok := app_editor_view_ensure(app, pin.document_id)
 	if !view_ok { set_error(app, "Could not retain the pinned source editor state."); return }
 	view := &app.editor_views[view_index]
 	if view.preedit_active {
@@ -864,7 +864,7 @@ pinned_command :: proc(app: ^App, rt: ^alicorn.Runtime, command: string, pin: br
 			case "go_to_source":
 				selection:=result.editor_selection
 				if selection.document_id!="" {
-					index,ok:=editor_view_ensure(&app.editor_views,selection.document_id)
+					index,ok:=app_editor_view_ensure(app,selection.document_id)
 					if ok {
 						view:=&app.editor_views[index];view.selection_anchor=selection.anchor_byte;view.caret_byte=selection.cursor_byte
 						semantic_zoom_destroy(&view.zoom)

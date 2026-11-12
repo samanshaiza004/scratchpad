@@ -42,7 +42,7 @@ git_diff_clear :: proc(app: ^App) {
 	clear(&app.git_diff_hunks)
 }
 
-git_workbench_select :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_View_Kind) {
+git_workbench_select :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_Content_Kind) {
 	if app == nil || rt == nil { return }
 	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return }
 	if app.workbench_split_open && app.workbench_secondary_view == view {
@@ -61,7 +61,7 @@ git_workbench_select :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_Vi
 	alicorn.invalidate_root(rt, "Scratchpad Git workbench view selected")
 }
 
-git_workbench_open_beside :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_View_Kind) {
+git_workbench_open_beside :: proc(app: ^App, rt: ^alicorn.Runtime, view: Workbench_Content_Kind) {
 	if app == nil || rt == nil || view == .Document { return }
 	if app.workspace_search_mode && !workspace_search_deactivate(app, rt) { return }
 	if app.workbench_view == view { app.workbench_view = .Document }

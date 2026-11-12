@@ -82,7 +82,7 @@ ACTION_VIEW_THEME_FLAT :: "view.theme-flat"
 ACTION_VIEW_THEME_RELIEF :: "view.theme-workbench-relief"
 ACTION_VIEW_THEME_CHARCOAL_INK :: "view.theme-charcoal-ink"
 
-Workbench_View_Kind :: enum {
+Workbench_Content_Kind :: enum {
 	Document,
 	Git_History,
 	Git_Diff,
@@ -178,6 +178,12 @@ App :: struct {
 	editor_edits:           [dynamic]Editor_Edit_Intent,
 	deferred_actions:       [dynamic]Deferred_Action,
 	editor_edit_sequence:   u64,
+	workbench_model:        Workbench_Model,
+	workbench_model_ready:  bool,
+	primary_workbench_window_id: Window_ID,
+	primary_workbench_group_id: Pane_Group_ID,
+	workbench_documents_synced: bool,
+	workbench_synced_application_revision: u64,
 	editor_views:           [dynamic]Editor_View_State,
 	selection_diagnostic_revision: u64,
 	editor_row_targets:     [dynamic]Editor_Row_Target,
@@ -295,9 +301,9 @@ App :: struct {
 	workspace_git_sidebar: bool,
 	git_history_tab_open: bool,
 	git_diff_tab_open: bool,
-	workbench_view: Workbench_View_Kind,
+	workbench_view: Workbench_Content_Kind,
 	workbench_split_open: bool,
-	workbench_secondary_view: Workbench_View_Kind,
+	workbench_secondary_view: Workbench_Content_Kind,
 	workbench_split_position: f32,
 	git_history_refs_split_position: f32,
 	git_history_detail_split_position: f32,
@@ -1212,7 +1218,7 @@ go_to_line_submit :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 		alicorn.invalidate_root(rt, "Scratchpad Go to Line input was invalid")
 		return true
 	}
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { app.go_to_line_error = "Could not retain the active document view."; return true }
 	view := &app.editor_views[view_index]
 	view.pending_goto_line = true
@@ -1517,7 +1523,7 @@ editor_source_at_pointer :: proc(
 	if app == nil || rt == nil || app.editor_scroll_owner == 0 { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
 	window, window_matches := editor_view_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)
@@ -1867,7 +1873,7 @@ editor_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Point
 	if app.editor_scroll_owner == 0 || target != app.editor_scroll_owner { return }
 	document, found := find_document(&app.backend.state, app.backend.state.active)
 	if !found { return }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
 	if view.zoom.depth > 0 && !semantic_zoom_active(view) { semantic_zoom_reveal_input(app, rt, view) }
@@ -1965,7 +1971,7 @@ editor_text_key :: proc(
 	if pinned_owner { document_id = app.pinned.edit_document_id }
 	document, found := find_document(&app.backend.state, document_id)
 	if !found { return false }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return false }
 	view := &app.editor_views[view_index]
 	if !pinned_owner {
@@ -2513,7 +2519,7 @@ editor_apply_local_typing_replace :: proc(
 	if app.pinned.editing { document_id = app.pinned.edit_document_id }
 	document, found := find_document(&app.backend.state, document_id)
 	if !found { return false }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return false }
 	group_id := editor_typing_group_id(&app.editor_views[view_index])
 	return editor_apply_local_replace_with_wire(
@@ -2558,7 +2564,7 @@ editor_apply_local_replace_with_wire :: proc(
 		alicorn.invalidate_root(rt, "Scratchpad rejected a search projection edit outside its source segment")
 		return false
 	}
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok {
 		set_error(app, "Could not retain the source document's optimistic editor view.")
 		return false
@@ -2753,7 +2759,7 @@ editor_insert_newline :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	if pinned_owner { document_id = app.pinned.edit_document_id }
 	document, found := find_document(&app.backend.state, document_id)
 	if !found { return true }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return true }
 	view := &app.editor_views[view_index]
 	if !pinned_owner { semantic_zoom_reveal_input(app, rt, view) }
@@ -3045,7 +3051,7 @@ editor_dispatch_next_edit :: proc(app: ^App) -> (accepted: bool, message: string
 		set_error(app, "The document was reopened before its queued edit could be applied; committed text was kept for recovery when possible.")
 		return editor_dispatch_next_edit(app)
 	}
-	view_index, view_ok := editor_view_ensure(&app.editor_views, edit.document_id)
+	view_index, view_ok := app_editor_view_ensure(app, edit.document_id)
 	if !view_ok { return false, "could not retain the document's authoritative editor revision" }
 	view := &app.editor_views[view_index]
 	if view.authoritative_revision == 0 { view.authoritative_revision = document.editor_revision }
@@ -3403,7 +3409,7 @@ editor_text_input :: proc(
 	if pinned_owner { document_id = app.pinned.edit_document_id }
 	document, found := find_document(&app.backend.state, document_id)
 	if !found { return }
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { set_error(app, "Could not retain the source document's optimistic editor view."); return }
 	view := &app.editor_views[view_index]
 	if view.document_instance_id != 0 && view.document_instance_id != document.instance_id {
@@ -3953,7 +3959,7 @@ editor_apply_backend_selection :: proc(
 		// mode before applying such a selection.
 		pinned_edit_finish(app, rt, false)
 	}
-	view_index, view_ok := editor_view_ensure(&app.editor_views, selection.document_id)
+	view_index, view_ok := app_editor_view_ensure(app, selection.document_id)
 	if !view_ok { set_error(app, "Could not restore the document selection after a command."); return }
 	view := &app.editor_views[view_index]
 	editor_undo_group_break(view)
@@ -4123,6 +4129,9 @@ editor_views_prune :: proc(app: ^App) {
 		   !app.editor_views[index].preedit_recoverable {
 			view := &app.editor_views[index]
 			bridge.visible_window_lane_cancel_view(editor_visible_window_lane(app), view.view_id)
+			if app.workbench_model_ready {
+				_ = workbench_model_view_close(&app.workbench_model, View_ID(view.view_id))
+			}
 			editor_view_remove(&app.editor_views, index)
 		}
 	}
@@ -4178,6 +4187,8 @@ application_stop :: proc(state: rawptr) {
 	app.tree_scroll_owner = 0
 	editor_window_destroy(&app.editor_window)
 	editor_views_destroy(&app.editor_views)
+	workbench_model_destroy(&app.workbench_model)
+	app.workbench_model_ready = false
 	delete(app.editor_row_targets)
 	app.editor_row_targets = {}
 	for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(app, index) }
@@ -4261,6 +4272,19 @@ main :: proc() {
 	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
 	app.editor_text_scale = 1
 	app.workbench_view = .Document
+	if !workbench_model_init(&app.workbench_model) {
+		fmt.eprintln("Could not initialize Scratchpad's workbench model.")
+		os.exit(1)
+	}
+	primary_window_id, primary_group_id, workbench_window_ok := workbench_model_window_add(&app.workbench_model)
+	if !workbench_window_ok {
+		workbench_model_destroy(&app.workbench_model)
+		fmt.eprintln("Could not create Scratchpad's primary workbench window.")
+		os.exit(1)
+	}
+	app.primary_workbench_window_id = primary_window_id
+	app.primary_workbench_group_id = primary_group_id
+	app.workbench_model_ready = true
 	init_menus(&app)
 	if config_root, config_error := os.user_config_dir(context.allocator); config_error == nil {
 		preferences_directory, preferences_path, ok := scratchpad_theme_preferences_location(config_root, context.allocator)

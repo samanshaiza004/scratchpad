@@ -210,7 +210,7 @@ editor_paste_test_viewport :: proc(t: ^testing.T, scenario: Editor_Paste_Test_Ca
 	wait_started := time.tick_now()
 	for time.tick_since(wait_started) < 5*time.Second {
 		sync.mutex_lock(&app.visible_window_lane.mutex)
-		completed := app.visible_window_lane.completed_ready
+		completed := len(app.visible_window_lane.completed) > 0
 		sync.mutex_unlock(&app.visible_window_lane.mutex)
 		if completed { break }
 		time.sleep(time.Millisecond)

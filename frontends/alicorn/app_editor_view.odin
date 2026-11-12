@@ -168,11 +168,144 @@ editor_wrap_viewport_size :: proc(
 	return max(width, 240), max(height, EDITOR_ROW_HEIGHT*text_scale)
 }
 
+// Workbench owns view identity; editor state is keyed by that identity. The UI
+// still renders one group, so this preserves the current document-tab behavior
+// while separating a presentation from its document resource.
+app_workbench_document_view_ensure :: proc(
+	app: ^App,
+	document_id: string,
+	instance_id: u64 = 0,
+) -> (view_id: View_ID, ok: bool) {
+	if app == nil || document_id == "" || !app.workbench_model_ready { return {}, false }
+	for &window in app.workbench_model.windows {
+		for &view in window.views {
+			if view.kind != .Editor || view.resource.kind != .Document || view.resource.id != document_id { continue }
+			if instance_id != 0 && view.resource.instance_id != instance_id {
+				view.resource.instance_id = instance_id
+				view.lifecycle_generation += 1
+				if view.lifecycle_generation == 0 { view.lifecycle_generation = 1 }
+			}
+			return view.id, true
+		}
+	}
+	view_id, ok = workbench_model_view_add(
+		&app.workbench_model,
+		app.primary_workbench_window_id,
+		app.primary_workbench_group_id,
+		.Editor,
+		Workbench_Resource_Ref{kind=.Document, id=document_id, instance_id=instance_id},
+	)
+	if !ok { return {}, false }
+	return view_id, true
+}
+
+app_workbench_sync_open_documents :: proc(app: ^App) {
+	if app == nil || !app.workbench_model_ready || !app.backend.started { return }
+	state := &app.backend.state
+	if !app.workbench_documents_synced || app.workbench_synced_application_revision != state.application_rev {
+		for document in state.documents {
+			if _, ok := app_workbench_document_view_ensure(app, document.id, document.instance_id); !ok {
+				set_error(app, "Could not retain a document view in the workbench.")
+			}
+		}
+		window_index := workbench_model_window_find(&app.workbench_model, app.primary_workbench_window_id)
+		if window_index >= 0 {
+			window := &app.workbench_model.windows[window_index]
+			for view_index := len(window.views)-1; view_index >= 0; view_index -= 1 {
+				view := window.views[view_index]
+				if view.group_id != app.primary_workbench_group_id || view.resource.kind != .Document { continue }
+				if document_is_open(state, view.resource.id) ||
+				   editor_view_find_by_id(app.editor_views[:], u64(view.id)) >= 0 { continue }
+				_ = workbench_model_view_close(&app.workbench_model, view.id)
+			}
+		}
+		app.workbench_synced_application_revision = state.application_rev
+		app.workbench_documents_synced = true
+	}
+
+	active_document_id := state.active
+	if active_document_id == "" { return }
+	document, found := find_document(state, active_document_id)
+	if !found { return }
+	active_view_id, view_ok := app_workbench_document_view_ensure(app, document.id, document.instance_id)
+	if !view_ok { return }
+	// Ensure may append to the model's window array, so resolve the window and
+	// group only after the active resource has been synchronized.
+	window_index := workbench_model_window_find(&app.workbench_model, app.primary_workbench_window_id)
+	if window_index < 0 { return }
+	window := &app.workbench_model.windows[window_index]
+	group_index := workbench_group_find(window, app.primary_workbench_group_id)
+	if group_index < 0 { return }
+	active_view_index := workbench_view_find(window, window.groups[group_index].active_view_id)
+	active_view_matches := active_view_index >= 0 &&
+		window.views[active_view_index].resource.id == active_document_id
+	if !active_view_matches {
+		_ = workbench_group_activate_view(window, app.primary_workbench_group_id, active_view_id)
+	}
+}
+
+app_workbench_view_resource_rekey :: proc(
+	app: ^App,
+	view_id: u64,
+	new_resource_id: string,
+	instance_id: u64,
+) -> bool {
+	if app == nil || !app.workbench_model_ready || view_id == 0 || new_resource_id == "" { return false }
+	for &window in app.workbench_model.windows {
+		if view_index := workbench_view_find(&window, View_ID(view_id)); view_index >= 0 {
+			view := &window.views[view_index]
+			owned_id, clone_error := strings.clone(new_resource_id, app.workbench_model.allocator)
+			if clone_error != nil { return false }
+			if len(view.resource.id) > 0 { delete(view.resource.id, window.allocator) }
+			view.resource.id = owned_id
+			if instance_id != 0 && view.resource.instance_id != instance_id {
+				view.resource.instance_id = instance_id
+				view.lifecycle_generation += 1
+				if view.lifecycle_generation == 0 { view.lifecycle_generation = 1 }
+			}
+			return true
+		}
+	}
+	return true
+}
+
+app_editor_transient_view_ensure :: proc(app: ^App, document_id: string) -> (index: int, ok: bool) {
+	if app == nil || document_id == "" { return -1, false }
+	if existing := editor_view_find(app.editor_views[:], document_id); existing >= 0 { return existing, true }
+	view_id := u64(0x8000_0000_0000_0000)
+	for view in app.editor_views {
+		if view.view_id < view_id { continue }
+		if view.view_id == max(u64) { return -1, false }
+		view_id = view.view_id+1
+	}
+	return editor_view_ensure_for_id(&app.editor_views, view_id, document_id)
+}
+
+app_editor_view_ensure :: proc(app: ^App, document_id: string) -> (index: int, ok: bool) {
+	if app == nil { return -1, false }
+	if !app.workbench_model_ready { return editor_view_ensure(&app.editor_views, document_id) }
+	if document, found := find_document(&app.backend.state, document_id); found {
+		view_id, view_ok := app_workbench_document_view_ensure(app, document_id, document.instance_id)
+		if !view_ok { return -1, false }
+		return editor_view_ensure_for_id(&app.editor_views, u64(view_id), document_id)
+	}
+	for &window in app.workbench_model.windows {
+		for view in window.views {
+			if view.kind == .Editor && view.resource.kind == .Document && view.resource.id == document_id {
+				return editor_view_ensure_for_id(&app.editor_views, u64(view.id), document_id)
+			}
+		}
+	}
+	// Pinned or recovery surfaces may need transient source state for a resource
+	// that is not an open workbench tab. Keep that state outside pane topology
+	// and in a disjoint ID range so it cannot collide with a not-yet-instantiated
+	// workbench editor state.
+	return app_editor_transient_view_ensure(app, document_id)
+}
+
 build_document_editor :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, document: bridge.State_Document) {
-	view_index := editor_view_find(app.editor_views[:], document.id)
-	view_created := view_index < 0
-	view_ok := true
-	if view_created { view_index, view_ok = editor_view_ensure(&app.editor_views, document.id) }
+	view_created := editor_view_find(app.editor_views[:], document.id) < 0
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok {
 		gui.text(ui, "Could not retain this document's view state.")
 		return
@@ -962,7 +1095,7 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 		alicorn.container_end(ui)
 		return
 	}
-	view_index, view_ok := editor_view_ensure(&app.editor_views, document.id)
+	view_index, view_ok := app_editor_view_ensure(app, document.id)
 	if !view_ok { return }
 	view := &app.editor_views[view_index]
 	window, _ := editor_presentation_window(view, &app.editor_window, app.editor_window_ready, document.id, document.editor_revision)

@@ -458,6 +458,14 @@ workspace_mutation_migrate_editor_views :: proc(app: ^App, rt: ^alicorn.Runtime,
 		}
 		if new_document == nil { continue }
 		if index := editor_view_find(app.editor_views[:], migration.old_id); index >= 0 {
+			if app.workbench_model_ready && !app_workbench_view_resource_rekey(
+				app,
+				app.editor_views[index].view_id,
+				new_document.id,
+				new_document.instance_id,
+			) {
+				set_error(app, "The renamed document could not be rebound to its workbench view.")
+			}
 			new_id, clone_error := strings.clone(new_document.id, context.allocator)
 			if clone_error == nil {
 				delete(app.editor_views[index].document_id, context.allocator)

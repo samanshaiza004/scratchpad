@@ -240,7 +240,7 @@ editor_accessibility_requests_drain :: proc(app: ^App, rt: ^alicorn.Runtime) {
 			alicorn.semantic_request_event_destroy(rt, &event)
 			continue
 		}
-		view_index, view_found := editor_view_ensure(&app.editor_views, document.id)
+		view_index, view_found := app_editor_view_ensure(app, document.id)
 		if !view_found {
 			alicorn.semantic_request_event_destroy(rt, &event)
 			continue
