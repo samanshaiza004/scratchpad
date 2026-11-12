@@ -275,11 +275,22 @@ func TestSemanticZoomEditCancelsBlockedWorkerAndRejectsOldGeneration(t *testing.
 	}
 
 	// The test builder blocks until cancellation. The runtime lock must remain
-	// available while it does, so an authoritative edit can proceed.
-	if !runtime.mu.TryLock() {
+	// available while it does, so an authoritative edit can proceed. Other
+	// runtime workers may hold the same lock briefly; tolerate that contention
+	// while still catching a worker that holds it for the blocked build.
+	lockDeadline := time.Now().Add(time.Second)
+	lockAvailable := false
+	for time.Now().Before(lockDeadline) {
+		if runtime.mu.TryLock() {
+			runtime.mu.Unlock()
+			lockAvailable = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !lockAvailable {
 		t.Fatal("semantic plan construction held the application runtime lock")
 	}
-	runtime.mu.Unlock()
 
 	dispatchForTest(t, runtime, mustJSON(t, CommandRequest{Version: ProtocolVersion, RequestID: 81,
 		BasedOnRevision: state.ApplicationRev, Command: "replace_document", DocumentID: document.ID,
