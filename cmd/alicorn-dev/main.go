@@ -479,7 +479,7 @@ func buildCaliberAndBackend(root, caliberRoot, goExe, out string, release bool) 
 		return nil, "", err
 	}
 	if runtime.GOOS == "darwin" {
-		if err := relocateDarwinCaliber(caliberLibrary, caliberCopy, backend); err != nil {
+		if err := relocateDarwinCaliber(caliberCopy, backend); err != nil {
 			return nil, "", err
 		}
 		if err := verifyDarwinBackendArtifact(backend); err != nil {
@@ -716,15 +716,54 @@ func stageCaliberLibrary(caliberLibrary, out string) error {
 	return nil
 }
 
-func relocateDarwinCaliber(source, copyPath, backend string) error {
+func relocateDarwinCaliber(copyPath, backend string) error {
 	if err := runCommand(".", nil, "install_name_tool", "install_name_tool", "-id", "@rpath/libcaliber_ffi.dylib", copyPath); err != nil {
 		return err
 	}
-	encoded := filepath.Join(filepath.Dir(source), "deps", filepath.Base(source))
-	if err := runCommand(".", nil, "install_name_tool", "install_name_tool", "-change", encoded, "@rpath/libcaliber_ffi.dylib", backend); err != nil {
+	linkedLibraries, err := commandOutput(".", "otool", "-L", backend)
+	if err != nil {
+		return fmt.Errorf("inspect macOS backend dependencies before relocation: %w", err)
+	}
+	currentName, err := darwinDependencyInstallName(string(linkedLibraries), "libcaliber_ffi.dylib")
+	if err != nil {
+		return err
+	}
+	const desiredName = "@rpath/libcaliber_ffi.dylib"
+	if currentName == desiredName {
+		return nil
+	}
+	if err := runCommand(".", nil, "install_name_tool", "install_name_tool", "-change", currentName, desiredName, backend); err != nil {
 		return err
 	}
 	return nil
+}
+
+func darwinDependencyInstallName(linkedLibraries, libraryName string) (string, error) {
+	var matchedName string
+	for _, line := range strings.Split(linkedLibraries, "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.HasSuffix(name, ":") {
+			continue
+		}
+		if compatibility := strings.Index(name, " (compatibility version "); compatibility >= 0 {
+			name = name[:compatibility]
+		}
+		base := name
+		if separator := strings.LastIndexByte(base, '/'); separator >= 0 {
+			base = base[separator+1:]
+		}
+		if base != libraryName {
+			continue
+		}
+		if matchedName != "" && matchedName != name {
+			return "", fmt.Errorf("macOS backend links multiple %s install names: %q and %q", libraryName, matchedName, name)
+		}
+		matchedName = name
+	}
+	if matchedName == "" {
+		return "", fmt.Errorf("macOS backend does not link %s", libraryName)
+	}
+	return matchedName, nil
 }
 
 func verifyDarwinBackendArtifact(backend string) error {

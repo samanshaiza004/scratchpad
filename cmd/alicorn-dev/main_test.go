@@ -177,6 +177,61 @@ Load command 13
 	}
 }
 
+func TestDarwinDependencyInstallNameReadsActualOtoolPath(t *testing.T) {
+	tests := []struct {
+		name            string
+		linkedLibraries string
+		want            string
+		wantError       string
+	}{
+		{
+			name: "already relocatable",
+			linkedLibraries: `backend.dylib:
+	backend.dylib (compatibility version 0.0.0, current version 0.0.0)
+	@rpath/libcaliber_ffi.dylib (compatibility version 0.0.0, current version 0.0.0)
+`,
+			want: "@rpath/libcaliber_ffi.dylib",
+		},
+		{
+			name: "absolute Cargo path with spaces",
+			linkedLibraries: `backend.dylib:
+	/Users/runner/work/Scratchpad Build/debug/deps/libcaliber_ffi.dylib (compatibility version 0.0.0, current version 0.0.0)
+`,
+			want: "/Users/runner/work/Scratchpad Build/debug/deps/libcaliber_ffi.dylib",
+		},
+		{
+			name:            "missing Caliber dependency",
+			linkedLibraries: "backend.dylib:\n\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit\n",
+			wantError:       "does not link libcaliber_ffi.dylib",
+		},
+		{
+			name: "ambiguous Caliber dependencies",
+			linkedLibraries: `backend.dylib:
+	@rpath/libcaliber_ffi.dylib (compatibility version 0.0.0, current version 0.0.0)
+	/old/path/libcaliber_ffi.dylib (compatibility version 0.0.0, current version 0.0.0)
+`,
+			wantError: "multiple libcaliber_ffi.dylib install names",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := darwinDependencyInstallName(test.linkedLibraries, "libcaliber_ffi.dylib")
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want substring %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("install name = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateDarwinBackendArtifactRejectsInvalidLoadCommands(t *testing.T) {
 	validLoadCommands := `Load command 12
           cmd LC_RPATH
