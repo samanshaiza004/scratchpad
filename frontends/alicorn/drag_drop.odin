@@ -39,7 +39,8 @@ application_drag :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Dra
 		workspace_drag_clear(app, reset_motion=true, snap_motion=true)
 		alicorn.invalidate_root(rt, "Scratchpad tab drag completed")
 	case .Cancelled:
-		if app.workspace_drag_kind == .Tabs && floating_window_drag_detached(rt, event) {
+		if app.workspace_drag_kind == .Tabs && app.workspace_drag_source_document_id != "" &&
+		   floating_window_drag_detached(rt, event) {
 			_ = floating_window_open(app, rt, app.workspace_drag_source_document_id)
 		}
 		workspace_drag_clear(app, reset_motion=true)
@@ -58,8 +59,10 @@ application_drag :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Dra
 
 workspace_drag_target_set :: proc(app: ^App, target: alicorn.Semantic_ID, position: alicorn.Drop_Position) {
 	if app == nil { return }
-	if target.namespace != TAB_SEMANTIC_NAMESPACE ||
-		(position != .Before && position != .After) {
+	valid_tab_target := (target.namespace == WORKBENCH_TAB_SEMANTIC_NAMESPACE || target.namespace == TAB_SEMANTIC_NAMESPACE) &&
+		(position == .Before || position == .After)
+	valid_group_target := target.namespace == WORKBENCH_GROUP_SEMANTIC_NAMESPACE && position == .On
+	if !valid_tab_target && !valid_group_target {
 		app.workspace_drag_target = {}
 		app.workspace_drag_position = .None
 		return
@@ -72,14 +75,32 @@ workspace_drag_capture_source :: proc(app: ^App, event: alicorn.Drag_Event) -> b
 	if app == nil || !app.backend.started { return false }
 	switch event.drag_type {
 	case SCRATCHPAD_DRAG_TABS:
-		for document in app.backend.state.documents {
-			if document_tab_semantic_id(document.id) != event.source { continue }
-			copy, err := strings.clone(document.id, context.allocator)
-			if err != nil { return false }
-			app.workspace_drag_kind = .Tabs
-			app.workspace_drag_source_document_id = copy
-			return true
+		window := app_workbench_window(app)
+		if window == nil { return false }
+		view_id: View_ID
+		view_index := -1
+		if event.source.namespace == WORKBENCH_TAB_SEMANTIC_NAMESPACE {
+			view_id = View_ID(event.source.value)
+			view_index = workbench_view_find(window, view_id)
+		} else if event.source.namespace == TAB_SEMANTIC_NAMESPACE {
+			for view, index in window.views {
+				if view.kind == .Editor && document_tab_semantic_id(view.resource.id) == event.source {
+					view_id, view_index = view.id, index
+					break
+				}
+			}
+		} else {
+			return false
 		}
+		if view_index < 0 { return false }
+		app.workspace_drag_kind = .Tabs
+		app.workspace_drag_source_view_id = view_id
+		if window.views[view_index].kind == .Editor {
+			copy, err := strings.clone(window.views[view_index].resource.id, context.allocator)
+			if err != nil { app.workspace_drag_source_view_id = {}; return false }
+			app.workspace_drag_source_document_id = copy
+		}
+		return true
 	case SCRATCHPAD_DRAG_WORKSPACE:
 		rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 		defer delete(rows)
@@ -101,35 +122,62 @@ workspace_drag_apply_drop :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicor
 	if app == nil || rt == nil || !app.backend.started { return }
 	switch app.workspace_drag_kind {
 	case .Tabs:
-		if event.drag_type != SCRATCHPAD_DRAG_TABS || event.target.namespace != TAB_SEMANTIC_NAMESPACE { return }
-		target_id := ""
-		for document in app.backend.state.documents {
-			if document_tab_semantic_id(document.id) == event.target {
-				target_id = document.id
-				break
+		if event.drag_type != SCRATCHPAD_DRAG_TABS || app.workspace_drag_source_view_id == 0 { return }
+		window := app_workbench_window(app)
+		if window == nil { return }
+		changed := false
+		source_was_active := false
+		if source_index := workbench_view_find(window, app.workspace_drag_source_view_id); source_index >= 0 {
+			if source_group_index := workbench_group_find(window, window.views[source_index].group_id); source_group_index >= 0 {
+				source_was_active = window.groups[source_group_index].active_view_id == app.workspace_drag_source_view_id
 			}
 		}
-		if target_id == "" { return }
-		order, changed := workspace_tab_order_after_drop(
-			app.backend.state.documents,
-			app.workspace_drag_source_document_id,
-			target_id,
-			event.position,
-			context.temp_allocator,
-		)
-		defer delete(order)
-		if len(order) == 0 { return }
-		source_preview := false
-		for document in app.backend.state.documents {
-			if document.id == app.workspace_drag_source_document_id {
-				source_preview = document.preview
-				break
+		reorder_group_id := Pane_Group_ID{}
+		persist_document_order := false
+		if event.target.namespace == WORKBENCH_GROUP_SEMANTIC_NAMESPACE && event.position == .On {
+			group_id := Pane_Group_ID(event.target.value)
+			if app_workbench_view_move_allowed(window, app.workspace_drag_source_view_id, group_id) {
+				changed = workbench_model_view_move(
+					&app.workbench_model, app.workspace_drag_source_view_id,
+					app.primary_workbench_window_id, group_id,
+				)
+			}
+		} else if (event.target.namespace == WORKBENCH_TAB_SEMANTIC_NAMESPACE ||
+		          event.target.namespace == TAB_SEMANTIC_NAMESPACE) &&
+		         (event.position == .Before || event.position == .After) {
+			target_view_id := View_ID(event.target.value)
+			if event.target.namespace == TAB_SEMANTIC_NAMESPACE {
+				for view in window.views {
+					if view.kind == .Editor && document_tab_semantic_id(view.resource.id) == event.target {
+						target_view_id = view.id
+						break
+					}
+				}
+			}
+			if target_index := workbench_view_find(window, target_view_id); target_index >= 0 {
+				target_group_id := window.views[target_index].group_id
+				source_index := workbench_view_find(window, app.workspace_drag_source_view_id)
+				if source_index >= 0 && window.views[source_index].group_id == target_group_id &&
+				   window.views[source_index].kind == .Editor && window.views[target_index].kind == .Editor {
+					reorder_group_id = target_group_id
+					persist_document_order = true
+				}
+				if app_workbench_view_move_allowed(window, app.workspace_drag_source_view_id, target_group_id) {
+					changed = workbench_model_view_drop_relative(
+						&app.workbench_model, app.primary_workbench_window_id,
+						app.workspace_drag_source_view_id, target_view_id,
+						event.position == .After,
+					)
+				}
 			}
 		}
-		if !changed && !source_preview { return }
-		response := bridge.backend_command(&app.backend, "reorder_documents", document_order=order[:])
-		handle_command_result(app, rt, &response)
-		bridge.backend_command_result_destroy(&response, context.allocator)
+		if changed {
+			if source_was_active { app.workbench_pending_view_focus_id = app.workspace_drag_source_view_id }
+			if persist_document_order {
+				workbench_persist_editor_tab_order(app, rt, reorder_group_id)
+			}
+			alicorn.invalidate_root(rt, "Scratchpad moved a workbench view")
+		}
 	case .Workspace:
 		if event.drag_type != SCRATCHPAD_DRAG_WORKSPACE { return }
 		target_path, found := workspace_drag_target_path(app, event.target)
@@ -156,11 +204,43 @@ workspace_drag_apply_drop :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicor
 	}
 }
 
+workbench_persist_editor_tab_order :: proc(app: ^App, rt: ^alicorn.Runtime, group_id: Pane_Group_ID) {
+	if app == nil || rt == nil || !app.backend.started { return }
+	window := app_workbench_window(app)
+	if window == nil { return }
+	ordered_views := workbench_group_views_ordered(window, group_id)
+	defer delete(ordered_views)
+	if len(ordered_views) == 0 { return }
+	for view_id in ordered_views {
+		index := workbench_view_find(window, view_id)
+		if index < 0 || window.views[index].kind != .Editor { return }
+	}
+	visible_indices := floating_window_tab_document_indices(
+		app.backend.state.documents,
+		app.floating_window.document_id if app.floating_window != nil else "",
+		context.temp_allocator,
+	)
+	defer delete(visible_indices)
+	if len(visible_indices) != len(ordered_views) { return }
+	order := make([dynamic]string, 0, len(app.backend.state.documents), allocator=context.temp_allocator)
+	defer delete(order)
+	for document in app.backend.state.documents { append(&order, document.id) }
+	for view_id, index in ordered_views {
+		view_index := workbench_view_find(window, view_id)
+		if view_index < 0 || index >= len(visible_indices) { return }
+		order[visible_indices[index]] = window.views[view_index].resource.id
+	}
+	response := bridge.backend_command(&app.backend, "reorder_documents", document_order=order[:])
+	handle_command_result(app, rt, &response)
+	bridge.backend_command_result_destroy(&response, context.allocator)
+}
+
 workspace_drag_clear :: proc(app: ^App, reset_motion := false, snap_motion := false) {
 	if app == nil { return }
 	if len(app.workspace_drag_source_document_id) > 0 { delete(app.workspace_drag_source_document_id, context.allocator) }
 	if len(app.workspace_drag_source_path) > 0 { delete(app.workspace_drag_source_path, context.allocator) }
 	app.workspace_drag_source_document_id = ""
+	app.workspace_drag_source_view_id = {}
 	app.workspace_drag_source_path = ""
 	app.workspace_drag_source_is_dir = false
 	app.workspace_drag_kind = .None

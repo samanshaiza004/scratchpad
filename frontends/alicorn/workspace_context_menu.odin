@@ -233,5 +233,6 @@ application_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.
 	if pinned_context_pointer(app,rt,event) { return }
 	if workspace_search_pointer(app, rt, event, target) { return }
 	if workspace_context_menu_pointer(app, rt, event, target) { return }
+	workbench_group_activate_from_pointer(app, rt, event)
 	editor_pointer(state, rt, event, target)
 }

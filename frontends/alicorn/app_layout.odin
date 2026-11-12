@@ -23,6 +23,7 @@ build_app :: proc(
 	scratchpad_image_preview_sync(app, rt)
 	session_ui_prepare(app, rt)
 	app_workbench_sync_open_documents(app)
+	app_workbench_view_scroll_capture_hidden(app, rt)
 	pinned_refresh(app,rt)
 	pinned_appearance_fixture_prepare(app,rt)
 	ui, should_build := alicorn.begin_frame(rt)
@@ -48,6 +49,8 @@ build_app :: proc(
 	app.git_commit_message_node = 0
 	_ = find_capture_text_field(rt, app.git_history_filter_node, &app.git_history_filter)
 	app.git_history_filter_node = 0
+	app.git_history_graph_node = 0
+	app.git_history_list_node = 0
 	git_workbench_sync_repository(app)
 	git_diff_sync(app)
 	if active, found := find_document(&app.backend.state, app.backend.state.active); found &&
@@ -60,6 +63,11 @@ build_app :: proc(
 		app.editor_focus_pending = false
 		app.editor_input_anchor_node = 0
 		if floating_window_contains(app, active.id) { editor_accessibility_retire(app, rt) }
+	}
+	if !app_workbench_editor_rendered(app) {
+		app.editor_scroll_owner = 0
+		app.editor_input_anchor_node = 0
+		editor_accessibility_retire(app, rt)
 	}
 	app.image_scroll_owner = 0
 	if app.workspace_search_tab_open { workspace_search_start_query(app, rt) }
@@ -187,15 +195,16 @@ build_app :: proc(
 		}
 
 		alicorn.container_begin(&ui, .Container, label="document-workbench", style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true), color=alicorn.style_color(&ui, .Surface))
-		when ODIN_OS != .Darwin && ODIN_OS != .Windows {
+		if !workbench_group_split_has_multiple(app) {
+			when ODIN_OS != .Darwin && ODIN_OS != .Windows {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("document-tabs"), label="document-tabs", style=alicorn.layout_style(.Row, height=42, gap=2, padding=5, clip=true), material=scratchpad_surface_material(app, app.raised_surface_material), physical_height=scratchpad_surface_height(app, 0.65))
 			scratchpad_document_tabs_build(app, &ui, rt, width=0, height=32, compact=false, show_empty=true)
 			alicorn.surface_end(&ui)
+			}
 		}
 		pinned_side_open := !app.workspace_search_mode && app.pinned.visible && !app.pinned.narrow_source && f32(logical_width)-app.workspace_sidebar_width >= 760
-		show_source := app.workspace_search_mode || app.workbench_split_open || !git_workbench_is_document(app) || !app.pinned.visible || pinned_side_open || app.pinned.narrow_source
+		show_source := app.workspace_search_mode || workbench_group_split_has_multiple(app) || !git_workbench_is_document(app) || !app.pinned.visible || pinned_side_open || app.pinned.narrow_source
 		app.pinned.single_pane=app.pinned.visible && !pinned_side_open && !app.pinned.narrow_source
-		workbench_split: alicorn.Split_Handle
 		if app.find_open && show_source {
 			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			if gui.row(&ui, label="scratchpad-find-bar", height=38, gap=8, align=.Center) {
@@ -255,26 +264,6 @@ build_app :: proc(
 		}
 		workbench_content_width := f32(logical_width)-app.workspace_sidebar_width
 		if pinned_side_open { workbench_content_width = pinned_split.position }
-		if show_source && app.workbench_split_open {
-			initial := app.workbench_split_position
-			secondary_min := f32(300)
-			initial_ratio := f32(0.56)
-			if app.workbench_secondary_view == .Git_History {
-				secondary_min = 560
-				initial_ratio = 0.46
-			}
-			if initial < 300 || initial > workbench_content_width-secondary_min {
-				initial = min(workbench_content_width-secondary_min, max(300, workbench_content_width*initial_ratio))
-			}
-			workbench_split = alicorn.split_begin(&ui,
-				key=alicorn.key_string("scratchpad-workbench-view-split"), axis=.Horizontal,
-				initial=initial, min_first=300, min_second=secondary_min,
-				style=alicorn.layout_style(.Row, grow=1, gap=2, clip=true),
-				label="workbench-primary-and-secondary-view")
-			app.workbench_split_position = workbench_split.position
-			workbench_content_width = workbench_split.position
-			alicorn.split_first_begin(&ui, workbench_split)
-		}
 		if show_source && app.pinned.visible && app.pinned.narrow_source {
 			if gui.row(&ui,label="pinned-return-banner",height=30,gap=6,align=.Center) {
 				label:=fmt.tprintf("Pinned · %d ranges",len(app.pinned.snapshot.ranges))
@@ -287,88 +276,16 @@ build_app :: proc(
 			}
 		}
 		if show_source {
-		app.git_history_graph_node = 0
-		app.git_history_list_node = 0
-		app.git_history_graph_first = 0
-		app.git_history_graph_last = 0
-		editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
-		alicorn.surface_begin(&ui, alicorn.surface_extension_color_role(scratchpad_editor_paper_surface_role()), key=alicorn.key_string("document-surface"), label="document-surface", style=alicorn.layout_style(.Column, grow=1, align=.Start, clip=true), material=scratchpad_surface_material(app, app.paper_surface_material), physical_height=scratchpad_surface_height(app, -0.75), open_top_edge=app.document_connected_tab_node)
-		build_startup_notice(app, &ui, rt)
-		if app.workbench_view == .Git_History {
-			git_history_build(app, &ui, rt, dpi_scale, workbench_content_width)
-		} else if app.workbench_view == .Git_Diff {
-			git_diff_build(app, &ui, rt)
-		} else if app.workspace_search_mode {
-			workspace_search_editor_build(app, &ui, rt)
-		} else if active, found := find_document(state, state.active); found {
-			if alicorn.component_begin(&ui, alicorn.key_string(active.id)) {
-				if floating_window_contains(app, active.id) {
-					if gui.column(&ui, label="floating-document-placeholder", height=-1, grow=1, align=.Center, justify=.Center, gap=10) {
-						gui.text(&ui, "No document open in this window.")
-						if gui.button(&ui, "Return to tabs", key="floating-document-return-main", width=140, height=32, variant=.Toolbar) {
-							floating_window_return_to_tabs(app)
-						}
-					}
-				} else {
-					switch active.view_kind {
-				case "image":
-					editor_accessibility_retire(app, rt)
-					build_image_preview(app, &ui, rt, active, dpi_scale)
-				case "unsupported":
-					editor_accessibility_retire(app, rt)
-					build_unsupported_file_view(app, &ui, active)
-				case:
-					build_document_editor(app, &ui, rt, active)
-					}
-				}
-				alicorn.component_end(&ui)
+			editor_theme_scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.editor_theme})
+			window := app_workbench_window(app)
+			if window != nil {
+				workbench_pane_render_node(
+					app, &ui, rt, dpi_scale, workbench_content_width,
+					f32(logical_height)-SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT,
+					window.root_node_id,
+				)
 			}
-		} else {
-			editor_accessibility_retire(app, rt)
-			if gui.column(&ui, label="workspace-empty-editor-welcome", height=-1, grow=1, align=.Center, justify=.Center, gap=12) {
-				if app.brand_mark != 0 { _ = alicorn.image(&ui, app.brand_mark, alt_text="Scratchpad mark", key=alicorn.key_string("scratchpad-brand-mark"), style=alicorn.layout_style(.Row, width=40, height=40)) }
-				gui.text(&ui, "No document open")
-				gui.text(&ui, "Open a file from this workspace to begin editing.")
-				if gui.button(&ui, "Quick Open…", key="empty-editor-quick-open", width=210, height=42, variant=.Primary) {
-					quick_open_open_surface(app, rt)
-				}
-				gui.text(&ui, "Ctrl+P opens Quick Open")
-			}
-		}
-		alicorn.style_environment_pop(&ui, editor_theme_scope)
-		alicorn.surface_end(&ui)
-		if !app.workspace_search_mode && git_workbench_is_document(app) {
-			if active, found := find_document(state, state.active); found && !floating_window_contains(app, active.id) {
-				build_document_status(app, &ui, rt, active)
-			}
-		}
-		if show_source && app.workbench_split_open {
-			alicorn.split_first_end(&ui, workbench_split)
-			alicorn.split_divider(&ui, workbench_split)
-			alicorn.split_second_begin(&ui, workbench_split)
-			secondary_width := max(f32(logical_width)-app.workspace_sidebar_width-workbench_split.position-2, 160)
-			if pinned_side_open { secondary_width = max(pinned_split.position-workbench_split.position-2, 160) }
-			alicorn.container_begin(&ui, .Container, label="workbench-secondary-view",
-				style=alicorn.layout_style(.Column, grow=1, gap=0, clip=true),
-				color=alicorn.style_color(&ui, .Surface))
-			if gui.row(&ui, label="workbench-secondary-view-heading", height=36, gap=8, align=.Center) {
-				label := "History"
-				if app.workbench_secondary_view == .Git_Diff { label = "Diff" }
-				gui.text(&ui, label, style=alicorn.layout_style(.Row, grow=1),
-					text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD, overflow=.Ellipsis})
-				if gui.button(&ui, "×", key="workbench-secondary-close", width=30, height=28, variant=.Toolbar) {
-					git_workbench_close_split(app, rt)
-				}
-			}
-			if app.workbench_secondary_view == .Git_History {
-				git_history_build(app, &ui, rt, dpi_scale, secondary_width)
-			} else if app.workbench_secondary_view == .Git_Diff {
-				git_diff_build(app, &ui, rt, secondary=true)
-			}
-			alicorn.container_end(&ui)
-			alicorn.split_second_end(&ui, workbench_split)
-			alicorn.split_end(&ui, workbench_split)
-		}
+			alicorn.style_environment_pop(&ui, editor_theme_scope)
 		}
 		if pinned_side_open {
 			alicorn.split_first_end(&ui,pinned_split)
@@ -497,6 +414,9 @@ build_app :: proc(
 	alicorn.style_environment_pop(&ui, workbench_style_scope)
 
 	alicorn.end_frame(&ui)
+	app_workbench_view_close_pending_apply(app, rt)
+	app_workbench_view_scroll_restore_after_frame(app, rt)
+	app_workbench_view_focus_after_frame(app, rt)
 	git_history_finalize_geometry(app, rt)
 	if app.editor_row_trace.path != "" && app.editor_window_ready && len(app.editor_row_targets) > 0 {
 		editor_row_trace_capture(
@@ -794,13 +714,9 @@ scratchpad_document_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alic
 		style=alicorn.layout_style(.Row, height=metrics.header.h, gap=0, align=.Center, clip=true),
 		color=alicorn.style_color(ui, .Subtle_Surface))
 	visible_tabs := 0
-	for document in app.backend.state.documents {
-		if app.floating_window != nil && document.id == app.floating_window.document_id { continue }
-		visible_tabs += 1
+	if window := app_workbench_window(app); window != nil && len(window.groups) == 1 {
+		visible_tabs = app_workbench_tab_count(app, window.groups[0].id)
 	}
-	if app.workspace_search_tab_open { visible_tabs += 1 }
-	if app.git_history_tab_open { visible_tabs += 1 }
-	if app.git_diff_tab_open { visible_tabs += 1 }
 	if visible_tabs > 0 {
 		tabs := alicorn.container_begin(ui, .Container,
 			label="scratchpad-titlebar-tabs-region",
@@ -858,13 +774,9 @@ scratchpad_content_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alico
 	)
 
 	visible_tabs := 0
-	for document in app.backend.state.documents {
-		if app.floating_window != nil && document.id == app.floating_window.document_id { continue }
-		visible_tabs += 1
+	if window := app_workbench_window(app); window != nil && len(window.groups) == 1 {
+		visible_tabs = app_workbench_tab_count(app, window.groups[0].id)
 	}
-	if app.workspace_search_tab_open { visible_tabs += 1 }
-	if app.git_history_tab_open { visible_tabs += 1 }
-	if app.git_diff_tab_open { visible_tabs += 1 }
 	drag_reserve := min(160, available_width*0.2)
 	tab_width := min(f32(visible_tabs)*180, max(available_width-drag_reserve, 0))
 	if visible_tabs > 0 && tab_width > 0 {
@@ -906,151 +818,16 @@ scratchpad_document_tabs_build :: proc(
 	show_empty: bool,
 ) {
 	if app == nil || ui == nil || rt == nil { return }
-	state := &app.backend.state
-	detached_document_id := ""
-	if app.floating_window != nil { detached_document_id = app.floating_window.document_id }
-	tab_document_indices := floating_window_tab_document_indices(state.documents, detached_document_id, context.temp_allocator)
-	defer delete(tab_document_indices)
-	if len(tab_document_indices) == 0 && !app.workspace_search_tab_open && !app.git_history_tab_open && !app.git_diff_tab_open {
-		if show_empty {
-			empty_label := "No documents open" if len(state.documents) == 0 else "No documents in this window"
-			gui.text(ui, empty_label, style=alicorn.layout_style(.Row, grow=1, height=height))
+	window := app_workbench_window(app)
+	if window == nil || len(window.groups) != 1 {
+		if show_empty && (window == nil || len(window.groups) == 0) {
+			gui.text(ui, "No views open", style=alicorn.layout_style(.Row, grow=1, height=height))
 		}
 		return
 	}
-	tab_items := make([dynamic]alicorn.Tab_Bar_Item, 0, len(tab_document_indices)+3, allocator=context.temp_allocator)
-	defer delete(tab_items)
-	for index in tab_document_indices {
-		document := state.documents[index]
-		title := document_title(document.path)
-		is_preview := document.preview && !document.dirty
-		append(&tab_items, alicorn.Tab_Bar_Item{
-			key=alicorn.key_string(document.id),
-			label=title,
-			label_italic=is_preview,
-			label_muted=is_preview,
-			tooltip=title,
-			selected=git_workbench_is_document(app) && !app.workspace_search_mode && state.active == document.id,
-			closable=true,
-			dirty=document.dirty,
-			semantic_id=document_tab_semantic_id(document.id),
-		})
-	}
-	if app.workspace_search_tab_open {
-		search_tooltip := "Workspace Search"
-		if app.workspace_search_query != "" { search_tooltip = fmt.tprintf("Search: %s", app.workspace_search_query) }
-		append(&tab_items, alicorn.Tab_Bar_Item{
-			key=alicorn.key_string("scratchpad-workspace-search-tab"),
-			label="Search",
-			tooltip=search_tooltip,
-			selected=app.workspace_search_mode,
-			closable=true,
-		})
-	}
-	if app.git_history_tab_open {
-		append(&tab_items, alicorn.Tab_Bar_Item{
-			key=alicorn.key_string("scratchpad-git-history-tab"), label="History",
-			tooltip="Repository History", selected=app.workbench_view == .Git_History, closable=true,
-		})
-	}
-	if app.git_diff_tab_open {
-		label := "Diff"
-		if app.backend.state.git.diff_path != "" { label = fmt.tprintf("Diff · %s", app.backend.state.git.diff_path) }
-		append(&tab_items, alicorn.Tab_Bar_Item{
-			key=alicorn.key_string("scratchpad-git-diff-tab"), label=label,
-			tooltip="Read-only Git Diff", selected=app.workbench_view == .Git_Diff, closable=true,
-		})
-	}
-	tab_options := alicorn.DEFAULT_TAB_BAR_OPTIONS
-	tab_options.height = height
-	tab_options.close_policy = .Selected_Or_Hover
-	tab_options.drag_type = SCRATCHPAD_DRAG_TABS
-	if !app.find_open && app.floating_window == nil {
-		tab_options.drag_tracking = alicorn.DRAG_TRACKING_HORIZONTAL_MAGNETIC
-	}
-	tab_style := alicorn.layout_style(.Row, grow=1, height=height, clip=true)
-	if compact {
-		tab_options.min_tab_width = SCRATCHPAD_CONTENT_TITLEBAR_MIN_TAB_WIDTH
-		tab_options.max_tab_width = 180
-		tab_options.gap = 0
-		tab_options.presentation = .Compact
-		if width > 0 { tab_style = alicorn.layout_style(.Row, width=width, height=height, clip=true) }
-		if !app.find_open {
-			if paper, found := alicorn.style_extension_color(rt, app.editor_theme, scratchpad_editor_paper_surface_role()); found {
-				tab_options.appearance = .Connected
-				tab_options.selected_fill = paper
-				tab_options.selected_text = alicorn.style_theme_color(rt, app.editor_theme, .Text)
-				tab_options.selected_fill_set = true
-			}
-		}
-	}
-	if app.workspace_drag_motion_reset_pending {
-		tab_options.animate_drag_reorder = true
-	} else if compact && !app.find_open && app.floating_window == nil {
-		tab_options.animate_drag_reorder = true
-		tab_options.drag_preview_mode = .Source_Subtree
-	}
-	tab_result := alicorn.tab_bar(
-		ui,
-		alicorn.key_string("scratchpad-document-tab-bar"),
-		tab_items[:],
-		tab_options,
-		tab_style,
+	scratchpad_workbench_group_tabs_build(
+		app, ui, rt, window.groups[0].id, width, height, compact, show_empty,
 	)
-	tab_document_nodes := tab_result.item_nodes
-	if len(tab_document_nodes) >= len(tab_document_indices) {
-		tab_document_nodes = tab_document_nodes[:len(tab_document_indices)]
-	}
-	scratchpad_document_tabs_reorder_motion(
-		app, ui, rt, state.documents, tab_document_indices[:], tab_document_nodes,
-		compact && app.floating_window == nil,
-	)
-	if compact && !app.find_open { app.document_connected_tab_node = tab_result.selected_tab }
-	item_index := tab_result.item_index
-	if tab_result.action != .None && app.workspace_search_tab_open && item_index == len(tab_document_indices) {
-		if tab_result.action == .Select {
-			workspace_search_open_surface(app, rt)
-		} else {
-			_ = workspace_search_close_tab(app, rt)
-		}
-	} else {
-		if app.workspace_search_tab_open && item_index > len(tab_document_indices) { item_index -= 1 }
-		if tab_result.action != .None && item_index == len(tab_document_indices) && app.git_history_tab_open {
-			if tab_result.action == .Select { git_workbench_select(app, rt, .Git_History) }
-			else {
-				app.git_history_tab_open = false
-				if app.workbench_split_open && app.workbench_secondary_view == .Git_History {
-					git_workbench_close_split(app, rt)
-				}
-				if app.workbench_view == .Git_History { app.workbench_view = .Document }
-				alicorn.invalidate_root(rt, "Scratchpad Git History tab closed")
-			}
-		} else {
-			if app.git_history_tab_open && item_index > len(tab_document_indices) { item_index -= 1 }
-			if tab_result.action != .None && item_index == len(tab_document_indices) && app.git_diff_tab_open {
-				if tab_result.action == .Select { git_workbench_select(app, rt, .Git_Diff) }
-				else {
-					app.git_diff_tab_open = false
-					if app.workbench_split_open && app.workbench_secondary_view == .Git_Diff {
-						git_workbench_close_split(app, rt)
-					}
-					if app.workbench_view == .Git_Diff { app.workbench_view = .Document }
-					alicorn.invalidate_root(rt, "Scratchpad Git Diff tab closed")
-				}
-			} else if tab_result.action != .None && item_index >= 0 && item_index < len(tab_document_indices) {
-		if tab_result.action == .Select && app.workspace_search_mode {
-			if !workspace_search_deactivate(app, rt) { return }
-		}
-		if tab_result.action == .Select { app.workbench_view = .Document }
-		document_id := state.documents[tab_document_indices[tab_result.item_index]].id
-		action := Deferred_Action_Kind.Select_Document if tab_result.action == .Select else Deferred_Action_Kind.Close_Document
-		if !frame_deferred_action_schedule(app, action, document_id) {
-			set_error(app, "Could not queue the document tab action until the current frame is complete.")
-			alicorn.invalidate_root(rt, "Scratchpad could not defer a document tab action")
-		}
-		}
-		}
-	}
 }
 
 scratchpad_document_tabs_reorder_motion :: proc(

@@ -23,6 +23,16 @@ as separate entries.
   the Go backend. Git status uses porcelain v2, repository paths and subprocess
   arguments are validated, stale workspace results are discarded, and historical
   diffs remain separate from editable document buffers.
+- Added a recursive workbench pane tree for Editor, History, and Diff views,
+  with group-local tabs, tab reordering and movement between groups, and
+  side-by-side History/Diff workflows. The existing Source Control sidebar
+  remains the compact repository navigator; document editing still uses one
+  editor-bearing group, and pane placement is not yet persisted.
+
+### Fixed
+
+- Kept open-document synchronization retryable after a workbench view allocation
+  or activation failure, so a partial sync cannot be cached as complete.
 
 ## [0.2.0] — 2026-11-11
 

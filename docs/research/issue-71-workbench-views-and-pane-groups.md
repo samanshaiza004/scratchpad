@@ -4,37 +4,57 @@
 
 Baseline: Scratchpad v0.2.0, commit **05631867b6a6c238aeea59184fa4abcaa581696f**. The pinned Alicorn dependency is **655c0f07dc73b3e22da184ea78e479acd0b0758f**.
 
-## Recommendation
+## Original recommendation
 
 Implement #71 as a first workbench slice, while keeping its promise narrow: add stable view instances and a small split/tab-group tree around the existing document and view code. Keep file bytes and edit history in the existing Go document. A pane contains a view reference; it never becomes the owner of a document, repository, or process.
 
 Do not start with a universal resource registry, plugin API, layout solver, persistent compositor, or terminal implementation. Use typed references to the resource owners that already exist. Integrate History and Diff through their own resource/view types as #73 lands; terminal views follow the #40/#41 decision.
 
-The central implementation change is to stop using a document identifier as the identity of its presentation. One document may have several independently navigable views.
+The central implementation change was to stop using a document identifier as the identity of its presentation. The current workbench has stable view IDs, but the app still does not offer multiple independent editor views of one document.
 
-## Implementation status — 2026-11-11
+## Current implementation status — 2026-11-11
 
-The first application-integration slice is in place on top of the request-worker and topology foundation from `bcac6eb`:
+This document began as a proposal from the v0.2.0 baseline. The current
+unreleased implementation has since added a recursive workbench UI and
+integrated the retired Alicorn History application's useful Git surfaces:
 
-- `App` owns a `Workbench_Model` initialized with one primary native-window identity and one pane group. Open document resources are synchronized into that group, and the model's active view follows the backend's active document. The current rendered layout and tab bar remain unchanged.
-- Each open document has one Workbench View ID, and the existing editor presentation cache uses that ID. This establishes the identity seam without claiming support for duplicate views of one document.
-- Renaming a document rebinds its resource reference while preserving the View ID. Closing a document removes its Workbench view when its editor state is no longer retained; pending edits and recoverable IME text continue to keep their existing editor state alive.
-- Topology move operations validate before mutation. Invalid destinations and resource-reference allocation failure leave source and destination unchanged; regression tests cover both cases.
-- The visible-window lane remains a single bounded worker with requests and results isolated by View ID, document instance/revision, range, request generation, and view lifecycle generation.
+- `Workbench_Model` owns view identity, pane groups, and recursive split
+  topology. The app renders it through Alicorn's retained Split, TabBar, focus,
+  semantics, and drag/drop APIs.
+- Editor, History, and read-only Diff are typed views in the same workbench.
+  Each split group has its own tab strip; tabs can be reordered or moved between
+  groups. History and Diff can open beside the focused view.
+- The Go backend remains the shared owner of documents and repository state.
+  Historical snapshots do not enter the editable document model. History and
+  Diff restore their captured scroll positions when hidden and reopened.
+- Editor tabs remain in one pane group because the app still has one live
+  editing, IME, and accessibility pipeline. A second independently navigable
+  editor view of the same document is not supported.
+- Search is still an existing workspace surface rather than a generic view
+  kind. Pane placement is not persisted. Terminal sessions are not implemented.
+- The standalone Alicorn History repository has been archived after its bounded
+  repository/history presentation was consolidated into Scratchpad.
 
-This is **Step A only**, not a completed #71 implementation. The application still enforces one editor view per document. Rendering, hit testing, keyboard/text/IME routing, accessibility identity, and command context are not yet scoped to an independently chosen View ID. Shared edit acknowledgements do not yet reconcile sibling views because the UI cannot create them. No split UI should be exposed until those paths are view-aware and tests prove that operations cannot target the wrong view or publish stale bytes.
-
-The remaining gates are: render a second Editor View ID over the same resource; key editor subtree and semantic identities by View ID; scope event and command context to the originating view; reconcile shared edit acknowledgements, undo, save, and sibling selections; then validate split interactions on both native platforms.
-
-**Validation:** On macOS with Odin `dev-2026-11:9a69916`, the pinned Scratchpad test runner passed the Go suites, all 248 Alicorn frontend tests, and all 13 tests in the pinned Alicorn package. Validation used Alicorn `655c0f07dc73b3e22da184ea78e479acd0b0758f` and Caliber `197cd964cc7265bc60df599a6b8562eac7c75f3a`. These automated checks do not cover native split interaction; no split UI is implemented in this step.
+The implementation additions in this branch have not yet received a new
+validation run; the historical validation results below describe the earlier
+foundation only, not native split interactions.
 
 ## Issue and product context
 
-Scratchpad [#71](https://github.com/samanshaiza004/scratchpad/issues/71) is the pane/view foundation under [#70, the composable workbench roadmap](https://github.com/samanshaiza004/scratchpad/issues/70). The user's multiplexing hypothesis is the product direction; #71 should prove its first claim: two views can share one authoritative resource, move between arrangements, and keep their own presentation state.
+Scratchpad [#71](https://github.com/samanshaiza004/scratchpad/issues/71) is the
+pane/view foundation under [#70, the composable workbench roadmap](https://github.com/samanshaiza004/scratchpad/issues/70).
+The current slice proves that typed workbench views can share a recursive
+layout while resource ownership stays in the existing application services.
+Independent editor presentations and terminal process ownership remain future
+work. Terminal planning stays with the explicit
+[PTY/emulator feasibility work in #40](https://github.com/samanshaiza004/scratchpad/issues/40)
+and [single-terminal product issue #41](https://github.com/samanshaiza004/scratchpad/issues/41).
 
-The first vertical slice should prove two independently navigable Editor views of one document. Keep the model's view/resource kinds small enough to admit History and Diff later, but defer their real factories and resource integration to checkpoint C alongside #73. Leave terminal ownership to the explicit [PTY/emulator feasibility work in #40](https://github.com/samanshaiza004/scratchpad/issues/40) and the [single-terminal product issue #41](https://github.com/samanshaiza004/scratchpad/issues/41). In particular, #41 defines hiding a terminal view separately from exiting or killing its retained process.
+## Baseline findings before pane integration
 
-## What the current code already provides
+The following notes describe the v0.2.0 code inspected when this proposal was
+written. They explain the original design constraints; they are not a status
+report for the current branch.
 
 Scratchpad has useful foundations, but they describe one active document workbench rather than a general collection of views:
 
@@ -147,35 +167,38 @@ For tab movement, use Alicorn drag events and stable group/view semantic identit
 
 Keep connected titlebar tabs while the window contains one pane group. When it is split, render a local tab strip in every visible pane group and leave the native titlebar to platform controls and workspace-level commands. Do not make the titlebar swap to whichever group has focus, and never render two selectable copies of one group's tabs. When the tree collapses back to one group, restore the existing connected-tab presentation. Preserve each editor's source scroll anchor and caret through the content-height change caused by switching policies.
 
-## Delivery plan
+## Delivery plan and remaining work
 
 ### 1. Define and test the topology/lifecycle model
 
-**Topology and one-group App integration are implemented.** The model and topology operations live in `frontends/alicorn/workbench.odin`; `App` creates the primary window/group, synchronizes document resources, and associates each current editor cache with its Workbench View ID. The request lane is independently keyed by View ID. Tests cover per-view cache identity, stable resource rekeying, topology invariants, cross-window moves, and failure-atomic rejection. The rendered UI still has one editor presentation per document, so this does not yet validate duplicate-view editing or UI lifecycle behavior. Run the pinned-package suite and retain the following topology gates: each live View ID belongs to exactly one group; each active view belongs to its group; global IDs are unique across windows; removing a view invalidates its async generation; and moving an inactive view does not steal focus.
+**Implemented.** The model and topology operations live in `frontends/alicorn/workbench.odin`; `App` creates its primary window/group, synchronizes document resources, and associates editor state with a Workbench View ID. The request lane is independently keyed by View ID. Existing model tests cover cache identity, resource rekeying, topology invariants, cross-window moves, and failure-atomic rejection. The current UI still has one editor-bearing group; duplicate independently navigable views of one document are deferred. Retain these topology invariants: each live View ID belongs to exactly one group; each active view belongs to its group; global IDs are unique across windows; removing a view invalidates its async generation; and moving an inactive view does not steal focus.
 
 Keep type-specific view payloads narrow. Do not create packages or generic callbacks solely to anticipate plugins.
 
 ### 2. Render the tree with pinned Alicorn primitives
 
-Recursively describe split nodes with split_begin, two pane scopes, and split_divider. Describe each group with its own keyed tab bar and active view renderer. Keys combine stable group/view identity. Use the actual Split's preferred position for divider state and keep pointer movement in the Runtime.
+**Implemented.** Split nodes are recursively described with `split_begin`, two pane scopes, and `split_divider`. Groups have keyed tab bars and active view renderers using stable group/view identity. Divider positions remain frontend presentation state and pointer movement remains in Alicorn Runtime.
 
 Keep the existing workspace sidebar outside the workbench tree for this slice. Do not turn Pinned, menus, or every transient panel into a pane view.
 
 ### 3. Support independent editor views over shared documents
 
-**Not implemented yet.** Add a “Split Right/Down” action only after editor state, editor subtree keys, focus, hit testing, accessibility identity, and visible-window request routing use View ID. Keep edit and undo commands resource-scoped, but capture the originating view for selection reconciliation. Verify source changes in either view appear in both. Keep one mutation/acknowledgment lane per authoritative document; on acknowledgment, map the invoking view's selection and each sibling's caret/selection independently, invalidate stale visible windows in every sibling, and prevent editing from an obsolete revision. A pending edit from one view must never be replayed against another view's projection.
+**Deferred.** The current app keeps Editor tabs in one pane group and does not expose duplicate Editor views of one document. A future implementation must make editor state, subtree keys, focus, hit testing, accessibility identity, and visible-window routing view-scoped before enabling this. Edit and undo commands remain resource-scoped; duplicate views will need independent selection reconciliation across shared source mutations and must reject edits from obsolete revisions.
 
 Move the existing detached document path toward the same View record and per-view editor state, rather than adding another Floating_Window_Scope snapshot. Keep native window lifetime and Runtime ownership separate from view identity.
 
 ### 4. Add heterogeneous views and close policy
 
-Provide explicit factories for Editor, History, and Diff. Coordinate with #73: the topology and duplicate-editor work can proceed independently, but the heterogeneous acceptance is complete only when History/Diff have real resource and view models to plug in. Do not add fake empty panes or build a Git backend as hidden work inside #71. Wire tab close, group focus, view move, hide/restore, and last-view dirty confirmation. Terminal remains a later consumer of the same ownership rules.
+**Implemented for Editor, History, and Diff.** These typed views share the recursive group/tab layout. Git History and Diff use the shared repository backend and remain read-only; their scroll state is captured and restored when hidden and reopened. Source Control remains in the workspace sidebar. Terminal, a generic plugin/view registry, arbitrary duplicate views, and durable pane restoration are not included.
 
 ### 5. Native acceptance and performance pass
 
-Run the same keyboard, focus, accessibility, titlebar, IME, resize, and drag cases on macOS and Windows, including fractional DPI and lost pointer capture. Verify a switch of workspace during an async request cannot update a new view instance; verify a result completing after reparent is accepted only by the same still-live view and cannot steal focus. Exercise alternating edits, undo from either view, and save with both views open. Measure settled layout idle work and confirm no Git/PTY service starts for a plain file.
+**Remaining acceptance.** Validate keyboard and pointer focus, accessibility, titlebar behavior, resize, and tab dragging on macOS and Windows, including fractional DPI and lost pointer capture. Verify workspace changes and reparenting during async work cannot install stale results or steal focus. Duplicate-editor edit/undo/save cases remain deferred with duplicate editor views. Confirm a plain-file workspace starts no Git subprocess until needed and that a settled split layout schedules no recurring work.
 
-## Acceptance matrix
+## Future acceptance matrix
+
+The scenarios below include future duplicate-editor work and are not all
+implemented or acceptance-tested by the current pane integration.
 
 | Scenario | Required result |
 | --- | --- |
@@ -201,9 +224,9 @@ Run the same keyboard, focus, accessibility, titlebar, IME, resize, and drag cas
 1. **Document ID is currently overloaded as presentation identity.** This is the principal correctness blocker for duplicate editor views. Every node key, semantic ID, request, restore token, and selection lookup must be audited for whether it is resource-scoped or view-scoped.
 2. **The detached-window state-swap protocol is too expensive to generalize.** A view-owned state record should replace field-by-field snapshots; window-owned Runtime/theme/chrome state remains separate.
 3. **Backend active-document assumptions are widespread.** Menus and commands that currently read Application.Active need a deterministic target rule: commands from an Editor use that view's resource; commands from History/Diff use their explicit resource; global file actions use the last focused Editor or ask the user. Do not silently target whichever document happened to be active before a pane switch.
-4. **Two views require independent bounded viewport work.** The existing one-pending-request lane is not keyed per view. Preserve bounded workers while preventing one view from canceling another's request.
-5. **Native titlebar tabs have one visual home.** Resolve the policy above before UI implementation; otherwise the first multi-group layout will produce duplicate or disappearing tab controls.
-6. **Close, hide, resource close, and process termination are distinct.** Encode behavior by view/resource kind, especially before the terminal view arrives.
+4. **Duplicate editor views require independent bounded viewport work.** The current request/result path is keyed by View ID, but duplicated editing is not yet exposed. Preserve bounded work while preventing one view from canceling another's request when that capability is added.
+5. **Native titlebar tabs have one visual home.** The current implementation uses connected titlebar tabs for one group and group-local tabs when split. Keep this policy aligned if additional platform titlebar modes are introduced.
+6. **Close, hide, resource close, and process termination are distinct.** Current Editor close follows the document's existing dirty-close flow; History/Diff close or hide retains type-specific state. Define terminal process lifetime separately if a terminal view is added.
 7. **Session v2 is document-oriented.** Keep old sessions readable and restore them into one group. Defer durable pane trees and arbitrary view restoration to #72.
 8. **Do not pull in Alicorn #143 implicitly.** Split resizing and tab movement should use current target geometry and finish immediately; target-first FLIP continuity is an optional, separately measured motion experiment described by [Alicorn #143](https://github.com/samanshaiza004/alicorn/issues/143).
 

@@ -184,6 +184,10 @@ App :: struct {
 	primary_workbench_group_id: Pane_Group_ID,
 	workbench_documents_synced: bool,
 	workbench_synced_application_revision: u64,
+	workbench_last_active_document_id: string,
+	workbench_pending_close_view_id: View_ID,
+	workbench_pending_view_focus_id: View_ID,
+	workspace_drag_source_view_id: View_ID,
 	editor_views:           [dynamic]Editor_View_State,
 	selection_diagnostic_revision: u64,
 	editor_row_targets:     [dynamic]Editor_Row_Target,
@@ -299,12 +303,6 @@ App :: struct {
 	workspace_search_mode:  bool,
 	workspace_search_tab_open: bool,
 	workspace_git_sidebar: bool,
-	git_history_tab_open: bool,
-	git_diff_tab_open: bool,
-	workbench_view: Workbench_Content_Kind,
-	workbench_split_open: bool,
-	workbench_secondary_view: Workbench_Content_Kind,
-	workbench_split_position: f32,
 	git_history_refs_split_position: f32,
 	git_history_detail_split_position: f32,
 	git_commit_message: string,
@@ -317,6 +315,8 @@ App :: struct {
 	git_history_filter_node: alicorn.Node_ID,
 	git_history_list_node: alicorn.Node_ID,
 	git_history_graph_node: alicorn.Node_ID,
+	git_history_scroll_y: f32,
+	git_history_scroll_restore: bool,
 	git_history_graph_payload_node: alicorn.Node_ID,
 	git_history_graph_first, git_history_graph_last: int,
 	git_history_graph_payload_first, git_history_graph_payload_last: int,
@@ -328,6 +328,8 @@ App :: struct {
 	git_diff_text: string,
 	git_diff_loaded_generation: u64,
 	git_diff_scroll_owner: alicorn.Node_ID,
+	git_diff_scroll_x, git_diff_scroll_y: f32,
+	git_diff_scroll_restore: bool,
 	git_diff_untracked: bool,
 	git_diff_content_width: f32,
 	git_diff_lines: [dynamic]Git_Diff_Line,
@@ -1240,6 +1242,10 @@ go_to_line_submit :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 
 application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
 	app := cast(^App)state
+	if !app.command_palette_open && !app.quick_open_open && !app.symbol_picker_open &&
+	   !app.settings_surface_open && !app.go_to_line_open && app.workspace_mutation_kind == .None {
+		workbench_group_activate_from_focus(app, rt)
+	}
 	if app.shutdown_intent != .None {
 		if key == .Escape { shutdown_cancel(app, rt); return true }
 		return key != .Return
@@ -4185,6 +4191,10 @@ application_stop :: proc(state: rawptr) {
 	delete(app.session_ui.tree_path, context.allocator)
 	tree_clear_focused_path(app)
 	app.tree_scroll_owner = 0
+	if len(app.workbench_last_active_document_id) > 0 {
+		delete(app.workbench_last_active_document_id, context.allocator)
+	}
+	app.workbench_last_active_document_id = ""
 	editor_window_destroy(&app.editor_window)
 	editor_views_destroy(&app.editor_views)
 	workbench_model_destroy(&app.workbench_model)
@@ -4271,7 +4281,6 @@ main :: proc() {
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
 	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
 	app.editor_text_scale = 1
-	app.workbench_view = .Document
 	if !workbench_model_init(&app.workbench_model) {
 		fmt.eprintln("Could not initialize Scratchpad's workbench model.")
 		os.exit(1)

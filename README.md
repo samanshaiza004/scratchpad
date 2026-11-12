@@ -30,11 +30,13 @@ These capabilities are included in the v0.2.0 packages. See the
 
 ## In development after v0.2.0
 
-Scratchpad is adding local Git source control to the workbench. The current
-development branch has a Source Control sidebar for status, staging, and local
-commits, plus History and read-only Diff views that can open beside a document.
-This work is not part of the v0.2.0 release package. See the [Git client scope
-and architecture](docs/GIT-CLIENT.md) for current capabilities and limits.
+Scratchpad is adding local Git source control and a composable workbench. The
+unreleased Git client has a Source Control sidebar for status, staging, and
+local commits, plus History and read-only Diff views. The workbench arranges
+Editor, History, and Diff views in recursive split groups; tabs can be reordered
+or moved between groups, and History/Diff can open beside the current view.
+This work is not part of the v0.2.0 release package. Current capabilities and
+limits are in the [Git client guide](docs/GIT-CLIENT.md).
 
 ## Run from source
 

@@ -14,12 +14,21 @@ after Scratchpad v0.2.0. It is not present in the v0.2.0 packages.
 - **Diff** is a read-only workbench tab for working-tree, staged, or historical
   diffs. A selected commit can open its full diff or a changed file's diff.
 
-The sidebar is the compact status navigator. History and Diff use the central
-workbench and can also open beside the current workbench view. The first split
-supports a document beside History or Diff, and History's refs, commits, and
-detail columns can be resized independently. This is a focused two-view layout,
-not yet a general pane tree: arbitrary view rearrangement, multiple splits,
-dragging any view to a new group, and layout presets remain future work.
+The sidebar is the compact status navigator. Editor, History, and Diff are
+typed workbench views arranged in pane groups. The recursive layout supports
+multiple side-by-side splits; each split group has its own tab strip, and tabs
+can be reordered or moved between groups. History and Diff can open beside the
+current view, while History's refs, commits, and detail columns can be resized
+independently.
+
+This is a first workbench slice, with deliberate limits. Scratchpad currently
+keeps all Editor tabs in one pane group because editing still uses one live
+editor, IME, and accessibility pipeline. A document can be moved as a view, but
+the app does not yet support two independently navigable editor views of the
+same document. History and Diff each have one shared view instance. Search
+remains an existing workspace surface rather than a generic workbench view.
+Pane layout is in-memory and is not restored across application restarts.
+Terminal sessions are not implemented.
 
 ## Ownership and safety
 
@@ -59,6 +68,9 @@ terminal or another application.
   commit details and diffs remain read-only.
 - Diffs include old/new line gutters, hunk navigation, horizontal scrolling,
   and explicit truncation when the bounded output limit is reached.
+- The pane tree is frontend presentation state. Document/session restoration
+  retains its existing document-oriented behavior and does not persist pane
+  groups, splits, or History/Diff placement.
 
 ## Standalone Alicorn History
 
