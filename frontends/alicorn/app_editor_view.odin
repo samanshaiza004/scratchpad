@@ -1173,9 +1173,16 @@ build_document_status :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, 
 	wide_min_width :: metadata_min_width + 2*(wide_side_min_width+group_gap)
 	button_content := alicorn.button_content_style(padding_x=4, padding_y=0)
 	row_style := alicorn.layout_style(.Row, grow=1, height=control_height, gap=group_gap, align=.Center)
+	status_shape := alicorn.Surface_Shape{kind=.Rectangle}
+	if scratchpad_find_editor_join_enabled(app) {
+		status_shape = alicorn.surface_shape_rounded_corners(alicorn.Surface_Corner_Radii{
+			bottom_right=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+			bottom_left=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+		})
+	}
 	alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), label="document-status-bar", key=alicorn.key_string("document-status-bar"),
 		style=alicorn.layout_style(.Row, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, min_height=control_height+2*padding, padding=padding, align=.Center, clip=true),
-		material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
+		shape=status_shape, material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 	alicorn.adaptive_begin(ui, alicorn.key_string("document-status-responsive"),
 		style=alicorn.layout_style(.Row, grow=1, height=control_height),
 		label="document-status-responsive")

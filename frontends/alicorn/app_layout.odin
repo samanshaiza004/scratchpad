@@ -210,7 +210,14 @@ build_app :: proc(
 		show_source := app.workspace_search_mode || workbench_group_split_has_multiple(app) || !git_workbench_is_document(app) || !app.pinned.visible || pinned_side_open || app.pinned.narrow_source
 		app.pinned.single_pane=app.pinned.visible && !pinned_side_open && !app.pinned.narrow_source
 		if app.find_open && show_source {
-			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
+			find_shape := alicorn.Surface_Shape{kind=.Rectangle}
+			if scratchpad_find_editor_join_enabled(app) {
+				find_shape = alicorn.surface_shape_rounded_corners(alicorn.Surface_Corner_Radii{
+					top_left=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+					top_right=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+				})
+			}
+			alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Subtle_Surface), label="scratchpad-find-panel", style=alicorn.layout_style(.Column, height=94, gap=4, padding=5), shape=find_shape, material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Groove))
 			if gui.row(&ui, label="scratchpad-find-bar", height=38, gap=8, align=.Center) {
 				_ = find_query_build(app, &ui, rt)
 				if gui.button(&ui, "Aa", key="find-match-case", width=38, height=28, state=alicorn.Button_State{selected=app.find_match_case}, variant=.Toolbar) {

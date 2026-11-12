@@ -73,8 +73,9 @@ test_workbench_relief_retains_settings_semantics_geometry_and_measurements :: pr
 			}
 		}
 		paint, found := rt.nodes[done].paint[0].payload.(alicorn.Surface_Paint)
+		resolved_shape, shape_ok := alicorn.surface_paint_shape_resolve(&rt, done, paint.shape)
 		testing.expect(t, found && paint.material != alicorn.MATERIAL_FLAT && paint.physical_height > 0 &&
-			paint.shape == alicorn.Surface_Shape{kind=.Rounded_Rectangle, corner_radius=4},
+			shape_ok && resolved_shape == alicorn.Surface_Shape{kind=.Rounded_Rectangle, corner_radius=4},
 			"Workbench Relief gives operable buttons a mounted surface with the control radius")
 		app.accessibility_appearance_override_enabled = true
 		app.accessibility_appearance = {increased_contrast=true, reduce_transparency=true}

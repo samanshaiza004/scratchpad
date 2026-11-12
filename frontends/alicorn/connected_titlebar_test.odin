@@ -110,6 +110,61 @@ connected_titlebar_test_expect_join :: proc(t: ^testing.T, app: ^App, rt: ^alico
 }
 
 @(test)
+test_find_panel_attaches_to_editor_with_only_outer_corners_rounded :: proc(t: ^testing.T) {
+	for scale in ([4]f32{1, 1.25, 1.5, 2}) {
+		rt := alicorn.new_runtime({0, 0, 1200, 760})
+		app: App
+		documents := [?]bridge.State_Document{{id="find-join-doc", path="sample.txt", language="plain-text", line_count=1, preview=true}}
+		loaded := connected_titlebar_test_prepare(&app, &rt, documents[:], 1200, scale)
+		if !loaded {
+			testing.expect(t, false, "the Find surface fixture should load both bundled font roles")
+			connected_titlebar_test_destroy(&app)
+			alicorn.destroy_runtime(&rt)
+			continue
+		}
+		app.find_open = true
+		_ = build_app(rawptr(&app), &rt, 1200, 760, scale)
+
+		find_id := connected_titlebar_test_node(&rt, "scratchpad-find-panel")
+		editor_id := connected_titlebar_test_node(&rt, "document-surface")
+		status_id := connected_titlebar_test_node(&rt, "document-status-bar")
+		find, find_found := rt.semantic_surfaces[find_id]
+		editor, editor_found := rt.semantic_surfaces[editor_id]
+		status, status_found := rt.semantic_surfaces[status_id]
+		find_bounds, find_bounds_found := alicorn.node_info(&rt, find_id)
+		editor_bounds, editor_bounds_found := alicorn.node_info(&rt, editor_id)
+		status_bounds, status_bounds_found := alicorn.node_info(&rt, status_id)
+		expected_find := alicorn.surface_shape_rounded_corners(alicorn.Surface_Corner_Radii{
+			top_left=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+			top_right=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+		})
+		expected_status := alicorn.surface_shape_rounded_corners(alicorn.Surface_Corner_Radii{
+			bottom_right=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+			bottom_left=SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS,
+		})
+		testing.expect(t, find_found && find.shape == expected_find,
+			"the attached Find header should round only its exposed top corners")
+		testing.expect(t, editor_found && editor.shape == alicorn.Surface_Shape{kind=.Rectangle},
+			"the editor body should keep a square edge where it joins Find and the status bar")
+		testing.expect(t, status_found && status.shape == expected_status,
+			"the footer should round only its exposed bottom corners")
+		if find_bounds_found && editor_bounds_found && status_bounds_found {
+			testing.expect(t,
+				abs(find_bounds.bounds.x-editor_bounds.bounds.x) < 1 &&
+				abs(find_bounds.bounds.w-editor_bounds.bounds.w) < 1 &&
+				abs(find_bounds.bounds.y+find_bounds.bounds.h-editor_bounds.bounds.y) < 1 &&
+				abs(editor_bounds.bounds.y+editor_bounds.bounds.h-status_bounds.bounds.y) < 1,
+				fmt.tprintf("Find, editor, and status surfaces should share aligned edges at scale %.2f", scale))
+		} else {
+			testing.expect(t, false, "the attached Find/editor/status surfaces should retain bounds")
+		}
+
+		connected_titlebar_test_destroy(&app)
+		alicorn.destroy_runtime(&rt)
+	}
+}
+
+@(test)
 test_connected_titlebar_tracks_shared_split_in_retained_layout :: proc(t: ^testing.T) {
 	when ODIN_OS != .Windows && ODIN_OS != .Darwin { return }
 	for scale in ([4]f32{1, 1.25, 1.5, 2}) {

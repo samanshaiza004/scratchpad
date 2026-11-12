@@ -4,6 +4,26 @@ import "core:fmt"
 import alicorn "alicorn:runtime"
 import gui "alicorn:ui"
 
+SCRATCHPAD_FIND_EDITOR_JOIN_RADIUS :: f32(8)
+
+// The Find panel only forms a continuous vertical stack when one editor owns
+// the workbench. Other layouts keep their ordinary independent surface
+// geometry so a full-width Find bar does not imply a false join to split panes.
+scratchpad_find_editor_join_enabled :: proc(app: ^App) -> bool {
+	if app == nil || !app.find_open || app.workspace_search_mode || app.pinned.visible {
+		return false
+	}
+	if app_workbench_group_count(app) != 1 || workbench_group_split_has_multiple(app) {
+		return false
+	}
+	window := app_workbench_window(app)
+	if window == nil { return false }
+	group_index := workbench_group_find(window, window.focused_group_id)
+	if group_index < 0 { return false }
+	view_index := workbench_view_find(window, window.groups[group_index].active_view_id)
+	return view_index >= 0 && window.views[view_index].kind == .Editor
+}
+
 Workbench_Tab_Entry :: struct {
 	view_id: View_ID,
 	search: bool,
