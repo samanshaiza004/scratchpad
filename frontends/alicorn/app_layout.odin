@@ -160,6 +160,9 @@ build_app :: proc(
 			)
 			app.workspace_search_edit_node = 0
 		}
+		if !app.workspace_address_open {
+			git_sidebar_navigation_build(app, &ui, rt)
+		}
 		if app.workspace_address_open {
 			workspace_address_suggestions_build(app, &ui, rt)
 		} else if app.workspace_git_sidebar {
@@ -696,16 +699,30 @@ scratchpad_workspace_panel_tabs_build :: proc(
 	if search_clicked {
 		workspace_search_open_surface(app, app.ui_description_runtime)
 	}
-	if gui.button(ui, "Git", key=alicorn.key_string("workspace-panel-git"),
-		style=alicorn.layout_style(.Row, width=38, height=button_height),
-		state=alicorn.Button_State{selected=app.workspace_git_sidebar}, variant=.Quiet) {
-		app.workspace_git_sidebar = !app.workspace_git_sidebar
-		if app.workspace_git_sidebar { app.workspace_projection_mode = false }
-		alicorn.invalidate_root(app.ui_description_runtime, "Scratchpad Source Control sidebar toggled")
-	}
-	_ = alicorn.tooltip(ui, "Source Control")
 	alicorn.container_end(ui)
 	return result
+}
+
+git_sidebar_navigation_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+	if app == nil || ui == nil || rt == nil { return }
+	if gui.row(ui, label="workspace-sidebar-navigation", height=32, gap=4, align=.Center) {
+		if gui.button(ui, "Files", key=alicorn.key_string("workspace-sidebar-files"), width=62, height=28,
+			state=alicorn.Button_State{selected=!app.workspace_git_sidebar}, variant=.Quiet) {
+			if app.workspace_git_sidebar {
+				app.workspace_git_sidebar = false
+				alicorn.invalidate_root(rt, "Scratchpad Files sidebar selected")
+			}
+		}
+		if gui.button(ui, "Git", key=alicorn.key_string("workspace-sidebar-git"), width=58, height=28,
+			state=alicorn.Button_State{selected=app.workspace_git_sidebar}, variant=.Quiet) {
+			if !app.workspace_git_sidebar {
+				app.workspace_git_sidebar = true
+				app.workspace_projection_mode = false
+				alicorn.invalidate_root(rt, "Scratchpad Source Control sidebar selected")
+			}
+		}
+		_ = alicorn.tooltip(ui, "Local Source Control")
+	}
 }
 
 workspace_projection_select :: proc(app: ^App, rt: ^alicorn.Runtime, kind: string) {
