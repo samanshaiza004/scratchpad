@@ -8,7 +8,21 @@ as separate entries.
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- Added a local Git Source Control sidebar with branch/upstream status, staged
+  and unstaged file groups, file staging and unstaging, and local commits.
+- Added workbench History and read-only Diff views with bounded recent history,
+  branch/remote/tag navigation, commit filtering, first-parent commit details,
+  changed-file summaries, keyboard selection, and a retained commit graph
+  aligned to virtualized rows. History and Diff can open beside a document;
+  History's refs, commits, and details are independently resizable.
+- Added readable diff line gutters, hunk navigation, horizontal scrolling, and
+  bounded diff parsing for working, staged, and historical changes.
+- Added asynchronous repository inspection and serialized Git mutations through
+  the Go backend. Git status uses porcelain v2, repository paths and subprocess
+  arguments are validated, stale workspace results are discarded, and historical
+  diffs remain separate from editable document buffers.
 
 ## [0.2.0] — 2026-11-11
 

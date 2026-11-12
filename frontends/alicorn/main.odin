@@ -82,6 +82,26 @@ ACTION_VIEW_THEME_FLAT :: "view.theme-flat"
 ACTION_VIEW_THEME_RELIEF :: "view.theme-workbench-relief"
 ACTION_VIEW_THEME_CHARCOAL_INK :: "view.theme-charcoal-ink"
 
+Workbench_View_Kind :: enum {
+	Document,
+	Git_History,
+	Git_Diff,
+}
+
+Git_Diff_Line_Kind :: enum {
+	Meta,
+	Hunk,
+	Context,
+	Addition,
+	Deletion,
+}
+
+Git_Diff_Line :: struct {
+	start, end: int,
+	old_line, new_line: int,
+	kind: Git_Diff_Line_Kind,
+}
+
 App :: struct {
 	pinned: Pinned_Surface,
 	brand_mark: alicorn.Image_Handle,
@@ -272,6 +292,41 @@ App :: struct {
 	workspace_address_confirm_open: bool,
 	workspace_search_mode:  bool,
 	workspace_search_tab_open: bool,
+	workspace_git_sidebar: bool,
+	git_history_tab_open: bool,
+	git_diff_tab_open: bool,
+	workbench_view: Workbench_View_Kind,
+	workbench_split_open: bool,
+	workbench_secondary_view: Workbench_View_Kind,
+	workbench_split_position: f32,
+	git_history_refs_split_position: f32,
+	git_history_detail_split_position: f32,
+	git_commit_message: string,
+	git_commit_message_node: alicorn.Node_ID,
+	git_commit_clear_pending: bool,
+	git_commit_submitted_message: string,
+	git_selected_commit: string,
+	git_repository_root: string,
+	git_history_filter: string,
+	git_history_filter_node: alicorn.Node_ID,
+	git_history_list_node: alicorn.Node_ID,
+	git_history_graph_node: alicorn.Node_ID,
+	git_history_graph_payload_node: alicorn.Node_ID,
+	git_history_graph_first, git_history_graph_last: int,
+	git_history_graph_payload_first, git_history_graph_payload_last: int,
+	git_history_graph_generation: u64,
+	git_history_graph_visible_count: int,
+	git_history_graph_width_milli, git_history_graph_height_milli: int,
+	git_history_graph_selected_index: int,
+	git_history_graph_filter: string,
+	git_diff_text: string,
+	git_diff_loaded_generation: u64,
+	git_diff_scroll_owner: alicorn.Node_ID,
+	git_diff_untracked: bool,
+	git_diff_content_width: f32,
+	git_diff_lines: [dynamic]Git_Diff_Line,
+	git_diff_hunks: [dynamic]int,
+	git_diff_selected_hunk: int,
 	workspace_projection_mode: bool,
 	symbol_picker_open: bool,
 	symbol_picker_query: string,
@@ -1311,6 +1366,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		case:
 		}
 	}
+	if git_history_handle_key(app, rt, key) { return true }
 	if key == .Find_Next {
 		return find_move_match(app, rt, 1)
 	}
@@ -4144,6 +4200,26 @@ application_stop :: proc(state: rawptr) {
 	workspace_search_edit_clear(app)
 	delete(app.workspace_search_pointer_targets)
 	app.workspace_search_pointer_targets = {}
+	if len(app.git_commit_message) > 0 { delete(app.git_commit_message, context.allocator) }
+	if len(app.git_commit_submitted_message) > 0 { delete(app.git_commit_submitted_message, context.allocator) }
+	if len(app.git_selected_commit) > 0 { delete(app.git_selected_commit, context.allocator) }
+	if len(app.git_repository_root) > 0 { delete(app.git_repository_root, context.allocator) }
+	if len(app.git_history_filter) > 0 { delete(app.git_history_filter, context.allocator) }
+	if len(app.git_history_graph_filter) > 0 { delete(app.git_history_graph_filter, context.allocator) }
+	if len(app.git_diff_text) > 0 { delete(app.git_diff_text, context.allocator) }
+	delete(app.git_diff_lines)
+	delete(app.git_diff_hunks)
+	app.git_commit_message = ""
+	app.git_commit_submitted_message = ""
+	app.git_selected_commit = ""
+	app.git_repository_root = ""
+	app.git_history_filter = ""
+	app.git_history_graph_filter = ""
+	app.git_diff_text = ""
+	app.git_diff_lines = {}
+	app.git_diff_hunks = {}
+	app.git_diff_scroll_owner = 0
+	app.git_diff_content_width = 0
 	app.workspace_search_context_menu_open = false
 	app.workspace_search_context_generation = 0
 	app.workspace_search_context_projection_key = 0
@@ -4184,6 +4260,7 @@ main :: proc() {
 	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
 	app.deferred_actions = make([dynamic]Deferred_Action, 0, allocator=context.allocator)
 	app.editor_text_scale = 1
+	app.workbench_view = .Document
 	init_menus(&app)
 	if config_root, config_error := os.user_config_dir(context.allocator); config_error == nil {
 		preferences_directory, preferences_path, ok := scratchpad_theme_preferences_location(config_root, context.allocator)

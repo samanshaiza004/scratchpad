@@ -110,6 +110,12 @@ type CommandRequest struct {
 	ProjectionFirst        uint64   `json:"projection_first"`
 	ProjectionLimit        uint64   `json:"projection_limit,omitempty"`
 	SemanticZoomGeneration uint64   `json:"semantic_zoom_generation,omitempty"`
+	GitKind                string   `json:"git_kind,omitempty"`
+	GitRevision            string   `json:"git_revision,omitempty"`
+	GitOriginalPath        string   `json:"git_original_path,omitempty"`
+	GitMessage             string   `json:"git_message,omitempty"`
+	GitDiffGeneration      uint64   `json:"git_diff_generation,omitempty"`
+	GitUntracked           bool     `json:"git_untracked,omitempty"`
 }
 
 type Response struct {
@@ -141,6 +147,12 @@ type Response struct {
 	SemanticZoom        *SemanticZoomPlan           `json:"semantic_zoom,omitempty"`
 	EditorFolds         *EditorFoldPlan             `json:"editor_folds,omitempty"`
 	Diagnostic          string                      `json:"diagnostic,omitempty"`
+	GitDiff             *GitDiff                    `json:"git_diff,omitempty"`
+}
+
+type GitDiff struct {
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
 }
 
 // EditorFoldPlan is detached, parser-derived folding metadata for one source
@@ -390,6 +402,83 @@ type StateEnvelope struct {
 	SemanticZoomGeneration        uint64                `json:"semantic_zoom_generation,omitempty"`
 	SemanticZoomReady             bool                  `json:"semantic_zoom_ready,omitempty"`
 	SemanticZoomSupersededThrough uint64                `json:"semantic_zoom_superseded_through,omitempty"`
+	Git                           GitState              `json:"git,omitempty"`
+}
+
+type GitState struct {
+	Available         bool            `json:"available"`
+	Generation        uint64          `json:"generation,omitempty"`
+	HistoryGeneration uint64          `json:"history_generation,omitempty"`
+	HistoryLoading    bool            `json:"history_loading,omitempty"`
+	HistoryError      string          `json:"history_error,omitempty"`
+	Loading           bool            `json:"loading,omitempty"`
+	Root              string          `json:"root,omitempty"`
+	Branch            string          `json:"branch,omitempty"`
+	Head              string          `json:"head,omitempty"`
+	Upstream          string          `json:"upstream,omitempty"`
+	Ahead             int             `json:"ahead,omitempty"`
+	Behind            int             `json:"behind,omitempty"`
+	Error             string          `json:"error,omitempty"`
+	Files             []GitFile       `json:"files,omitempty"`
+	Commits           []GitCommit     `json:"commits,omitempty"`
+	Refs              []GitRef        `json:"refs,omitempty"`
+	DiffGeneration    uint64          `json:"diff_generation,omitempty"`
+	DiffLoading       bool            `json:"diff_loading,omitempty"`
+	DiffReady         bool            `json:"diff_ready,omitempty"`
+	DiffKind          string          `json:"diff_kind,omitempty"`
+	DiffPath          string          `json:"diff_path,omitempty"`
+	DiffRevision      string          `json:"diff_revision,omitempty"`
+	DiffError         string          `json:"diff_error,omitempty"`
+	DetailGeneration  uint64          `json:"detail_generation,omitempty"`
+	DetailLoading     bool            `json:"detail_loading,omitempty"`
+	DetailReady       bool            `json:"detail_ready,omitempty"`
+	DetailError       string          `json:"detail_error,omitempty"`
+	Detail            GitCommitDetail `json:"detail,omitempty"`
+}
+
+type GitFile struct {
+	Path         string `json:"path"`
+	OriginalPath string `json:"original_path,omitempty"`
+	Status       string `json:"status"`
+	Staged       bool   `json:"staged"`
+	Unstaged     bool   `json:"unstaged"`
+	Untracked    bool   `json:"untracked"`
+	Conflict     bool   `json:"conflict"`
+}
+
+type GitCommit struct {
+	Hash    string   `json:"hash"`
+	Parents []string `json:"parents,omitempty"`
+	Author  string   `json:"author"`
+	Date    string   `json:"date"`
+	Subject string   `json:"subject"`
+	Refs    string   `json:"refs,omitempty"`
+}
+
+type GitRef struct {
+	FullName string `json:"full_name"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Target   string `json:"target,omitempty"`
+	Head     bool   `json:"head,omitempty"`
+}
+
+type GitCommitDetail struct {
+	Hash    string           `json:"hash"`
+	Parents []string         `json:"parents,omitempty"`
+	Author  string           `json:"author"`
+	Email   string           `json:"email,omitempty"`
+	Date    string           `json:"date"`
+	Subject string           `json:"subject"`
+	Body    string           `json:"body,omitempty"`
+	Files   []GitChangedFile `json:"files"`
+}
+
+type GitChangedFile struct {
+	Path      string `json:"path"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
 }
 
 // ActionState publishes the canonical Scratchpad command vocabulary to any
@@ -782,6 +871,10 @@ func decodeCommandRequest(input []byte, lifecycle string) (CommandRequest, Respo
 	case "workspace_search_cancel", "workspace_search_take_page":
 		if request.SearchGeneration == 0 {
 			return request, errorResponse(request.RequestID, lifecycle, "invalid_search_generation", "search_generation must be nonzero", false), false
+		}
+	case "git_refresh", "git_history_request", "git_detail_request", "git_diff_request", "git_read_diff", "git_stage", "git_unstage", "git_commit":
+		if err := validateGitJob(request); err != nil {
+			return request, errorResponse(request.RequestID, lifecycle, "invalid_git_request", err.Error(), false), false
 		}
 	default:
 		return request, errorResponse(request.RequestID, lifecycle, "unknown_command", fmt.Sprintf("unknown command %q", request.Command), false), false
