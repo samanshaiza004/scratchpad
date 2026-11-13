@@ -109,6 +109,19 @@ focus_event :: proc(state: ^State, rt: ^alicorn.Runtime, event: Event) {
 	if event.kind == .Focus_Changed { focus_runtime(state, rt, event.id, event.index) }
 }
 
+@(private)
+sync_semantic_focus :: proc(state: ^State, rt: ^alicorn.Runtime, window: Window, select_on_focus: bool) {
+	if state == nil || rt == nil || state.semantic_namespace == 0 { return }
+	semantic_focus := alicorn.semantic_focus_state(rt)
+	if semantic_focus.id.namespace != state.semantic_namespace { return }
+	_ = model.focus_item(
+		&state.model,
+		window,
+		Item_ID(semantic_focus.id.value),
+		select=select_on_focus,
+	)
+}
+
 // build renders a borrowed visible-row window using Alicorn's retained
 // fixed-row virtual list. Expand/collapse, activation and loading remain
 // application events; the component never owns the hierarchy or data source.
@@ -132,12 +145,7 @@ build :: proc(ctx: ^ui.UI, state: ^State, window: Window, key: ui.UI_Key, option
 		state.semantic_namespace = u64(state.tree_node) ~ 0x414C494B49545245
 		if state.semantic_namespace == 0 { state.semantic_namespace = 1 }
 	}
-	if state.model.focused_id == 0 {
-		semantic_focus := alicorn.semantic_focus_state(ctx.runtime)
-		if semantic_focus.id.namespace == state.semantic_namespace {
-			_ = model.focus_item(&state.model, window, Item_ID(semantic_focus.id.value), select=resolved.select_on_focus)
-		}
-	}
+	sync_semantic_focus(state, ctx.runtime, window, resolved.select_on_focus)
 	_ = alicorn.semantic_description(ctx, .Tree, resolved.accessible_label)
 	if window.total_count == 0 {
 		_ = ui.text(ctx, resolved.empty_label, key=alicorn.key_string("tree-empty"))
@@ -173,6 +181,9 @@ build :: proc(ctx: ^ui.UI, state: ^State, window: Window, key: ui.UI_Key, option
 			if row_event.kind != .None { event = row_event }
 		}
 		alicorn.virtual_list_end(ctx, list)
+	}
+	if event.kind == .Pressed {
+		event = model.press(&state.model, window, event.id, select=resolved.selection_enabled)
 	}
 	if event.kind == .None && state.model.pending_focus &&
 		(state.model.pending_index < window.offset || state.model.pending_index >= window.offset+len(window.items)) {
@@ -254,7 +265,7 @@ row_build :: proc(ctx: ^ui.UI, state: ^State, item: Item, index: int, options: O
 	}
 	alicorn.button_end(ctx)
 	if pressed {
-		return model.press(&state.model, Window{total_count=index+1, offset=index, revision=state.model.revision, items=[]Item{item}}, item.id, select=options.selection_enabled)
+		return Event{kind=.Pressed, id=item.id, index=index}
 	}
 	return {}
 }
@@ -284,6 +295,7 @@ handle_key :: proc(
 	case: return
 	}
 	resolved := options_resolve(options)
+	sync_semantic_focus(state, rt, window, resolved.select_on_focus)
 	page_size := 10
 	if info, found := alicorn.node_info(rt, state.scroll_node); found && info.scroll_viewport_bounds.h > 0 {
 		page_size = max(1, int(info.scroll_viewport_bounds.h/resolved.row_height)-1)

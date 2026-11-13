@@ -278,7 +278,11 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	testing.expect(t, focus_before_followup.id == tree_semantic_id(avar_path, false),
 		"semantic focus should move to avar in the click frame")
 	testing.expect(t, rt.nodes[cff2_id].selected && !rt.nodes[avar_id].selected,
-		"the click frame should still contain its old description until the pending follow-up is built")
+		fmt.tprintf("the click frame should still contain its old description until the pending follow-up is built (cff2=%v avar=%v selected_id=%d focused_id=%d)",
+			rt.nodes[cff2_id].selected,
+			rt.nodes[avar_id].selected,
+			u64(app.workspace_tree_state.model.selected_id),
+			u64(app.workspace_tree_state.model.focused_id)))
 	testing.expect(t, test_render_workspace_tree(t, &app, &rt), "active file change should update selection without another input event")
 	avar_id, _ = test_workspace_tree_row(&rt, "Runa/parse/avar.odin")
 	cff2_id, _ = test_workspace_tree_row(&rt, "Runa/parse/cff2.odin")

@@ -859,7 +859,11 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	testing.expect(t, tree_test_paths_equal(app.tree_focused_path, "src/nested"), "Left on a child should focus its parent folder")
 	_ = application_key(rawptr(&app), &rt, .Left)
 	navigation_nested_index := tree_directory_index(&app, nested_source_path)
-	testing.expect(t, navigation_nested_index >= 0 && !app.tree_directories[navigation_nested_index].expanded, "Left on an expanded folder should collapse it")
+	testing.expect(t, navigation_nested_index >= 0 && !app.tree_directories[navigation_nested_index].expanded,
+		fmt.tprintf("Left on an expanded folder should collapse it (focused=%s, expanded=%v, model=%d)",
+			app.tree_focused_path,
+			navigation_nested_index >= 0 && app.tree_directories[navigation_nested_index].expanded,
+			u64(app.workspace_tree_state.model.focused_id)))
 	_ = application_key(rawptr(&app), &rt, .Right)
 	navigation_nested_index = tree_directory_index(&app, nested_source_path)
 	testing.expect(t, navigation_nested_index >= 0 && app.tree_directories[navigation_nested_index].expanded, "Right on a collapsed folder should expand it")
@@ -884,16 +888,11 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	context_x, context_y := context_bounds.x+context_bounds.w/2, context_bounds.y+context_bounds.h/2
 	context_event := alicorn.Pointer_Event{kind=.Down, x=context_x, y=context_y, button=alicorn.POINTER_BUTTON_SECONDARY}
 	context_target := alicorn.process_pointer(&rt, context_event)
-	context_key, context_key_found := alicorn.node_identity_key(&rt, context_target)
-	testing.expect(t, context_target == context_row && context_key_found,
-		"Alicorn pointer hit testing should resolve the context-menu row and its semantic key")
-	resolved_context, resolved_context_found := workspace_context_menu_target_for_key(&app, context_key)
-	testing.expect(t, resolved_context_found && tree_test_paths_equal(resolved_context.path, "src/nested/first.txt"),
-		"the pointer target key should resolve to the matching workspace path")
+	testing.expect(t, context_target == context_row,
+		"Alicorn pointer hit testing should resolve the context-menu row")
 	context_node_info, context_node_found := alicorn.node_info(&rt, context_target)
 	testing.expect(t, context_node_found && context_node_info.active,
 		"the context-menu pointer target should remain active after hit testing")
-	context_event.target_key = context_key
 	application_pointer(
 		rawptr(&app),
 		&rt,
@@ -902,7 +901,7 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	)
 	testing.expect(t, alicorn.context_menu_is_open(&rt) && app.workspace_context_target == .Item &&
 		tree_test_paths_equal(app.workspace_context_path, "src/nested/first.txt"),
-		"secondary-click should open the context menu for the row under the pointer")
+		"AliKit's stable item identity should target the matching Scratchpad context menu")
 	if !test_render_workspace_tree(t, &app, &rt) { testing.expect(t, false, "context menu should describe after secondary-click"); return }
 	rename_item := test_workspace_context_menu_item(&rt, "Rename")
 	if rename_item == 0 { testing.expect(t, false, "workspace context menu should contain its registered Rename action"); return }

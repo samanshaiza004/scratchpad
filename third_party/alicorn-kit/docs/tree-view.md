@@ -34,6 +34,10 @@ to communicate expanded state. Set `semantic_namespace` to preserve an
 application's existing stable semantic identities during migration; otherwise
 AliKit derives a namespace from the retained tree root.
 
+When an application restores or moves Alicorn semantic focus to an item in this
+tree, the view synchronizes its keyboard-navigation cursor from that stable
+semantic identity before the next key is handled or rows are described.
+
 ## Application-owned behavior
 
 `build` returns row press, activation, and missing-range events. `handle_key`

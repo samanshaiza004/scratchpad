@@ -1787,8 +1787,11 @@ func TestSmokeRoundTrip(t *testing.T) {
 	if state.Documents[0].Path != filepath.Join(workspace, "a.txt") {
 		t.Fatalf("opened document = %+v", state.Documents[0])
 	}
-	if state.Revision != open.Revision {
-		t.Fatalf("state revision %d != response revision %d", state.Revision, open.Revision)
+	// Background Git refreshes can publish a newer global snapshot between the
+	// command response and this state read. The observed state must include at
+	// least the command's publication, but need not have the exact same revision.
+	if state.Revision < open.Revision {
+		t.Fatalf("state revision %d is older than open response revision %d", state.Revision, open.Revision)
 	}
 	id := application.DocumentID(state.Documents[0].ID)
 	doc := runtime.app.Documents[id]

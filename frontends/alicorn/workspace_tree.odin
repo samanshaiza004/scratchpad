@@ -279,7 +279,12 @@ workspace_tree_apply_event :: proc(
 			Workspace_Tree_Row_Target{node=app.tree_scroll_owner, path=row.path, is_dir=row.is_dir, index=index},
 			alikit_tree.context_anchor(&app.workspace_tree_state), menu_already_open,
 		)
-	case:
+	case .None:
+		return
+	case .Range_Requested:
+		// Scratchpad supplies its complete flattened row projection, so AliKit
+		// has no unloaded range for the filesystem adapter to request here.
+		return
 	}
 }
 
