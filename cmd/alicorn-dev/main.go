@@ -241,7 +241,7 @@ func run(args []string) error {
 		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
 		probeExe := filepath.Join(out, "scratchpad-crash-probe"+exeSuffix())
-		probeArgs := []string{"build", filepath.Join(root, "tests", "fixtures", "crash_diagnostics"), "-debug", "-out:" + probeExe, collectionArg}
+		probeArgs := []string{"build", filepath.Join(root, "tests", "fixtures", "crash_diagnostics"), "-debug", "-out:" + probeExe, collectionArg, alikitCollectionArg}
 		probeArgs = append(probeArgs, accessKitCompilerArgs...)
 		probeArgs = appendLinkerFlags(probeArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
 		if err := runCommand(root, testEnv, "odin", odinExe, probeArgs...); err != nil {
