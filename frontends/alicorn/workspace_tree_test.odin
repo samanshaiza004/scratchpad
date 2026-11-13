@@ -9,6 +9,15 @@ import alicorn "alicorn:runtime"
 import bridge "./bridge"
 
 @(test)
+test_workspace_tree_semantic_identity_normalizes_windows_separators :: proc(t: ^testing.T) {
+	when ODIN_OS == .Windows {
+		testing.expect(t,
+			tree_semantic_id("src/nested/file.txt", false) == tree_semantic_id("src\\nested\\file.txt", false),
+			"Windows tree item identity should ignore the spelling of path separators")
+	}
+}
+
+@(test)
 test_workspace_tree_ignore_toggle_preserves_expansion_and_focus :: proc(t: ^testing.T) {
 	sync.mutex_lock(&backend_integration_test_mutex)
 	defer sync.mutex_unlock(&backend_integration_test_mutex)

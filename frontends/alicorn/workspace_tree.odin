@@ -522,7 +522,15 @@ tree_any_truncated :: proc(app: ^App) -> bool {
 tree_semantic_id :: proc(path: string, is_directory: bool) -> alicorn.Semantic_ID {
 	hash: u64 = 14_695_981_039_346_656_037
 	hash = (hash ~ (1 if is_directory else 2)) * 1_099_511_628_211
-	for character in path { hash = (hash ~ u64(character)) * 1_099_511_628_211 }
+	for character in path {
+		identity_character := character
+		when ODIN_OS == .Windows {
+			// Backend-relative paths use native separators, while callers may
+			// supply the same stable item path with forward slashes.
+			if identity_character == '\\' { identity_character = '/' }
+		}
+		hash = (hash ~ u64(identity_character)) * 1_099_511_628_211
+	}
 	if hash == 0 { hash = 1 }
 	return alicorn.Semantic_ID{namespace=TREE_SEMANTIC_NAMESPACE, value=hash}
 }
