@@ -185,6 +185,7 @@ func run(args []string) error {
 		return err
 	}
 	collectionArg := "-collection:alicorn=" + filepath.ToSlash(alicornRoot)
+	alikitCollectionArg := "-collection:alikit=" + filepath.ToSlash(filepath.Join(root, "third_party", "alicorn-kit"))
 
 	if err := generateScratchpadThemes(root, alicornRoot, out, odinExe, collectionArg); err != nil {
 		return err
@@ -215,7 +216,7 @@ func run(args []string) error {
 		if err := runGoTests(root, goExe, env); err != nil {
 			return err
 		}
-		checkArgs := []string{"check", filepath.Join(root, "frontends", "alicorn"), collectionArg}
+		checkArgs := []string{"check", filepath.Join(root, "frontends", "alicorn"), collectionArg, alikitCollectionArg}
 		checkArgs = append(checkArgs, accessKitCompilerArgs...)
 		if err := runCommand(root, nil, "odin", odinExe, checkArgs...); err != nil {
 			return fmt.Errorf("Alicorn frontend type check: %w", err)
@@ -247,7 +248,7 @@ func run(args []string) error {
 			return fmt.Errorf("build diagnostic crash probe: %w", err)
 		}
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DIAGNOSTIC_PROBE_EXE", probeExe)
-		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg}
+		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg, alikitCollectionArg}
 		testArgs = append(testArgs, accessKitCompilerArgs...)
 		testArgs = append(testArgs, appMutationDiagnosticCompilerArgs(*mutationDiagnostics)...)
 		testArgs = appendLinkerFlags(testArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
@@ -651,7 +652,8 @@ func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags 
 			return "", err
 		}
 	}
-	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg}
+	alikitCollectionArg := "-collection:alikit=" + filepath.ToSlash(filepath.Join(root, "third_party", "alicorn-kit"))
+	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg, alikitCollectionArg}
 	if runtime.GOOS == "windows" {
 		// Odin compiles this resource script and links the ICO into the PE
 		// executable. runCommand uses root as the working directory, which is

@@ -842,7 +842,7 @@ pinned_command :: proc(app: ^App, rt: ^alicorn.Runtime, command: string, pin: br
 	if command=="add" {
 		view_index:=editor_view_find(app.editor_views[:],app.backend.state.active)
 		dragging:=view_index>=0 && app.editor_views[view_index].dragging_selection
-		palette_returned_from_editor:=app.command_palette_previous_focus!=0 && app.command_palette_previous_focus==app.editor_scroll_owner
+		palette_returned_from_editor:=app.command_palette_component.previous_focus!=0 && app.command_palette_component.previous_focus==app.editor_scroll_owner
 		if (!editor_command_focus_owned(app,rt) && !palette_returned_from_editor) || len(app.editor_edits)>0 || editor_active_preedit(app) || dragging {set_error(app,"Focus the source editor and finish text input before pinning.");alicorn.invalidate_root(rt,"Pinned capture waited for focused, committed source");return}
 		document,found:=find_document(&app.backend.state,app.backend.state.active)
 		index:=editor_view_find(app.editor_views[:],app.backend.state.active)

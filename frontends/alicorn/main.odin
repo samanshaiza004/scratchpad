@@ -8,6 +8,7 @@ import odin_runtime "base:runtime"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
 import theme "alicorn:theme"
+import alikit "alikit:command_palette"
 import bridge "./bridge"
 
 ACTION_FILE_OPEN       :: "file.open"
@@ -451,18 +452,12 @@ App :: struct {
 	go_to_line_focus_pending: bool,
 	go_to_line_error:       string,
 	command_palette_open: bool,
-	command_palette_query: string,
+	command_palette_component: alikit.State,
 	command_palette_node: alicorn.Node_ID,
 	command_palette_overlay_node: alicorn.Node_ID,
 	command_palette_panel_node: alicorn.Node_ID,
-	command_palette_motion_accent_node: alicorn.Node_ID,
-	command_palette_reveal_pending: bool,
-	command_palette_motion_policy_signature: u64,
 	command_palette_results_scroll_node: alicorn.Node_ID,
-	command_palette_focus_pending: bool,
-	command_palette_restore_pending: bool,
 	command_palette_previous_focus: alicorn.Node_ID,
-	command_palette_selected_index: int,
 	command_palette_recent: [8]host.Application_Command_ID,
 	command_palette_recent_count: int,
 	quick_open_open: bool,
@@ -1350,19 +1345,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 	}
 	if app.workspace_address_open { return workspace_address_handle_key(app, rt, key) }
 	if app.command_palette_open {
-		#partial switch key {
-		case .Open_Command_Palette, .Escape:
-			command_palette_close_surface(app, rt, true)
-			return true
-		case .Return:
-			return command_palette_execute_selected(app, rt)
-		case .Up:
-			return command_palette_move_selection(app, rt, -1)
-		case .Down:
-			return command_palette_move_selection(app, rt, 1)
-		case:
-			return false
-		}
+		return command_palette_handle_key(app, rt, key)
 	}
 	if app.quick_open_open { return quick_open_handle_key(app, rt, key) }
 	if app.symbol_picker_open { return symbol_picker_handle_key(app, rt, key) }
@@ -4328,7 +4311,7 @@ application_stop :: proc(state: rawptr) {
 	find_set_message(&app.find_replace_text, "")
 	find_set_message(&app.find_replace_message, "")
 	find_set_message(&app.find_error, "")
-	find_set_message(&app.command_palette_query, "")
+	alikit.destroy(&app.command_palette_component)
 	quick_open_destroy(app)
 	workspace_address_browse_clear(app)
 	workspace_address_confirmation_clear(app)

@@ -5,6 +5,7 @@ import "core:mem"
 import alicorn "alicorn:runtime"
 import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
+import alikit "alikit:command_palette"
 
 COMMAND_PALETTE_MAX_VISIBLE_ROWS :: 8
 COMMAND_PALETTE_ROW_HEIGHT :: f32(38)
@@ -338,6 +339,52 @@ command_palette_filter_results :: proc(
 	return results
 }
 
+command_palette_alikit_items :: proc(results: []Command_Palette_Result, allocator: mem.Allocator) -> [dynamic]alikit.Item {
+	items := make([dynamic]alikit.Item, 0, allocator=allocator)
+	for result in results {
+		description := result.category
+		if result.shortcut != "" {
+			shortcut := command_palette_binding_label(result.shortcut)
+			if description == "" { description = shortcut
+			} else { description = fmt.tprintf("%s  ·  %s", description, shortcut) }
+		}
+		if !result.enabled {
+			if description == "" { description = "Unavailable here"
+			} else { description = fmt.tprintf("%s  ·  Unavailable here", description) }
+		}
+		append(&items, alikit.Item{
+			id=alikit.Item_ID(u64(action_id_for(result.action_id))),
+			title=result.title,
+			description=description,
+			disabled=!result.enabled,
+		})
+	}
+	return items
+}
+
+command_palette_prepare_items :: proc(
+	app: ^App,
+	allocator: mem.Allocator,
+) -> (results: [dynamic]Command_Palette_Result, filtered: [dynamic]Command_Palette_Result, items: [dynamic]alikit.Item) {
+	if app == nil { return }
+	results = command_palette_collect_results(app, allocator)
+	filtered = command_palette_filter_results(
+		results[:],
+		alikit.query_text(&app.command_palette_component),
+		app.command_palette_recent[:app.command_palette_recent_count],
+		allocator,
+	)
+	items = command_palette_alikit_items(filtered[:], allocator)
+	return
+}
+
+command_palette_find_result :: proc(results: []Command_Palette_Result, id: alikit.Item_ID) -> (result: Command_Palette_Result, found: bool) {
+	for candidate in results {
+		if u64(action_id_for(candidate.action_id)) == u64(id) { return candidate, true }
+	}
+	return
+}
+
 command_palette_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil || app.shutdown_intent != .None || app.close_document_id != "" ||
 	   app.workspace_mutation_kind != .None || app.settings_surface_open || app.go_to_line_open {
@@ -347,51 +394,42 @@ command_palette_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		command_palette_close_surface(app, rt, true)
 		return
 	}
-	app.command_palette_previous_focus = alicorn.focused_node(rt)
+	if !app.command_palette_component.initialized && !alikit.init(&app.command_palette_component, context.allocator) {
+		set_error(app, "The command palette could not allocate its search state.")
+		return
+	}
+	if !alikit.open_palette(&app.command_palette_component, rt, .Caller_Filtered) {
+		set_error(app, "The command palette could not be opened.")
+		return
+	}
 	app.command_palette_open = true
-	app.command_palette_focus_pending = true
-	app.command_palette_restore_pending = false
+	app.command_palette_previous_focus = app.command_palette_component.previous_focus
 	app.command_palette_node = 0
-	app.command_palette_motion_accent_node = 0
-	app.command_palette_reveal_pending = true
-	app.command_palette_motion_policy_signature = 0
 	app.command_palette_results_scroll_node = 0
-	app.command_palette_selected_index = 0
-	find_set_message(&app.command_palette_query, "")
 	alicorn.invalidate_root(rt, "Scratchpad command palette opened")
 }
 
 command_palette_close_surface :: proc(app: ^App, rt: ^alicorn.Runtime, restore_focus: bool) {
 	if app == nil { return }
+	if app.command_palette_component.initialized {
+		alikit.close_palette(&app.command_palette_component, rt, restore_focus)
+		app.command_palette_previous_focus = app.command_palette_component.previous_focus
+	}
 	app.command_palette_open = false
-	app.command_palette_focus_pending = false
-	app.command_palette_restore_pending = restore_focus
 	app.command_palette_node = 0
-	app.command_palette_motion_accent_node = 0
-	app.command_palette_reveal_pending = false
-	app.command_palette_motion_policy_signature = 0
 	app.command_palette_results_scroll_node = 0
-	find_set_message(&app.command_palette_query, "")
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad command palette closed") }
 }
 
 command_palette_restore_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
-	if app == nil || rt == nil { return }
-	if app.command_palette_open && app.command_palette_focus_pending && app.command_palette_node != 0 {
-		if alicorn.focus(rt, app.command_palette_node) {
-			app.command_palette_focus_pending = false
-			if text, found := alicorn.text_field_value(rt, app.command_palette_node); found {
-				_ = alicorn.set_text_selection(rt, app.command_palette_node, 0, len(text))
-			}
-		}
-	}
-	if !app.command_palette_restore_pending { return }
-	app.command_palette_restore_pending = false
-	focus := app.command_palette_previous_focus
-	app.command_palette_previous_focus = 0
-	if focus != 0 {
-		if _, found := alicorn.node_info(rt, focus); found { _ = alicorn.focus(rt, focus) }
-	}
+	if app == nil || rt == nil || !app.command_palette_component.initialized { return }
+	alikit.after_frame(&app.command_palette_component, rt)
+	app.command_palette_open = app.command_palette_component.open
+	app.command_palette_node = app.command_palette_component.query_node
+	app.command_palette_overlay_node = app.command_palette_component.overlay_node
+	app.command_palette_panel_node = app.command_palette_component.panel_node
+	app.command_palette_results_scroll_node = app.command_palette_component.results_node
+	app.command_palette_previous_focus = app.command_palette_component.previous_focus
 }
 
 command_palette_recent_add :: proc(app: ^App, id: host.Application_Command_ID) {
@@ -425,43 +463,21 @@ command_palette_execute :: proc(app: ^App, rt: ^alicorn.Runtime, result: Command
 	return true
 }
 
-command_palette_move_selection :: proc(app: ^App, rt: ^alicorn.Runtime, delta: int) -> bool {
-	if app == nil || rt == nil || !app.command_palette_open { return false }
-	results := command_palette_collect_results(app, context.temp_allocator)
-		defer delete(results)
-	filtered := command_palette_filter_results(results[:], app.command_palette_query, app.command_palette_recent[:app.command_palette_recent_count], context.temp_allocator)
-		defer delete(filtered)
-	if len(filtered) > 0 {
-		next := app.command_palette_selected_index+delta
-		for next >= 0 && next < len(filtered) {
-			if filtered[next].enabled {
-				app.command_palette_selected_index = next
-				break
-			}
-			next += delta
-		}
-		if app.command_palette_results_scroll_node != 0 {
-			_ = alicorn.virtual_list_ensure_visible(
-				rt,
-				app.command_palette_results_scroll_node,
-				app.command_palette_selected_index,
-				"Scratchpad command palette selection visibility",
-			)
+command_palette_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
+	if app == nil || rt == nil || !app.command_palette_open || !app.command_palette_component.initialized { return false }
+	results, filtered, items := command_palette_prepare_items(app, context.temp_allocator)
+	defer delete(results)
+	defer delete(filtered)
+	defer delete(items)
+	handled, event := alikit.handle_key(&app.command_palette_component, rt, items[:], key)
+	app.command_palette_open = app.command_palette_component.open
+	app.command_palette_previous_focus = app.command_palette_component.previous_focus
+	if event.kind == .Activated {
+		if result, found := command_palette_find_result(filtered[:], event.item_id); found {
+			_ = command_palette_execute(app, rt, result)
 		}
 	}
-	alicorn.invalidate_root(rt, "Scratchpad command palette selection moved")
-	return true
-}
-
-command_palette_execute_selected :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
-	if app == nil || rt == nil || !app.command_palette_open { return false }
-	results := command_palette_collect_results(app, context.temp_allocator)
-	defer delete(results)
-	filtered := command_palette_filter_results(results[:], app.command_palette_query, app.command_palette_recent[:app.command_palette_recent_count], context.temp_allocator)
-	defer delete(filtered)
-	if app.command_palette_selected_index < 0 || app.command_palette_selected_index >= len(filtered) { return true }
-	if !filtered[app.command_palette_selected_index].enabled { return true }
-	return command_palette_execute(app, rt, filtered[app.command_palette_selected_index])
+	return handled
 }
 
 command_palette_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
@@ -470,124 +486,64 @@ command_palette_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change:
 	symbol_picker_text_change(state, rt, change)
 	workspace_address_text_change(state, rt, change)
 	app := cast(^App)state
-	if app == nil || rt == nil || !app.command_palette_open || change.node != app.command_palette_node || !change.changed { return }
-	find_set_message(&app.command_palette_query, change.text)
-	app.command_palette_selected_index = 0
-	alicorn.invalidate_root(rt, "Scratchpad command palette query changed")
+	if app == nil || rt == nil || !app.command_palette_component.initialized { return }
+	_ = alikit.text_change(&app.command_palette_component, rt, change)
+	app.command_palette_open = app.command_palette_component.open
 }
 
 command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
-	if app == nil || ui == nil || rt == nil || !app.command_palette_open { return }
-	results := command_palette_collect_results(app, alicorn.runtime_scratch_allocator(rt))
+	if app == nil || ui == nil || rt == nil || !app.command_palette_open || !app.command_palette_component.initialized { return }
+	allocator := alicorn.runtime_scratch_allocator(rt)
+	results, filtered, items := command_palette_prepare_items(app, allocator)
 	defer delete(results)
-	filtered := command_palette_filter_results(results[:], app.command_palette_query, app.command_palette_recent[:app.command_palette_recent_count], alicorn.runtime_scratch_allocator(rt))
 	defer delete(filtered)
-	if len(filtered) == 0 { app.command_palette_selected_index = 0
-	} else { app.command_palette_selected_index = clamp(app.command_palette_selected_index, 0, len(filtered)-1) }
-	app.command_palette_overlay_node = alicorn.modal_overlay_begin(
+	defer delete(items)
+	event := alikit.build(
 		ui,
-		alicorn.key_string("scratchpad-command-palette-overlay"),
-		style=alicorn.layout_style(.Column, grow=1, padding=48, align=.Center, clip=true),
-		backdrop_color=scratchpad_modal_overlay_color(app, rt),
+		&app.command_palette_component,
+		items[:],
+		alicorn.key_string("scratchpad-command-palette"),
+		alikit.Options{
+			hide_title=true,
+			query_accessible_name="Search commands",
+			query_prefix=">",
+			query_height=44,
+			query_text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
+			empty_message="No matching commands",
+			footer_label="commands  ·  ↑/↓ navigate  ·  Enter run  ·  Esc close",
+			panel_max_width=760,
+			list_max_height=COMMAND_PALETTE_MAX_LIST_HEIGHT,
+			row_height=COMMAND_PALETTE_ROW_HEIGHT,
+			appearance=alikit.Appearance{
+				enabled=true,
+				overlay_padding=48,
+				panel_padding=12,
+				panel_gap=8,
+				backdrop_color=scratchpad_modal_overlay_color(app, rt),
+				panel_shape=scratchpad_surface_shape(app, 7),
+				panel_material=scratchpad_surface_material(app, app.floating_surface_material),
+				physical_height=scratchpad_surface_height(app, 1),
+				panel_fill=scratchpad_modal_panel_fill(app, rt),
+				backdrop_effect=scratchpad_modal_backdrop_effect(app, rt),
+			},
+		},
 	)
-	app.command_palette_panel_node = alicorn.surface_begin(
-		ui,
-		alicorn.surface_core_color_role(.Surface),
-		label="scratchpad-command-palette-panel",
-		key=alicorn.key_string("scratchpad-command-palette-panel"),
-		style=alicorn.layout_style(.Column, max_width=760, height=alicorn.LAYOUT_SIZE_FIT_CONTENT, padding=12, gap=8, clip=true),
-		shape=scratchpad_surface_shape(app, 7),
-		material=scratchpad_surface_material(app, app.floating_surface_material),
-		physical_height=scratchpad_surface_height(app, 1),
-		fill=scratchpad_modal_panel_fill(app, rt),
-		backdrop_effect=scratchpad_modal_backdrop_effect(app, rt),
-	)
-	if gui.row(ui, label="scratchpad-command-palette-query-row", height=44, gap=4, align=.Center) {
-		app.command_palette_motion_accent_node = alicorn.surface_begin(
-			ui,
-			alicorn.surface_core_color_role(.Accent),
-			key=alicorn.key_string("scratchpad-command-palette-motion-accent"),
-			style=alicorn.layout_style(.Row, width=2, height=26),
-			label="scratchpad-command-palette-motion-accent",
-		)
-		alicorn.surface_end(ui)
-		if app.command_palette_motion_accent_node != 0 {
-			policy_signature := scratchpad_motion_policy_signature(app, rt, app.workbench_theme)
-			intent := gui.Motion_Intent.Settle
-			should_declare := app.command_palette_motion_policy_signature != policy_signature
-			if app.command_palette_reveal_pending {
-				intent = .Reveal
-				should_declare = true
-			}
-			if should_declare {
-				status := gui.motion(
-					ui,
-					app.command_palette_motion_accent_node,
-					gui.Motion_Target{opacity=1, has_opacity=true, has_translation=true},
-					intent,
-					gui.Motion_Vector2{y=-6},
-				)
-				if status == .Ok {
-					app.command_palette_motion_policy_signature = policy_signature
-					if intent == .Reveal { app.command_palette_reveal_pending = false }
-				}
-			}
+	app.command_palette_open = app.command_palette_component.open
+	app.command_palette_node = app.command_palette_component.query_node
+	app.command_palette_overlay_node = app.command_palette_component.overlay_node
+	app.command_palette_panel_node = app.command_palette_component.panel_node
+	app.command_palette_results_scroll_node = app.command_palette_component.results_node
+	if event.kind == .Activated {
+		if result, found := command_palette_find_result(filtered[:], event.item_id); found {
+			_ = command_palette_execute(app, rt, result, true)
 		}
-		gui.text(ui, ">", style=alicorn.layout_style(.Row, width=16, height=36), text_style=alicorn.Text_Style{font_weight=alicorn.FONT_WEIGHT_SEMIBOLD})
-		app.command_palette_node = alicorn.text_field(
-			ui,
-			app.command_palette_query,
-			key=alicorn.key_string("scratchpad-command-palette-query"),
-			style=alicorn.layout_style(.Row, grow=1, height=40),
-			text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
-		)
 	}
-	if len(filtered) == 0 {
-		gui.text(ui, "No matching commands", style=alicorn.layout_style(.Row, height=COMMAND_PALETTE_ROW_HEIGHT, padding=8))
-	} else {
-		list := alicorn.virtual_list_begin(
-			ui,
-			len(filtered),
-			COMMAND_PALETTE_ROW_HEIGHT,
-			key=alicorn.key_string("scratchpad-command-palette-results"),
-			style=alicorn.layout_style(height=alicorn.LAYOUT_SIZE_FIT_CONTENT, max_height=COMMAND_PALETTE_MAX_LIST_HEIGHT, grow=1, clip=true),
-			label="scratchpad-command-palette-results",
-		)
-		app.command_palette_results_scroll_node = list.scroll.id
-		for index := list.first; index < list.last; index += 1 {
-			result := filtered[index]
-			label := result.title
-			if result.category != "" { label = fmt.tprintf("%s  ·  %s", label, result.category) }
-			if result.shortcut != "" { label = fmt.tprintf("%s     %s", label, command_palette_binding_label(result.shortcut)) }
-			if !result.enabled { label = fmt.tprintf("%s  ·  Unavailable here", label) }
-			if gui.button(
-				ui,
-				label,
-				key=result.action_id,
-				state=alicorn.Button_State{selected=index == app.command_palette_selected_index, disabled=!result.enabled},
-				height=COMMAND_PALETTE_ROW_HEIGHT,
-				text_style=alicorn.Text_Style{overflow=.Ellipsis},
-				content_style=alicorn.button_content_style(horizontal=.Start, vertical=.Center, padding_x=10, padding_y=5),
-				variant=.Quiet,
-			) {
-				_ = command_palette_execute(app, rt, result, true)
-			}
-		}
-		alicorn.virtual_list_end(ui, list)
-	}
-	gui.text(ui, fmt.tprintf("%d commands  ·  ↑/↓ navigate  ·  Enter run  ·  Esc close", len(filtered)), style=alicorn.layout_style(.Row, height=20))
-	alicorn.surface_end(ui)
-	alicorn.modal_overlay_end(ui)
 }
 
 command_palette_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) -> bool {
-	if app == nil || rt == nil || !app.command_palette_open { return false }
-	if event.kind == .Down && event.button == alicorn.POINTER_BUTTON_PRIMARY && target == app.command_palette_overlay_node {
-		panel, found := alicorn.node_info(rt, app.command_palette_panel_node)
-		inside := found && event.x >= panel.bounds.x && event.x < panel.bounds.x+panel.bounds.w &&
-		         event.y >= panel.bounds.y && event.y < panel.bounds.y+panel.bounds.h
-		if !inside { command_palette_close_surface(app, rt, true) }
-		return true
-	}
+	if app == nil || rt == nil || !app.command_palette_open || !app.command_palette_component.initialized { return false }
+	_ = alikit.pointer(&app.command_palette_component, rt, event, target)
+	app.command_palette_open = app.command_palette_component.open
+	app.command_palette_previous_focus = app.command_palette_component.previous_focus
 	return true
 }

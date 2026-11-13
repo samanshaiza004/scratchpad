@@ -1,8 +1,10 @@
 package main
 
 import "core:testing"
+import "core:strings"
 import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
+import alikit "alikit:command_palette"
 import bridge "./bridge"
 
 @(test)
@@ -45,6 +47,24 @@ test_command_palette_shortcut_search_and_binding_presentation :: proc(t: ^testin
 		"platform-neutral shortcut search should understand the displayed primary modifier")
 	testing.expect(t, command_palette_binding_label(result.shortcut) == "Ctrl/Cmd+Shift+P",
 		"primary shortcut presentation should name both common desktop conventions")
+}
+
+@(test)
+test_command_palette_projects_fuzzy_ranked_results_to_stable_alikit_items :: proc(t: ^testing.T) {
+	candidates := [?]Command_Palette_Result{
+		{action_id="workspace.open", title="Open Workspace", category="Workspace", shortcut="primary+o", enabled=true},
+		{action_id="file.open", title="Open File", category="File", shortcut="primary+o", enabled=false},
+	}
+	ranked := command_palette_filter_results(candidates[:], "wrkspc", {}, context.temp_allocator)
+	defer delete(ranked)
+	items := command_palette_alikit_items(ranked[:], context.temp_allocator)
+	defer delete(items)
+	command_id := action_id_for(ranked[0].action_id)
+	testing.expect(t, len(items) == 1 && u64(items[0].id) == u64(command_id),
+		"Scratchpad's fuzzy matcher and ranking should supply the exact stable actions shown by AliKit")
+	testing.expect(t, items[0].title == "Open Workspace" && strings.contains(items[0].description, "Workspace") &&
+		strings.contains(items[0].description, "Ctrl/Cmd+O") && !items[0].disabled,
+		"the AliKit projection should preserve category, shortcut presentation, and enabled state")
 }
 
 @(test)
@@ -93,9 +113,10 @@ test_command_palette_focus_keyboard_and_dismissal_are_local :: proc(t: ^testing.
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 600})
 	defer alicorn.destroy_runtime(&rt)
 	app: App
+	defer alikit.destroy(&app.command_palette_component)
 	ui, should_build := alicorn.begin_frame(&rt)
 	if !should_build { testing.expect(t, false, "palette focus test should describe its initial frame"); return }
-	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-focus-root"), style=alicorn.layout_style(grow=1))
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
 	previous_focus := alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
@@ -104,10 +125,10 @@ test_command_palette_focus_keyboard_and_dismissal_are_local :: proc(t: ^testing.
 	command_palette_open_surface(&app, &rt)
 	ui, should_build = alicorn.begin_frame(&rt)
 	if !should_build { testing.expect(t, false, "palette focus test should describe the open palette"); return }
-	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-focus-root"), style=alicorn.layout_style(grow=1))
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
 	_ = alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
-	command_palette_build(&app, &ui, &rt)
 	alicorn.container_end(&ui)
+	command_palette_build(&app, &ui, &rt)
 	alicorn.end_frame(&ui)
 	command_palette_restore_focus_after_frame(&app, &rt)
 	testing.expect(t, app.command_palette_open && rt.focused == app.command_palette_node,
@@ -120,7 +141,7 @@ test_command_palette_focus_keyboard_and_dismissal_are_local :: proc(t: ^testing.
 
 	ui, should_build = alicorn.begin_frame(&rt)
 	if !should_build { testing.expect(t, false, "palette focus test should describe after dismissal"); return }
-	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-focus-root"), style=alicorn.layout_style(grow=1))
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
 	previous_focus = alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
@@ -136,136 +157,150 @@ command_palette_test_build :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtim
 		return false
 	}
 	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
-	command_palette_build(app, &ui, rt)
+	_ = alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
 	alicorn.container_end(&ui)
+	command_palette_build(app, &ui, rt)
 	alicorn.end_frame(&ui)
 	return true
 }
 
-command_palette_motion_test_build :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
+command_palette_styled_test_build :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
 	if !scratchpad_styles_ensure(app, rt) {
 		testing.expect(t, false, "palette motion fixture should register the workbench theme")
 		return false
 	}
 	ui, should_build := alicorn.begin_frame(rt)
 	if !should_build {
-		testing.expect(t, false, "palette motion fixture should build its invalidated description")
+		testing.expect(t, false, "palette fixture should build its invalidated description")
 		return false
 	}
 	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	_ = alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
+	alicorn.container_end(&ui)
 	scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
 	command_palette_build(app, &ui, rt)
 	alicorn.style_environment_pop(&ui, scope)
-	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
 	return true
 }
 
 @(test)
-test_command_palette_reveals_only_its_decoration_once :: proc(t: ^testing.T) {
-	for reduce_motion in ([2]bool{false, true}) {
-		rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 650})
-		app: App
-		init_menus(&app)
-		app.accessibility_appearance_override_enabled = true
-		app.accessibility_appearance.reduce_motion = reduce_motion
-		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
-		command_palette_open_surface(&app, &rt)
-		testing.expect(t, app.command_palette_reveal_pending,
-			"opening the palette should queue one decorative Reveal")
-		if !command_palette_motion_test_build(t, &app, &rt) {
-			alicorn.destroy_runtime(&rt)
-			continue
-		}
-		command_palette_restore_focus_after_frame(&app, &rt)
-		accent_id := app.command_palette_motion_accent_node
-		accent, accent_ok := alicorn.node_info(&rt, accent_id)
-		query_focus_ok := app.command_palette_node != 0 && rt.focused == app.command_palette_node
-		stats := alicorn.motion_diagnostics_stats(&rt)
-		handle, handle_status := alicorn.motion_owner_begin(&rt, accent_id)
-		presentation := alicorn.motion_presentation(&rt, handle)
-		testing.expect(t, accent_ok && app.command_palette_panel_node != 0 && app.command_palette_node != 0 &&
-			query_focus_ok && !app.command_palette_reveal_pending,
-			"the palette panel and query remain present and focused immediately while the accent reveals")
-		testing.expect(t, stats.reveals == 1 && handle_status == .Ok,
-			"the opt-in Reveal should belong only to the passive accent surface")
-		if reduce_motion {
-			testing.expect(t, !presentation.active && presentation.presented_opacity == 1 &&
-				presentation.presented_translation == [2]f32{0, 0},
-				"reduced motion should snap the palette accent to its final presentation")
-		} else {
-			testing.expect(t, presentation.active && presentation.presented_opacity == 0 &&
-				presentation.presented_translation == [2]f32{0, -6},
-				"normal motion should reveal the accent from a small offset and zero opacity")
-		}
-
-		find_set_message(&app.command_palette_query, "Open File")
-		alicorn.invalidate_root(&rt, "palette query rebuild after Reveal")
-		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
-		if command_palette_motion_test_build(t, &app, &rt) {
-			command_palette_restore_focus_after_frame(&app, &rt)
-			updated_accent, updated_ok := alicorn.node_info(&rt, app.command_palette_motion_accent_node)
-			updated_stats := alicorn.motion_diagnostics_stats(&rt)
-			testing.expect(t, updated_ok && app.command_palette_motion_accent_node == accent_id &&
-				updated_accent.bounds == accent.bounds && updated_stats.reveals == 1 &&
-				updated_stats.intent_declarations == stats.intent_declarations,
-				"query updates should preserve accent geometry and never replay its birth animation")
-			testing.expect(t, rt.focused == app.command_palette_node,
-				"query rebuilds should keep keyboard focus on the palette field")
-		}
-		if !reduce_motion {
-			_ = alicorn.motion_tick(&rt, alicorn.Motion_Time(5_000_000_000))
-		}
-		testing.expect(t, alicorn.motion_activity(&rt).active_owners == 0,
-			"the palette accent should have no motion activity after settlement")
-		command_palette_close_surface(&app, &rt, false)
-		testing.expect(t, !app.command_palette_reveal_pending,
-			"closing the palette should discard any pending entrance intent without an exit ghost")
-		alicorn.destroy_runtime(&rt)
-	}
-}
-
-@(test)
-test_command_palette_reduce_motion_change_during_reveal_does_not_replay_birth :: proc(t: ^testing.T) {
+test_command_palette_component_owns_pointer_dismissal_and_focus_restoration :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 650})
 	defer alicorn.destroy_runtime(&rt)
 	app: App
-	init_menus(&app)
-	app.accessibility_appearance_override_enabled = true
-	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
+	defer alikit.destroy(&app.command_palette_component)
+	if !scratchpad_styles_ensure(&app, &rt) { testing.expect(t, false, "palette fixture should register its theme"); return }
+	ui, should_build := alicorn.begin_frame(&rt)
+	if !should_build { testing.expect(t, false, "initial focus frame should build"); return }
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	previous_focus := alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	_ = alicorn.focus(&rt, previous_focus)
 	command_palette_open_surface(&app, &rt)
-	if !command_palette_motion_test_build(t, &app, &rt) { return }
+	if !command_palette_styled_test_build(t, &app, &rt) { return }
 	command_palette_restore_focus_after_frame(&app, &rt)
-	accent_id := app.command_palette_motion_accent_node
-	initial_stats := alicorn.motion_diagnostics_stats(&rt)
-	initial := alicorn.motion_diagnostics_owner_snapshot(&rt, accent_id)
-	testing.expect(t, initial.valid && initial.opacity.active && initial_stats.reveals == 1,
-		"the normal-motion palette should begin its single decorative Reveal")
+	overlay := app.command_palette_overlay_node
+	panel, panel_found := alicorn.node_info(&rt, app.command_palette_panel_node)
+	testing.expect(t, panel_found && app.command_palette_node != 0 && rt.focused == app.command_palette_node,
+		"AliKit should render the themed palette and focus its controlled query")
+	outside_click := alicorn.Pointer_Event{kind=.Down, button=alicorn.POINTER_BUTTON_PRIMARY, x=1, y=1}
+	outside_target := alicorn.process_pointer(&rt, outside_click)
+	testing.expect(t, outside_target == overlay,
+		"the modal backdrop should own a physical hit outside the palette panel")
+	command_palette_pointer(&app, &rt, outside_click, outside_target)
+	testing.expect(t, !app.command_palette_open,
+		"a primary pointer down on the modal backdrop should dismiss the palette")
+	ui, should_build = alicorn.begin_frame(&rt)
+	if !should_build { testing.expect(t, false, "dismissal should build the frame that retires the modal"); return }
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	previous_focus = alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
+	alicorn.container_end(&ui)
+	command_palette_build(&app, &ui, &rt)
+	alicorn.end_frame(&ui)
+	command_palette_restore_focus_after_frame(&app, &rt)
+	testing.expect(t, rt.focused == previous_focus,
+		"outside dismissal should restore the focus owner captured before opening")
+	_ = panel
+}
 
-	app.accessibility_appearance.reduce_motion = true
-	alicorn.invalidate_root(&rt, "Reduce Motion changed during command-palette Reveal")
-	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
-	if command_palette_motion_test_build(t, &app, &rt) {
-		command_palette_restore_focus_after_frame(&app, &rt)
-		changed_stats := alicorn.motion_diagnostics_stats(&rt)
-		handle, handle_status := alicorn.motion_owner_begin(&rt, accent_id)
-		presentation := alicorn.motion_presentation(&rt, handle)
-		testing.expect(t, changed_stats.intent_declarations > initial_stats.intent_declarations &&
-			changed_stats.reveals == 1 && handle_status == .Ok && !presentation.active &&
-			presentation.presented_opacity == 1 && presentation.presented_translation == [2]f32{0, 0},
-			"a policy change should settle the existing entrance to its target without replaying Reveal")
-		testing.expect(t, rt.focused == app.command_palette_node,
-			"changing Reduce Motion during the accent entrance should preserve query focus")
-		alicorn.invalidate_root(&rt, "repeat palette description after policy update")
-		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(30_000_000))
-		if command_palette_motion_test_build(t, &app, &rt) {
-			repeated_stats := alicorn.motion_diagnostics_stats(&rt)
-			testing.expect(t, repeated_stats.intent_declarations == changed_stats.intent_declarations &&
-				repeated_stats.reveals == 1,
-				"an unchanged motion policy should not add declarations or repeat the birth Reveal")
-		}
+@(test)
+test_command_palette_pointer_activation_defers_current_scratchpad_action :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 650})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	defer alikit.destroy(&app.command_palette_component)
+	actions := [?]bridge.Action_State{
+		{id="file.open", title="Open File", category="File", visible=true, enabled=true},
 	}
-	command_palette_close_surface(&app, &rt, false)
+	app.backend.state.actions = actions[:]
+	ui, should_build := alicorn.begin_frame(&rt)
+	if !should_build { testing.expect(t, false, "initial focus frame should build"); return }
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	previous_focus := alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	_ = alicorn.focus(&rt, previous_focus)
+	command_palette_open_surface(&app, &rt)
+	if !command_palette_styled_test_build(t, &app, &rt) { return }
+	command_palette_restore_focus_after_frame(&app, &rt)
+
+	button_id, button_found := alicorn.node_by_key(
+		&rt,
+		alicorn.key_pair(0xA11C_0001, u64(action_id_for("file.open"))),
+		.Button,
+	)
+	button, button_ok := alicorn.node_info(&rt, button_id)
+	testing.expect(t, button_found && button_ok,
+		"the current Scratchpad action should be realized as an AliKit result button")
+	if !button_found || !button_ok { return }
+	x := button.bounds.x+button.bounds.w/2
+	y := button.bounds.y+button.bounds.h/2
+	down := alicorn.Pointer_Event{kind=.Down, button=alicorn.POINTER_BUTTON_PRIMARY, x=x, y=y}
+	down_target := alicorn.process_pointer(&rt, down)
+	command_palette_pointer(&app, &rt, down, down_target)
+	up := alicorn.Pointer_Event{kind=.Up, button=alicorn.POINTER_BUTTON_PRIMARY, x=x, y=y}
+	up_target := alicorn.process_pointer(&rt, up)
+	command_palette_pointer(&app, &rt, up, up_target)
+	testing.expect(t, down_target == button_id && up_target == button_id,
+		"a physical pointer sequence should hit and release on the selected result")
+
+	ui, should_build = alicorn.begin_frame(&rt)
+	if !should_build { testing.expect(t, false, "the clicked result should schedule a palette description"); return }
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("command-palette-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	_ = alicorn.text_field(&ui, "", key=alicorn.key_string("command-palette-prior-focus"))
+	alicorn.container_end(&ui)
+	command_palette_build(&app, &ui, &rt)
+	alicorn.end_frame(&ui)
+	testing.expect(t, !app.command_palette_open && app.frame_deferred_action_pending &&
+		app.frame_deferred_action.kind == .Action && app.frame_deferred_action.value == "file.open" &&
+		app.command_palette_recent_count == 1 && app.command_palette_recent[0] == action_id_for("file.open"),
+		"pointer activation should queue and record the exact current Scratchpad action after closing the palette")
+	if app.frame_deferred_action_pending { deferred_action_destroy(&app.frame_deferred_action) }
+}
+
+@(test)
+test_command_palette_yields_navigation_during_ime_composition :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 650})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	defer alikit.destroy(&app.command_palette_component)
+	init_menus(&app)
+	command_palette_open_surface(&app, &rt)
+	if !command_palette_styled_test_build(t, &app, &rt) { return }
+	command_palette_restore_focus_after_frame(&app, &rt)
+	query_node := app.command_palette_node
+	if !alicorn.process_text_editing(&rt, query_node, "候補", 0, 0) {
+		testing.expect(t, false, "the command query should accept native-style preedit text")
+		return
+	}
+	selection_before := app.command_palette_component.selection.id
+	handled := application_key(rawptr(&app), &rt, .Down)
+	interaction, found := alicorn.text_field_interaction(&rt, query_node)
+	testing.expect(t, !handled && app.command_palette_open && found && interaction.composition_active &&
+		app.command_palette_component.selection.id == selection_before,
+		"Up/Down/Return handling should yield to active input-method candidate navigation")
 }
 
 @(test)
@@ -273,6 +308,7 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
 	defer alicorn.destroy_runtime(&rt)
 	app: App
+	defer alikit.destroy(&app.command_palette_component)
 	init_menus(&app)
 	synthetic_actions := [?]bridge.Action_State{
 		{id="file.open", title="Open File", category="File", visible=true, enabled=true},
@@ -290,12 +326,12 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 		{id="demo.twelve", title="Demo Twelve", category="Demo", visible=true, enabled=true},
 	}
 	app.backend.state.actions = synthetic_actions[:]
-	app.command_palette_open = true
-	find_set_message(&app.command_palette_query, "Open File")
+	command_palette_open_surface(&app, &rt)
+	_ = alikit.set_query(&app.command_palette_component, &rt, "Open File")
 
 	results := command_palette_collect_results(&app, context.temp_allocator)
 	defer delete(results)
-	sparse := command_palette_filter_results(results[:], app.command_palette_query, {}, context.temp_allocator)
+	sparse := command_palette_filter_results(results[:], alikit.query_text(&app.command_palette_component), {}, context.temp_allocator)
 	defer delete(sparse)
 	visible_sparse := min(max(len(sparse), 1), COMMAND_PALETTE_MAX_VISIBLE_ROWS)
 	if !command_palette_test_build(t, &app, &rt) { return }
@@ -303,12 +339,12 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	testing.expect(t, panel_ok && len(sparse) > 0 && len(sparse) < COMMAND_PALETTE_MAX_VISIBLE_ROWS,
 		"the focused query should produce a short natural-height result list")
 	if panel_ok {
-		want_height := f32(104)+f32(visible_sparse)*COMMAND_PALETTE_ROW_HEIGHT
+		want_height := f32(108)+f32(visible_sparse)*COMMAND_PALETTE_ROW_HEIGHT
 		testing.expect(t, panel.bounds.h == want_height,
 			"the command palette panel height should come from its realized query, result, and footer contents")
 	}
 
-	find_set_message(&app.command_palette_query, "")
+	_ = alikit.set_query(&app.command_palette_component, &rt, "")
 	alicorn.invalidate_root(&rt, "command palette content sizing stress")
 	all_results := command_palette_filter_results(results[:], "", {}, context.temp_allocator)
 	defer delete(all_results)
@@ -317,7 +353,7 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	list, list_ok := alicorn.node_info(&rt, app.command_palette_results_scroll_node)
 	testing.expect(t, len(all_results) > COMMAND_PALETTE_MAX_VISIBLE_ROWS,
 		"the real command set should exceed the palette's bounded visible row count")
-	testing.expect(t, panel_ok && panel.bounds.h == f32(104)+COMMAND_PALETTE_MAX_LIST_HEIGHT,
+	testing.expect(t, panel_ok && panel.bounds.h == f32(108)+COMMAND_PALETTE_MAX_LIST_HEIGHT,
 		"many results should grow the panel only to the capped list height")
 	testing.expect(t, list_ok && list.scroll_content_height == f32(len(all_results))*COMMAND_PALETTE_ROW_HEIGHT &&
 		list.scroll_viewport_height <= COMMAND_PALETTE_MAX_LIST_HEIGHT,

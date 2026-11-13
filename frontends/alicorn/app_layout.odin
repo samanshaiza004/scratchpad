@@ -45,7 +45,6 @@ build_app :: proc(
 	clear(&app.workspace_search_pointer_targets)
 	_ = find_capture_text_field(rt, app.workspace_mutation_name_node, &app.workspace_mutation_name)
 	_ = find_capture_text_field(rt, app.go_to_line_query_node, &app.go_to_line_query)
-	_ = find_capture_text_field(rt, app.command_palette_node, &app.command_palette_query)
 	_ = find_capture_text_field(rt, app.quick_open_node, &app.quick_open_query)
 	_ = find_capture_text_field(rt, app.symbol_picker_query_node, &app.symbol_picker_query)
 	_ = find_capture_text_field(rt, app.editor_font_picker_query_node, &app.editor_font_picker_query)
