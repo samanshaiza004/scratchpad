@@ -9,6 +9,7 @@ as separate entries.
 ## [Unreleased]
 
 ### Added
+- Added the vendored AliKit Tree View to Scratchpad's workspace explorer, preserving stable semantic IDs, active-document styling, focus and scroll state, drag/drop, and application-owned context-menu actions.
 
 - Added local Alicorn color-theme import, preview, persistence, and duplicate-
   and-customize controls in Settings, with built-in Catppuccin Mocha and

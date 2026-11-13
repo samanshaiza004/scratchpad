@@ -7,6 +7,7 @@ import "core:strings"
 import alicorn "alicorn:runtime"
 import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
+import alikit_tree "alikit:tree_view"
 import bridge "./bridge"
 
 TREE_SEMANTIC_NAMESPACE :: u64(0x5343524154434850)
@@ -34,6 +35,7 @@ Tree_Row :: struct {
 
 build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if !app.backend.state.has_workspace {
+		app.tree_scroll_owner = 0
 		alicorn.container_begin(ui, .Container, label="workspace-tree-empty", style=alicorn.layout_style(grow=1, padding=12), color=alicorn.style_color(ui, .Subtle_Surface))
 		gui.text(ui, "Open a folder to browse files.")
 		alicorn.container_end(ui)
@@ -41,6 +43,7 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	}
 	root_index := tree_directory_index(app, "")
 	if root_index < 0 {
+		app.tree_scroll_owner = 0
 		alicorn.container_begin(ui, .Container, label="workspace-tree-loading", style=alicorn.layout_style(grow=1, padding=12), color=alicorn.style_color(ui, .Subtle_Surface))
 		gui.text(ui, "Loading workspace…")
 		alicorn.container_end(ui)
@@ -51,102 +54,232 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
 	defer delete(rows)
 	tree_flatten_directory(app, "", 0, &rows)
-	list := alicorn.virtual_list_begin(
-		ui,
-		len(rows),
-		TREE_ROW_HEIGHT,
-		key=alicorn.key_string(TREE_SCROLL_KEY),
-		style=alicorn.layout_style(grow=1, clip=true),
-		label="scratchpad-workspace-tree",
-		focusable=true,
-	restore=session_ui_tree_scroll_request(app),
-	)
-	app.tree_scroll_owner = list.scroll.id
-	session_ui_restore_tree_focus(app, rt, rows[:])
-	_ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, tree_semantic_id("", true), .On)
-	focus_state := alicorn.semantic_focus_state(rt)
+	window := workspace_tree_window(app, rows[:])
 	active_document, has_active_document := find_document(&app.backend.state, app.backend.state.active)
-	for position := list.first; position < list.last; position += 1 {
-		row := rows[position]
-		semantic_id := tree_semantic_id(row.path, row.is_dir)
-		selected := focus_state.id == semantic_id
-		active_document_row := has_active_document && !row.is_dir &&
-			tree_path_is_workspace_entry(app.tree_root_path, row.path, active_document.path)
-		// The filename paints from the top of its layout box. Padding brings
-		// the glyphs to the icon's centerline and insets both from the highlight.
-		row_button, clicked := alicorn.button_begin(
-			ui,
-			"",
-			key=alicorn.key_string(row.path),
-			style=alicorn.layout_style(.Row, height=TREE_ROW_HEIGHT, padding=TREE_ROW_PADDING, gap=TREE_ROW_GAP, align=.Center),
-			state=alicorn.Button_State{selected=selected},
-			variant=.Quiet,
-		)
-		if row_button != 0 {
-			row_states := alicorn.Semantic_States{}
-			if selected { row_states = alicorn.semantic_states_add(row_states, .Selected) }
-			row_actions := alicorn.semantic_actions_add({}, .Press)
-			row_description := "File"
-			if row.is_dir {
-				if row.expanded {
-					row_states = alicorn.semantic_states_add(row_states, .Expanded)
-					row_actions = alicorn.semantic_actions_add(row_actions, .Collapse)
-					row_description = "Folder, expanded"
-				} else {
-					row_actions = alicorn.semantic_actions_add(row_actions, .Expand)
-					row_description = "Folder, collapsed"
-				}
-			}
-			_ = alicorn.semantic_description(ui, .Button, row.name, description=row_description, states=row_states, actions=row_actions)
-			_ = alicorn.semantic_bind(ui, semantic_id)
-			_ = alicorn.drag_source(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id)
-			if row.is_dir { _ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, semantic_id, .On) }
-
-			if row.depth > 0 {
-				// The Row gap also sits between the depth spacer and type icon,
-				// so subtract it to keep each nesting level exactly 12 units wide.
-				tree_row_indent(ui, max(f32(row.depth)*TREE_INDENT_WIDTH-TREE_ROW_GAP, 0))
-			}
-			file_icon := alicorn.Icon_ID.File
-			if row.is_dir {
-				file_icon = .Folder_Closed
-				if row.expanded { file_icon = .Folder_Open }
-			}
-			_ = alicorn.icon(ui, file_icon, key=alicorn.key_string("tree-row-type-icon"), size=TREE_TYPE_ICON_SIZE)
-			name_color := alicorn.style_color(ui, .Text)
-			if active_document_row {
-				name_color = alicorn.style_contrast_fallback(
-					alicorn.style_color(ui, .Accent),
-					alicorn.style_color(ui, .Subtle_Surface),
-					4.5,
-				)
-			}
-			name_id := gui.text(
-				ui,
-				row.name,
-				key="tree-row-name",
-				style=alicorn.layout_style(.Row, grow=1),
-				text_style=alicorn.Text_Style{overflow=.Ellipsis},
-				color=name_color,
-			)
-			// Keep the tree's keyboard row highlight independent from the active
-			// document. A theme accent on the active filename lets both states be
-			// understood when the editor tab and tree focus point at different files.
-			if active_document_row {
-				accessibility := alicorn.style_root_accessibility_observation_get(rt).preferences
-				if accessibility.differentiate_without_color {
-					active_document_spans := make([]alicorn.Text_Paint_Span, 1, allocator=alicorn.runtime_scratch_allocator(rt))
-					active_document_spans[0] = alicorn.Text_Paint_Span{start=0, end=len(row.name), underline=true}
-					_ = alicorn.text_paint_spans(ui, name_id, active_document_spans[:])
-				}
-			}
-			alicorn.button_end(ui)
-		}
-		if clicked { tree_activate_row(app, rt, row) }
+	callbacks := Workspace_Tree_Callback_Data{
+		app=app, rows=rows[:], active_document_path=active_document.path,
+		has_active_document=has_active_document,
 	}
-	alicorn.virtual_list_end(ui, list)
-	if tree_any_truncated(app) {
-		gui.text(ui, "Some folders show only the first 200 entries.")
+	_ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, tree_semantic_id("", true), .On)
+	event := alikit_tree.build(
+		ui, &app.workspace_tree_state, window, alicorn.key_string(TREE_SCROLL_KEY),
+		workspace_tree_options(rawptr(&callbacks), session_ui_tree_scroll_request(app)),
+	)
+	app.tree_scroll_owner = app.workspace_tree_state.scroll_node
+	session_ui_restore_tree_focus(app, rt, rows[:])
+	workspace_tree_apply_event(app, rt, rows[:], event, false)
+	if tree_any_truncated(app) { gui.text(ui, "Some folders show only the first 200 entries.") }
+}
+
+Workspace_Tree_Callback_Data :: struct {
+	app: ^App,
+	rows: []Tree_Row,
+	active_document_path: string,
+	has_active_document: bool,
+}
+
+workspace_tree_item_id :: proc(path: string, is_directory: bool) -> alikit_tree.Item_ID {
+	semantic := tree_semantic_id(path, is_directory)
+	return alikit_tree.Item_ID(semantic.value)
+}
+
+workspace_tree_window :: proc(app: ^App, rows: []Tree_Row) -> alikit_tree.Window {
+	items := make([]alikit_tree.Item, len(rows), allocator=context.temp_allocator)
+	for row, index in rows {
+		parent_id: alikit_tree.Item_ID
+		if row.depth > 0 { parent_id = workspace_tree_item_id(tree_parent_relative_path(row.path), true) }
+		items[index] = alikit_tree.Item{
+			id=workspace_tree_item_id(row.path, row.is_dir),
+			parent_id=parent_id,
+			label=row.name,
+			depth=row.depth,
+			expandable=row.is_dir,
+			expanded=row.expanded,
+		}
+	}
+	return alikit_tree.Window{
+		total_count=len(items),
+		revision=workspace_tree_projection_revision(app, rows),
+		items=items,
+	}
+}
+
+workspace_tree_projection_revision :: proc(app: ^App, rows: []Tree_Row) -> u64 {
+	if app == nil { return 0 }
+	hash: u64 = 14_695_981_039_346_656_037
+	for row in rows {
+		hash = (hash ~ u64(workspace_tree_item_id(row.path, row.is_dir))) * 1_099_511_628_211
+		parent_id: u64
+		if row.depth > 0 {
+			parent_id = u64(workspace_tree_item_id(tree_parent_relative_path(row.path), true))
+		}
+		hash = (hash ~ parent_id) * 1_099_511_628_211
+		hash = (hash ~ u64(row.depth)) * 1_099_511_628_211
+		hash = (hash ~ (1 if row.expanded else 0)) * 1_099_511_628_211
+	}
+	if hash == 0 { hash = 1 }
+	if app.workspace_tree_projection_signature != hash {
+		app.workspace_tree_projection_signature = hash
+		app.workspace_tree_projection_revision += 1
+		if app.workspace_tree_projection_revision == 0 { app.workspace_tree_projection_revision = 1 }
+	}
+	return app.workspace_tree_projection_revision
+}
+
+workspace_tree_options :: proc(callback_data: rawptr, restore: alicorn.Scroll_Restore_Request) -> alikit_tree.Options {
+	return alikit_tree.Options{
+		accessible_label="Workspace files",
+		empty_label="This workspace has no visible files.",
+		loading_label="Loading workspace…",
+		row_height=TREE_ROW_HEIGHT,
+		row_padding=TREE_ROW_PADDING,
+		row_gap=TREE_ROW_GAP,
+		indent_width=TREE_INDENT_WIDTH-TREE_ROW_GAP,
+		icon_size=TREE_TYPE_ICON_SIZE,
+		semantic_namespace=TREE_SEMANTIC_NAMESPACE,
+		scroll_restore=restore,
+		icon_proc=workspace_tree_icon_proc,
+		label_color_proc=workspace_tree_label_color_proc,
+		row_hook_proc=workspace_tree_row_hook,
+		label_paint_proc=workspace_tree_label_paint_proc,
+		callback_data=callback_data,
+		hide_disclosure=true,
+		selection_enabled=true,
+		select_on_focus=true,
+		context_menu_enabled=true,
+	}
+}
+
+workspace_tree_row_for_id :: proc(rows: []Tree_Row, id: alikit_tree.Item_ID) -> (row: Tree_Row, index: int, found: bool) {
+	for candidate, candidate_index in rows {
+		if workspace_tree_item_id(candidate.path, candidate.is_dir) == id {
+			return candidate, candidate_index, true
+		}
+	}
+	return
+}
+
+workspace_tree_icon_proc :: proc(_data: rawptr, item: alikit_tree.Item) -> alicorn.Icon_ID {
+	if !item.expandable { return .File }
+	if item.expanded { return .Folder_Open }
+	return .Folder_Closed
+}
+
+workspace_tree_label_color_proc :: proc(data: rawptr, ctx: ^alicorn.UI, item: alikit_tree.Item) -> alicorn.Color {
+	callbacks := cast(^Workspace_Tree_Callback_Data)data
+	if callbacks == nil || ctx == nil { return {} }
+	row, _, found := workspace_tree_row_for_id(callbacks.rows, item.id)
+	if !found || !callbacks.has_active_document || row.is_dir ||
+	   !tree_path_is_workspace_entry(callbacks.app.tree_root_path, row.path, callbacks.active_document_path) {
+		return alicorn.style_color(ctx, .Text)
+	}
+	return alicorn.style_contrast_fallback(
+		alicorn.style_color(ctx, .Accent),
+		alicorn.style_color(ctx, .Subtle_Surface),
+		4.5,
+	)
+}
+
+workspace_tree_label_paint_proc :: proc(data: rawptr, ctx: ^alicorn.UI, item: alikit_tree.Item, label_node: alicorn.Node_ID) {
+	callbacks := cast(^Workspace_Tree_Callback_Data)data
+	if callbacks == nil || ctx == nil || ctx.runtime == nil || label_node == 0 { return }
+	row, _, found := workspace_tree_row_for_id(callbacks.rows, item.id)
+	if !found || !callbacks.has_active_document || row.is_dir ||
+	   !tree_path_is_workspace_entry(callbacks.app.tree_root_path, row.path, callbacks.active_document_path) { return }
+	accessibility := alicorn.style_root_accessibility_observation_get(ctx.runtime).preferences
+	if accessibility.differentiate_without_color {
+		spans := make([]alicorn.Text_Paint_Span, 1, allocator=alicorn.runtime_scratch_allocator(ctx.runtime))
+		spans[0] = alicorn.Text_Paint_Span{start=0, end=len(item.label), underline=true}
+		_ = alicorn.text_paint_spans(ctx, label_node, spans[:])
+	}
+}
+
+workspace_tree_row_hook :: proc(_data: rawptr, ctx: ^alicorn.UI, item: alikit_tree.Item, semantic: alicorn.Semantic_ID) {
+	_ = alicorn.drag_source(ctx, SCRATCHPAD_DRAG_WORKSPACE, semantic)
+	if item.expandable { _ = alicorn.drop_target(ctx, SCRATCHPAD_DRAG_WORKSPACE, semantic, .On) }
+}
+
+workspace_tree_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
+	if app == nil || rt == nil || app.tree_scroll_owner == 0 { return false }
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	defer delete(rows)
+	tree_flatten_directory(app, "", 0, &rows)
+	window := workspace_tree_window(app, rows[:])
+	handled, event := alikit_tree.handle_key(
+		&app.workspace_tree_state, rt, window, key,
+		workspace_tree_options(nil, alicorn.Scroll_Restore_Request{}),
+	)
+	if handled { workspace_tree_apply_event(app, rt, rows[:], event, true) }
+	return handled
+}
+
+workspace_tree_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) -> bool {
+	if app == nil || rt == nil || app.tree_scroll_owner == 0 ||
+	   event.kind != .Down || event.button != alicorn.POINTER_BUTTON_SECONDARY { return false }
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	defer delete(rows)
+	tree_flatten_directory(app, "", 0, &rows)
+	window := workspace_tree_window(app, rows[:])
+	options := workspace_tree_options(nil, alicorn.Scroll_Restore_Request{})
+	handled, result := alikit_tree.pointer(
+		&app.workspace_tree_state, rt, window, event, target, options,
+	)
+	if !handled {
+		// Hit testing can report the label or icon child. Resolve its realized
+		// Tree_Item owner, then let AliKit perform the normal focus, selection,
+		// and context-menu transition on that owner.
+		for row, index in rows {
+			node, found := alicorn.semantic_node_lookup(rt, tree_semantic_id(row.path, row.is_dir))
+			if !found || !node.has_bounds || node.visual_node == 0 ||
+			   event.x < node.bounds.x || event.x >= node.bounds.x+node.bounds.w ||
+			   event.y < node.bounds.y || event.y >= node.bounds.y+node.bounds.h {
+				continue
+			}
+			handled, result = alikit_tree.pointer(
+				&app.workspace_tree_state, rt, window, event, node.visual_node, options,
+			)
+			if handled { break }
+		}
+	}
+	if !handled { return false }
+	workspace_tree_apply_event(app, rt, rows[:], result, true)
+	return true
+}
+
+workspace_tree_open_context_menu_focused :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	return workspace_tree_handle_key(app, rt, .Context_Menu)
+}
+
+workspace_tree_apply_event :: proc(
+	app: ^App, rt: ^alicorn.Runtime, rows: []Tree_Row, event: alikit_tree.Event, menu_already_open: bool,
+) {
+	if app == nil || rt == nil || event.id == 0 { return }
+	row, index, found := workspace_tree_row_for_id(rows, event.id)
+	if !found { return }
+	switch event.kind {
+	case .Focus_Changed:
+		tree_set_focused_row(app, rt, row, index)
+	case .Pressed, .Activated:
+		tree_set_focused_row(app, rt, row, index)
+		tree_activate_row(app, rt, row)
+	case .Expand_Requested:
+		tree_set_focused_row(app, rt, row, index)
+		if tree_load_directory(app, row.path, true) { alicorn.invalidate_root(rt, "Scratchpad workspace tree expanded") }
+	case .Collapse_Requested:
+		tree_set_focused_row(app, rt, row, index)
+		if directory_index := tree_directory_index(app, row.path); directory_index >= 0 {
+			app.tree_directories[directory_index].expanded = false
+			alicorn.invalidate_root(rt, "Scratchpad workspace tree collapsed")
+		}
+	case .Parent_Focus_Requested:
+		tree_set_focused_row(app, rt, row, index)
+	case .Context_Menu_Requested:
+		_ = workspace_context_menu_set_target(
+			app, rt,
+			Workspace_Tree_Row_Target{node=app.tree_scroll_owner, path=row.path, is_dir=row.is_dir, index=index},
+			alikit_tree.context_anchor(&app.workspace_tree_state), menu_already_open,
+		)
+	case:
 	}
 }
 
@@ -194,16 +327,17 @@ tree_path_segments_equal :: proc(a, b: string) -> bool {
 	}
 }
 
-tree_row_indent :: proc(ui: ^alicorn.UI, width: f32) {
-	if gui.column(ui, key="tree-row-indent", label="", width=width, height=1) {}
-}
-
 tree_sync_workspace :: proc(app: ^App, rt: ^alicorn.Runtime = nil) {
 	if app == nil || !app.backend.started { return }
 	workspace_root := app.backend.state.workspace_root if app.backend.state.has_workspace else ""
 	if app.tree_root_path == workspace_root && (workspace_root == "" || tree_directory_index(app, "") >= 0) { return }
 	workspace_changed := app.tree_root_path != workspace_root
-	if workspace_changed { session_ui_workspace_changed(app, rt) }
+	if workspace_changed {
+		app.workspace_tree_state = {}
+		app.workspace_tree_projection_signature = 0
+		app.workspace_tree_projection_revision = 0
+		session_ui_workspace_changed(app, rt)
+	}
 	tree_clear_directories(app)
 	delete(app.tree_directories)
 	app.tree_directories = {}
@@ -440,48 +574,4 @@ tree_activate_row :: proc(app: ^App, rt: ^alicorn.Runtime, row: Tree_Row) {
 	delete(absolute_path, context.allocator)
 	handle_command_result(app, rt, &response)
 	bridge.backend_command_result_destroy(&response, context.allocator)
-}
-
-tree_move_focus :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
-	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
-	defer delete(rows)
-	tree_flatten_directory(app, "", 0, &rows)
-	if len(rows) == 0 { return false }
-	current := -1
-	for row, index in rows {
-		if row.path == app.tree_focused_path && row.is_dir == app.tree_focused_is_dir { current = index; break }
-	}
-	next := current
-	#partial switch key {
-	case .Up: next -= 1
-	case .Down: next += 1
-	case .Page_Up, .Page_Down:
-		page := 8
-		if metrics := alicorn.scroll_region_state(rt, app.tree_scroll_owner); metrics.viewport_bounds.h > 0 {
-			page = max(1, int(metrics.viewport_bounds.h/f32(TREE_ROW_HEIGHT))-1)
-		}
-		if key == .Page_Up { next -= page } else { next += page }
-	case .Home: next = 0
-	case .End: next = len(rows)-1
-	case: return false
-	}
-	if next < 0 { next = 0 }
-	if next >= len(rows) { next = len(rows)-1 }
-	if next == current { return true }
-	tree_set_focused_row(app, rt, rows[next], next)
-	alicorn.invalidate_root(rt, "Scratchpad workspace tree keyboard navigation")
-	return true
-}
-
-tree_activate_focused :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
-	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
-	defer delete(rows)
-	tree_flatten_directory(app, "", 0, &rows)
-	for row in rows {
-		if row.path == app.tree_focused_path && row.is_dir == app.tree_focused_is_dir {
-			tree_activate_row(app, rt, row)
-			return true
-		}
-	}
-	return false
 }

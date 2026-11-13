@@ -248,8 +248,8 @@ test_workspace_tree_expansion_and_semantic_selection_refresh_immediately :: proc
 	avar_id, _ = test_workspace_tree_row(&rt, "Runa/parse/avar.odin")
 	cff2_name_id := tree_test_row_text_node(&rt, cff2_id)
 	avar_name_id := tree_test_row_text_node(&rt, avar_id)
-	testing.expect(t, tree_path_is_workspace_entry(app.tree_root_path, rt.nodes[cff2_id].key, cff2_document.path) &&
-		!tree_path_is_workspace_entry(app.tree_root_path, rt.nodes[avar_id].key, cff2_document.path),
+	testing.expect(t, tree_path_is_workspace_entry(app.tree_root_path, "Runa/parse/cff2.odin", cff2_document.path) &&
+		!tree_path_is_workspace_entry(app.tree_root_path, "Runa/parse/avar.odin", cff2_document.path),
 		"the active document path should identify only its matching workspace-tree entry")
 	testing.expect(t, !rt.nodes[cff2_id].selected && rt.nodes[avar_id].selected,
 		"the tree keyboard highlight should follow the focused row, not the active document")
@@ -386,7 +386,8 @@ test_click_workspace_tree_row :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Run
 }
 test_workspace_tree_row :: proc(rt: ^alicorn.Runtime, path: string) -> (id: alicorn.Node_ID, found: bool) {
 	for node_id in rt.order {
-		if node, exists := rt.nodes[node_id]; exists && tree_test_paths_equal(node.key, path) {
+		if node, exists := rt.nodes[node_id]; exists && node.active &&
+		   (node.semantic_id == tree_semantic_id(path, false) || node.semantic_id == tree_semantic_id(path, true)) {
 			return node_id, true
 		}
 	}
@@ -396,7 +397,7 @@ tree_test_row_text_node :: proc(rt: ^alicorn.Runtime, row_id: alicorn.Node_ID) -
 	if rt == nil || row_id == 0 { return 0 }
 	for node_id in rt.order {
 		node, found := rt.nodes[node_id]
-		if found && node.active && node.parent == row_id && node.kind == .Text && node.key == "tree-row-name" { return node_id }
+		if found && node.active && node.parent == row_id && node.kind == .Text && node.key == "tree-label" { return node_id }
 	}
 	return 0
 }

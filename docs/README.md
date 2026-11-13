@@ -10,6 +10,7 @@
 - [Git client](GIT-CLIENT.md) — local source control, repository history, diff behavior, and current scope.
 - [Session restoration](SESSION-RESTORATION.md) — persisted session, recent workspaces, and recovery boundaries.
 - [Color themes](THEMES.md) — built-in and installed palettes, import limits, inheritance, and customization.
+- [Workspace Tree View](TREE-VIEW.md) — AliKit ownership, stable row identity, application behavior, and build integration.
 
 ## Frontend contracts and design
 

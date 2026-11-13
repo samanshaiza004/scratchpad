@@ -9,6 +9,7 @@ import alicorn "alicorn:runtime"
 import host "alicorn:native/sdl_gpu"
 import theme "alicorn:theme"
 import alikit "alikit:command_palette"
+import alikit_tree "alikit:tree_view"
 import bridge "./bridge"
 
 ACTION_FILE_OPEN       :: "file.open"
@@ -266,6 +267,9 @@ App :: struct {
 	tree_directories:       [dynamic]Tree_Directory,
 	tree_focused_path:      string,
 	tree_focused_is_dir:    bool,
+	workspace_tree_state: alikit_tree.State,
+	workspace_tree_projection_signature: u64,
+	workspace_tree_projection_revision: u64,
 	workspace_context_target: Workspace_Context_Target,
 	workspace_context_path: string,
 	workspace_context_is_dir: bool,
@@ -1490,15 +1494,7 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return editor_insert_newline(app, rt)
 	}
 	if app.tree_scroll_owner != 0 && alicorn.focused_node(rt) == app.tree_scroll_owner {
-		#partial switch key {
-		case .Left, .Right:
-			return tree_move_horizontal_focus(app, rt, key)
-		case .Up, .Down, .Page_Up, .Page_Down, .Home, .End:
-			return tree_move_focus(app, rt, key)
-		case .Return:
-			return tree_activate_focused(app, rt)
-		case:
-		}
+		return workspace_tree_handle_key(app, rt, key)
 	}
 	return false
 }

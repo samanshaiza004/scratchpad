@@ -4,6 +4,8 @@ Alicorn is Scratchpad's supported desktop frontend. The Odin/Runa frontend owns 
 
 Ordinary production text, buttons, and simple layout scopes use Alicorn's public `alicorn:ui` helpers; advanced retained controls continue to use the runtime API where they need exact identity, scrolling, text-input, or native behavior. See the [UI API dogfood report](../../docs/frontends/alicorn/UI-API-DOGFOOD.md) for the migration scope, before/after source counts, retained-output comparison, and validation results.
 
+The workspace explorer uses AliKit's vendored `tree_model` and `tree_view` packages for row presentation, keyboard navigation, stable accessibility identities, and focus reveal. Scratchpad still supplies the expanded filesystem projection and owns loading, file activation, drag/drop policy, and context-menu actions. See the [Tree View integration guide](../../docs/TREE-VIEW.md).
+
 The unreleased Git workbench uses a Scratchpad-owned recursive pane tree with
 typed Editor, History, and Diff views. Alicorn supplies the retained split,
 tab, focus, semantic, and drag/drop primitives; the Go backend remains the

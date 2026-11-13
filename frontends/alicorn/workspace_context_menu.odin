@@ -24,20 +24,21 @@ workspace_context_menu_clear :: proc(app: ^App) {
 	app.workspace_context_is_dir = false
 }
 
-workspace_context_menu_set_target :: proc(app: ^App, rt: ^alicorn.Runtime, target: Workspace_Tree_Row_Target, anchor: alicorn.Rect) -> bool {
-	if app == nil || rt == nil || target.node == 0 || app.tree_scroll_owner == 0 { return false }
+workspace_context_menu_set_target :: proc(app: ^App, rt: ^alicorn.Runtime, target: Workspace_Tree_Row_Target, anchor: alicorn.Rect, menu_already_open := false) -> bool {
+	if app == nil || rt == nil || app.tree_scroll_owner == 0 { return false }
 	row := Tree_Row{path=target.path, is_dir=target.is_dir}
 	tree_set_focused_row(app, rt, row, target.index)
 	workspace_context_menu_clear(app)
 	path_copy, clone_error := strings.clone(target.path, context.allocator)
 	if clone_error != nil {
 		set_error(app, "Could not retain the workspace item for its context menu.")
+		if menu_already_open { alicorn.context_menu_close(rt) }
 		return false
 	}
 	app.workspace_context_path = path_copy
 	app.workspace_context_is_dir = target.is_dir
 	app.workspace_context_target = .Item
-	if !alicorn.context_menu_open(rt, anchor, app.tree_scroll_owner) {
+	if !menu_already_open && !alicorn.context_menu_open(rt, anchor, app.tree_scroll_owner) {
 		workspace_context_menu_clear(app)
 		return false
 	}
@@ -56,57 +57,13 @@ workspace_context_menu_set_root_target :: proc(app: ^App, rt: ^alicorn.Runtime, 
 	return true
 }
 
-workspace_context_menu_target_for_key :: proc(app: ^App, key: alicorn.UI_Key) -> (target: Workspace_Tree_Row_Target, found: bool) {
-	if app == nil { return }
-	path := ""
-	#partial switch value in key {
-	case string:
-		path = value
-	}
-	if path == "" { return }
-	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
-	defer delete(rows)
-	tree_flatten_directory(app, "", 0, &rows)
-	for row, index in rows {
-		if row.path == path {
-			return Workspace_Tree_Row_Target{path=row.path, is_dir=row.is_dir, index=index}, true
-		}
-	}
-	return
-}
-
-workspace_context_menu_target_for_node :: proc(app: ^App, rt: ^alicorn.Runtime, node: alicorn.Node_ID) -> (target: Workspace_Tree_Row_Target, found: bool) {
-	if rt == nil || node == 0 { return }
-	key, key_found := alicorn.node_identity_key(rt, node)
-	if !key_found { return }
-	target, found = workspace_context_menu_target_for_key(app, key)
-	if found { target.node = node }
-	return
-}
-
-workspace_context_menu_open_node :: proc(app: ^App, rt: ^alicorn.Runtime, node: alicorn.Node_ID, anchor: alicorn.Rect) -> bool {
-	target, found := workspace_context_menu_target_for_node(app, rt, node)
-	if !found { return false }
-	row, row_found := alicorn.node_info(rt, node)
-	if !row_found || !row.active { return false }
-	return workspace_context_menu_set_target(app, rt, target, anchor)
-}
-
 workspace_context_menu_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target_node: alicorn.Node_ID) -> bool {
 	if event.kind != .Down || event.button != alicorn.POINTER_BUTTON_SECONDARY { return false }
 	if app == nil || rt == nil || app.tree_scroll_owner == 0 || !app.backend.state.has_workspace { return false }
-	key := event.target_key
-	if target_node != 0 && !alicorn.ui_key_is_explicit(key) {
-		key_found: bool
-		key, key_found = alicorn.node_identity_key(rt, target_node)
-		if !key_found { key = alicorn.UI_Unkeyed{} }
-	}
-	target, found := workspace_context_menu_target_for_key(app, key)
-	if found && target_node != 0 {
-		row, row_found := alicorn.node_info(rt, target_node)
-		if row_found && row.active {
-			target.node = target_node
-			return workspace_context_menu_set_target(app, rt, target, alicorn.Rect{event.x, event.y, 0, 0})
+	if target_node != 0 {
+		if target, found := alicorn.node_info(rt, target_node); found &&
+		   target.semantic_id.namespace == TREE_SEMANTIC_NAMESPACE {
+			return false
 		}
 	}
 	viewport := alicorn.scroll_region_state(rt, app.tree_scroll_owner).viewport_bounds
@@ -117,16 +74,18 @@ workspace_context_menu_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: a
 }
 
 workspace_context_menu_open_focused :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
-	if app == nil || rt == nil || app.tree_scroll_owner == 0 || alicorn.focused_node(rt) != app.tree_scroll_owner || app.tree_focused_path == "" {
-		return false
+	return workspace_tree_open_context_menu_focused(app, rt)
+}
+
+workspace_context_menu_item_is_current :: proc(app: ^App) -> bool {
+	if app == nil || app.workspace_context_target != .Item { return false }
+	rows := make([dynamic]Tree_Row, 0, allocator=context.temp_allocator)
+	defer delete(rows)
+	tree_flatten_directory(app, "", 0, &rows)
+	for row in rows {
+		if row.path == app.workspace_context_path && row.is_dir == app.workspace_context_is_dir { return true }
 	}
-	semantic := alicorn.semantic_focus_state(rt)
-	if semantic.realized_node == 0 { return false }
-	target, found := workspace_context_menu_target_for_node(app, rt, semantic.realized_node)
-	if !found || target.path != app.tree_focused_path || target.is_dir != app.tree_focused_is_dir { return false }
-	row, row_found := alicorn.node_info(rt, semantic.realized_node)
-	if !row_found { return false }
-	return workspace_context_menu_open_node(app, rt, semantic.realized_node, row.bounds)
+	return false
 }
 
 workspace_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
@@ -172,7 +131,8 @@ workspace_context_menu_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Ru
 		workspace_context_menu_clear(app)
 		return
 	}
-	if app.workspace_context_target == .None || !app.backend.state.has_workspace {
+	if app.workspace_context_target == .None || !app.backend.state.has_workspace ||
+	   (app.workspace_context_target == .Item && !workspace_context_menu_item_is_current(app)) {
 		alicorn.context_menu_close(rt)
 		workspace_context_menu_clear(app)
 		return
@@ -232,6 +192,7 @@ application_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.
 	}
 	if pinned_context_pointer(app,rt,event) { return }
 	if workspace_search_pointer(app, rt, event, target) { return }
+	if workspace_tree_pointer(app, rt, event, target) { return }
 	if workspace_context_menu_pointer(app, rt, event, target) { return }
 	workbench_group_activate_from_pointer(app, rt, event)
 	editor_pointer(state, rt, event, target)

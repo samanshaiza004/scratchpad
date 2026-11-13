@@ -19,9 +19,10 @@ describe its scope and platform evidence. The full release history is in the
   Full, Focus, Skim, and Overview views.
 - Work with derived surfaces: pin ranges, edit unambiguous pinned source, edit
   workspace search results, and navigate tasks, symbols, headings, and links.
-- Use a keyboard-navigable workspace tree, Quick Open, editable Search and
-  Symbols tools, detachable text-document windows, and read-only PNG/QOI
-  previews.
+- Browse workspaces with AliKit's accessible, virtualized Tree View, including
+  keyboard navigation, stable semantic identities, active-file styling, and
+  row context menus. Quick Open, editable Search and Symbols tools, detachable
+  text-document windows, and read-only PNG/QOI previews.
 - Restore clean sessions and recent workspaces, recover unsaved edits after a
   crash, choose an editor font and size, and import, customize, preview, and
   persist color themes.
