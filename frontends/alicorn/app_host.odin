@@ -46,8 +46,8 @@ Scratchpad_Services :: struct {
 //   prepare      runs before the description and may decline the frame.
 //   describe     records the retained tree; the caller owns the open frame.
 //   after_frame  applies post-layout state (focus, scroll restore, deferred
-//                actions); the native host calls it after end_frame, the
-//                hosted adapter calls it at the start of the next description.
+//                actions). Both hosts call it after end_frame of the same
+//                description pass, before that frame is presented.
 Scratchpad_Application :: struct {
 	title:              string,
 	width, height:      int,
@@ -266,6 +266,9 @@ run_scratchpad_webgpu :: proc(app: ^App) {
 	stop :: proc(app: ^App) {
 		if scratchpad_application_spec.on_stop != nil { scratchpad_application_spec.on_stop(rawptr(app)) }
 	}
+	after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
+		if scratchpad_application_spec.after_frame != nil { scratchpad_application_spec.after_frame(app, rt) }
+	}
 	key :: proc(app: ^App, rt: ^alicorn.Runtime, code: alicorn.Application_Key) -> bool {
 		return scratchpad_application_spec.on_key != nil && scratchpad_application_spec.on_key(rawptr(app), rt, code)
 	}
@@ -356,6 +359,7 @@ run_scratchpad_webgpu :: proc(app: ^App) {
 		on_close_requested=close_requested,
 		on_dialog=dialog,
 		on_stop=stop,
+		on_after_frame=after_frame,
 		smoke=app.smoke,
 		menus=scratchpad_application_spec.menus,
 		menu_presentation=scratchpad_application_spec.menu_presentation,
@@ -369,25 +373,19 @@ run_scratchpad_webgpu :: proc(app: ^App) {
 }
 
 // hosted_render adapts the hosted renderer's single callback to the shared
-// three-phase application description. The hosted runtime opens the frame and
-// wraps it in its own root container, so describe must not open one.
+// three-phase application description. The hosted runtime opens the frame but
+// adds no root container: the application owns the root, so describe opens it
+// exactly like the reference host's build contract. Post-layout work runs
+// through the hosted `on_after_frame` hook after end_frame of the same pass.
 hosted_render :: proc(app: ^App, ctx: ^gui.UI) {
 	if app == nil || ctx == nil || ctx.runtime == nil { return }
 	rt := ctx.runtime
-	// Post-layout work from the previous description. The native host runs it
-	// after end_frame; the hosted runtime gives no after-frame hook, so it runs
-	// here, before this description, against the previous frame's layout.
-	if app.hosted_after_frame_pending {
-		app.hosted_after_frame_pending = false
-		if scratchpad_application_spec.after_frame != nil { scratchpad_application_spec.after_frame(app, rt) }
-	}
 	if scratchpad_application_spec.prepare != nil && !scratchpad_application_spec.prepare(app, rt) { return }
 	logical_width := int(ctx.runtime.viewport.w)
 	logical_height := int(ctx.runtime.viewport.h)
 	dpi_scale := ctx.runtime.presentation_scale_x
 	if dpi_scale <= 0 { dpi_scale = 1 }
 	_ = scratchpad_application_spec.describe(app, rt, ctx, logical_width, logical_height, dpi_scale)
-	app.hosted_after_frame_pending = scratchpad_application_spec.after_frame != nil
 }
 
 scratchpad_services_from_hosted :: proc(value: gui.UI_Host_Services) -> Scratchpad_Services {

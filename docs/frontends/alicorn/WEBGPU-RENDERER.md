@@ -1,4 +1,4 @@
-# WebGPU renderer entry (issue #211, Stage B2)
+# WebGPU renderer entry (issue #211, Stage B)
 
 Scratchpad's Alicorn frontend is one application with two renderer entry
 paths:
@@ -34,21 +34,28 @@ The two adapters below it are mapping-only:
   `prepare → begin_frame → describe → end_frame → after_frame`.
 * `run_scratchpad_webgpu` calls `alicorn:ui/webgpu.run` and maps each hosted
   callback back onto the shared description. The hosted runtime opens the
-  frame and wraps it in its own `ui-root`; `hosted_render` therefore runs
-  `after_frame` (for the previous description), then `prepare`, then
-  `describe`, against the host-owned frame.
+  frame but does not add a root container, so `hosted_render` runs `prepare`
+  then `describe`, and `describe` opens the application's `.Root` itself —
+  the same contract as the reference host's `build`. `after_frame` is passed
+  as `webgpu.run`'s `on_after_frame` hook, so both hosts run post-layout work
+  at the same point: `describe → end_frame → after_frame → present`.
 
-Why after-frame work is deferred on the hosted path: `webgpu.run` gives no
-post-`end_frame` hook. The native host applies focus/scroll/deferred-action
-state after `end_frame`; the hosted adapter applies the same work at the start
-of the next description, which is the same position relative to the next
-layout pass. No extra description pass is requested.
+Both hosts therefore run the after-frame phase after `end_frame` of the same
+description pass, including the last pass before an idle period. Deferred
+actions, focus/scroll restoration, the editor row trace, and the smoke
+publication assertion all sample that identical position.
 
 Secondary windows use `alicorn.Hosted_Window_Description` /
 `Hosted_Runtime_Config` (`floating_window_description`), so the floating
 editor is described once. On the native path `app_host.odin` bridges that
 hosted description onto `host.Application` (the same shape Alicorn's own
 `ui.run` adapter uses) and opens it through the host-owned window service.
+One deliberate difference remains there: `floating_window_render` still
+applies its post-layout work at the start of its next description
+(`Floating_Window_State.after_frame_pending`), because that description is
+shared with the native secondary-window bridge, which forwards no after-frame
+hook. Moving it onto `Hosted_Runtime_Config.on_after_frame` is a separate
+follow-up for both renderers.
 
 ## Field mapping
 
@@ -67,7 +74,7 @@ hosted description onto `host.Application` (the same shape Alicorn's own
 | `window_chrome_layout` | `window_chrome_layout` | `window_chrome_layout` | Connected titlebar tabs + drag regions |
 | `window_chrome_appearance` | `window_chrome_appearance` | `window_chrome_appearance` | Windows only |
 | `interaction_update_policy` | (adapter constant) | `.Explicit` | Matches `host.Application`'s zero value |
-| `build` | `prepare` + `describe` (+`after_frame`) | `render` (`hosted_render`) | Three phases, described above |
+| `build` | `prepare` + `describe` (+`after_frame`) | `render` (`hosted_render`) + `on_after_frame` | Description owns `.Root`; after-frame runs after `end_frame` on both hosts |
 | `on_initialize` | `on_initialize` | `on_initialize` | Hosted entry adds default font loading after it |
 | `on_key` | `on_key` | `on_key` | `alicorn.Application_Key`; hosted key adapter is identity |
 | `on_text_change` | `on_text_change` | `on_text_change` | `alicorn.Text_Change` |
@@ -115,7 +122,7 @@ hosted SDL3/WebGPU host. Two consequences:
   executable.
 
 Local candidate builds (Alicorn `codex/issue-211-scratchpad-webgpu` at
-c56f4b9, not the pinned revision yet):
+9b31260, not the pinned revision yet):
 
 ```powershell
 $env:ALICORN_CANDIDATE_ROOT = 'C:\Users\saman\.codex\worktrees\alicorn-webgpu-migration\alicorn'
@@ -130,7 +137,7 @@ go run ./cmd/alicorn-dev run  --odin C:\odin\odin.exe --allow-alicorn-revision -
 also be selected at launch with `--renderer=webgpu|sdl-gpu` or
 `SCRATCHPAD_RENDERER=webgpu|sdl-gpu`. The hosted host itself accepts
 `--backend=d3d12|vulkan`; without the flag wgpu chooses the adapter backend
-(auto currently lands on Vulkan here, see the gap below).
+(auto currently lands on Vulkan here; both backends are now validated).
 
 Reference recipe:
 
@@ -158,51 +165,71 @@ go run ./cmd/alicorn-dev test  --odin C:\odin\odin.exe --allow-alicorn-revision
 
 ## Validation (2026-11-20, Windows x64, RTX 2080 SUPER)
 
-Executed against Alicorn `c56f4b9` with `ALICORN_CANDIDATE_ROOT` and
-`--allow-alicorn-revision`:
+Stage B wrap-up slice, executed against Alicorn
+`codex/issue-211-scratchpad-webgpu` at `9b31260` with
+`ALICORN_CANDIDATE_ROOT` and `--allow-alicorn-revision`:
 
 * `test`: Go suites, the Odin type check, 13 bridge/lifecycle tests, and 255
   frontend tests all pass.
 * `smoke --renderer=sdl-gpu`: both legs pass
   (`publication_rendered/wake_observed/ordered_shutdown/session_restore` =
   true for `clean` and `recovery`).
-* WebGPU direct smoke (`--renderer=webgpu --backend=d3d12`, isolated profile,
-  start screen): passes with the same four assertions.
-* WebGPU smoke with a restored session (one or more open documents, or any
-  workbench scene without a modal): **fails**. The first present returns
-  `Presenter_Failure` from the hosted host (`steps=1`, `frames_presented=0`).
-  The same session restores and presents normally on the reference renderer.
-  This reproduces with a reduced hosted probe that only wires
-  initialize/services/start/stop, so it is not a callback-mapping issue. The
-  `contrast` appearance fixture (increased contrast + reduced transparency)
-  presents the same workbench successfully, which points at the shared WebGPU
-  renderer's transparency/material path rather than Scratchpad's description.
-  Reported as an Alicorn-side gap; no Alicorn change was made from this
-  branch.
-* WebGPU `--backend=vulkan`: adapter and device initialize, but the first
-  present never completes (`publication_rendered=false`); auto-selection lands
-  on Vulkan and fails the same way. D3D12 is the validated hosted backend.
+* `smoke --renderer=webgpu --backend=d3d12`: both legs pass with the same four
+  assertions.
+* `smoke --renderer=webgpu --backend=vulkan`: both legs pass with the same four
+  assertions.
+* The `publication_rendered` assertion lives in `scratchpad_build_after_frame`
+  again (it had been moved into the description phase while the hosted runtime
+  lacked a post-frame hook). Passing on both hosted backends is the evidence
+  that `on_after_frame` now runs after `end_frame` of every described frame,
+  including the last pass before idle.
+* Capture parity on the same scene (`language/detection.go`, restored session,
+  cool-light, workbench): hosted D3D12 and SDL_GPU `inspector.txt` agree on all
+  75 text runs including `paint-spans` byte ranges and colors, and differ only
+  in frame counters and per-node `reason` strings. `screenshot.ppm` is
+  byte-identical (0 of 2,914,768 bytes differ).
+
+### Row-trace fingerprints: remaining hosted/reference difference
+
+`SCRATCHPAD_EDITOR_ROW_TRACE_PATH` traces agree on `text_fp` and
+`geometry_fp` for every sampled row, but `style_fp` and `paint_fp` still differ
+by a per-host constant (each host is stable across repeat runs). Moving
+`after_frame` to the contract position did not change those values, so the
+difference is not a sampling-phase artifact. The inspector dump above rules
+out retained presentation state as the cause; the hash inputs that remain are
+host-local identities: `node.font`, `text_run.font_generation`, and the
+display list's text-run handle generations. The reference host seeds
+DirectWrite and script fallback faces at startup (`native_load_default_fonts`
+in Alicorn's `native/sdl_gpu/fonts.odin`), each of which advances
+`Text_Engine.font_generation`; `ui/webgpu.run` loads only the bundled default
+faces. Identical text, geometry, spans, inspector state, and pixels make this
+difference non-observable; it is recorded here so a future slice does not
+chase it as a rendering regression.
 
 ## Hands-on Stage C checklist
 
 Not exercised by smoke; needs the real window:
 
 1. Launch `out/alicorn/scratchpad-alicorn.exe --renderer=webgpu --backend=d3d12`
-   with a real workspace and confirm the workbench appears (blocked by the
-   restored-session gap above until it is fixed on the Alicorn side).
-2. Connected titlebar tabs: region declaration, tab reorder drag, window drag
+   with a real workspace and confirm the workbench, tabs, and status strip
+   appear.
+2. Modals and Quick Open float above the workbench (the hosted root contract
+   and the presentation ordering changed in this slice).
+3. Syntax highlighting on light themes (span colors must survive the hosted
+   presentation list; the reference and hosted captures now agree).
+4. Connected titlebar tabs: region declaration, tab reorder drag, window drag
    on the blank band, caption reservation at the measured content end.
-3. Native menus: Hidden presentation on Windows, accelerators, disabled and
+5. Native menus: Hidden presentation on Windows, accelerators, disabled and
    checked items, command palette parity.
-4. Text input: IME preedit/commit byte offsets, caret placement, selection
-   drag, clipboard cut/copy/paste.
-5. Scheduler wakes: selection autoscroll (Frequent) and theme compilation
+6. Text input: IME preedit/commit byte offsets, caret placement, click-drag
+   selection, clipboard cut/copy/paste.
+7. Scheduler wakes: selection autoscroll (Frequent) and theme compilation
    (Opportunistic) both keep the editor responsive.
-6. Dialogs: open/save dialog round-trip through the hosted dialog service.
-7. File drop: drag a file from Explorer into the window.
-8. Floating window: detach a tab (`--renderer=webgpu`), Save / On top /
-   Return to tabs, and the native-path floating window after the description
-   unification.
-9. Theme switching (Warm, Cool Light, Charcoal & Ink, Workbench Relief, Flat)
-   and live editor theme reload.
-10. Resize, DPI change, minimize/restore, and device-loss recovery.
+8. Dialogs: open/save dialog round-trip through the hosted dialog service.
+9. File drop: drag a file from Explorer into the window.
+10. Floating window: detach a tab (`--renderer=webgpu`), Save / On top /
+    Return to tabs, and the native-path floating window after the description
+    unification.
+11. Theme switching (Warm, Cool Light, Charcoal & Ink, Workbench Relief, Flat)
+    and live editor theme reload.
+12. Resize, DPI change, minimize/restore, and device-loss recovery.

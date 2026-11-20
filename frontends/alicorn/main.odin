@@ -239,7 +239,6 @@ App :: struct {
 	editor_window_request_rejected: bool,
 	waker:                  gui.Application_Waker,
 	services:               Scratchpad_Services,
-	hosted_after_frame_pending: bool,
 	after_frame_previous_ui_description_runtime: ^alicorn.Runtime,
 	workspace_path:         string,
 	backend_library:        string,

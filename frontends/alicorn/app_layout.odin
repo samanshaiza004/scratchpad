@@ -453,10 +453,6 @@ scratchpad_build_describe :: proc(
 		command_palette_build(app, &ui, rt)
 	}
 	alicorn.style_environment_pop(&ui, workbench_style_scope)
-	// A description with backend state is the publication smoke evidence. It is
-	// recorded here, not in the after-frame phase, so the hosted renderer's
-	// deferred after-frame pass is not required for the smoke assertion.
-	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	return root
 }
 
@@ -545,6 +541,7 @@ scratchpad_build_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	}
 	editor_reveal_after_frame(app, rt)
 	pinned_after_frame(app,rt)
+	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	session_ui_after_frame(app, rt)
 	scratchpad_application_assets_build_completed(app)
 }
