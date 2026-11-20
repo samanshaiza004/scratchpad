@@ -62,7 +62,7 @@ shutdown_finish :: proc(app: ^App) {
 	app.shutdown_intent = .None
 	app.shutdown_edit_failed = false
 	if intent == .Quit_Application {
-		host.application_request_quit(app.services.quit)
+		alicorn.hosted_quit_request(app.services.quit)
 	}
 }
 
@@ -380,7 +380,7 @@ request_file_dialog :: proc(app: ^App, rt: ^alicorn.Runtime, kind: host.File_Dia
 		initial_location=app.backend.state.workspace_root,
 		allow_many=false,
 	}
-	if !host.ShowFileDialog(app.services.dialogs, request) {
+	if !alicorn.hosted_dialog_show_file(app.services.dialogs, request) {
 		app.dialog_action = ""
 		clear_dialog_document(app)
 		set_error(app, "The native file dialog could not be opened.")
@@ -400,7 +400,7 @@ request_theme_import_dialog :: proc(app: ^App, rt: ^alicorn.Runtime) {
 		initial_location=app.theme_directory,
 		allow_many=false,
 	}
-	if !host.ShowFileDialog(app.services.dialogs, request) {
+	if !alicorn.hosted_dialog_show_file(app.services.dialogs, request) {
 		app.dialog_action = ""
 		message := "The native theme import dialog could not be opened."
 		set_error(app, message)

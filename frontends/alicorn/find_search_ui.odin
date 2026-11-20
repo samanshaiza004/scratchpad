@@ -5,7 +5,6 @@ import "core:os"
 import "core:strings"
 import alicorn "alicorn:runtime"
 import gui "alicorn:ui"
-import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
 FIND_QUERY_KEY :: "scratchpad-find-query"
@@ -163,7 +162,7 @@ find_text_field_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, actio
 				return true
 			}
 		}
-		if app.services.clipboard.set_text == nil || !host.ClipboardSetText(app.services.clipboard, selected) {
+		if app.services.clipboard.set_text == nil || !alicorn.ClipboardSetText(app.services.clipboard, selected) {
 			set_error(app, "Could not copy selected text to the system clipboard.")
 			alicorn.invalidate_root(rt, "Scratchpad text field clipboard write failed")
 			if action_id == ACTION_EDIT_CUT {
@@ -180,7 +179,7 @@ find_text_field_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, actio
 		}
 	case ACTION_EDIT_PASTE:
 		if app == nil || app.services.clipboard.get_text == nil { return true }
-		text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
+		text, clipboard_ok := alicorn.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
 		if !clipboard_ok {
 			set_error(app, "Could not read text from the system clipboard.")
 			alicorn.invalidate_root(rt, "Scratchpad text field clipboard read failed")

@@ -860,7 +860,7 @@ pinned_command :: proc(app: ^App, rt: ^alicorn.Runtime, command: string, pin: br
 		if !result.ok {set_error(app,result.message);when ODIN_DEBUG {app.pinned.rejected_responses+=1};app.pinned.force_refresh=true} else {
 			switch command {
 			case "copy":
-				if !host.ClipboardSetText(app.services.clipboard,string(result.pinned_data)) {set_error(app,"Could not copy the complete pinned excerpt.")}
+				if !alicorn.ClipboardSetText(app.services.clipboard,string(result.pinned_data)) {set_error(app,"Could not copy the complete pinned excerpt.")}
 			case "go_to_source":
 				selection:=result.editor_selection
 				if selection.document_id!="" {

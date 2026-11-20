@@ -2,10 +2,9 @@ package main
 
 import "core:testing"
 import alicorn "alicorn:runtime"
-import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
-tab_detach_test_open :: proc(data: rawptr, description: host.Application_Window_Description) -> bool {
+tab_detach_test_open :: proc(data: rawptr, description: alicorn.Hosted_Window_Description) -> bool {
 	requests := cast(^int)data
 	requests^ += 1
 	// Reject the request after observing it so this test needs no native window.
@@ -29,7 +28,7 @@ test_tab_drag_beyond_strip_requests_window :: proc(t: ^testing.T) {
 		scratchpad_workbench_test_destroy(&app)
 	}
 	requests := 0
-	app.services.windows = host.Application_Window_Service{data=rawptr(&requests), open=tab_detach_test_open}
+	app.services.windows = alicorn.Hosted_Window_Service{data=rawptr(&requests), open=tab_detach_test_open}
 	ui, should_build := alicorn.begin_frame(&rt)
 	if !should_build { testing.expect(t, false, "the tab should be described"); return }
 	alicorn.container_begin_simple(&ui, .Root, style=alicorn.layout_style(.Row, width=640, height=480))

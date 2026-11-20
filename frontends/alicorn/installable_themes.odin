@@ -12,7 +12,6 @@ import "core:thread"
 import alicorn "alicorn:runtime"
 import theme "alicorn:theme"
 import gui "alicorn:ui"
-import host "alicorn:native/sdl_gpu"
 
 SCRATCHPAD_THEME_SOURCE_LIMIT :: 1024 * 1024
 SCRATCHPAD_THEME_CATALOG_LIMIT :: 64
@@ -54,7 +53,7 @@ Scratchpad_Theme_Compile_Request :: struct {
 // before it reaches a Runtime. The condition variable is idle without polling.
 Scratchpad_Theme_Compiler :: struct {
 	worker: ^thread.Thread,
-	waker: host.Application_Waker,
+	waker: gui.Application_Waker,
 	mutex: sync.Mutex,
 	condition: sync.Cond,
 	stopping, request_ready, candidate_ready: bool,
@@ -492,7 +491,7 @@ scratchpad_theme_compile_worker_publish :: proc(
 	gui.wake(compiler.waker)
 }
 
-scratchpad_theme_compiler_start :: proc(compiler: ^Scratchpad_Theme_Compiler, waker: host.Application_Waker) {
+scratchpad_theme_compiler_start :: proc(compiler: ^Scratchpad_Theme_Compiler, waker: gui.Application_Waker) {
 	if compiler == nil || compiler.worker != nil { return }
 	compiler.waker = waker
 	compiler.worker = thread.create_and_start_with_data(

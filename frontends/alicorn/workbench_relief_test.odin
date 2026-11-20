@@ -2,7 +2,7 @@ package main
 
 import "core:testing"
 import alicorn "alicorn:runtime"
-import host "alicorn:native/sdl_gpu"
+import cpu_renderer "alicorn:renderer/cpu"
 
 @(test)
 test_relief_is_visible_on_the_workbench_controls_and_keeps_the_fill_calm :: proc(t: ^testing.T) {
@@ -15,8 +15,8 @@ test_relief_is_visible_on_the_workbench_controls_and_keeps_the_fill_calm :: proc
 		material, valid := alicorn.style_material_resolve(&rt, resolved.material)
 		testing.expect(t, valid && resolved.surface.a == 1 && material.kind == .Analytic_Relief,
 			"visible controls, including unselected tabs, must have an opaque mounted treatment")
-		vertices := make([dynamic]host.Native_Text_Vertex, 0, 2048, allocator=context.temp_allocator)
-		host.native_solid_append_rounded_material_surface(&vertices, {10, 10, 120, 30}, {6, 6, 128, 38}, resolved.surface, material, resolved.physical_height, 1, resolved.shape)
+		vertices := make([dynamic]cpu_renderer.Vertex, 0, 2048, allocator=context.temp_allocator)
+		cpu_renderer.Append_Rounded_Material_Surface(&vertices, {10, 10, 120, 30}, {6, 6, 128, 38}, resolved.surface, material, resolved.physical_height, 1, resolved.shape)
 		if len(vertices) < 24 {
 			testing.expect(t, false, "the mounted treatment must emit optical edge geometry")
 			delete(vertices)

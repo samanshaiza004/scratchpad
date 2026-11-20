@@ -306,7 +306,7 @@ dispatch_action :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: string) {
 		semantic_zoom_reveal_input(app, rt, view)
 		clipboard_text := ""
 		if action_id == ACTION_MARKDOWN_SMART_PASTE {
-			text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
+			text, clipboard_ok := alicorn.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
 			if !clipboard_ok {
 				set_error(app, "Could not read text from the system clipboard.")
 				alicorn.invalidate_root(rt, "Scratchpad smart paste clipboard read failed")

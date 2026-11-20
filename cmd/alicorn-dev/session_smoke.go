@@ -31,7 +31,7 @@ type sessionSmokeFixture struct {
 
 // runNativeSessionRestartSmoke exercises the actual native frontend/backend
 // startup and stop paths in separate processes, while isolating all user state.
-func runNativeSessionRestartSmoke(root, exe string, baseEnv []string) error {
+func runNativeSessionRestartSmoke(root, exe string, baseEnv []string, launchArguments ...string) error {
 	smokeRoot, err := os.MkdirTemp("", "scratchpad-session-smoke-")
 	if err != nil {
 		return fmt.Errorf("create isolated native session smoke directory: %w", err)
@@ -59,7 +59,7 @@ func runNativeSessionRestartSmoke(root, exe string, baseEnv []string) error {
 	cleanEnv := setEnv(launchEnv, "SCRATCHPAD_ALICORN_SMOKE_SESSION_MODE", "clean")
 	cleanEnv = setEnv(cleanEnv, "SCRATCHPAD_ALICORN_SMOKE_EXPECT_ACTIVE", string(fixture.secondID))
 	fmt.Println("native session smoke: clean two-document quit/relaunch")
-	if err := runCommandWithTimeout(root, cleanEnv, 20*time.Second, exe); err != nil {
+	if err := runCommandWithTimeout(root, cleanEnv, 20*time.Second, exe, launchArguments...); err != nil {
 		return fmt.Errorf("clean-session native relaunch: %w", err)
 	}
 	if err := verifyCleanSessionAfterNativeLaunch(fixture); err != nil {
@@ -74,7 +74,7 @@ func runNativeSessionRestartSmoke(root, exe string, baseEnv []string) error {
 	recoveryEnv := setEnv(launchEnv, "SCRATCHPAD_ALICORN_SMOKE_SESSION_MODE", "recovery")
 	recoveryEnv = setEnv(recoveryEnv, "SCRATCHPAD_ALICORN_SMOKE_EXPECT_ACTIVE", string(fixture.secondID))
 	fmt.Println("native session smoke: unsaved recovery restart")
-	if err := runCommandWithTimeout(root, recoveryEnv, 20*time.Second, exe); err != nil {
+	if err := runCommandWithTimeout(root, recoveryEnv, 20*time.Second, exe, launchArguments...); err != nil {
 		return fmt.Errorf("recovery native relaunch: %w", err)
 	}
 	if err := verifyRecoveredSessionAfterNativeLaunch(fixture); err != nil {

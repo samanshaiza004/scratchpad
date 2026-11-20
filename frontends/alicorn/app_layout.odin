@@ -11,6 +11,11 @@ SCRATCHPAD_CONTENT_TITLEBAR_TAB_HEIGHT :: SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT
 SCRATCHPAD_CONTENT_TITLEBAR_MIN_TAB_WIDTH :: f32(136)
 SCRATCHPAD_CONTENT_TITLEBAR_DRAG_WIDTH :: f32(48)
 
+// build_app is the reference renderer's build callback. It keeps the exact
+// frame lifecycle the native host has always used: prepare, begin_frame,
+// describe, end_frame, after-frame state. The hosted renderer composes the
+// same three phases from scratchpad_build_prepare / scratchpad_build_describe /
+// scratchpad_build_after_frame through app_host.odin.
 build_app :: proc(
 	state: rawptr,
 	rt: ^alicorn.Runtime,
@@ -18,9 +23,22 @@ build_app :: proc(
 	dpi_scale: f32,
 ) -> alicorn.Node_ID {
 	app := cast(^App)state
+	if !scratchpad_build_prepare(app, rt) { return 0 }
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build { return 0 }
+	root := scratchpad_build_describe(app, rt, &ui, logical_width, logical_height, dpi_scale)
+	alicorn.end_frame(&ui)
+	scratchpad_build_after_frame(app, rt)
+	return root
+}
+
+// scratchpad_build_prepare runs the pre-frame application work. It never reads
+// or mutates the retained frame state, so both hosts can call it from their own
+// frame position.
+scratchpad_build_prepare :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
 	if app == nil || (app.backend.started && !app.workbench_model_ready) {
 		fmt.eprintln("Scratchpad's workbench model must be initialized before building the active application.")
-		return 0
+		return false
 	}
 	scratchpad_editor_font_apply_pending(app, rt)
 	scratchpad_application_assets_release_retired(app, rt)
@@ -30,9 +48,22 @@ build_app :: proc(
 	app_workbench_view_scroll_capture_hidden(app, rt)
 	pinned_refresh(app,rt)
 	pinned_appearance_fixture_prepare(app,rt)
-	ui, should_build := alicorn.begin_frame(rt)
-	if !should_build { return 0 }
-	previous_ui_description_runtime := app.ui_description_runtime
+	return true
+}
+
+// scratchpad_build_describe records the workbench into an already-open frame.
+// The native caller ends the frame; the hosted renderer's frame is owned by the
+// host's description loop.
+scratchpad_build_describe :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	ui_context: ^alicorn.UI,
+	logical_width, logical_height: int,
+	dpi_scale: f32,
+) -> alicorn.Node_ID {
+	if app == nil || rt == nil || ui_context == nil { return 0 }
+	ui := ui_context^
+	app.after_frame_previous_ui_description_runtime = app.ui_description_runtime
 	app.ui_description_runtime = rt
 	find_text_history_initialize(&app.find_replace_edit_history, app.find_replace_text)
 	if find_capture_text_field(rt, app.find_replace_node, &app.find_replace_text) {
@@ -422,8 +453,17 @@ build_app :: proc(
 		command_palette_build(app, &ui, rt)
 	}
 	alicorn.style_environment_pop(&ui, workbench_style_scope)
+	// A description with backend state is the publication smoke evidence. It is
+	// recorded here, not in the after-frame phase, so the hosted renderer's
+	// deferred after-frame pass is not required for the smoke assertion.
+	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
+	return root
+}
 
-	alicorn.end_frame(&ui)
+// scratchpad_build_after_frame applies post-layout state. It assumes the frame
+// has ended.
+scratchpad_build_after_frame :: proc(app: ^App, rt: ^alicorn.Runtime) {
+	if app == nil || rt == nil { return }
 	app_workbench_view_close_pending_apply(app, rt)
 	app_workbench_view_scroll_restore_after_frame(app, rt)
 	app_workbench_view_focus_after_frame(app, rt)
@@ -438,7 +478,7 @@ build_app :: proc(
 			app.editor_window.presentation_revision,
 		)
 	}
-	app.ui_description_runtime = previous_ui_description_runtime
+	app.ui_description_runtime = app.after_frame_previous_ui_description_runtime
 	image_preview_after_frame(app, rt)
 	if !app.workspace_split_restore_complete &&
 	   app.workspace_split_restore_token != alicorn.RESTORE_TOKEN_NONE &&
@@ -505,10 +545,8 @@ build_app :: proc(
 	}
 	editor_reveal_after_frame(app, rt)
 	pinned_after_frame(app,rt)
-	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	session_ui_after_frame(app, rt)
 	scratchpad_application_assets_build_completed(app)
-	return root
 }
 
 build_startup_notice :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {

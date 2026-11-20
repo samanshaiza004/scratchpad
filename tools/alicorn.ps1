@@ -7,6 +7,9 @@ param(
     [string]$Go,
     [string]$Odin,
 
+    [ValidateSet('sdl-gpu', 'webgpu')]
+    [string]$Renderer,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Arguments
 )
@@ -28,6 +31,7 @@ if (-not $GoCommand) {
 
 $DriverArguments = @('run', './cmd/alicorn-dev', $Command, '--go', $GoCommand.Source)
 if ($Odin) { $DriverArguments += @('--odin', $Odin) }
+if ($Renderer) { $DriverArguments += @("--renderer=$Renderer") }
 if ($Arguments) { $DriverArguments += $Arguments }
 
 Push-Location $ProjectRoot

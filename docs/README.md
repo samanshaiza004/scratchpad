@@ -15,6 +15,7 @@
 ## Frontend contracts and design
 
 - [Alicorn setup and usage](../frontends/alicorn/README.md).
+- [WebGPU renderer entry](frontends/alicorn/WEBGPU-RENDERER.md) — dual renderer architecture, host callback mapping, and build recipes.
 - [Editing ownership](frontends/alicorn/EDITING.md) — source edits, interaction state, and Caliber boundaries.
 - [Markdown presentation](frontends/alicorn/MARKDOWN.md) — source-preserving Markdown styles, wrapping, and tasks.
 - [Semantic zoom and folding](SEMANTIC_VIEWS.md) — reduced source views, local folds, navigation, and cost model.

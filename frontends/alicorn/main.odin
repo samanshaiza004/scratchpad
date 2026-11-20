@@ -6,6 +6,7 @@ import "core:os"
 import "core:strings"
 import odin_runtime "base:runtime"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import theme "alicorn:theme"
 import alikit "alikit:command_palette"
@@ -236,8 +237,10 @@ App :: struct {
 	editor_window_error:    string,
 	editor_window_rejected_request: bridge.Visible_Window_Request,
 	editor_window_request_rejected: bool,
-	waker:                  host.Application_Waker,
-	services:               host.Application_Services,
+	waker:                  gui.Application_Waker,
+	services:               Scratchpad_Services,
+	hosted_after_frame_pending: bool,
+	after_frame_previous_ui_description_runtime: ^alicorn.Runtime,
 	workspace_path:         string,
 	backend_library:        string,
 	error_message:          string,
@@ -671,7 +674,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 	return bridge.backend_stop(&app.backend, session=&session)
 }
 
-application_start :: proc(state: rawptr, waker: host.Application_Waker) {
+application_start :: proc(state: rawptr, waker: gui.Application_Waker) {
 	app := cast(^App)state
 	app.waker = waker
 	app.theme_compiler.waker = waker
@@ -693,11 +696,11 @@ application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	if app.appearance_fixture_workbench {
 		// One fixture-only deadline lets document loading settle before the host
 		// captures at one second. It adds no periodic wake to ordinary operation.
-		_ = host.application_schedule_after(app.services.scheduler, .Opportunistic, 1_200_000_000)
+		_ = alicorn.application_schedule_after(app.services.scheduler, .Opportunistic, 1_200_000_000)
 	}
 }
 
-application_services :: proc(state: rawptr, services: host.Application_Services) {
+application_services :: proc(state: rawptr, services: Scratchpad_Services) {
 	app := cast(^App)state
 	app.services = services
 }
@@ -1118,7 +1121,7 @@ application_wake :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	workspace_address_take_completion(app, rt)
 	if floating := app.floating_window; floating != nil && !document_is_open(&app.backend.state, floating.document_id) {
 		floating.return_to_tabs = false
-		host.application_close_window(app.services.windows)
+		alicorn.hosted_window_close(app.services.windows)
 	}
 	application_visible_window_wake(app, rt, &app.visible_window_lane)
 	if floating := app.floating_window; floating != nil && floating.visible_window_lane.thread != nil {
@@ -1632,9 +1635,9 @@ editor_pointer_outside_viewport :: proc(rt: ^alicorn.Runtime, owner_id: alicorn.
 editor_schedule_selection_autoscroll :: proc(app: ^App, outside: bool) {
 	if app == nil { return }
 	if outside {
-		_ = host.application_schedule_after(app.services.scheduler, .Frequent, EDITOR_SELECTION_AUTOSCROLL_INTERVAL_NS)
+		_ = alicorn.application_schedule_after(app.services.scheduler, .Frequent, EDITOR_SELECTION_AUTOSCROLL_INTERVAL_NS)
 	} else {
-		_ = host.application_cancel_scheduled_wake(app.services.scheduler, .Frequent)
+		_ = alicorn.application_cancel_scheduled_wake(app.services.scheduler, .Frequent)
 	}
 }
 
@@ -3767,7 +3770,7 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 					alicorn.invalidate_root(rt, "Scratchpad refused invalid IME text for the UTF-8 clipboard")
 					return
 				}
-				if !host.ClipboardSetText(app.services.clipboard, string(view.preedit_text)) {
+				if !alicorn.ClipboardSetText(app.services.clipboard, string(view.preedit_text)) {
 					set_error(app, "Could not copy the active text composition to the system clipboard.")
 					alicorn.invalidate_root(rt, "Scratchpad clipboard write failed during IME composition")
 					return
@@ -3859,7 +3862,7 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 				return
 			}
 		}
-		if !host.ClipboardSetText(app.services.clipboard, string(bytes)) {
+		if !alicorn.ClipboardSetText(app.services.clipboard, string(bytes)) {
 			set_error(app, "Could not copy text to the system clipboard.")
 			alicorn.invalidate_root(rt, "Scratchpad clipboard write failed")
 			return
@@ -3869,7 +3872,7 @@ editor_clipboard_command :: proc(app: ^App, rt: ^alicorn.Runtime, action_id: str
 			alicorn.invalidate_root(rt, "Scratchpad document Cut failed after clipboard copy")
 		}
 	case ACTION_EDIT_PASTE:
-		text, clipboard_ok := host.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
+		text, clipboard_ok := alicorn.ClipboardGetText(app.services.clipboard, allocator=context.allocator)
 		if !clipboard_ok {
 			set_error(app, "Could not read text from the system clipboard.")
 			alicorn.invalidate_root(rt, "Scratchpad clipboard read failed")
@@ -4154,7 +4157,7 @@ editor_copy_recoverable_preedit :: proc(app: ^App, rt: ^alicorn.Runtime, documen
 		alicorn.invalidate_root(rt, "Scratchpad refused invalid recovery text for the UTF-8 clipboard")
 		return false
 	}
-	if !host.ClipboardSetText(app.services.clipboard, string(view.preedit_text)) {
+	if !alicorn.ClipboardSetText(app.services.clipboard, string(view.preedit_text)) {
 		set_error(app, "Could not copy the committed recovery text. It remains available in this document.")
 		alicorn.invalidate_root(rt, "Scratchpad clipboard write failed during IME recovery")
 		return false
@@ -4484,61 +4487,7 @@ main :: proc() {
 		defer delete(fixture, context.allocator)
 		app.appearance_fixture_pinned = fixture == "1" || fixture == "true"
 	}
-	window_decorations := host.Window_Decoration_Mode.System
-	when ODIN_OS == .Windows {
-		window_decorations = .Integrated_Title_Bar
-	}
-	window_chrome_height: f32
-	window_chrome_metrics: host.Window_Chrome_Metrics_Proc
-	window_chrome_layout: host.Window_Chrome_Layout_Proc
-	when ODIN_OS == .Darwin {
-		window_decorations = .Content_Title_Bar
-		window_chrome_height = SCRATCHPAD_CONTENT_TITLEBAR_HEIGHT
-		window_chrome_metrics = scratchpad_content_titlebar_metrics
-		window_chrome_layout = scratchpad_content_titlebar_layout
-	}
-	when ODIN_OS == .Windows {
-		window_chrome_metrics = scratchpad_content_titlebar_metrics
-		window_chrome_layout = scratchpad_content_titlebar_layout
-	}
-	window_chrome_appearance: host.Application_Chrome_Appearance_Proc
-	menu_presentation := host.Application_Menu_Presentation.Labels
-	when ODIN_OS == .Windows {
-		window_chrome_appearance = scratchpad_window_chrome_appearance
-		menu_presentation = .Hidden
-	}
-	native_menus := scratchpad_native_menus(app.menus[:])
-
-	host.Run(host.Application{
-		state=rawptr(&app),
-		title="Scratchpad",
-		width=1200,
-		height=760,
-		menus=native_menus,
-		menu_presentation=menu_presentation,
-		window_decorations=window_decorations,
-		window_chrome_height=window_chrome_height,
-		window_chrome_metrics=window_chrome_metrics,
-		window_chrome_layout=window_chrome_layout,
-		window_chrome_appearance=window_chrome_appearance,
-		on_initialize=scratchpad_application_initialize,
-		build=build_app,
-		on_key=application_key,
-		on_pointer=application_pointer,
-		on_scroll_capture=semantic_zoom_scroll_capture,
-		on_drag=application_drag,
-		on_text_key=editor_text_key,
-		on_text_input=editor_text_input,
-		on_text_change=command_palette_text_change,
-		on_services=application_services,
-		on_start=application_start,
-		on_close_requested=application_close_requested,
-		on_dialog=application_dialog,
-		on_wake=application_wake,
-		on_scheduled_wake=application_scheduled_wake,
-		on_stop=application_stop,
-		on_menu_command=application_menu_command,
-	}, app.smoke)
+	run_scratchpad_application(&app)
 	if app.smoke {
 		session_passed := len(app.smoke_session_mode) == 0 || app.smoke_session_passed
 		passed := app.smoke_rendered && app.smoke_wake_observed && app.smoke_shutdown && session_passed

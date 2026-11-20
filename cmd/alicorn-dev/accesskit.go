@@ -12,13 +12,32 @@ import (
 
 const accessKitVersion = "0.23.1"
 
+// alicornAccessKitSource reports whether the selected Alicorn checkout compiles
+// an AccessKit adapter. Older checkouts keep it under native/sdl_gpu; the
+// hosted renderer shares host/sdl3/accessibility/accesskit.odin instead. Older
+// Alicorn checkouts do not use AccessKit and should not need its native
+// distribution just to build Scratchpad.
+func alicornAccessKitSource(alicornRoot string) (bool, error) {
+	for _, relative := range []string{
+		filepath.Join("native", "sdl_gpu", "accessibility_accesskit.odin"),
+		filepath.Join("host", "sdl3", "accessibility", "accesskit.odin"),
+	} {
+		if _, err := os.Stat(filepath.Join(alicornRoot, relative)); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect Alicorn AccessKit integration: %w", err)
+		}
+	}
+	return false, nil
+}
+
 func accessKitLinkerFlags(alicornRoot string) (string, error) {
-	// Older Alicorn checkouts do not use AccessKit and should not need its
-	// native distribution just to build Scratchpad.
-	if _, err := os.Stat(filepath.Join(alicornRoot, "native", "sdl_gpu", "accessibility_accesskit.odin")); errors.Is(err, os.ErrNotExist) {
+	usesAccessKit, err := alicornAccessKitSource(alicornRoot)
+	if err != nil {
+		return "", err
+	}
+	if !usesAccessKit {
 		return "", nil
-	} else if err != nil {
-		return "", fmt.Errorf("inspect Alicorn AccessKit integration: %w", err)
 	}
 
 	flags, library, err := accessKitLinkerFlagsFor(alicornRoot, runtime.GOOS, runtime.GOARCH)
@@ -41,10 +60,12 @@ func accessKitLinkerFlags(alicornRoot string) (string, error) {
 }
 
 func accessKitCompilerArguments(alicornRoot string) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(alicornRoot, "native", "sdl_gpu", "accessibility_accesskit.odin")); errors.Is(err, os.ErrNotExist) {
+	usesAccessKit, err := alicornAccessKitSource(alicornRoot)
+	if err != nil {
+		return nil, err
+	}
+	if !usesAccessKit {
 		return nil, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("inspect Alicorn AccessKit integration: %w", err)
 	}
 
 	switch runtime.GOOS {

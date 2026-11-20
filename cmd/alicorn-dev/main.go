@@ -63,11 +63,24 @@ func run(args []string) error {
 	outArg := flags.String("out", "", "artifact directory (package defaults under out/packages)")
 	staticSDL := flags.Bool("static-sdl", false, "package Windows with Alicorn's prepared static SDL recipe")
 	workspace := flags.String("workspace", "", "initial Scratchpad workspace directory; defaults to this checkout")
+	renderer := flags.String("renderer", defaultFrontendRenderer(), "frontend renderer: sdl-gpu (reference) or webgpu (hosted)")
+	gpuBackend := flags.String("backend", "d3d12", "hosted WebGPU adapter backend passed to the frontend: d3d12, vulkan, or auto")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
+	rendererName, rendererErr := normalizeFrontendRenderer(*renderer)
+	if rendererErr != nil {
+		return rendererErr
+	}
+	backendArgument, backendErr := normalizeWebGPUBackend(*gpuBackend)
+	if backendErr != nil {
+		return backendErr
+	}
 	if len(flags.Args()) != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if rendererName == "webgpu" && command == "test" {
+		return errors.New("--renderer=webgpu builds and runs the hosted frontend; use build, run, or smoke (the Go and Odin unit suites run against the reference renderer)")
 	}
 	if command != "build" && command != "test" && command != "smoke" && command != "run" && command != "package" {
 		return fmt.Errorf("unknown command %q; expected build, test, smoke, run, or package", command)
@@ -77,6 +90,9 @@ func run(args []string) error {
 	}
 	if *staticSDL && command != "package" {
 		return errors.New("--static-sdl is supported only by the package command")
+	}
+	if command == "package" {
+		return errors.New("packaging is not wired for the dual-renderer frontend yet: the hosted WebGPU host links Odin's shared wgpu-native, and Alicorn's consumer packager needs a wgpu-native staging/license contract before a shipped package can start (see docs/frontends/alicorn/WEBGPU-RENDERER.md). Build/run/smoke are unaffected")
 	}
 	if *staticSDL && runtime.GOOS != "windows" {
 		return errors.New("--static-sdl currently supports Windows x64 packages only")
@@ -239,6 +255,9 @@ func run(args []string) error {
 				return fmt.Errorf("stage SDL3 for Alicorn frontend tests: %w", err)
 			}
 		}
+		if err := stageWebGPURuntime(odinExe, out); err != nil {
+			return err
+		}
 		frontendTestExe := filepath.Join(out, "scratchpad-alicorn-frontend-tests"+exeSuffix())
 		probeExe := filepath.Join(out, "scratchpad-crash-probe"+exeSuffix())
 		probeArgs := []string{"build", filepath.Join(root, "tests", "fixtures", "crash_diagnostics"), "-debug", "-out:" + probeExe, collectionArg, alikitCollectionArg}
@@ -250,6 +269,7 @@ func run(args []string) error {
 		testEnv = setEnv(testEnv, "SCRATCHPAD_DIAGNOSTIC_PROBE_EXE", probeExe)
 		testArgs := []string{"test", filepath.Join(root, "frontends", "alicorn"), "-define:ODIN_TEST_THREADS=1", "-out:" + frontendTestExe, collectionArg, alikitCollectionArg}
 		testArgs = append(testArgs, accessKitCompilerArgs...)
+		testArgs = append(testArgs, frontendWebGPUCompilerArguments()...)
 		testArgs = append(testArgs, appMutationDiagnosticCompilerArgs(*mutationDiagnostics)...)
 		testArgs = appendLinkerFlags(testArgs, nativeFrontendLinkerFlagsFor(runtime.GOOS, frontendEnv, accessKitFlags))
 		if err := runCommand(root, testEnv, "odin", odinExe, testArgs...); err != nil {
@@ -277,6 +297,11 @@ func run(args []string) error {
 		}
 		launchEnv := setRuntimePath(frontendEnv, out)
 		launchEnv = setEnv(launchEnv, "SCRATCHPAD_ALICORN_WORKSPACE", workspacePath)
+		launchEnv = setEnv(launchEnv, frontendRendererEnv, rendererName)
+		var launchArguments []string
+		if rendererName == "webgpu" && backendArgument != "" {
+			launchArguments = append(launchArguments, backendArgument)
+		}
 		if command == "smoke" {
 			// Smoke the packaged sibling-library discovery path, even if the
 			// developer's shell happens to have a backend override configured.
@@ -284,9 +309,9 @@ func run(args []string) error {
 			if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 				return errors.New("native smoke skipped: Linux has no DISPLAY/WAYLAND_DISPLAY; use `test` for headless foreign/type checks")
 			}
-			return runNativeSessionRestartSmoke(root, exe, launchEnv)
+			return runNativeSessionRestartSmoke(root, exe, launchEnv, launchArguments...)
 		}
-		return runCommand(root, launchEnv, "Alicorn frontend", exe)
+		return runCommand(root, launchEnv, "Alicorn frontend", exe, launchArguments...)
 	}
 	return nil
 }
@@ -653,7 +678,13 @@ func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags 
 		}
 	}
 	alikitCollectionArg := "-collection:alikit=" + filepath.ToSlash(filepath.Join(root, "third_party", "alicorn-kit"))
-	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), collectionArg, alikitCollectionArg}
+	exe := filepath.Join(out, "scratchpad-alicorn"+exeSuffix())
+	args := []string{"build", filepath.Join(root, "frontends", "alicorn"), "-out:" + exe, collectionArg, alikitCollectionArg}
+	// The frontend carries both renderer entry points (see app_host.odin), so
+	// it always compiles the hosted SDL3/WebGPU host. Odin's shared wgpu-native
+	// is required because AccessKit's Rust static library and the static
+	// wgpu-native library both define rust_eh_personality.
+	args = append(args, frontendWebGPUCompilerArguments()...)
 	if runtime.GOOS == "windows" {
 		// Odin compiles this resource script and links the ICO into the PE
 		// executable. runCommand uses root as the working directory, which is
@@ -694,7 +725,75 @@ func buildFrontendWithOptions(root, out, odinExe, collectionArg, accessKitFlags 
 	if err != nil {
 		return "", fmt.Errorf("build Scratchpad Alicorn frontend: %w", err)
 	}
-	return filepath.Join(out, "scratchpad-alicorn"+exeSuffix()), nil
+	if err := stageWebGPURuntime(odinExe, out); err != nil {
+		return "", err
+	}
+	return exe, nil
+}
+
+// frontendRendererEnv selects the frontend renderer for launches that do not
+// carry explicit flags (the smoke harness launches the executable directly).
+const frontendRendererEnv = "SCRATCHPAD_RENDERER"
+
+func defaultFrontendRenderer() string {
+	if value := os.Getenv(frontendRendererEnv); strings.TrimSpace(value) != "" {
+		return value
+	}
+	return "sdl-gpu"
+}
+
+func normalizeFrontendRenderer(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "sdl-gpu", "sdl_gpu", "sdlgpu", "native":
+		return "sdl-gpu", nil
+	case "webgpu", "web-gpu", "gpu":
+		return "webgpu", nil
+	}
+	return "", fmt.Errorf("unknown renderer %q; expected sdl-gpu (reference) or webgpu (hosted)", value)
+}
+
+// normalizeWebGPUBackend mirrors the flag the hosted WebGPU host consumes from
+// os.args. "auto" omits the flag so wgpu selects the adapter backend itself.
+func normalizeWebGPUBackend(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "d3d12", "direct3d12":
+		return "--backend=d3d12", nil
+	case "vulkan":
+		return "--backend=vulkan", nil
+	case "auto":
+		return "", nil
+	}
+	return "", fmt.Errorf("unknown WebGPU backend %q; expected d3d12, vulkan, or auto", value)
+}
+
+func frontendWebGPUCompilerArguments() []string {
+	// AccessKit's Rust static library and Odin's static wgpu-native both define
+	// rust_eh_personality. Link Odin's bundled shared WGPU library instead,
+	// exactly as Alicorn's examples/16_native_webgpu_ui does.
+	return []string{"-define:WGPU_SHARED=true"}
+}
+
+// stageWebGPURuntime copies the shared wgpu-native library next to the hosted
+// executable; the WebGPU host loads it at process start.
+func stageWebGPURuntime(odinExe, out string) error {
+	odinRoot := filepath.Dir(odinExe)
+	var source string
+	switch runtime.GOOS {
+	case "windows":
+		if runtime.GOARCH != "amd64" {
+			return fmt.Errorf("Alicorn's shared wgpu-native library is configured for windows/amd64, not %s", runtime.GOARCH)
+		}
+		source = filepath.Join(odinRoot, "vendor", "wgpu", "lib", "wgpu-windows-x86_64-msvc-release", "lib", "wgpu_native.dll")
+	default:
+		return fmt.Errorf("the hosted WebGPU renderer is staged for Windows only; %s/`%s` has no wgpu-native staging recipe yet", runtime.GOOS, runtime.GOARCH)
+	}
+	if info, err := os.Stat(source); err != nil || info.Size() < 100_000 {
+		return fmt.Errorf("shared wgpu-native DLL is missing or invalid: %s", source)
+	}
+	if err := copyFile(source, filepath.Join(out, filepath.Base(source))); err != nil {
+		return fmt.Errorf("stage wgpu_native for the hosted renderer: %w", err)
+	}
+	return nil
 }
 
 func appendDarwinMinimumOSVersion(args []string, goos string) []string {

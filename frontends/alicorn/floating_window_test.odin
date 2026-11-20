@@ -6,10 +6,9 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import alicorn "alicorn:runtime"
-import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
 
-floating_test_accept_open :: proc(data: rawptr, description: host.Application_Window_Description) -> bool { return true }
+floating_test_accept_open :: proc(data: rawptr, description: alicorn.Hosted_Window_Description) -> bool { return true }
 
 @(test)
 test_floating_preview_and_save_preserve_primary_document :: proc(t: ^testing.T) {

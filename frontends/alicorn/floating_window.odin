@@ -13,7 +13,10 @@ Floating_Window_State :: struct {
 	owner: ^App,
 	runtime: ^alicorn.Runtime,
 	document_id: string,
-	services: host.Application_Services,
+	services: Scratchpad_Services,
+	hosted_waker: alicorn.Hosted_Waker,
+	after_frame_pending: bool,
+	after_frame_previous_ui_description_runtime: ^alicorn.Runtime,
 	visible_window_lane: bridge.Visible_Window_Lane,
 	editor_window: Editor_Window,
 	editor_window_ready: bool,
@@ -74,7 +77,7 @@ Floating_Window_Scope :: struct {
 	accessibility_semantic_revision: u64,
 	accessibility_semantic_has_runs: bool,
 	accessibility_semantic_run_count: int,
-	services: host.Application_Services,
+	services: Scratchpad_Services,
 	visible_window_lane_override: ^bridge.Visible_Window_Lane,
 	editor_window: Editor_Window,
 	editor_window_ready: bool,
@@ -409,35 +412,8 @@ floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 		{label="Detail", items=state.semantic_zoom_items[:]},
 	}
 	title := fmt.tprintf("%s — Scratchpad", document_title(document.path))
-	native_menus := scratchpad_native_menus(state.caption_actions[:])
-	description := host.Application_Window_Description{
-		application=host.Application{
-			state=rawptr(state),
-			menus=native_menus,
-			window_chrome_appearance=floating_window_chrome_appearance,
-			window_decorations=.Integrated_Title_Bar when ODIN_OS == .Windows else .System,
-			title=title,
-				width=760,
-				height=560,
-				on_initialize=floating_window_initialize,
-				build=floating_window_build,
-				on_key=floating_window_key,
-				on_pointer=floating_window_pointer,
-				on_scroll_capture=floating_window_scroll_capture,
-				on_text_key=floating_window_text_key,
-				on_text_input=floating_window_text_input,
-				on_services=floating_window_services,
-				on_start=floating_window_start,
-				on_close_requested=floating_window_close_requested,
-				on_stop=floating_window_stop,
-				on_menu_command=floating_window_menu_command,
-				on_scheduled_wake=floating_window_scheduled_wake,
-			},
-		width=760,
-		height=560,
-		on_open_failed=floating_window_open_failed,
-	}
-	if !host.application_open_window(app.services.windows, description) {
+	description := floating_window_description(state, title)
+	if !alicorn.hosted_window_open(app.services.windows, description) {
 		delete(state.document_id, context.allocator)
 		free(state, allocator=context.allocator)
 		return false
@@ -450,6 +426,40 @@ floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 	}
 	alicorn.invalidate_root(rt, "Scratchpad opened a floating document window")
 	return true
+}
+
+// floating_window_description is the floating editor's single host
+// description. Both renderers open it through the hosted window vocabulary;
+// app_host.odin's native bridge translates it for native/sdl_gpu.
+floating_window_description :: proc(window: ^Floating_Window_State, title: string) -> alicorn.Hosted_Window_Description {
+	window.after_frame_pending = false
+	return alicorn.Hosted_Window_Description{
+		title=title,
+		width=760,
+		height=560,
+		config=alicorn.Hosted_Runtime_Config{
+			state=rawptr(window),
+			render=floating_window_render,
+			menus=scratchpad_native_menus(window.caption_actions[:]),
+			menu_presentation=.Labels,
+			window_decorations=.Integrated_Title_Bar when ODIN_OS == .Windows else .System,
+			window_chrome_appearance=floating_window_chrome_appearance,
+			on_initialize=floating_window_initialize,
+			on_host_services=floating_window_host_services,
+			on_start=floating_window_start,
+			on_key=floating_window_hosted_key,
+			on_pointer=floating_window_pointer,
+			on_scroll_capture=floating_window_scroll_capture,
+			on_text_key=floating_window_text_key,
+			on_text_input=floating_window_hosted_text_input,
+			on_close_requested=floating_window_close_requested,
+			on_stop=floating_window_stop,
+			on_menu_command=floating_window_menu_command,
+			on_scheduled_wake=floating_window_scheduled_wake,
+			interaction_update_policy=.Explicit,
+		},
+		on_open_failed=floating_window_open_failed,
+	}
 }
 
 floating_window_initialize :: proc(state: rawptr, rt: ^alicorn.Runtime) {
@@ -471,14 +481,23 @@ floating_window_initialize :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	}
 }
 
-floating_window_services :: proc(state: rawptr, services: host.Application_Services) {
+floating_window_host_services :: proc(state: rawptr, services: alicorn.Hosted_Host_Services) {
 	window := cast(^Floating_Window_State)state
-	if window != nil { window.services = services }
+	if window == nil { return }
+	window.services = Scratchpad_Services{
+		windows=services.windows,
+		dialogs=services.dialogs,
+		quit=services.quit,
+		clipboard=services.clipboard,
+		scheduler=services.scheduler,
+	}
 }
 
-floating_window_start :: proc(state: rawptr, waker: host.Application_Waker) {
+floating_window_start :: proc(state: rawptr, waker: alicorn.Hosted_Waker) {
 	window := cast(^Floating_Window_State)state
-	if window == nil || window.owner == nil || !window.owner.backend.started { return }
+	if window == nil { return }
+	window.hosted_waker = waker
+	if window.owner == nil || !window.owner.backend.started { return }
 	app := window.owner
 	_ = accessibility_source_lane_start(&window.accessibility_source_lane, &app.backend, app.waker.wake, app.waker.data)
 	if !bridge.visible_window_lane_start(&window.visible_window_lane, &app.backend, app.waker.wake, app.waker.data) {
@@ -486,7 +505,7 @@ floating_window_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	}
 }
 
-floating_window_close_requested :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host.Application_Close_Result {
+floating_window_close_requested :: proc(state: rawptr, rt: ^alicorn.Runtime) -> alicorn.Hosted_Close_Result {
 	return .Allow
 }
 
@@ -537,24 +556,34 @@ floating_window_state_destroy :: proc(window: ^Floating_Window_State) {
 floating_window_return_to_tabs :: proc(app: ^App) {
 	if app == nil || app.floating_window == nil { return }
 	app.floating_window.return_to_tabs = true
-	host.application_close_window(app.services.windows)
+	alicorn.hosted_window_close(app.services.windows)
 }
 
-floating_window_build :: proc(
+// floating_window_render records the floating editor into the open frame the
+// host owns. The native bridge opens the frame; the hosted runtime does the
+// same for its own child surface.
+floating_window_render :: proc(
 	state: rawptr,
-	rt: ^alicorn.Runtime,
+	ui_context: ^alicorn.UI,
 	logical_width, logical_height: int,
 	dpi_scale: f32,
-) -> alicorn.Node_ID {
+) {
 	window := cast(^Floating_Window_State)state
+	if window == nil || ui_context == nil || ui_context.runtime == nil { return }
+	rt := ui_context.runtime
 	app, scope := floating_editor_scope_enter(window, rt)
-	if app == nil { return 0 }
+	if app == nil { return }
 	defer floating_editor_scope_leave(window, app, &scope)
-	if !scratchpad_styles_ensure(app, rt) { return 0 }
+	if !scratchpad_styles_ensure(app, rt) { return }
 	editor_accessibility_requests_drain(app, rt)
-	ui, should_build := alicorn.begin_frame(rt)
-	if !should_build { return 0 }
-	previous_ui_description_runtime := app.ui_description_runtime
+	// Post-layout work from the previous floating description, mirroring the
+	// main window's hosted ordering.
+	if window.after_frame_pending {
+		window.after_frame_pending = false
+		floating_window_after_frame(window, app, rt)
+	}
+	ui := ui_context^
+	window.after_frame_previous_ui_description_runtime = app.ui_description_runtime
 	app.ui_description_runtime = rt
 	root := alicorn.container_begin(
 		&ui, .Root, label="scratchpad-floating-document",
@@ -565,7 +594,7 @@ floating_window_build :: proc(
 	if document, found := find_document(&app.backend.state, window.document_id); found {
 		title := floating_window_document_heading(app, document)
 		if title != window.caption_title {
-			if host.application_window_set_title(window.services.windows, title) {
+			if alicorn.hosted_window_set_title(window.services.windows, title) {
 				delete(window.caption_title, context.allocator)
 				window.caption_title, _ = strings.clone(title, context.allocator)
 			}
@@ -594,8 +623,11 @@ floating_window_build :: proc(
 	alicorn.style_environment_pop(&ui, style_scope)
 	alicorn.surface_end(&ui)
 	alicorn.style_environment_pop(&ui, workbench_scope)
-	alicorn.end_frame(&ui)
-	app.ui_description_runtime = previous_ui_description_runtime
+	window.after_frame_pending = true
+}
+
+floating_window_after_frame :: proc(window: ^Floating_Window_State, app: ^App, rt: ^alicorn.Runtime) {
+	app.ui_description_runtime = window.after_frame_previous_ui_description_runtime
 	editor_view_restore_after_frame(app, rt, app.editor_scroll_owner)
 	if app.editor_focus_pending && app.editor_scroll_owner != 0 {
 		if alicorn.focus(rt, app.editor_scroll_owner) { app.editor_focus_pending = false }
@@ -616,7 +648,6 @@ floating_window_build :: proc(
 	}
 	editor_reveal_after_frame(app, rt)
 	frame_deferred_action_run(app, rt)
-	return root
 }
 
 floating_window_document_dirty :: proc(app: ^App, document: bridge.State_Document) -> bool {
@@ -652,7 +683,7 @@ floating_window_save :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 floating_window_toggle_topmost :: proc(window: ^Floating_Window_State) {
 	if window == nil { return }
 	requested := !window.always_on_top
-	if host.application_window_set_always_on_top(window.services.windows, requested) { window.always_on_top = requested; window.caption_actions[1].state.checked = requested }
+	if alicorn.hosted_window_set_always_on_top(window.services.windows, requested) { window.always_on_top = requested; window.caption_actions[1].state.checked = requested }
 }
 
 floating_window_chrome_appearance :: proc(state: rawptr, rt: ^alicorn.Runtime) -> host.Window_Chrome_Appearance {
@@ -700,6 +731,32 @@ floating_window_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Appli
 		return application_key(rawptr(app), rt, key)
 	}
 	return false
+}
+
+floating_window_hosted_key :: proc(
+	state: rawptr,
+	rt: ^alicorn.Runtime,
+	_owner: alicorn.Node_ID,
+	event: alicorn.Hosted_Key_Event,
+) -> bool {
+	// Mirrors Alicorn's ui.run key adapter: only translated, pressed keys in
+	// the Application_Key vocabulary reach the shared handler.
+	if !event.pressed || event.key_code > u32(alicorn.Application_Key.Return) { return false }
+	return floating_window_key(state, rt, alicorn.Application_Key(event.key_code))
+}
+
+floating_window_hosted_text_input :: proc(
+	state: rawptr,
+	rt: ^alicorn.Runtime,
+	owner: alicorn.Node_ID,
+	event: alicorn.Hosted_Text_Input_Event,
+) {
+	floating_window_text_input(state, rt, owner, alicorn.Application_Text_Input_Event{
+		kind=alicorn.Application_Text_Input_Event_Kind(event.kind),
+		text=event.text,
+		selection_start_byte=event.selection_start_byte,
+		selection_end_byte=event.selection_end_byte,
+	})
 }
 
 floating_window_pointer :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Pointer_Event, target: alicorn.Node_ID) {
