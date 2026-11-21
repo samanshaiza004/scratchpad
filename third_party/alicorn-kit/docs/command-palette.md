@@ -128,6 +128,13 @@ allow an application to match an existing palette header without replacing the
 component's focusable controlled query field. The default options remain
 appropriate for consumers that want a conventional titled palette.
 
+The panel is anchored at the overlay's top inset and grows or shrinks downward
+from the search field, matching VS Code Quick Open. Result-count changes never
+move the field: the footer follows the results, and the panel's fit-content
+height changes beneath a stable field position. Avoid re-centering the panel in
+a wrapper; `test_quick_open_layout_keeps_the_search_field_anchored_across_result_counts`
+asserts the anchored geometry for 54 and 4 results.
+
 ## UI-independent model
 
 The model package can be used independently to filter and navigate a command

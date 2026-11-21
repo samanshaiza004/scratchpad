@@ -336,6 +336,7 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	visible_sparse := min(max(len(sparse), 1), COMMAND_PALETTE_MAX_VISIBLE_ROWS)
 	if !command_palette_test_build(t, &app, &rt) { return }
 	panel, panel_ok := alicorn.node_info(&rt, app.command_palette_panel_node)
+	query_sparse, query_sparse_ok := alicorn.node_info(&rt, app.command_palette_node)
 	testing.expect(t, panel_ok && len(sparse) > 0 && len(sparse) < COMMAND_PALETTE_MAX_VISIBLE_ROWS,
 		"the focused query should produce a short natural-height result list")
 	if panel_ok {
@@ -351,10 +352,20 @@ test_command_palette_sizes_from_results_and_caps_scroll_content :: proc(t: ^test
 	if !command_palette_test_build(t, &app, &rt) { return }
 	panel, panel_ok = alicorn.node_info(&rt, app.command_palette_panel_node)
 	list, list_ok := alicorn.node_info(&rt, app.command_palette_results_scroll_node)
+	query_full, query_full_ok := alicorn.node_info(&rt, app.command_palette_node)
 	testing.expect(t, len(all_results) > COMMAND_PALETTE_MAX_VISIBLE_ROWS,
 		"the real command set should exceed the palette's bounded visible row count")
 	testing.expect(t, panel_ok && panel.bounds.h == f32(108)+COMMAND_PALETTE_MAX_LIST_HEIGHT,
 		"many results should grow the panel only to the capped list height")
+	// Quick Open semantics: growing the result set must extend the panel
+	// downward, never move the search field's anchor.
+	testing.expect(t, query_sparse_ok && query_full_ok &&
+		query_sparse.bounds.y == query_full.bounds.y,
+		"the palette search field should keep its vertical position across result-count changes")
+	if query_sparse_ok && query_full_ok {
+		testing.expect(t, query_full.bounds.y >= panel.bounds.y,
+			"the search field should stay inside the anchored panel")
+	}
 	testing.expect(t, list_ok && list.scroll_content_height == f32(len(all_results))*COMMAND_PALETTE_ROW_HEIGHT &&
 		list.scroll_viewport_height <= COMMAND_PALETTE_MAX_LIST_HEIGHT,
 		"the palette should retain the full result extent while keeping the scroll viewport bounded")

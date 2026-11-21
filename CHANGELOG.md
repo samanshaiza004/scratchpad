@@ -9,6 +9,10 @@ as separate entries.
 ## [Unreleased]
 
 ### Added
+- Added native drag-out for workspace files and folders: crossing the retained
+  tree drag threshold starts the shared `application_file_drag_start` service
+  with the item's absolute path on both the SDL_GPU reference and hosted WebGPU
+  hosts. Tab drags keep the retained in-app reorder path.
 - Added the vendored AliKit Tree View to Scratchpad's workspace explorer, preserving stable semantic IDs, active-document styling, focus and scroll state, drag/drop, and application-owned context-menu actions.
 
 - Added local Alicorn color-theme import, preview, persistence, and duplicate-
@@ -34,6 +38,17 @@ as separate entries.
   editor-bearing group, and pane placement is not yet persisted.
 
 ### Fixed
+
+- Preserved syntax highlighting while typing: the exact presentation-ready
+  source window now retires the matching-revision optimistic snapshot, so
+  published parser tokens stay visible instead of being shadowed by a stale
+  rebased window and dropped by the metadata-refresh gate.
+- Anchored the command palette like VS Code Quick Open: the search field keeps
+  its position and the results area grows or shrinks beneath it instead of
+  re-centering the whole fit-content panel when the result count changes.
+- Replaced the pinned card's text ellipsis with Alicorn's built-in
+  `More_Horizontal` icon button while keeping the `More actions` semantic
+  description and menu behavior.
 
 - Kept open-document synchronization retryable after a workbench view allocation
   or activation failure, so a partial sync cannot be cached as complete.

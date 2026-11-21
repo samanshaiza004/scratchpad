@@ -369,7 +369,11 @@ build :: proc(
 	state.overlay_node = alicorn.modal_overlay_begin(
 		ctx,
 		alicorn.key_string("alikit-command-palette-overlay"),
-		style=ui.layout_style(.Column, grow=1, padding=overlay_padding, align=.Center, justify=.Center, clip=true),
+		// Quick Open semantics: the panel is anchored at a stable top inset and
+		// grows or shrinks downward from the search field. Centering a
+		// fit-content panel would move the field whenever the result count
+		// changed, so the results area must yield height beneath a fixed field.
+		style=ui.layout_style(.Column, grow=1, padding=overlay_padding, align=.Center, justify=.Start, clip=true),
 		backdrop_color=backdrop_color,
 	)
 	if state.overlay_node == 0 { return }

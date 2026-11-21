@@ -18,4 +18,11 @@ after all rows in the current description have been built. The rest of AliKit
 Alicorn revision; update the dependency and snapshot together when adopting that
 API.
 
+Scratchpad also carries one local command-palette presentation change: the
+modal overlay anchors the fit-content panel at a stable top inset
+(`justify=.Start`) instead of centering it, so the Quick Open search field does
+not move when the result count changes. The rest of the palette package is the
+reviewed snapshot above. Port this anchoring change to `samanshaiza004/alicorn-kit`
+before the next snapshot update and record the upstream commit here.
+
 Other vendored changes must be ported upstream before they are added here.

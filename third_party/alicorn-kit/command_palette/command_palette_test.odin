@@ -56,6 +56,52 @@ palette_test_describe :: proc(rt: ^alicorn.Runtime, state: ^State, items: []Item
 }
 
 @(test)
+test_quick_open_layout_keeps_the_search_field_anchored_across_result_counts :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 480})
+	defer alicorn.destroy_runtime(&rt)
+	state: State
+	if !init(&state, context.allocator) {
+		testing.expect(t, false, "palette state should initialize")
+		return
+	}
+	defer destroy(&state)
+	if !open_palette(&state, &rt, .Caller_Filtered) {
+		testing.expect(t, false, "caller-filtered palette should open")
+		return
+	}
+	many := make([]Item, 54, context.allocator)
+	defer delete(many, context.allocator)
+	for index in 0..<len(many) {
+		many[index] = Item{id=Item_ID(index+1), title="Command"}
+	}
+	few := many[:4]
+
+	alicorn.invalidate_root(&rt, "quick open layout fixture with many results")
+	_ = palette_test_describe(&rt, &state, many)
+	many_query, many_query_ok := alicorn.node_info(&rt, state.query_node)
+	many_panel, many_panel_ok := alicorn.node_info(&rt, state.panel_node)
+	testing.expect(t, state.match_count == len(many) && many_query_ok && many_panel_ok,
+		"the many-result frame should realize both the query field and the panel")
+
+	alicorn.invalidate_root(&rt, "quick open layout fixture with few results")
+	_ = palette_test_describe(&rt, &state, few)
+	few_query, few_query_ok := alicorn.node_info(&rt, state.query_node)
+	few_panel, few_panel_ok := alicorn.node_info(&rt, state.panel_node)
+	testing.expect(t, state.match_count == len(few) && few_query_ok && few_panel_ok,
+		"the few-result frame should realize both the query field and the panel")
+	if !many_query_ok || !few_query_ok || !many_panel_ok || !few_panel_ok { return }
+
+	testing.expect(t, few_query.bounds.y == many_query.bounds.y,
+		"the Quick Open search field must keep its vertical anchor as results shrink")
+	testing.expect(t, few_panel.bounds.y == many_panel.bounds.y,
+		"the palette panel must keep its top anchor instead of recentering a fit-content box")
+	testing.expect(t, few_panel.bounds.h < many_panel.bounds.h,
+		"the results area should shrink beneath the fixed field")
+	testing.expect(t, many_query.bounds.y == many_panel.bounds.y || many_query.bounds.y > many_panel.bounds.y,
+		"the search field should sit at or below the panel's top edge")
+}
+
+@(test)
 test_keyboard_activation_and_focus_restore_use_retained_runtime :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 480, 320})
 	defer alicorn.destroy_runtime(&rt)
