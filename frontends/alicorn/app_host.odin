@@ -37,6 +37,7 @@ Scratchpad_Services :: struct {
 	quit:      alicorn.Hosted_Quit_Service,
 	clipboard: alicorn.Clipboard_Service,
 	scheduler: alicorn.Application_Scheduler,
+	file_drag: alicorn.File_Drag_Service,
 }
 
 // Scratchpad_Application is the single application description shared by both
@@ -242,6 +243,7 @@ scratchpad_services_from_native :: proc(value: host.Application_Services) -> Scr
 		quit=value.quit,
 		clipboard=value.clipboard,
 		scheduler=value.scheduler,
+		file_drag=value.file_drag,
 	}
 }
 
@@ -395,6 +397,7 @@ scratchpad_services_from_hosted :: proc(value: gui.UI_Host_Services) -> Scratchp
 		quit=value.quit,
 		clipboard=value.clipboard_text,
 		scheduler=value.scheduler,
+		file_drag=value.file_drag,
 	}
 }
 

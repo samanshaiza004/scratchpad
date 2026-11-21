@@ -7,8 +7,40 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import bridge "./bridge"
+
+@(private)
+Workspace_File_Drag_Record :: struct {
+	calls: int,
+	path:  string,
+}
+
+// workspace_file_drag_record_start stands in for the native drag-out service.
+// It records a borrowed path (the caller builds it with its temp allocator) and
+// returns false so the retained drag session stays alive for the internal drop
+// path this fixture also exercises.
+@(private)
+workspace_file_drag_record_start :: proc(data: rawptr, path: string) -> bool {
+	record := cast(^Workspace_File_Drag_Record)data
+	if record == nil { return false }
+	record.calls += 1
+	record.path = path
+	return false
+}
+
+@(test)
+test_renderer_neutral_services_preserve_the_native_file_drag_source :: proc(t: ^testing.T) {
+	marker: u8
+	service := alicorn.File_Drag_Service{data=&marker, start=workspace_file_drag_record_start}
+	hosted := scratchpad_services_from_hosted(gui.UI_Host_Services{file_drag=service})
+	testing.expect(t, hosted.file_drag.start == service.start && hosted.file_drag.data == &marker,
+		"the hosted UI host service set should map file_drag into Scratchpad_Services unchanged")
+	native := scratchpad_services_from_native(host.Application_Services{file_drag=service})
+	testing.expect(t, native.file_drag.start == service.start && native.file_drag.data == &marker,
+		"the reference native host service set should map file_drag into Scratchpad_Services unchanged")
+}
 
 @(test)
 test_rejected_editor_window_request_does_not_repeat_until_request_changes :: proc(t: ^testing.T) {
@@ -945,6 +977,8 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 		id, clone_error := strings.clone(document.id, context.temp_allocator)
 		if clone_error == nil { append(&old_ids, id) }
 	}
+	file_drag_record: Workspace_File_Drag_Record
+	app.services.file_drag = alicorn.File_Drag_Service{data=&file_drag_record, start=workspace_file_drag_record_start}
 	application_drag(rawptr(&app), &rt, alicorn.Drag_Event{
 		kind=.Started,
 		drag_type=SCRATCHPAD_DRAG_WORKSPACE,
@@ -952,6 +986,15 @@ test_workspace_directory_move_preserves_editor_views_tree_expansion_and_focus ::
 	})
 	testing.expect(t, app.workspace_drag_kind == .Workspace && app.workspace_drag_source_path == "src",
 		fmt.tprintf("drag should capture the src directory (kind=%v path=%s)", app.workspace_drag_kind, app.workspace_drag_source_path))
+	expected_export := fmt.tprintf("%s%csrc", strings.trim_right(workspace, "/\\"), os.Path_Separator)
+	testing.expect(t, file_drag_record.calls == 1 && os.is_absolute_path(file_drag_record.path) &&
+		strings.has_suffix(file_drag_record.path, "src") && !strings.has_suffix(file_drag_record.path, "/src"),
+		fmt.tprintf("a file/folder row drag should hand the native service its absolute path (calls=%d path=%s absolute=%t)",
+			file_drag_record.calls, file_drag_record.path, os.is_absolute_path(file_drag_record.path)))
+	testing.expect(t, len(file_drag_record.path) >= len(expected_export) &&
+		strings.equal_fold(file_drag_record.path, expected_export),
+		fmt.tprintf("the exported path should join the workspace root and the row's relative path (got=%s expected=%s)",
+			file_drag_record.path, expected_export))
 	drag_target_path, drag_target_found := workspace_drag_target_path(&app, tree_semantic_id("archive", true))
 	defer delete(drag_target_path, context.allocator)
 	drag_destination, drag_should_move := workspace_drag_move_destination(app.workspace_drag_source_path, drag_target_path, app.workspace_drag_source_is_dir, tree_preferred_separator(&app))

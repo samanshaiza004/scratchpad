@@ -1,5 +1,6 @@
 package main
 
+import "core:os"
 import "core:strings"
 import "core:testing"
 import alicorn "alicorn:runtime"
@@ -33,6 +34,8 @@ application_drag :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Dra
 		} else if app.workspace_drag_kind == .Tabs {
 			workspace_drag_target_set(app, event.target, event.position)
 			alicorn.invalidate_root(rt, "Scratchpad tab drag started")
+		} else if app.workspace_drag_kind == .Workspace {
+			workspace_drag_export_source(app, rt)
 		}
 	case .Dropped:
 		workspace_drag_apply_drop(app, rt, event)
@@ -116,6 +119,25 @@ workspace_drag_capture_source :: proc(app: ^App, event: alicorn.Drag_Event) -> b
 		}
 	}
 	return false
+}
+
+// workspace_drag_export_source starts the native drag-out for the workspace row
+// that crossed the retained drag threshold. The tree stores workspace-relative
+// paths, so the service receives the absolute path. Native drag sources are
+// modal and own the gesture once started; the retained session is retired so a
+// later pointer release cannot also apply an internal tree move. Tab payloads
+// never reach here and keep the retained-only behaviour.
+workspace_drag_export_source :: proc(app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if app == nil || rt == nil || app.workspace_drag_kind != .Workspace { return false }
+	if app.workspace_drag_source_path == "" || app.services.file_drag.start == nil { return false }
+	root := app.backend.state.workspace_root
+	if root == "" { root = app.tree_root_path }
+	if root == "" { return false }
+	absolute_path, path_error := os.join_path({root, app.workspace_drag_source_path}, context.temp_allocator)
+	if path_error != nil || absolute_path == "" { return false }
+	if !alicorn.application_file_drag_start(app.services.file_drag, absolute_path) { return false }
+	_ = alicorn.drag_cancel(rt)
+	return true
 }
 
 workspace_drag_apply_drop :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Drag_Event) {

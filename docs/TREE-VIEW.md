@@ -43,6 +43,15 @@ item ID; Scratchpad copies the path and revalidates that the item is still
 visible before building destructive actions. Menu actions remain application
 commands.
 
+Files and folders cross the retained drag threshold into the native drag-out
+service: Scratchpad joins the row's workspace-relative path with the workspace
+root and calls `alicorn.application_file_drag_start` with the absolute path.
+The native drag source owns that gesture, so the retained session is retired
+after it starts and a later pointer release cannot also move the row. Tab
+payloads never take this path and keep the retained-only reorder behavior.
+The service is mapped from both host service sets, so the SDL_GPU reference and
+the hosted WebGPU host use the same call site.
+
 The workspace backend returns bounded entries per directory. Expanding a
 directory loads that directory through the existing backend path; AliKit does
 not read the filesystem or require a second data provider. Rendering remains
