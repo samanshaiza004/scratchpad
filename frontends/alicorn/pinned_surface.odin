@@ -996,11 +996,9 @@ pinned_button :: proc(app: ^App, ui: ^alicorn.UI, label, key: string, pin: bridg
 }
 
 pinned_more_button :: proc(app: ^App, ui: ^alicorn.UI, pin: bridge.Pin_ID) -> bool {
-	id, clicked := alicorn.button_begin(ui, "⋯", key="pinned-more",
-		style=alicorn.layout_style(.Row,width=32,height=32), variant=.Quiet,
-		text_style=alicorn.Text_Style{font_size=20},
-		content_style=alicorn.button_content_style(.Center,padding_x=0,padding_y=0))
-	alicorn.button_end(ui)
+	id, clicked := alicorn.icon_button(ui, "More actions", .More_Horizontal,
+		key=alicorn.key_string("pinned-more"),
+		style=alicorn.layout_style(.Row,width=32,height=32), variant=.Quiet)
 	alicorn.semantic_description(ui,.Button,"More actions",actions={.Press,.Focus})
 	append(&app.pinned.controls, Pinned_Control{id,pin,"more"})
 	if clicked { pinned_open_action_menu(app,ui.runtime,pin) }
