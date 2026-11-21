@@ -806,6 +806,15 @@ application_install_view_visible_window :: proc(
 			editor_window_destroy(&view.source_window)
 			view.source_window = window
 			view.source_window_ready = true
+			// The exact publication carries the parser's tokens for this revision.
+			// Keep a locally rebased optimistic snapshot only until the asynchronous
+			// projection catches up: both snapshots share editor_revision, so leaving
+			// the stale one installed would shadow the real spans during painting.
+			if view.optimistic_window_ready &&
+			   view.source_window.presentation_ready && !view.source_window.presentation_stale {
+				editor_window_destroy(&view.optimistic_window)
+				view.optimistic_window_ready = false
+			}
 			if view.position_reconcile_pending {
 				_ = editor_view_reconcile_positions(view, &view.source_window)
 			}

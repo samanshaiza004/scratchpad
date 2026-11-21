@@ -32,6 +32,160 @@ editor_stale_window_test_line :: proc(app: ^App, rt: ^alicorn.Runtime, logical_l
 	return
 }
 
+editor_stale_window_test_span_rows :: proc(app: ^App, rt: ^alicorn.Runtime) -> (style_rows, paint_rows: int) {
+	if app == nil || rt == nil { return }
+	for target in app.editor_row_targets {
+		node, found := rt.nodes[target.node]
+		if !found { continue }
+		if len(node.text_style_spans) > 0 { style_rows += 1 }
+		if len(node.text_paint_spans) > 0 { paint_rows += 1 }
+	}
+	return
+}
+
+@(test)
+test_published_presentation_window_supersedes_the_rebased_optimistic_window :: proc(t: ^testing.T) {
+	source_text := "package main\n\nfunc main() {}\n"
+	line_count := u64(3)
+
+	app: App
+	app.backend.started = true
+	app.backend.state.active = "highlight-doc"
+	app.backend.state.application_rev = 2
+	documents := make([dynamic]bridge.State_Document, 0, allocator=context.allocator)
+	append(&documents, bridge.State_Document{
+		id="highlight-doc",
+		path="main.go",
+		language="go",
+		editor_revision=2,
+		line_count=line_count,
+		byte_length=u64(len(source_text)),
+		presentation_revision=2,
+		presentation_ready=true,
+	})
+	app.backend.state.documents = documents[:]
+	app.editor_views = make([dynamic]Editor_View_State, 0, allocator=context.allocator)
+	app.editor_row_targets = make([dynamic]Editor_Row_Target, 0, allocator=context.allocator)
+	app.editor_edits = make([dynamic]Editor_Edit_Intent, 0, allocator=context.allocator)
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 800, 180})
+	defer {
+		for index := len(app.editor_edits)-1; index >= 0; index -= 1 { editor_remove_edit(&app, index) }
+		delete(app.editor_edits)
+		delete(app.editor_row_targets)
+		editor_views_destroy(&app.editor_views, context.allocator)
+		delete(documents)
+		editor_window_destroy(&app.editor_window, context.allocator)
+		if len(app.editor_presented_document_id) > 0 { delete(app.editor_presented_document_id, context.allocator) }
+		if len(app.editor_window_error) > 0 { delete(app.editor_window_error, context.allocator) }
+		if len(app.error_message) > 0 { delete(app.error_message, context.allocator) }
+		alicorn.destroy_runtime(&rt)
+	}
+	if !alicorn.text_engine_load_font(&rt.text_engine, ALICORN_TEST_UI_FONT_DATA) ||
+	   !alicorn.text_engine_load_font_role(&rt.text_engine, .Monospace, ALICORN_TEST_MONO_FONT_DATA) {
+		testing.expect(t, false, "highlight persistence fixture should load the bundled fonts")
+		return
+	}
+	document := app.backend.state.documents[0]
+	editor_stale_window_test_render(&app, &rt, document)
+	view_index := editor_view_find(app.editor_views[:], "highlight-doc")
+	if view_index < 0 {
+		testing.expect(t, false, "the highlight document should gain local view state on first presentation")
+		return
+	}
+	view := &app.editor_views[view_index]
+	view.view_id = 73
+	view.lifecycle_generation = 4
+	view.source_request_generation = 11
+	view.document_instance_id = document.instance_id
+	view.authoritative_revision = 2
+
+	// Model the post-acknowledgement state: the optimistic window carries the
+	// accepted revision but only pre-edit presentation, so it can never satisfy
+	// the exact-presentation gate.
+	optimistic_bytes, optimistic_error := make([]u8, len(source_text), allocator=context.allocator)
+	if optimistic_error != nil { testing.expect(t, false, "could not allocate the optimistic fixture"); return }
+	mem.copy(rawptr(&optimistic_bytes[0]), rawptr(raw_data(source_text)), len(source_text))
+	optimistic_spans := make([]bridge.Presentation_Record, 1, allocator=context.allocator)
+	optimistic_spans[0] = bridge.Presentation_Record{kind=EDITOR_PRESENTATION_CODE_KEYWORD, start_byte=0, end_byte=7}
+	optimistic_visible := bridge.Visible_Window{
+		document_id="highlight-doc",
+		application_rev=2,
+		editor_revision=2,
+		start_line=0,
+		end_line=line_count,
+		start_byte=0,
+		line_byte_length=u64(len(source_text)),
+		source=optimistic_bytes,
+		presentation_revision=1,
+		presentation_ready=true,
+		presentation_spans=optimistic_spans,
+	}
+	optimistic_window, optimistic_ok, optimistic_message := editor_window_from_visible(&optimistic_visible, context.allocator)
+	testing.expect(t, optimistic_ok, optimistic_message)
+	if !optimistic_ok { return }
+	optimistic_window.presentation_stale = true
+	view.optimistic_window = optimistic_window
+	view.optimistic_window_ready = true
+	view.optimistic_pending_edits = 0
+
+	editor_stale_window_test_render(&app, &rt, document)
+	_, rebased_paint_rows := editor_stale_window_test_span_rows(&app, &rt)
+	testing.expect(t, rebased_paint_rows == 0,
+		"the rebased snapshot alone must not claim published spans while an exact refresh is pending")
+
+	exact_bytes, exact_error := make([]u8, len(source_text), allocator=context.allocator)
+	if exact_error != nil { testing.expect(t, false, "could not allocate the published fixture"); return }
+	mem.copy(rawptr(&exact_bytes[0]), rawptr(raw_data(source_text)), len(source_text))
+	exact_spans := make([]bridge.Presentation_Record, 3, allocator=context.allocator)
+	exact_spans[0] = bridge.Presentation_Record{kind=EDITOR_PRESENTATION_CODE_KEYWORD, start_byte=0, end_byte=7}
+	exact_spans[1] = bridge.Presentation_Record{kind=EDITOR_PRESENTATION_CODE_KEYWORD, start_byte=14, end_byte=18}
+	exact_spans[2] = bridge.Presentation_Record{kind=EDITOR_PRESENTATION_CODE_FUNCTION, start_byte=19, end_byte=23}
+	result := bridge.Visible_Window_Lane_Result{
+		generation=view.source_request_generation,
+		request=bridge.Visible_Window_Request{
+			view_id=view.view_id,
+			view_lifecycle_generation=view.lifecycle_generation,
+			document_id="highlight-doc",
+			document_instance_id=document.instance_id,
+			editor_revision=document.editor_revision,
+		},
+		window=bridge.Visible_Window{
+			document_id="highlight-doc",
+			application_rev=2,
+			editor_revision=2,
+			start_line=0,
+			end_line=line_count,
+			start_byte=0,
+			line_byte_length=u64(len(source_text)),
+			source=exact_bytes,
+			presentation_revision=2,
+			presentation_ready=true,
+			presentation_spans=exact_spans,
+		},
+		window_owned=true,
+	}
+	installed, _ := application_install_view_visible_window(&app, &rt, &result)
+	testing.expect(t, installed && view.source_window_ready,
+		"the exact published window should install as the view's source window")
+	testing.expect(t, !view.optimistic_window_ready && len(view.optimistic_window.source) == 0,
+		"installing exact presentation should retire the matching-revision optimistic snapshot")
+
+	published, authoritative := editor_view_window(view, &app.editor_window, app.editor_window_ready, "highlight-doc", document.editor_revision)
+	testing.expect(t, authoritative && published == &view.source_window,
+		"an exact presentation-ready source window must win over a matching-revision optimistic snapshot")
+
+	editor_stale_window_test_render(&app, &rt, document)
+	_, published_paint_rows := editor_stale_window_test_span_rows(&app, &rt)
+	testing.expect(t, published_paint_rows == 2,
+		"the published window should restore token-bearing runs on the untouched and edited lines")
+	line_0, text_0, found_0 := editor_stale_window_test_line(&app, &rt, 0)
+	line_2, text_2, found_2 := editor_stale_window_test_line(&app, &rt, 2)
+	testing.expect(t, found_0 && found_2 && text_0 == "package main" && text_2 == "func main() {}",
+		"publishing exact presentation must not change visible source text")
+	testing.expect(t, line_0 != 0 && line_2 != 0,
+		"the visible rows should retain their own node identity across publication")
+}
+
 @(test)
 test_stale_document_window_remains_visible_and_read_only_until_fresh_revision :: proc(t: ^testing.T) {
 	old_source := [?]u8{'a', 'l', 'p', 'h', 'a', '\n', 'b', 'e', 't', 'a', '\n', 'g', 'a', 'm', 'm', 'a'}

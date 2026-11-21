@@ -835,7 +835,19 @@ editor_view_window :: proc(
 	editor_revision: u64,
 ) -> (window: ^Editor_Window, matches: bool) {
 	if view != nil && view.optimistic_window_ready {
-		if view.optimistic_window.document_id == document_id &&
+		// A rebased optimistic snapshot is only the best visible source while an
+		// edit is pending or while the exact projection is still in flight. Once
+		// the view holds a presentation-ready source window for the same revision,
+		// prefer it: the optimistic revision matches the published one after the
+		// edit acknowledgement, and returning the rebased snapshot would keep
+		// painting pre-edit spans over real parser tokens.
+		exact_source_presentation := view.optimistic_pending_edits == 0 &&
+			view.source_window_ready &&
+			view.source_window.document_id == document_id &&
+			view.source_window.editor_revision == editor_revision &&
+			view.source_window.presentation_ready &&
+			!view.source_window.presentation_stale
+		if !exact_source_presentation && view.optimistic_window.document_id == document_id &&
 		   (view.document_instance_id == 0 || view.optimistic_window.document_instance_id == 0 ||
 		    view.optimistic_window.document_instance_id == view.document_instance_id) &&
 		   (view.optimistic_pending_edits > 0 || view.optimistic_window.editor_revision == editor_revision) {

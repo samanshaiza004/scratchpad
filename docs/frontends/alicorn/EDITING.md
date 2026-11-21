@@ -20,6 +20,8 @@ The numbered phase headings below preserve the order in which implementation sli
 
 The frontend may keep bounded visible source windows and an optimistic projection for responsive presentation. These do not replace Scratchpad's authoritative document or revision. Alicorn owns interaction and presentation state; it does not define Scratchpad document or file semantics.
 
+A locally rebased optimistic window keeps the last parser spans visible while an edit is unacknowledged, but it is never the presentation owner for a published revision. When the view-scoped installer receives the exact, presentation-ready source window and no edit is pending, it retires the optimistic snapshot. Both snapshots share the accepted `editor_revision`, so keeping the rebased one would shadow the parser's real tokens and force the metadata-refresh gate to describe span-less rows. `editor_view_window` applies the same precedence: an exact presentation-ready source window wins over a matching-revision optimistic snapshot. The highlight-persistence regression types into a Go fixture, installs the published window, and asserts span-bearing rows plus unchanged visible text.
+
 ## Invariants
 
 1. Cursor movement stays in the Alicorn frontend; cursor movement never crosses Caliber.
