@@ -298,7 +298,8 @@ after_frame :: proc(state: ^State, rt: ^alicorn.Runtime) {
 	if state.open && state.focus_pending && state.query_node != 0 {
 		if alicorn.focus(rt, state.query_node) {
 			state.focus_pending = false
-			_ = alicorn.set_text_selection(rt, state.query_node, 0, len(state.query.text))
+			query_end := len(state.query.text)
+			_ = alicorn.set_text_selection(rt, state.query_node, query_end, query_end)
 		}
 	}
 	if state.open || !state.restore_focus { return }

@@ -824,6 +824,49 @@ editor_window_clone :: proc(source: ^Editor_Window, allocator := context.allocat
 	return
 }
 
+// Carry the last known safe presentation onto a newer source snapshot only
+// when the bytes and their absolute origin are identical. This keeps syntax
+// visible while the current parser projection is pending without making old
+// offsets describe different text.
+editor_window_carry_matching_presentation :: proc(
+	target: ^Editor_Window,
+	previous: ^Editor_Window,
+	allocator := context.allocator,
+) -> bool {
+	if target == nil || previous == nil || target.presentation_ready || !previous.presentation_ready ||
+	   target.document_id != previous.document_id || target.start_byte != previous.start_byte ||
+	   (target.document_instance_id != 0 && previous.document_instance_id != 0 &&
+	    target.document_instance_id != previous.document_instance_id) ||
+	   len(target.source) != len(previous.source) {
+		return false
+	}
+	for index in 0..<len(target.source) {
+		if target.source[index] != previous.source[index] { return false }
+	}
+	spans, spans_error := make([]bridge.Presentation_Record, len(previous.presentation_spans), allocator=allocator)
+	if spans_error != nil { return false }
+	if len(spans) > 0 {
+		mem.copy(rawptr(&spans[0]), rawptr(&previous.presentation_spans[0]), len(spans)*size_of(bridge.Presentation_Record))
+	}
+	blocks, blocks_error := make([]bridge.Presentation_Record, len(previous.presentation_blocks), allocator=allocator)
+	if blocks_error != nil {
+		delete(spans, allocator)
+		return false
+	}
+	if len(blocks) > 0 {
+		mem.copy(rawptr(&blocks[0]), rawptr(&previous.presentation_blocks[0]), len(blocks)*size_of(bridge.Presentation_Record))
+	}
+	if len(target.presentation_spans) > 0 { delete(target.presentation_spans, allocator) }
+	if len(target.presentation_blocks) > 0 { delete(target.presentation_blocks, allocator) }
+	target.presentation_revision = previous.presentation_revision
+	target.presentation_ready = true
+	target.presentation_stale = previous.presentation_stale || previous.presentation_revision != target.editor_revision
+	target.presentation_truncated = previous.presentation_truncated
+	target.presentation_spans = spans
+	target.presentation_blocks = blocks
+	return true
+}
+
 // editor_view_window resolves only an exact edit-authoritative window. It is
 // deliberately observational: asking whether the current source is editable
 // must not discard a stale snapshot that still carries the latest visible UI.

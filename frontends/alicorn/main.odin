@@ -811,6 +811,15 @@ application_install_view_visible_window :: proc(
 				return false, false
 			}
 		} else {
+			if !window.presentation_ready {
+				carried := false
+				if view.optimistic_window_ready {
+					carried = editor_window_carry_matching_presentation(&window, &view.optimistic_window)
+				}
+				if !carried && view.source_window_ready {
+					_ = editor_window_carry_matching_presentation(&window, &view.source_window)
+				}
+			}
 			if view.authoritative_revision != 0 && view.authoritative_revision != window.editor_revision {
 				editor_wrap_heights_reset(view, int(document.line_count), editor_text_scale_effective(app))
 			}
@@ -907,9 +916,21 @@ application_visible_window_wake :: proc(app: ^App, rt: ^alicorn.Runtime, lane: ^
 					}
 				} else if converted {
 					window.document_instance_id = active.instance_id
-						if view_index >= 0 && app.editor_views[view_index].optimistic_window_ready {
-							editor_window_destroy(&app.editor_views[view_index].optimistic_window)
-							app.editor_views[view_index].optimistic_window_ready = false
+						if view_index >= 0 {
+							view := &app.editor_views[view_index]
+							if !window.presentation_ready {
+								carried := false
+								if view.optimistic_window_ready {
+									carried = editor_window_carry_matching_presentation(&window, &view.optimistic_window)
+								}
+								if !carried && view.source_window_ready {
+									_ = editor_window_carry_matching_presentation(&window, &view.source_window)
+								}
+							}
+							if view.optimistic_window_ready {
+								editor_window_destroy(&view.optimistic_window)
+								view.optimistic_window_ready = false
+							}
 						}
 						advancing_long_line := app.editor_window_ready &&
 						                       app.editor_window.document_id == window.document_id &&
@@ -2038,6 +2059,11 @@ editor_text_key :: proc(
 	event: host.Application_Text_Key_Event,
 ) -> bool {
 	app := cast(^App)state
+	if app != nil && app.command_palette_open && owner != app.command_palette_component.query_node {
+		// The command palette takes ownership immediately, even before its field
+		// has been described and focused. Never let a key edit the underlying file.
+		return true
+	}
 	if app == nil || owner == 0 || !app.backend.started { return false }
 	pinned_owner := app.pinned.editing && owner == app.pinned.owner
 	if !pinned_owner && owner != app.editor_scroll_owner { return false }
@@ -3466,6 +3492,19 @@ editor_text_input :: proc(
 ) {
 	app := cast(^App)state
 	if app == nil { return }
+	if app.command_palette_open && owner != app.command_palette_component.query_node {
+		if event.kind == .Commit {
+			_ = command_palette_capture_initial_text(app, rt, event.text)
+		} else if event.kind == .Cancel {
+			if editor_preedit_cancel_for_owner(app, owner) {
+				sync_menu_states(app)
+				if rt != nil { sync_runtime_actions(app, rt) }
+			}
+		}
+		// Preedit and cancellation events from the old target must not leak into
+		// the document while the modal palette is taking focus.
+		return
+	}
 	defer pinned_edit_selection_sync(app)
 	if event.kind == .Cancel {
 		cleared := editor_preedit_cancel_for_owner(app, owner)

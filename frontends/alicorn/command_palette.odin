@@ -493,6 +493,20 @@ command_palette_scope_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, c
 	return true
 }
 
+// A shortcut can open the palette before its query field has been described
+// and focused. Text input delivered to the previously focused editor during
+// that frame belongs to the palette, not to the source document.
+command_palette_capture_initial_text :: proc(app: ^App, rt: ^alicorn.Runtime, text: string) -> bool {
+	if app == nil || rt == nil || !app.command_palette_open || !app.command_palette_component.initialized { return false }
+	if len(text) == 0 { return true }
+	query := alikit.query_text(&app.command_palette_component)
+	updated := fmt.tprintf("%s%s", query, text)
+	if !alikit.set_query(&app.command_palette_component, rt, updated) {
+		set_error(app, "The command palette could not retain the text you entered.")
+	}
+	return true
+}
+
 command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil || !app.command_palette_open || !app.command_palette_component.initialized { return }
 	allocator := alicorn.runtime_scratch_allocator(rt)
