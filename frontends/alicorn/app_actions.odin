@@ -580,53 +580,181 @@ action_id_for :: proc(name: string) -> host.Application_Command_ID {
 	return host.Application_Command_ID(hash)
 }
 
+Scratchpad_Global_Command :: enum {
+	File_Open,
+	Quick_Open,
+	Save,
+	Save_As,
+	Close_Document,
+	Undo,
+	Redo,
+	Cut,
+	Copy,
+	Paste,
+	Select_All,
+	Expand_Selection,
+	Delete_Line,
+	Go_To_Symbol,
+	Workspace_Address,
+	Workspace_Search,
+	Workspace_Refresh,
+	Go_To_Line,
+	Pin_Selection,
+	Markdown_Strong,
+	Markdown_Emphasis,
+	Semantic_More,
+	Semantic_Less,
+	Semantic_Full,
+	Editor_Zoom_In,
+	Editor_Zoom_Out,
+	Editor_Zoom_Reset,
+	Command_Palette,
+	Find,
+	Workspace_Rename,
+	Find_Next,
+	Find_Previous,
+	Next_Document,
+	Previous_Document,
+	Context_Menu,
+}
+
+Scratchpad_Global_Command_Binding :: struct {
+	command: Scratchpad_Global_Command,
+	action_id: string,
+	application_key: host.Application_Key,
+	has_application_key: bool,
+	shortcut: host.Application_Menu_Shortcut,
+	has_shortcut: bool,
+}
+
+// This table is the shared vocabulary for stable app-wide commands. Native
+// hosts translate physical shortcuts to Application_Key where appropriate;
+// menu-only shortcuts use the same typed command record for displayed command
+// IDs and accelerator metadata. Contextual/editor commands remain app policy.
+SCRATCHPAD_GLOBAL_COMMAND_BINDINGS :: [?]Scratchpad_Global_Command_Binding{
+	{.File_Open, ACTION_FILE_OPEN, {}, false, host.Application_Menu_Shortcut{'O', {.Primary}}, true},
+	{.Quick_Open, ACTION_FILE_QUICK_OPEN, {}, false, host.Application_Menu_Shortcut{'P', {.Primary}}, true},
+	{.Save, ACTION_FILE_SAVE, {}, false, host.Application_Menu_Shortcut{'S', {.Primary}}, true},
+	{.Save_As, ACTION_FILE_SAVE_AS, {}, false, host.Application_Menu_Shortcut{'S', {.Primary, .Shift}}, true},
+	{.Close_Document, ACTION_DOCUMENT_CLOSE, {}, false, host.Application_Menu_Shortcut{'W', {.Primary}}, true},
+	{.Undo, ACTION_EDIT_UNDO, {}, false, host.Application_Menu_Shortcut{'Z', {.Primary}}, true},
+	{.Redo, ACTION_EDIT_REDO, {}, false, host.Application_Menu_Shortcut{'Z', {.Primary, .Shift}}, true},
+	{.Cut, ACTION_EDIT_CUT, {}, false, host.Application_Menu_Shortcut{'X', {.Primary}}, true},
+	{.Copy, ACTION_EDIT_COPY, {}, false, host.Application_Menu_Shortcut{'C', {.Primary}}, true},
+	{.Paste, ACTION_EDIT_PASTE, {}, false, host.Application_Menu_Shortcut{'V', {.Primary}}, true},
+	{.Select_All, ACTION_EDIT_SELECT_ALL, {}, false, host.Application_Menu_Shortcut{'A', {.Primary}}, true},
+	{.Expand_Selection, ACTION_SELECTION_EXPAND, {}, false, host.Application_Menu_Shortcut{'E', {.Primary, .Alt}}, true},
+	{.Delete_Line, ACTION_EDIT_DELETE_LINE, {}, false, host.Application_Menu_Shortcut{'K', {.Primary, .Shift}}, true},
+	{.Go_To_Symbol, ACTION_WORKSPACE_GO_TO_SYMBOL, {}, false, host.Application_Menu_Shortcut{'O', {.Primary, .Shift}}, true},
+	{.Workspace_Address, ACTION_WORKSPACE_ADDRESS, {}, false, host.Application_Menu_Shortcut{'L', {.Primary}}, true},
+	{.Workspace_Search, ACTION_WORKSPACE_SEARCH_OPEN, .Workspace_Search, true, host.Application_Menu_Shortcut{'F', {.Primary, .Shift}}, true},
+	{.Workspace_Refresh, ACTION_WORKSPACE_REFRESH, {}, false, host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}, true},
+	{.Go_To_Line, ACTION_DOCUMENT_GO_TO_LINE, {}, false, host.Application_Menu_Shortcut{'G', {.Primary}}, true},
+	{.Pin_Selection, ACTION_PIN_SELECTION, {}, false, host.Application_Menu_Shortcut{'P', {.Primary, .Alt}}, true},
+	{.Markdown_Strong, ACTION_MARKDOWN_TOGGLE_STRONG, {}, false, host.Application_Menu_Shortcut{'B', {.Primary}}, true},
+	{.Markdown_Emphasis, ACTION_MARKDOWN_TOGGLE_EMPHASIS, {}, false, host.Application_Menu_Shortcut{'I', {.Primary}}, true},
+	{.Semantic_More, ACTION_SEMANTIC_MORE, {}, false, host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}, true},
+	{.Semantic_Less, ACTION_SEMANTIC_LESS, {}, false, host.Application_Menu_Shortcut{'-', {.Primary, .Alt}}, true},
+	{.Semantic_Full, ACTION_SEMANTIC_FULL, {}, false, host.Application_Menu_Shortcut{'0', {.Primary, .Alt}}, true},
+	{.Editor_Zoom_In, ACTION_VIEW_EDITOR_ZOOM_IN, .Zoom_In, true, host.Application_Menu_Shortcut{'+', {.Primary}}, true},
+	{.Editor_Zoom_Out, ACTION_VIEW_EDITOR_ZOOM_OUT, .Zoom_Out, true, host.Application_Menu_Shortcut{'-', {.Primary}}, true},
+	{.Editor_Zoom_Reset, ACTION_VIEW_EDITOR_ZOOM_RESET, .Zoom_Reset, true, host.Application_Menu_Shortcut{'0', {.Primary}}, true},
+	{.Command_Palette, ACTION_VIEW_COMMAND_PALETTE, .Open_Command_Palette, true, host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}, true},
+	{.Find, "", .Find, true, {}, false},
+	{.Workspace_Rename, "", .Workspace_Rename, true, {}, false},
+	{.Find_Next, "", .Find_Next, true, {}, false},
+	{.Find_Previous, "", .Find_Previous, true, {}, false},
+	{.Next_Document, ACTION_TAB_NEXT, .Tab_Next, true, {}, false},
+	{.Previous_Document, ACTION_TAB_PREVIOUS, .Tab_Previous, true, {}, false},
+	{.Context_Menu, "", .Context_Menu, true, {}, false},
+}
+
+scratchpad_global_binding :: proc(command: Scratchpad_Global_Command) -> (binding: Scratchpad_Global_Command_Binding, found: bool) {
+	for candidate in SCRATCHPAD_GLOBAL_COMMAND_BINDINGS {
+		if candidate.command == command { return candidate, true }
+	}
+	return
+}
+
+scratchpad_global_command_for_key :: proc(key: host.Application_Key) -> (command: Scratchpad_Global_Command, found: bool) {
+	for binding in SCRATCHPAD_GLOBAL_COMMAND_BINDINGS {
+		if binding.has_application_key && binding.application_key == key { return binding.command, true }
+	}
+	return
+}
+
+scratchpad_global_command_for_action :: proc(action_id: string) -> (command: Scratchpad_Global_Command, found: bool) {
+	for binding in SCRATCHPAD_GLOBAL_COMMAND_BINDINGS {
+		if binding.action_id != "" && binding.action_id == action_id { return binding.command, true }
+	}
+	return
+}
+
+scratchpad_global_command_id :: proc(command: Scratchpad_Global_Command) -> host.Application_Command_ID {
+	binding, found := scratchpad_global_binding(command)
+	if !found || binding.action_id == "" { return 0 }
+	return action_id_for(binding.action_id)
+}
+
+scratchpad_global_command_shortcut :: proc(command: Scratchpad_Global_Command) -> host.Application_Menu_Shortcut {
+	binding, found := scratchpad_global_binding(command)
+	if !found || !binding.has_shortcut { return {} }
+	return binding.shortcut
+}
+
+scratchpad_global_shortcut_for_action :: proc(action_id: string) -> host.Application_Menu_Shortcut {
+	command, found := scratchpad_global_command_for_action(action_id)
+	if !found { return {} }
+	return scratchpad_global_command_shortcut(command)
+}
+
 init_menus :: proc(app: ^App) {
 	if app.editor_text_scale <= 0 { app.editor_text_scale = 1 }
 	app.file_items = [7]host.Application_Menu_Item{
-		{kind=.Command, command=action_id_for(ACTION_FILE_OPEN), label="Open File…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'O', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_FILE_QUICK_OPEN), label="Quick Open…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary}}},
+		{kind=.Command, command=scratchpad_global_command_id(.File_Open), label="Open File…", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.File_Open)},
+		{kind=.Command, command=scratchpad_global_command_id(.Quick_Open), label="Quick Open…", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Quick_Open)},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_OPEN), label="Open Folder…", state=alicorn.Action_State{enabled=true}},
 		{kind=.Separator},
-		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE), label="Save", shortcut=host.Application_Menu_Shortcut{'S', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_FILE_SAVE_AS), label="Save As…", shortcut=host.Application_Menu_Shortcut{'S', {.Primary, .Shift}}},
-		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_CLOSE), label="Close Document", shortcut=host.Application_Menu_Shortcut{'W', {.Primary}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Save), label="Save", shortcut=scratchpad_global_command_shortcut(.Save)},
+		{kind=.Command, command=scratchpad_global_command_id(.Save_As), label="Save As…", shortcut=scratchpad_global_command_shortcut(.Save_As)},
+		{kind=.Command, command=scratchpad_global_command_id(.Close_Document), label="Close Document", shortcut=scratchpad_global_command_shortcut(.Close_Document)},
 	}
 	app.edit_items = [11]host.Application_Menu_Item{
-		{kind=.Command, command=action_id_for(ACTION_EDIT_UNDO), label="Undo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_EDIT_REDO), label="Redo", shortcut=host.Application_Menu_Shortcut{'Z', {.Primary, .Shift}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Undo), label="Undo", shortcut=scratchpad_global_command_shortcut(.Undo)},
+		{kind=.Command, command=scratchpad_global_command_id(.Redo), label="Redo", shortcut=scratchpad_global_command_shortcut(.Redo)},
 		{kind=.Separator},
-		{kind=.Command, command=action_id_for(ACTION_EDIT_CUT), label="Cut", shortcut=host.Application_Menu_Shortcut{'X', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_EDIT_COPY), label="Copy", shortcut=host.Application_Menu_Shortcut{'C', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_EDIT_PASTE), label="Paste", shortcut=host.Application_Menu_Shortcut{'V', {.Primary}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Cut), label="Cut", shortcut=scratchpad_global_command_shortcut(.Cut)},
+		{kind=.Command, command=scratchpad_global_command_id(.Copy), label="Copy", shortcut=scratchpad_global_command_shortcut(.Copy)},
+		{kind=.Command, command=scratchpad_global_command_id(.Paste), label="Paste", shortcut=scratchpad_global_command_shortcut(.Paste)},
 		{kind=.Separator},
-		{kind=.Command, command=action_id_for(ACTION_EDIT_SELECT_ALL), label="Select All", shortcut=host.Application_Menu_Shortcut{'A', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_SELECTION_EXPAND), label="Expand Selection", shortcut=host.Application_Menu_Shortcut{'E', {.Primary, .Alt}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Select_All), label="Select All", shortcut=scratchpad_global_command_shortcut(.Select_All)},
+		{kind=.Command, command=scratchpad_global_command_id(.Expand_Selection), label="Expand Selection", shortcut=scratchpad_global_command_shortcut(.Expand_Selection)},
 		{kind=.Separator},
-		{kind=.Command, command=action_id_for(ACTION_EDIT_DELETE_LINE), label="Delete Line", shortcut=host.Application_Menu_Shortcut{'K', {.Primary, .Shift}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Delete_Line), label="Delete Line", shortcut=scratchpad_global_command_shortcut(.Delete_Line)},
 	}
 	app.workspace_items = [10]host.Application_Menu_Item{
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FILE), label="New File"},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_NEW_FOLDER), label="New Folder"},
-		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_GO_TO_SYMBOL), label="Go to Symbol…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'O', {.Primary, .Shift}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Go_To_Symbol), label="Go to Symbol…", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Go_To_Symbol)},
 		{kind=.Separator},
-		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_ADDRESS), label="Go to Workspace…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'L', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SEARCH_OPEN), label="Search Workspace…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'F', {.Primary, .Shift}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Workspace_Address), label="Go to Workspace…", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Workspace_Address)},
+		{kind=.Command, command=scratchpad_global_command_id(.Workspace_Search), label="Search Workspace…", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Workspace_Search)},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_RECENT), label="Open Recent Workspace…", state=alicorn.Action_State{enabled=true}},
-		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_REFRESH), label="Refresh Workspace", shortcut=host.Application_Menu_Shortcut{'R', {.Primary, .Shift}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Workspace_Refresh), label="Refresh Workspace", shortcut=scratchpad_global_command_shortcut(.Workspace_Refresh)},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_WORKSPACE_SETTINGS), label="Settings…"},
 	}
 	app.document_items = [16]host.Application_Menu_Item{
-		{kind=.Command, command=action_id_for(ACTION_TAB_NEXT), label="Next Document"},
-		{kind=.Command, command=action_id_for(ACTION_TAB_PREVIOUS), label="Previous Document"},
+		{kind=.Command, command=scratchpad_global_command_id(.Next_Document), label="Next Document"},
+		{kind=.Command, command=scratchpad_global_command_id(.Previous_Document), label="Previous Document"},
 		{kind=.Separator},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_FORMAT), label="Format Table"},
-		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_GO_TO_LINE), label="Go to Line…", shortcut=host.Application_Menu_Shortcut{'G', {.Primary}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Go_To_Line), label="Go to Line…", shortcut=scratchpad_global_command_shortcut(.Go_To_Line)},
 		{kind=.Command, command=action_id_for(ACTION_DOCUMENT_TOGGLE_WRAP), label="Cycle Word Wrap"},
-		{kind=.Command, command=action_id_for(ACTION_PIN_SELECTION), label="Pin Selection", shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Alt}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Pin_Selection), label="Pin Selection", shortcut=scratchpad_global_command_shortcut(.Pin_Selection)},
 		{kind=.Separator},
-		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_STRONG), label="Strong", shortcut=host.Application_Menu_Shortcut{'B', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_EMPHASIS), label="Emphasis", shortcut=host.Application_Menu_Shortcut{'I', {.Primary}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Markdown_Strong), label="Strong", shortcut=scratchpad_global_command_shortcut(.Markdown_Strong)},
+		{kind=.Command, command=scratchpad_global_command_id(.Markdown_Emphasis), label="Emphasis", shortcut=scratchpad_global_command_shortcut(.Markdown_Emphasis)},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_TOGGLE_INLINE_CODE), label="Inline Code"},
 		{kind=.Command, command=action_id_for(ACTION_MARKDOWN_INSERT_TASK), label="Task Checkbox"},
 		{kind=.Separator},
@@ -635,14 +763,14 @@ init_menus :: proc(app: ^App) {
 		{kind=.Command, command=action_id_for(ACTION_EDITOR_UNFOLD_ALL), label="Unfold All"},
 	}
 	app.view_items = [16]host.Application_Menu_Item{
-		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_MORE), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}},
-		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_LESS), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary, .Alt}}},
-		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_FULL), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary, .Alt}}},
-		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_IN), label="Zoom In", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+' , {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_OUT), label="Zoom Out", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary}}},
-		{kind=.Command, command=action_id_for(ACTION_VIEW_EDITOR_ZOOM_RESET), label="Reset Zoom", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Semantic_More), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Semantic_More)},
+		{kind=.Command, command=scratchpad_global_command_id(.Semantic_Less), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Semantic_Less)},
+		{kind=.Command, command=scratchpad_global_command_id(.Semantic_Full), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Semantic_Full)},
+		{kind=.Command, command=scratchpad_global_command_id(.Editor_Zoom_In), label="Zoom In", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Editor_Zoom_In)},
+		{kind=.Command, command=scratchpad_global_command_id(.Editor_Zoom_Out), label="Zoom Out", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Editor_Zoom_Out)},
+		{kind=.Command, command=scratchpad_global_command_id(.Editor_Zoom_Reset), label="Reset Zoom", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Editor_Zoom_Reset)},
 		{kind=.Separator},
-		{kind=.Command, command=action_id_for(ACTION_VIEW_COMMAND_PALETTE), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'P', {.Primary, .Shift}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Command_Palette), label="Command Palette…", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Command_Palette)},
 		{kind=.Command, command=action_id_for(ACTION_PINNED_FOCUS), label="Focus Pinned References", state=alicorn.Action_State{enabled=true}},
 		{kind=.Command, command=action_id_for(ACTION_PINNED_TOGGLE), label="Toggle Pinned References", state=alicorn.Action_State{enabled=true}},
 		{kind=.Separator},

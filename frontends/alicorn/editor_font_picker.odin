@@ -54,6 +54,26 @@ editor_font_picker_selectable :: proc(catalog: []System_Font_Family, result_inde
 	return result_index >= 0 && result_index < len(catalog) && catalog[result_index].unsupported_reason == ""
 }
 
+Editor_Font_Roving_Context :: struct {
+	catalog: []System_Font_Family,
+	results: []int,
+}
+
+editor_font_picker_roving_enabled :: proc(data: rawptr, index: int) -> bool {
+	ctx := cast(^Editor_Font_Roving_Context)data
+	if ctx == nil || index < 0 || index >= len(ctx.results) { return false }
+	return editor_font_picker_selectable(ctx.catalog, ctx.results[index])
+}
+
+editor_font_picker_roving_view :: proc(data: ^Editor_Font_Roving_Context) -> alicorn.Roving_View {
+	if data == nil { return {} }
+	return alicorn.Roving_View{
+		count=len(data.results),
+		enabled=editor_font_picker_roving_enabled,
+		data=rawptr(data),
+	}
+}
+
 scratchpad_editor_font_picker_open :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil || app.editor_font_picker_open { return }
 	scratchpad_editor_font_catalog_ensure(app)
@@ -99,12 +119,19 @@ scratchpad_editor_font_picker_restore_focus_after_frame :: proc(app: ^App, rt: ^
 	}
 }
 
-scratchpad_editor_font_picker_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
+scratchpad_editor_font_picker_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change, invalidate := true) {
 	app := cast(^App)state
 	if app == nil || rt == nil || !app.editor_font_picker_open || change.node != app.editor_font_picker_query_node || !change.changed { return }
 	find_set_message(&app.editor_font_picker_query, change.text)
 	app.editor_font_picker_selected = 0
-	alicorn.invalidate_root(rt, "Scratchpad editor font picker query changed")
+	if invalidate { alicorn.invalidate_root(rt, "Scratchpad editor font picker query changed") }
+}
+
+scratchpad_editor_font_picker_scope_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) -> bool {
+	app := cast(^App)state
+	if app == nil || rt == nil || !app.editor_font_picker_open || change.node != app.editor_font_picker_query_node || !change.changed { return false }
+	scratchpad_editor_font_picker_text_change(state, rt, change, invalidate=false)
+	return true
 }
 
 scratchpad_editor_font_picker_choose :: proc(app: ^App, rt: ^alicorn.Runtime, catalog_index: int) -> bool {
@@ -126,14 +153,16 @@ scratchpad_editor_font_picker_move :: proc(app: ^App, rt: ^alicorn.Runtime, delt
 	results := editor_font_picker_filter(app.editor_font_catalog[:], app.editor_font_picker_query, context.temp_allocator)
 	defer delete(results)
 	if len(results) > 0 {
-		next := app.editor_font_picker_selected+delta
-		for next >= 0 && next < len(results) {
-			family := app.editor_font_catalog[results[next]]
-			if family.unsupported_reason == "" {
-				app.editor_font_picker_selected = next
-				break
+		roving_context := Editor_Font_Roving_Context{catalog=app.editor_font_catalog[:], results=results[:]
+		}
+		view := editor_font_picker_roving_view(&roving_context)
+		move := alicorn.Roving_Move.Down if delta > 0 else .Up
+		current := alicorn.roving_clamp(view, app.editor_font_picker_selected)
+		if current < 0 { current = alicorn.roving_first_enabled(view) }
+		if current >= 0 {
+			if proposed := alicorn.roving_propose(view, current, move); proposed >= 0 {
+				app.editor_font_picker_selected = proposed
 			}
-			next += delta
 		}
 		if app.editor_font_picker_results_owner != 0 {
 			_ = alicorn.virtual_list_ensure_visible(rt, app.editor_font_picker_results_owner, app.editor_font_picker_selected, "Scratchpad editor font picker selection visibility")
@@ -176,6 +205,20 @@ scratchpad_editor_font_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^ali
 		}
 	}
 	app.editor_font_picker_overlay_node = alicorn.modal_overlay_begin(ui, alicorn.key_string("scratchpad-editor-font-picker-overlay"), style=alicorn.layout_style(.Column, grow=1, padding=24, align=.Center, justify=.Center, clip=true), backdrop_color=scratchpad_modal_overlay_color(app, rt))
+	_ = gui.interaction_scope(ui, app.editor_font_picker_overlay_node, rawptr(app), gui.Interaction_Scope_Options{
+		keys={.Escape, .Return, .Up, .Down},
+		modal=true,
+		on_text_change=scratchpad_editor_font_picker_scope_text_change,
+	})
+	for {
+		event, found := gui.interaction_event_next(ui, app.editor_font_picker_overlay_node)
+		if !found { break }
+		if event.kind == .Key { _ = scratchpad_editor_font_picker_handle_key(app, rt, event.key) }
+	}
+	if !app.editor_font_picker_open {
+		alicorn.modal_overlay_end(ui)
+		return
+	}
 	viewport := alicorn.viewport_bounds(rt)
 	panel_sizing := gui.sizing(
 		width=gui.percent(1),

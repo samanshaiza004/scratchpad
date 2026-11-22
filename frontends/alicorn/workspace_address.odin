@@ -24,6 +24,20 @@ Workspace_Address_Row :: struct {
 	path: string,
 }
 
+Workspace_Address_Roving_Context :: struct {
+	rows: []Workspace_Address_Row,
+}
+
+workspace_address_roving_enabled :: proc(data: rawptr, index: int) -> bool {
+	ctx := cast(^Workspace_Address_Roving_Context)data
+	return ctx != nil && index >= 0 && index < len(ctx.rows) && workspace_address_row_selectable(ctx.rows[index])
+}
+
+workspace_address_roving_view :: proc(data: ^Workspace_Address_Roving_Context) -> alicorn.Roving_View {
+	if data == nil { return {} }
+	return alicorn.Roving_View{count=len(data.rows), enabled=workspace_address_roving_enabled, data=rawptr(data)}
+}
+
 workspace_address_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	if app == nil || rt == nil || !app.backend.started || app.shutdown_intent != .None ||
 	   app.close_document_id != "" || app.save_as_confirmation_open || app.workspace_mutation_kind != .None ||
@@ -69,6 +83,7 @@ workspace_address_close_surface :: proc(app: ^App, rt: ^alicorn.Runtime, restore
 	app.workspace_address_focus_pending = false
 	app.workspace_address_restore_pending = restore_focus
 	app.workspace_address_node = 0
+	app.workspace_address_results_owner = 0
 	app.workspace_address_selected_index = -1
 	workspace_address_confirmation_clear(app)
 	bridge.workspace_browse_lane_cancel(&app.workspace_browse_lane)
@@ -97,12 +112,12 @@ workspace_address_restore_focus_after_frame :: proc(app: ^App, rt: ^alicorn.Runt
 	if app.tree_scroll_owner != 0 { _ = alicorn.focus(rt, app.tree_scroll_owner) }
 }
 
-workspace_address_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
+workspace_address_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change, invalidate := true) {
 	app := cast(^App)state
 	if app == nil || rt == nil || !app.workspace_address_open || change.node != app.workspace_address_node || !change.changed { return }
 	if len(change.text) > 32768 {
 		find_set_message(&app.workspace_address_error, "Workspace paths are limited to 32 KiB.")
-		alicorn.invalidate_root(rt, "Scratchpad rejected an oversized workspace path")
+		if invalidate { alicorn.invalidate_root(rt, "Scratchpad rejected an oversized workspace path") }
 		return
 	}
 	find_set_message(&app.workspace_address_query, change.text)
@@ -111,7 +126,14 @@ workspace_address_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, chang
 	app.workspace_address_confirm_open = false
 	workspace_address_browse_clear(app)
 	workspace_address_request_browse(app)
-	alicorn.invalidate_root(rt, "Scratchpad workspace address query changed")
+	if invalidate { alicorn.invalidate_root(rt, "Scratchpad workspace address query changed") }
+}
+
+workspace_address_scope_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) -> bool {
+	app := cast(^App)state
+	if app == nil || rt == nil || !app.workspace_address_open || change.node != app.workspace_address_node || !change.changed { return false }
+	workspace_address_text_change(state, rt, change, invalidate=false)
+	return true
 }
 
 workspace_address_request_browse :: proc(app: ^App) {
@@ -189,6 +211,7 @@ workspace_address_rows :: proc(app: ^App, allocator := context.temp_allocator) -
 workspace_address_suggestions_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil { return }
 	alicorn.container_begin(ui, .Container, label="workspace-address-suggestions", style=alicorn.layout_style(.Column, grow=1, gap=6, padding=4, clip=true))
+	app.workspace_address_results_owner = 0
 	if app.workspace_address_confirm_open {
 		gui.text(ui, fmt.tprintf("Switch to %s? This will remove the current pinned references.", app.workspace_address_confirm_path))
 		if gui.row(ui, label="workspace-address-confirm-actions", height=36, gap=8) {
@@ -229,6 +252,7 @@ workspace_address_suggestions_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^ali
 				style=alicorn.layout_style(.Column, grow=1, clip=true),
 				label="Workspace folders and recent workspaces",
 			)
+			app.workspace_address_results_owner = list.scroll.id
 			for index := list.first; index < list.last; index += 1 {
 				row := rows[index]
 				if row.kind == .Heading {
@@ -344,13 +368,25 @@ workspace_address_move_selection :: proc(app: ^App, delta: int, rt: ^alicorn.Run
 	rows := workspace_address_rows(app, context.temp_allocator)
 	defer delete(rows)
 	if len(rows) == 0 { return true }
-	start := app.workspace_address_selected_index
-	if start < 0 { start = -1 if delta > 0 else len(rows) }
-	for index := start+delta; index >= 0 && index < len(rows); index += delta {
-		if !workspace_address_row_selectable(rows[index]) { continue }
-		app.workspace_address_selected_index = index
-		if rt != nil { alicorn.invalidate_root(rt, "Scratchpad moved workspace address suggestion selection") }
-		return true
+	ctx := Workspace_Address_Roving_Context{rows=rows[:]}
+	view := workspace_address_roving_view(&ctx)
+	current := app.workspace_address_selected_index
+	if current < 0 {
+		current = 0 if delta > 0 else len(rows)-1
+		move := alicorn.Roving_Move.Home if delta > 0 else .End
+		app.workspace_address_selected_index = alicorn.roving_propose(view, current, move)
+	} else {
+		move := alicorn.Roving_Move.Down if delta > 0 else .Up
+		if proposed := alicorn.roving_propose(view, current, move); proposed >= 0 {
+			app.workspace_address_selected_index = proposed
+		}
+	}
+	if app.workspace_address_selected_index >= 0 && rt != nil {
+		if app.workspace_address_results_owner != 0 {
+			_ = alicorn.virtual_list_ensure_visible(rt, app.workspace_address_results_owner, app.workspace_address_selected_index,
+				"Scratchpad workspace address selection visibility")
+		}
+		alicorn.invalidate_root(rt, "Scratchpad moved workspace address suggestion selection")
 	}
 	return true
 }

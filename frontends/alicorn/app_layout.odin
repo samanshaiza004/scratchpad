@@ -22,6 +22,18 @@ build_app :: proc(
 		fmt.eprintln("Scratchpad's workbench model must be initialized before building the active application.")
 		return 0
 	}
+	scratchpad_frame_prepare(app, rt)
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build { return 0 }
+	previous_ui_description_runtime := scratchpad_frame_adopt(app, rt)
+	root := scratchpad_frame_describe(app, rt, &ui, logical_width, logical_height, dpi_scale)
+	alicorn.end_frame(&ui)
+	scratchpad_frame_after(app, rt, previous_ui_description_runtime)
+	return root
+}
+
+// Prepare performs application-owned work that must precede begin_frame.
+scratchpad_frame_prepare :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	scratchpad_editor_font_apply_pending(app, rt)
 	scratchpad_application_assets_release_retired(app, rt)
 	scratchpad_image_preview_sync(app, rt)
@@ -30,8 +42,12 @@ build_app :: proc(
 	app_workbench_view_scroll_capture_hidden(app, rt)
 	pinned_refresh(app,rt)
 	pinned_appearance_fixture_prepare(app,rt)
-	ui, should_build := alicorn.begin_frame(rt)
-	if !should_build { return 0 }
+}
+
+// Adopt reconciles retained text and asynchronous/application state before the
+// immutable UI description starts. The returned runtime restores any enclosing
+// floating-window description context after layout has completed.
+scratchpad_frame_adopt :: proc(app: ^App, rt: ^alicorn.Runtime) -> ^alicorn.Runtime {
 	previous_ui_description_runtime := app.ui_description_runtime
 	app.ui_description_runtime = rt
 	find_text_history_initialize(&app.find_replace_edit_history, app.find_replace_text)
@@ -95,6 +111,19 @@ build_app :: proc(
 		pinned_sync_menu_states(app,rt)
 	}
 
+	return previous_ui_description_runtime
+}
+
+// Describe declares the retained tree. Mutations requiring backend commands or
+// post-layout geometry stay in application callbacks and the after stage.
+scratchpad_frame_describe :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	ui_ptr: ^alicorn.UI,
+	logical_width, logical_height: int,
+	dpi_scale: f32,
+) -> alicorn.Node_ID {
+	ui := ui_ptr^
 	root_gap := f32(8)
 	when ODIN_OS == .Darwin || ODIN_OS == .Windows { root_gap = 0 }
 	root := alicorn.container_begin(
@@ -161,7 +190,7 @@ build_app :: proc(
 		app.workspace_sidebar_width = workspace_split.position
 		alicorn.split_first_begin(&ui, workspace_split)
 		when ODIN_OS == .Darwin || ODIN_OS == .Windows {
-			scratchpad_sidebar_titlebar_build(app, &ui)
+			scratchpad_sidebar_titlebar_build(app, &ui, rt)
 			app.workspace_search_edit_node = 0
 		}
 		alicorn.surface_begin(&ui, alicorn.surface_core_color_role(.Surface), label="files-sidebar", style=alicorn.layout_style(.Column, grow=1, padding=8, gap=6, clip=true), material=scratchpad_structural_material(app), physical_height=scratchpad_optical_height(.Recessed))
@@ -169,6 +198,7 @@ build_app :: proc(
 			_ = scratchpad_workspace_panel_tabs_build(app, &ui,
 				style=alicorn.layout_style(.Row, height=30, gap=4),
 				button_height=28,
+				rt=rt,
 			)
 			app.workspace_search_edit_node = 0
 		}
@@ -422,11 +452,16 @@ build_app :: proc(
 		command_palette_build(app, &ui, rt)
 	}
 	alicorn.style_environment_pop(&ui, workbench_style_scope)
+	ui_ptr^ = ui
+	return root
+}
 
-	alicorn.end_frame(&ui)
+// After runs only once end_frame has reconciled and laid out the described tree.
+scratchpad_frame_after :: proc(app: ^App, rt: ^alicorn.Runtime, previous_ui_description_runtime: ^alicorn.Runtime) {
 	app_workbench_view_close_pending_apply(app, rt)
 	app_workbench_view_scroll_restore_after_frame(app, rt)
 	app_workbench_view_focus_after_frame(app, rt)
+	settings_surface_intrinsic_after_frame(app, rt)
 	git_history_finalize_geometry(app, rt)
 	if app.editor_row_trace.path != "" && app.editor_window_ready && len(app.editor_row_targets) > 0 {
 		editor_row_trace_capture(
@@ -508,7 +543,6 @@ build_app :: proc(
 	if app.smoke && app.backend.started && app.backend.state.revision > 0 { app.smoke_rendered = true }
 	session_ui_after_frame(app, rt)
 	scratchpad_application_assets_build_completed(app)
-	return root
 }
 
 build_startup_notice :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
@@ -570,6 +604,7 @@ scratchpad_workspace_panel_tabs_build :: proc(
 	style: alicorn.Layout_Style,
 	button_height: f32,
 	register_chrome_regions := false,
+	rt: ^alicorn.Runtime = nil,
 ) -> Workspace_Panel_Tabs_Nodes {
 	result := Workspace_Panel_Tabs_Nodes{}
 	if app == nil || ui == nil { return result }
@@ -631,6 +666,17 @@ scratchpad_workspace_panel_tabs_build :: proc(
 		workspace_search_open_surface(app, app.ui_description_runtime)
 	}
 	alicorn.container_end(ui)
+	if app.workspace_address_open && result.workspace_path != 0 && rt != nil {
+		_ = gui.interaction_scope(ui, result.workspace_path, rawptr(app), gui.Interaction_Scope_Options{
+			keys={.Escape, .Up, .Down},
+			on_text_change=workspace_address_scope_text_change,
+		})
+		for {
+			event, found := gui.interaction_event_next(ui, result.workspace_path)
+			if !found { break }
+			if event.kind == .Key { _ = workspace_address_handle_key(app, rt, event.key) }
+		}
+	}
 	return result
 }
 
@@ -671,8 +717,8 @@ workspace_projection_select :: proc(app: ^App, rt: ^alicorn.Runtime, kind: strin
 	if changed { alicorn.invalidate_root(rt, "Scratchpad structural projection selected") }
 }
 
-scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
-	if app == nil || ui == nil || app.window_chrome_metrics.header.h <= 0 { return }
+scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
+	if app == nil || ui == nil || rt == nil || app.window_chrome_metrics.header.h <= 0 { return }
 	metrics := app.window_chrome_metrics
 	header := alicorn.container_begin(ui, .Container,
 		label="scratchpad-titlebar-sidebar-band",
@@ -703,6 +749,7 @@ scratchpad_sidebar_titlebar_build :: proc(app: ^App, ui: ^alicorn.UI) {
 		style=alicorn.layout_style(.Row, grow=1, height=32, gap=2, align=.Center, clip=true),
 		button_height=30,
 		register_chrome_regions=true,
+		rt=rt,
 	)
 	_ = tabs
 	drag_space := alicorn.container_begin(ui, .Container,

@@ -1200,7 +1200,7 @@ scratchpad_test_sidebar_titlebar_frame :: proc(app: ^App, rt: ^alicorn.Runtime) 
 	pane := alicorn.container_begin(&ui, .Container, label="sidebar-titlebar-focus-fixture-pane",
 		key=alicorn.key_string("sidebar-titlebar-focus-fixture-pane"),
 		style=alicorn.layout_style(.Column, width=app.workspace_sidebar_width, grow=1))
-	scratchpad_sidebar_titlebar_build(app, &ui)
+	scratchpad_sidebar_titlebar_build(app, &ui, rt)
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
 	_ = root

@@ -1,6 +1,6 @@
 # Alicorn frontend modernization audit
 
-Reviewed against Scratchpad `main` at `ef1f1bfd` and
+Reviewed against Scratchpad `main` at `05d1fd8` and
 [Carnival-Science/Alicorn `master`](https://github.com/Carnival-Science/Alicorn)
 at `3d49b8bd` on 2026-11-22. Scratchpad's lockfile now names that canonical
 repository while retaining the same exact latest commit. This is a source-level
@@ -51,6 +51,35 @@ The scope is incremental: the application key callback remains the modal
 fallback and continues to own command precedence and IME-sensitive behavior.
 The cache is cleared before its borrowed path strings are released.
 
+## Follow-up implementation — 2026-11-22
+
+The next modernization slice builds on Quick Open without moving application
+policy into Alicorn:
+
+- Symbol, workspace-address, and editor-font pickers now use Alicorn's public
+  interaction scopes for local text and navigation input. Their selection
+  movement uses `Roving_View`, including the font picker's disabled-family
+  policy. Enter for symbol and workspace selection remains on the application
+  key path because those actions may synchronously request or change backend
+  state; font selection and command-palette execution retain their safe
+  deferred paths.
+- Stable global command IDs, menu accelerators, and host key mappings now use
+  one typed `Scratchpad_Global_Command_Binding` table. Modal precedence,
+  contextual commands, and editor transaction meaning remain in Scratchpad.
+- `build_app` now names its prepare, adopt, describe, and after-frame phases.
+  Their order and existing scheduling are preserved; editor/source adoption
+  and post-layout caret, focus, scroll, and deferred work remain
+  application-owned.
+- Settings describes its selected page once. Rows and previews use intrinsic
+  sizing; a post-layout form measurement updates the scroll region's extent
+  for the next frame, preserving wrapped content without separate text
+  measurement and duplicate description.
+
+The macOS frontend build compiled and linked after these changes. No test suite
+was run in this pass, and the interaction and Settings layout still need
+native visual/accessibility acceptance at narrow widths and increased text
+scales.
+
 ## Audit of `codex/scratchpad-audit-unused-code`
 
 The local branch is 62 commits behind refreshed `main`. Its committed unused
@@ -71,24 +100,18 @@ editor-row trace is retained only as opt-in diagnostic code already present on
 `main`; it is not a pattern for normal application components or a stable API
 contract.
 
-## Recommended next slices
+## Remaining modernization work
 
-1. Migrate symbol-picker navigation and text changes to a retained interaction
-   scope and `Roving_View`; keep source navigation and page requests in
-   `projection_sidebar_navigate` and the existing application service.
-2. Give workspace-address and font-picker controls their own scoped input
-   ownership. Preserve workspace validation/confirmation and disabled-font
-   behavior in their existing application code.
-3. Introduce a typed command-binding table for stable global shortcuts only
-   after command IDs, menu accelerators, text-field precedence, and IME policy
-   have one documented source. Keep dynamic context commands and editor
-   transactions application-owned.
-4. Split `build_app` into named prepare/adopt, describe, and after-frame stages
-   without changing ordering. Verify caret, scroll anchors, source-window
-   revisions, and deferred operations before considering any scheduling change.
-5. Revisit Settings' two-pass content sizing with large text, narrow windows,
-   and long labels as acceptance cases. Retain the current layout if Alicorn's
-   intrinsic sizing cannot express the same scroll extent reliably.
+The picker, command-binding, frame-stage, and Settings intrinsic-sizing slices
+above are implemented. The remaining work is validation and profiling:
+
+1. Exercise picker key and text routing, including IME composition, disabled
+   fonts, workspace confirmation, focus restoration, and symbol activation.
+2. Verify Settings wrapping and scroll reachability with narrow windows,
+   long labels, and increased text scale.
+3. Profile the cached Quick Open projection and the frontend before and after
+   modernization. Do not remove invalidations by count alone; measure which
+   ones trigger meaningful layout, shaping, or paint work.
 
 These are migration slices, not a request for a new frontend framework. Each
 should keep its existing Go/backend authority and be adopted only where

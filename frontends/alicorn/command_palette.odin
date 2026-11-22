@@ -301,6 +301,10 @@ command_palette_collect_results :: proc(app: ^App, allocator: mem.Allocator) -> 
 		if !action.visible { continue }
 		shortcut := ""
 		if len(action.bindings) > 0 { shortcut = action.bindings[0] }
+		global_shortcut := scratchpad_global_shortcut_for_action(action.id)
+		if global_shortcut.key != 0 {
+			shortcut = command_palette_menu_binding(global_shortcut)
+		}
 		command_palette_add_or_enrich(&results, action.id, action.title, action.category, shortcut, action.enabled)
 	}
 	for menu in app.menus {
@@ -463,7 +467,7 @@ command_palette_execute :: proc(app: ^App, rt: ^alicorn.Runtime, result: Command
 	return true
 }
 
-command_palette_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
+command_palette_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key, from_build := false) -> bool {
 	if app == nil || rt == nil || !app.command_palette_open || !app.command_palette_component.initialized { return false }
 	results, filtered, items := command_palette_prepare_items(app, context.temp_allocator)
 	defer delete(results)
@@ -474,21 +478,19 @@ command_palette_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Ap
 	app.command_palette_previous_focus = app.command_palette_component.previous_focus
 	if event.kind == .Activated {
 		if result, found := command_palette_find_result(filtered[:], event.item_id); found {
-			_ = command_palette_execute(app, rt, result)
+			_ = command_palette_execute(app, rt, result, from_build)
 		}
 	}
 	return handled
 }
 
-command_palette_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
-	scratchpad_editor_font_picker_text_change(state, rt, change)
-	quick_open_text_change(state, rt, change)
-	symbol_picker_text_change(state, rt, change)
-	workspace_address_text_change(state, rt, change)
+command_palette_scope_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) -> bool {
 	app := cast(^App)state
-	if app == nil || rt == nil || !app.command_palette_component.initialized { return }
-	_ = alikit.text_change(&app.command_palette_component, rt, change)
+	if app == nil || rt == nil || !app.command_palette_open || !app.command_palette_component.initialized { return false }
+	handled := alikit.text_change(&app.command_palette_component, rt, change)
 	app.command_palette_open = app.command_palette_component.open
+	if !handled { return false }
+	return true
 }
 
 command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
@@ -533,6 +535,20 @@ command_palette_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) 
 	app.command_palette_overlay_node = app.command_palette_component.overlay_node
 	app.command_palette_panel_node = app.command_palette_component.panel_node
 	app.command_palette_results_scroll_node = app.command_palette_component.results_node
+	if app.command_palette_panel_node != 0 {
+		_ = gui.interaction_scope(ui, app.command_palette_panel_node, rawptr(app), gui.Interaction_Scope_Options{
+			keys={.Escape, .Return, .Up, .Down},
+			modal=true,
+			on_text_change=command_palette_scope_text_change,
+		})
+		for {
+			scoped_event, found := gui.interaction_event_next(ui, app.command_palette_panel_node)
+			if !found { break }
+			if scoped_event.kind == .Key {
+				_ = command_palette_handle_key(app, rt, scoped_event.key, from_build=true)
+			}
+		}
+	}
 	if event.kind == .Activated {
 		if result, found := command_palette_find_result(filtered[:], event.item_id); found {
 			_ = command_palette_execute(app, rt, result, true)

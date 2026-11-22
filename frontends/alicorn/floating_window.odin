@@ -398,12 +398,12 @@ floating_window_open :: proc(app: ^App, rt: ^alicorn.Runtime, document_id: strin
 	state.return_to_tabs = true
 	state.was_primary_active = app.backend.state.active == state.document_id
 	state.semantic_zoom_items = {
-		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_MORE), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'+', {.Primary, .Alt}}},
-		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_LESS), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'-', {.Primary, .Alt}}},
-		{kind=.Command, command=action_id_for(ACTION_SEMANTIC_FULL), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{'0', {.Primary, .Alt}}},
+		{kind=.Command, command=scratchpad_global_command_id(.Semantic_More), label="More Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Semantic_More)},
+		{kind=.Command, command=scratchpad_global_command_id(.Semantic_Less), label="Less Semantic Detail", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Semantic_Less)},
+		{kind=.Command, command=scratchpad_global_command_id(.Semantic_Full), label="Full Source", state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Semantic_Full)},
 	}
 	state.caption_actions = {
-		{label="Save", command=action_id_for(ACTION_FILE_SAVE), state=alicorn.Action_State{enabled=true}, shortcut=host.Application_Menu_Shortcut{key='s',modifiers={.Primary}}},
+		{label="Save", command=scratchpad_global_command_id(.Save), state=alicorn.Action_State{enabled=true}, shortcut=scratchpad_global_command_shortcut(.Save)},
 		{label="On top", command=action_id_for("floating.on-top"), state=alicorn.Action_State{enabled=true}},
 		{label="Return to tabs", command=action_id_for("floating.return"), state=alicorn.Action_State{enabled=true}},
 		{label="Detail", items=state.semantic_zoom_items[:]},

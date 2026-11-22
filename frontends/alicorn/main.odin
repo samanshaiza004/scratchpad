@@ -314,10 +314,13 @@ App :: struct {
 	show_ignored_files:     bool,
 	settings_surface_open:  bool,
 	settings_category: Settings_Category,
+	settings_form_node: alicorn.Node_ID,
+	settings_form_content_height: f32,
 	recent_workspaces_open: bool,
 	workspace_address_open: bool,
 	workspace_address_query: string,
 	workspace_address_node: alicorn.Node_ID,
+	workspace_address_results_owner: alicorn.Node_ID,
 	workspace_address_previous_focus: alicorn.Node_ID,
 	workspace_address_focus_pending: bool,
 	workspace_address_restore_pending: bool,
@@ -1397,44 +1400,43 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		return true
 	}
 	if pinned_key(app,rt,key) { return true }
-	if key == .Tab_Next {
-		navigate_tab(app, rt, 1)
-		return true
-	}
-	if key == .Tab_Previous {
-		navigate_tab(app, rt, -1)
-		return true
-	}
-	if key == .Zoom_In || key == .Zoom_Out || key == .Zoom_Reset {
-		if image_preview_handle_zoom_key(app, rt, key) { return true }
-	}
-	if key == .Zoom_In { return editor_text_zoom_step(app, rt, 1) }
-	if key == .Zoom_Out { return editor_text_zoom_step(app, rt, -1) }
-	if key == .Zoom_Reset { return editor_text_zoom_set(app, rt, 1) }
-	if key == .Open_Command_Palette {
-		command_palette_open_surface(app, rt)
-		return true
-	}
-	if key == .Context_Menu {
-		if app.workspace_search_mode && workspace_search_context_menu_open_selected(app, rt) { return true }
-		return workspace_context_menu_open_focused(app, rt)
-	}
-	if key == .Workspace_Rename {
-		if app.tree_scroll_owner != 0 && alicorn.focused_node(rt) == app.tree_scroll_owner && app.tree_focused_path != "" {
-			workspace_mutation_open_selected(app, rt, .Rename)
+	if global_command, found := scratchpad_global_command_for_key(key); found {
+		#partial switch global_command {
+		case .Next_Document:
+			navigate_tab(app, rt, 1)
 			return true
+		case .Previous_Document:
+			navigate_tab(app, rt, -1)
+			return true
+		case .Editor_Zoom_In, .Editor_Zoom_Out, .Editor_Zoom_Reset:
+			if image_preview_handle_zoom_key(app, rt, key) { return true }
+			if global_command == .Editor_Zoom_In { return editor_text_zoom_step(app, rt, 1) }
+			if global_command == .Editor_Zoom_Out { return editor_text_zoom_step(app, rt, -1) }
+			return editor_text_zoom_set(app, rt, 1)
+		case .Command_Palette:
+			command_palette_open_surface(app, rt)
+			return true
+		case .Context_Menu:
+			if app.workspace_search_mode && workspace_search_context_menu_open_selected(app, rt) { return true }
+			return workspace_context_menu_open_focused(app, rt)
+		case .Workspace_Rename:
+			if app.tree_scroll_owner != 0 && alicorn.focused_node(rt) == app.tree_scroll_owner && app.tree_focused_path != "" {
+				workspace_mutation_open_selected(app, rt, .Rename)
+				return true
+			}
+			return false
+		case .Find:
+			if document, found := find_document(&app.backend.state, app.backend.state.active); found && (document.view_kind == "image" || document.view_kind == "unsupported") { return true }
+			find_open_surface(app)
+			alicorn.invalidate_root(rt, "Scratchpad Find opened")
+			return true
+		case .Workspace_Search:
+			workspace_search_open_surface(app, rt)
+			return true
+		case:
+			// Find navigation deliberately stays below workspace-search and Git
+			// history routing so the active result list keeps precedence.
 		}
-		return false
-	}
-	if key == .Find {
-		if document, found := find_document(&app.backend.state, app.backend.state.active); found && (document.view_kind == "image" || document.view_kind == "unsupported") { return true }
-		find_open_surface(app)
-		alicorn.invalidate_root(rt, "Scratchpad Find opened")
-		return true
-	}
-	if key == .Workspace_Search {
-		workspace_search_open_surface(app, rt)
-		return true
 	}
 	if key == .Escape && app.workspace_search_edit_active &&
 	   alicorn.focused_node(rt) == app.workspace_search_edit_node {
@@ -1454,10 +1456,10 @@ application_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicati
 		}
 	}
 	if git_history_handle_key(app, rt, key) { return true }
-	if key == .Find_Next {
+	if global_command, found := scratchpad_global_command_for_key(key); found && global_command == .Find_Next {
 		return find_move_match(app, rt, 1)
 	}
-	if key == .Find_Previous {
+	if global_command, found := scratchpad_global_command_for_key(key); found && global_command == .Find_Previous {
 		return find_move_match(app, rt, -1)
 	}
 	if key == .Escape && app.find_open {
@@ -4540,7 +4542,6 @@ main :: proc() {
 		on_drag=application_drag,
 		on_text_key=editor_text_key,
 		on_text_input=editor_text_input,
-		on_text_change=command_palette_text_change,
 		on_services=application_services,
 		on_start=application_start,
 		on_close_requested=application_close_requested,

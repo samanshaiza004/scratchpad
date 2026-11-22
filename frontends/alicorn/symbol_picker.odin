@@ -94,7 +94,13 @@ symbol_picker_move_selection :: proc(app: ^App, rt: ^alicorn.Runtime, direction:
 	filtered := symbol_picker_filter_indices(app, context.temp_allocator)
 	defer delete(filtered)
 	if len(filtered) == 0 { return }
-	app.symbol_picker_selected_index = clamp(app.symbol_picker_selected_index+direction, 0, len(filtered)-1)
+	view := alicorn.Roving_View{count=len(filtered)}
+	move := alicorn.Roving_Move.Down if direction > 0 else .Up
+	current := alicorn.roving_clamp(view, app.symbol_picker_selected_index)
+	if current < 0 { current = 0 if direction > 0 else len(filtered)-1 }
+	if proposed := alicorn.roving_propose(view, current, move); proposed >= 0 {
+		app.symbol_picker_selected_index = proposed
+	}
 	if app.symbol_picker_results_owner != 0 {
 		_ = alicorn.virtual_list_ensure_visible(rt, app.symbol_picker_results_owner,
 			app.symbol_picker_selected_index, "Scratchpad Go to Symbol selection visibility")
@@ -127,6 +133,23 @@ symbol_picker_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		fill=scratchpad_modal_panel_fill(app, rt),
 		backdrop_effect=scratchpad_modal_backdrop_effect(app, rt),
 	)
+	_ = gui.interaction_scope(ui, app.symbol_picker_panel_node, rawptr(app), gui.Interaction_Scope_Options{
+		// Return remains on the application-key path because selecting a symbol
+		// can synchronously request its source location from the backend.
+		keys={.Escape, .Up, .Down, .Page_Up, .Page_Down},
+		modal=true,
+		on_text_change=symbol_picker_scope_text_change,
+	})
+	for {
+		event, found := gui.interaction_event_next(ui, app.symbol_picker_panel_node)
+		if !found { break }
+		if event.kind == .Key { _ = symbol_picker_handle_key(app, rt, event.key) }
+	}
+	if !app.symbol_picker_open {
+		alicorn.surface_end(ui)
+		alicorn.modal_overlay_end(ui)
+		return
+	}
 	gui.text(ui, "Go to Symbol", style=alicorn.layout_style(.Row, height=24),
 		text_style=alicorn.Text_Style{font_size=17, font_weight=alicorn.FONT_WEIGHT_MEDIUM})
 	app.symbol_picker_query_node = alicorn.text_field(ui, app.symbol_picker_query,
@@ -292,7 +315,7 @@ symbol_picker_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Po
 	return true
 }
 
-symbol_picker_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
+symbol_picker_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change, invalidate := true) {
 	app := cast(^App)state
 	if app == nil || rt == nil || !app.symbol_picker_open || change.node != app.symbol_picker_query_node || !change.changed { return }
 	find_set_message(&app.symbol_picker_query, change.text)
@@ -301,5 +324,12 @@ symbol_picker_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: a
 		_ = alicorn.virtual_list_ensure_visible(rt, app.symbol_picker_results_owner, 0,
 			"Scratchpad Go to Symbol query reset visibility")
 	}
-	alicorn.invalidate_root(rt, "Scratchpad Go to Symbol query changed")
+	if invalidate { alicorn.invalidate_root(rt, "Scratchpad Go to Symbol query changed") }
+}
+
+symbol_picker_scope_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) -> bool {
+	app := cast(^App)state
+	if app == nil || rt == nil || !app.symbol_picker_open || change.node != app.symbol_picker_query_node || !change.changed { return false }
+	symbol_picker_text_change(state, rt, change, invalidate=false)
+	return true
 }
