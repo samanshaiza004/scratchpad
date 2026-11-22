@@ -49,7 +49,7 @@ func TestSafePackageOutputIsConfinedToOut(t *testing.T) {
 
 func TestReadSDLSourceVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "SDL_version.h")
-	header := "#define SDL_MAJOR_VERSION 3\n#define SDL_MINOR_VERSION 4\n#define SDL_MICRO_VERSION 18\n"
+	header := "#define SDL_MAJOR_VERSION 3\n#define SDL_MINOR_VERSION 4\n#define SDL_MICRO_VERSION 20\n"
 	if err := os.WriteFile(path, []byte(header), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -213,6 +213,9 @@ editor_row_trace_paint_command :: proc(hash: u64, command: alicorn.Paint_Command
 	case alicorn.Geometry_Paint:
 		result = editor_wrap_fingerprint_mix(result, u64(payload.geometry.resource))
 		result = editor_wrap_fingerprint_mix(result, payload.geometry.generation)
+	case alicorn.Lighting_Group_Paint:
+		result = editor_wrap_fingerprint_mix(result, u64(payload.group))
+		result = editor_wrap_fingerprint_mix(result, payload.generation)
 	}
 	return result
 }

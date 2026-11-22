@@ -119,6 +119,7 @@ ui_dogfood_scene_payload_name :: proc(paint_payload: alicorn.Paint_Payload) -> s
 	case alicorn.Image_Paint: return "image"
 	case alicorn.Text_Paint: return "text"
 	case alicorn.Geometry_Paint: return "geometry"
+	case alicorn.Lighting_Group_Paint: return "lighting"
 	}
 	return "unknown"
 }
@@ -156,6 +157,8 @@ ui_dogfood_scene_append_paint :: proc(
 		}
 	case alicorn.Geometry_Paint:
 		fmt.sbprintf(sb, "geometry_resource=present\n")
+	case alicorn.Lighting_Group_Paint:
+		fmt.sbprintf(sb, "lighting_group=%d generation=%d\n", u32(payload.group), payload.generation)
 	}
 }
 
