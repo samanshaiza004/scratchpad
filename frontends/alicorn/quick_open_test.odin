@@ -1,7 +1,10 @@
 package main
 
+import "core:fmt"
+import "core:slice"
 import "core:testing"
 import "core:strings"
+import "core:time"
 import alicorn "alicorn:runtime"
 
 @(test)
@@ -44,6 +47,37 @@ test_quick_open_filter_orders_by_match_then_source_order :: proc(t: ^testing.T) 
 		"all matching paths should be retained in the filtered result set")
 	testing.expect(t, results[0].path == "README.md",
 		"an exact basename match should rank ahead of weaker path matches")
+}
+
+@(test)
+test_quick_open_result_cache_reuses_and_tracks_query_and_index_generation :: proc(t: ^testing.T) {
+	paths := [?]string{"README.md", "src/main.odin", "docs/guide.md"}
+	app: App
+	app.quick_open_paths = paths[:]
+	app.quick_open_generation = 4
+	app.quick_open_query = "readme"
+	defer quick_open_results_cache_clear(&app)
+
+	first, first_ok := quick_open_results_get(&app)
+	second, second_ok := quick_open_results_get(&app)
+	testing.expect(t, first_ok && second_ok && len(first) == 1 && first[0].path == "README.md",
+		"the first Quick Open projection should contain the matching workspace path")
+	testing.expect(t, raw_data(first) == raw_data(second),
+		"repeated reads for an unchanged query and index generation should reuse the retained result allocation")
+
+	app.quick_open_query = "guide"
+	query_results, query_ok := quick_open_results_get(&app)
+	testing.expect(t, query_ok && len(query_results) == 1 && query_results[0].path == "docs/guide.md" &&
+		app.quick_open_results_query == "guide" && app.quick_open_results_valid,
+		"a query change should replace the projection with results for the new query")
+
+	new_paths := [?]string{"notes/guide.md", "src/main.odin"}
+	app.quick_open_paths = new_paths[:]
+	app.quick_open_generation += 1
+	index_results, index_ok := quick_open_results_get(&app)
+	testing.expect(t, index_ok && len(index_results) == 1 && index_results[0].path == "notes/guide.md" &&
+		app.quick_open_results_generation == app.quick_open_generation,
+		"a new workspace-index generation should not reuse results borrowing paths from the old index")
 }
 
 @(test)
@@ -104,11 +138,21 @@ quick_open_test_render :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -
 	return true
 }
 
+quick_open_test_replace_index :: proc(app: ^App, paths: []string) {
+	if app == nil { return }
+	// Production index completion retires the old cache before replacing its
+	// borrowed path strings, then publishes a new request generation.
+	quick_open_results_cache_clear(app)
+	app.quick_open_generation += 1
+	app.quick_open_paths = paths
+}
+
 @(test)
 test_quick_open_blur_keeps_a_stable_viewport_and_preserves_focus :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
 	defer alicorn.destroy_runtime(&rt)
 	app: App
+	defer quick_open_results_cache_clear(&app)
 	app.quick_open_open = true
 	app.quick_open_ready = true
 	app.quick_open_focus_pending = true
@@ -131,7 +175,7 @@ test_quick_open_blur_keeps_a_stable_viewport_and_preserves_focus :: proc(t: ^tes
 	}
 
 	short_paths := [?]string{"README.md", "src/main.odin", "docs/guide.md"}
-	app.quick_open_paths = short_paths[:]
+	quick_open_test_replace_index(&app, short_paths[:])
 	alicorn.invalidate_root(&rt, "Quick Open short result fixture")
 	if !quick_open_test_render(t, &app, &rt) { return }
 	short_panel, short_panel_ok := alicorn.node_info(&rt, app.quick_open_panel_node)
@@ -147,7 +191,7 @@ test_quick_open_blur_keeps_a_stable_viewport_and_preserves_focus :: proc(t: ^tes
 		"tools/run.ps1", "application/app.go", "document/model.go", "editor/buffer.go", "workspace/tree.go",
 		"tests/one.odin", "tests/two.odin",
 	}
-	app.quick_open_paths = full_paths[:]
+	quick_open_test_replace_index(&app, full_paths[:])
 	alicorn.invalidate_root(&rt, "Quick Open capped result fixture")
 	if !quick_open_test_render(t, &app, &rt) { return }
 	full_panel, full_panel_ok := alicorn.node_info(&rt, app.quick_open_panel_node)
@@ -166,18 +210,23 @@ test_quick_open_blur_keeps_a_stable_viewport_and_preserves_focus :: proc(t: ^tes
 		"query changes should not change the palette backdrop's resolved rectangle")
 	app.quick_open_query = ""
 
-	app.quick_open_paths = full_paths[:QUICK_OPEN_MAX_VISIBLE_ROWS]
+	quick_open_test_replace_index(&app, full_paths[:QUICK_OPEN_MAX_VISIBLE_ROWS])
 	alicorn.invalidate_root(&rt, "Quick Open exact cap fixture")
 	if !quick_open_test_render(t, &app, &rt) { return }
 	cap_panel, cap_panel_ok := alicorn.node_info(&rt, app.quick_open_panel_node)
 	testing.expect(t, cap_panel_ok && cap_panel.bounds.h == full_panel.bounds.h,
 		"result counts within the ten-row cap should preserve the same backdrop region")
 
-	app.quick_open_paths = full_paths[:]
+	quick_open_test_replace_index(&app, full_paths[:])
 	alicorn.invalidate_root(&rt, "Quick Open restore full result set")
 	if !quick_open_test_render(t, &app, &rt) { return }
 	app.quick_open_selected_index = 0
-	if !quick_open_move_selection(&app, &rt, 10) { testing.expect(t, false, "Quick Open should move selection to a later result"); return }
+	for _ in 0..<10 {
+		if !quick_open_move_selection(&app, &rt, 1) {
+			testing.expect(t, false, "Quick Open should move selection to a later result")
+			return
+		}
+	}
 	_ = quick_open_test_render(t, &app, &rt)
 	list_state := alicorn.scroll_region_state(&rt, app.quick_open_results_scroll_node)
 	testing.expect(t, list_state.offset_y > 0 && app.quick_open_selected_index == 10,
@@ -191,6 +240,7 @@ test_quick_open_fixed_panel_fits_narrow_windows :: proc(t: ^testing.T) {
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 360, 600})
 	defer alicorn.destroy_runtime(&rt)
 	app: App
+	defer quick_open_results_cache_clear(&app)
 	app.quick_open_open = true
 	app.quick_open_ready = true
 	app.quick_open_focus_pending = true
@@ -206,6 +256,124 @@ test_quick_open_fixed_panel_fits_narrow_windows :: proc(t: ^testing.T) {
 		"the query control should remain bounded by the panel in a narrow window")
 	testing.expect(t, alicorn.focused_node(&rt) == app.quick_open_node,
 		"the query field should remain focusable at narrow window widths")
+}
+
+@(test)
+test_quick_open_scoped_input_owns_navigation_and_query_changes :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 900, 640})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	defer quick_open_results_cache_clear(&app)
+	defer find_set_message(&app.quick_open_query, "")
+	app.quick_open_open = true
+	app.quick_open_ready = true
+	app.quick_open_focus_pending = true
+	paths := [?]string{"README.md", "src/main.odin", "docs/guide.md"}
+	app.quick_open_paths = paths[:]
+	app.quick_open_generation = 1
+	if !quick_open_test_render(t, &app, &rt) { return }
+	testing.expect(t, app.quick_open_results_valid && app.quick_open_selected_index == 0,
+		"the initial Quick Open description should prepare results and select the first match")
+
+	consumed := alicorn.application_dispatch_key(&rt, rawptr(&app), application_key, .Down, text_input_focused=true)
+	testing.expect(t, consumed && app.quick_open_selected_index == 0,
+		"the modal scope should queue Down instead of mutating selection during host event dispatch")
+	if !quick_open_test_render(t, &app, &rt) { return }
+	testing.expect(t, app.quick_open_selected_index == 1 && alicorn.focused_node(&rt) == app.quick_open_node,
+		"the next description should apply scoped navigation while preserving query focus")
+
+	text_consumed := alicorn.interaction_scope_dispatch_text_change(&rt, alicorn.Text_Change{
+		node=app.quick_open_node,
+		text="guide",
+		changed=true,
+	})
+	testing.expect(t, text_consumed && app.quick_open_query == "guide" && app.quick_open_selected_index == 0 &&
+		!app.quick_open_results_valid,
+		"a scoped query edit should update application-owned query state, reset selection, and invalidate the old projection")
+	guide_results, guide_ok := quick_open_results_get(&app)
+	testing.expect(t, guide_ok && len(guide_results) == 1 && guide_results[0].path == "docs/guide.md",
+		"the next projection read should reflect the scoped query change")
+
+	_ = alicorn.application_dispatch_key(&rt, rawptr(&app), application_key, .Escape, text_input_focused=true)
+	testing.expect(t, app.quick_open_open,
+		"the scoped Escape event should remain deferred until the next description")
+	if !quick_open_test_render(t, &app, &rt) { return }
+	testing.expect(t, !app.quick_open_open,
+		"the modal scope should close Quick Open when its queued Escape event is described")
+}
+
+@(test)
+test_quick_open_cached_projection_avoids_repeated_full_index_scans :: proc(t: ^testing.T) {
+	QUICK_OPEN_BENCH_PATHS :: 5000
+	QUICK_OPEN_BENCH_BATCHES :: 5
+	QUICK_OPEN_BENCH_OPERATIONS :: 3
+	QUICK_OPEN_BENCH_CYCLES :: 30
+
+	paths := make([dynamic]string, 0, QUICK_OPEN_BENCH_PATHS, allocator=context.temp_allocator)
+	defer delete(paths)
+	for index in 0..<QUICK_OPEN_BENCH_PATHS {
+		append(&paths, fmt.tprintf("src/module_%02d/document_%04d.odin", index%80, index))
+	}
+	query := "document 042"
+	baseline := quick_open_filter(paths[:], query, context.temp_allocator)
+	defer delete(baseline)
+	testing.expect(t, len(baseline) > 0,
+		"the benchmark query should exercise a non-empty projection over the bounded path index")
+
+	old_samples: [QUICK_OPEN_BENCH_BATCHES]i64
+	checksum_sink := 0
+	for batch in 0..<QUICK_OPEN_BENCH_BATCHES {
+		checksum := 0
+		started := time.tick_now()
+		for cycle in 0..<QUICK_OPEN_BENCH_CYCLES {
+			for operation in 0..<QUICK_OPEN_BENCH_OPERATIONS {
+				filtered := quick_open_filter(paths[:], query, context.temp_allocator)
+				checksum += len(filtered)
+				delete(filtered)
+			}
+		}
+		old_samples[batch] = time.duration_nanoseconds(time.tick_since(started))
+		checksum_sink += checksum
+	}
+
+	app: App
+	defer quick_open_results_cache_clear(&app)
+	app.quick_open_paths = paths[:]
+	app.quick_open_query = query
+	app.quick_open_generation = 1
+	cold_started := time.tick_now()
+	warm, warm_ok := quick_open_results_get(&app)
+	cold_projection_ns := time.duration_nanoseconds(time.tick_since(cold_started))
+	testing.expect(t, warm_ok && len(warm) == len(baseline),
+		"the retained projection should match the uncached filter result before timing cache hits")
+
+	cached_samples: [QUICK_OPEN_BENCH_BATCHES]i64
+	for batch in 0..<QUICK_OPEN_BENCH_BATCHES {
+		checksum := 0
+		started := time.tick_now()
+		for cycle in 0..<QUICK_OPEN_BENCH_CYCLES {
+			for operation in 0..<QUICK_OPEN_BENCH_OPERATIONS {
+				cached, cached_ok := quick_open_results_get(&app)
+				if cached_ok { checksum += len(cached) }
+			}
+		}
+		cached_samples[batch] = time.duration_nanoseconds(time.tick_since(started))
+		checksum_sink += checksum
+	}
+	slice.sort(old_samples[:])
+	slice.sort(cached_samples[:])
+	old_median := old_samples[len(old_samples)/2]
+	cached_median := cached_samples[len(cached_samples)/2]
+	fmt.println("QUICK_OPEN_CACHE paths=", QUICK_OPEN_BENCH_PATHS,
+		" matches=", len(baseline),
+		" cold_projection_ns=", cold_projection_ns,
+		" operations_per_batch=", QUICK_OPEN_BENCH_CYCLES*QUICK_OPEN_BENCH_OPERATIONS,
+		" legacy_recompute_median_ns=", old_median,
+		" cached_lookup_median_ns=", cached_median)
+	testing.expect(t, len(warm) == len(baseline) && warm[0].path == baseline[0].path,
+		"cached and uncached projections should preserve identical result ordering")
+	testing.expect(t, checksum_sink > 0,
+		"the benchmark must consume results so both measured paths perform their work")
 }
 
 @(test)

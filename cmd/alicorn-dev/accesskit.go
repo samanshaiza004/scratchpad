@@ -12,13 +12,32 @@ import (
 
 const accessKitVersion = "0.23.1"
 
+func alicornUsesAccessKit(alicornRoot string) (bool, error) {
+	// Alicorn moved the SDL3 AccessKit adapter out of the legacy native host
+	// package. Support both layouts while older pinned checkouts are in use.
+	for _, relative := range []string{
+		filepath.Join("host", "sdl3", "accessibility", "accesskit.odin"),
+		filepath.Join("native", "sdl_gpu", "accessibility_accesskit.odin"),
+	} {
+		path := filepath.Join(alicornRoot, relative)
+		if _, err := os.Stat(path); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect Alicorn AccessKit integration at %s: %w", path, err)
+		}
+	}
+	return false, nil
+}
+
 func accessKitLinkerFlags(alicornRoot string) (string, error) {
 	// Older Alicorn checkouts do not use AccessKit and should not need its
 	// native distribution just to build Scratchpad.
-	if _, err := os.Stat(filepath.Join(alicornRoot, "native", "sdl_gpu", "accessibility_accesskit.odin")); errors.Is(err, os.ErrNotExist) {
+	usesAccessKit, err := alicornUsesAccessKit(alicornRoot)
+	if err != nil {
+		return "", err
+	}
+	if !usesAccessKit {
 		return "", nil
-	} else if err != nil {
-		return "", fmt.Errorf("inspect Alicorn AccessKit integration: %w", err)
 	}
 
 	flags, library, err := accessKitLinkerFlagsFor(alicornRoot, runtime.GOOS, runtime.GOARCH)
@@ -41,10 +60,12 @@ func accessKitLinkerFlags(alicornRoot string) (string, error) {
 }
 
 func accessKitCompilerArguments(alicornRoot string) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(alicornRoot, "native", "sdl_gpu", "accessibility_accesskit.odin")); errors.Is(err, os.ErrNotExist) {
+	usesAccessKit, err := alicornUsesAccessKit(alicornRoot)
+	if err != nil {
+		return nil, err
+	}
+	if !usesAccessKit {
 		return nil, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("inspect Alicorn AccessKit integration: %w", err)
 	}
 
 	switch runtime.GOOS {
