@@ -6,6 +6,7 @@ import "core:os"
 import "core:strings"
 import odin_runtime "base:runtime"
 import alicorn "alicorn:runtime"
+import gui "alicorn:ui"
 import host "alicorn:native/sdl_gpu"
 import theme "alicorn:theme"
 import alikit "alikit:command_palette"
@@ -475,6 +476,10 @@ App :: struct {
 	quick_open_restore_query_focus_pending: bool,
 	quick_open_previous_focus: alicorn.Node_ID,
 	quick_open_selected_index: int,
+	quick_open_results_cache: [dynamic]Quick_Open_Result,
+	quick_open_results_query: string,
+	quick_open_results_generation: u64,
+	quick_open_results_valid: bool,
 	quick_open_generation: u64,
 	quick_open_path_root: string,
 	quick_open_paths: []string,
@@ -502,6 +507,12 @@ App :: struct {
 	smoke_session_expected_second: string,
 	smoke_session_expected_preview: string,
 	smoke_session_passed: bool,
+}
+
+// Adapt the native host's event-loop waker to Alicorn's backend-neutral UI
+// surface. The host retains ownership of the borrowed wake callback.
+scratchpad_ui_waker :: proc(waker: host.Application_Waker) -> gui.Application_Waker {
+	return gui.Application_Waker{data=waker.data, wake=waker.wake}
 }
 
 editor_window_request_is_rejected :: proc(app: ^App, request: bridge.Visible_Window_Request) -> bool {
@@ -674,7 +685,7 @@ stop_backend :: proc(app: ^App) -> (stopped: bool, message: string) {
 application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 	app := cast(^App)state
 	app.waker = waker
-	app.theme_compiler.waker = waker
+	app.theme_compiler.waker = scratchpad_ui_waker(waker)
 	start_backend(app)
 	if app.selected_theme_id == SCRATCHPAD_THEME_BUILTIN_MOCHA {
 		if !scratchpad_theme_compile_mocha_request(app) || !scratchpad_theme_pending_set(app, app.selected_theme_id) {
@@ -688,7 +699,7 @@ application_start :: proc(state: rawptr, waker: host.Application_Waker) {
 		}
 	}
 	if app.backend.started && app.live_theme.path != "" {
-		scratchpad_live_theme_start(&app.live_theme, waker)
+		scratchpad_live_theme_start(&app.live_theme, scratchpad_ui_waker(waker))
 	}
 	if app.appearance_fixture_workbench {
 		// One fixture-only deadline lets document loading settle before the host

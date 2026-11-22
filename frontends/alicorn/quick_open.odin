@@ -23,8 +23,21 @@ Quick_Open_Result :: struct {
 	order: int,
 }
 
+quick_open_results_cache_clear :: proc(app: ^App) {
+	if app == nil { return }
+	delete(app.quick_open_results_cache)
+	app.quick_open_results_cache = {}
+	if len(app.quick_open_results_query) > 0 { delete(app.quick_open_results_query, context.allocator) }
+	app.quick_open_results_query = ""
+	app.quick_open_results_generation = 0
+	app.quick_open_results_valid = false
+}
+
 quick_open_cache_clear :: proc(app: ^App) {
 	if app == nil { return }
+	// Result paths borrow from quick_open_paths, so retire the filtered index
+	// before freeing the path strings it references.
+	quick_open_results_cache_clear(app)
 	for &path in app.quick_open_paths { delete(path, context.allocator) }
 	delete(app.quick_open_paths)
 	app.quick_open_paths = {}
@@ -126,6 +139,7 @@ quick_open_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	app.quick_open_results_scroll_node = 0
 	app.quick_open_selected_index = 0
 	find_set_message(&app.quick_open_query, "")
+	quick_open_results_cache_clear(app)
 	find_set_message(&app.quick_open_error, "")
 	quick_open_request_index(app)
 	alicorn.invalidate_root(rt, "Scratchpad Quick Open opened")
@@ -139,6 +153,8 @@ quick_open_close_surface :: proc(app: ^App, rt: ^alicorn.Runtime, restore_focus:
 	app.quick_open_node = 0
 	app.quick_open_results_scroll_node = 0
 	find_set_message(&app.quick_open_query, "")
+	// Keep the result array alive through the current description: a row can
+	// activate Quick Open while quick_open_build is still iterating that array.
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad Quick Open closed") }
 }
 
@@ -220,8 +236,37 @@ quick_open_filter :: proc(paths: []string, query: string, allocator := context.t
 		score := quick_open_match_score(query, path)
 		if score >= 0 { append(&results, Quick_Open_Result{path=path, score=score, order=index}) }
 	}
-	quick_open_sort(results[:])
+	if len(query) > 0 { quick_open_sort(results[:]) }
 	return results
+}
+
+// quick_open_results_get keeps the score-sorted projection alive until either
+// the query or bounded workspace index changes. Builds, navigation, and
+// activation therefore share one result set instead of scanning the 5,000
+// path index independently for each operation.
+quick_open_results_get :: proc(app: ^App) -> (results: []Quick_Open_Result, ok: bool) {
+	if app == nil { return }
+	if app.quick_open_results_valid &&
+	   app.quick_open_results_generation == app.quick_open_generation &&
+	   app.quick_open_results_query == app.quick_open_query {
+		return app.quick_open_results_cache[:], true
+	}
+	quick_open_results_cache_clear(app)
+	filtered := quick_open_filter(app.quick_open_paths, app.quick_open_query, context.allocator)
+	query_copy, clone_error := strings.clone(app.quick_open_query, context.allocator)
+	if clone_error != nil {
+		delete(filtered)
+		find_set_message(&app.quick_open_error, "Could not retain the Quick Open query results.")
+		return
+	}
+	app.quick_open_results_cache = filtered
+	app.quick_open_results_query = query_copy
+	app.quick_open_results_generation = app.quick_open_generation
+	app.quick_open_results_valid = true
+	if app.quick_open_error == "Could not retain the Quick Open query results." {
+		find_set_message(&app.quick_open_error, "")
+	}
+	return app.quick_open_results_cache[:], true
 }
 
 quick_open_workspace_path :: proc(workspace_root, relative_path: string, allocator := context.temp_allocator) -> (string, bool) {
@@ -275,43 +320,74 @@ quick_open_execute :: proc(app: ^App, rt: ^alicorn.Runtime, path: string, from_b
 	return true
 }
 
-quick_open_move_selection :: proc(app: ^App, rt: ^alicorn.Runtime, direction: int) -> bool {
+quick_open_move_selection :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	direction: int,
+	during_description := false,
+) -> bool {
 	if app == nil || rt == nil || !app.quick_open_open { return false }
-	results := quick_open_filter(app.quick_open_paths, app.quick_open_query, context.temp_allocator)
-	defer delete(results)
+	results, results_ok := quick_open_results_get(app)
+	if !results_ok { return true }
 	if len(results) > 0 {
-		app.quick_open_selected_index = clamp(app.quick_open_selected_index+direction, 0, len(results)-1)
+		view := alicorn.Roving_View{count=len(results)}
+		current := alicorn.roving_clamp(view, app.quick_open_selected_index)
+		if current < 0 { current = 0 }
+		move := alicorn.Roving_Move.Down if direction >= 0 else .Up
+		if proposed := alicorn.roving_propose(view, current, move); proposed >= 0 {
+			app.quick_open_selected_index = proposed
+		}
 		if app.quick_open_results_scroll_node != 0 {
 			_ = alicorn.virtual_list_ensure_visible(rt, app.quick_open_results_scroll_node, app.quick_open_selected_index, "Scratchpad Quick Open selection visibility")
 		}
 	}
-	alicorn.invalidate_root(rt, "Scratchpad Quick Open selection moved")
+	if !during_description { alicorn.invalidate_root(rt, "Scratchpad Quick Open selection moved") }
 	return true
 }
 
 quick_open_execute_selected :: proc(app: ^App, rt: ^alicorn.Runtime, from_build := false) -> bool {
 	if app == nil || rt == nil || !app.quick_open_open { return false }
-	results := quick_open_filter(app.quick_open_paths, app.quick_open_query, context.temp_allocator)
-	defer delete(results)
-	if app.quick_open_selected_index < 0 || app.quick_open_selected_index >= len(results) { return true }
+	results, results_ok := quick_open_results_get(app)
+	if !results_ok { return true }
+	app.quick_open_selected_index = alicorn.roving_clamp(
+		alicorn.Roving_View{count=len(results)},
+		app.quick_open_selected_index,
+	)
+	if app.quick_open_selected_index < 0 { app.quick_open_selected_index = 0; return true }
 	return quick_open_execute(app, rt, results[app.quick_open_selected_index].path, from_build)
 }
 
-quick_open_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
+quick_open_text_change :: proc(
+	state: rawptr,
+	rt: ^alicorn.Runtime,
+	change: alicorn.Text_Change,
+	invalidate := true,
+) {
 	app := cast(^App)state
 	if app == nil || rt == nil || !app.quick_open_open || change.node != app.quick_open_node || !change.changed { return }
 	find_set_message(&app.quick_open_query, change.text)
+	quick_open_results_cache_clear(app)
 	app.quick_open_selected_index = 0
-	alicorn.invalidate_root(rt, "Scratchpad Quick Open query changed")
+	if app.quick_open_error == "Could not retain the Quick Open query results." {
+		find_set_message(&app.quick_open_error, "")
+	}
+	if invalidate { alicorn.invalidate_root(rt, "Scratchpad Quick Open query changed") }
+}
+
+quick_open_scope_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) -> bool {
+	app := cast(^App)state
+	if app == nil || !app.quick_open_open || change.node != app.quick_open_node || !change.changed { return false }
+	quick_open_text_change(state, rt, change, invalidate=false)
+	return true
 }
 
 quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	if app == nil || ui == nil || rt == nil || !app.quick_open_open { return }
 	quick_open_request_index(app)
-	results := quick_open_filter(app.quick_open_paths, app.quick_open_query, alicorn.runtime_scratch_allocator(rt))
-	defer delete(results)
+	results, results_ok := quick_open_results_get(app)
+	if !results_ok { results = nil }
 	if len(results) == 0 { app.quick_open_selected_index = 0
-	} else { app.quick_open_selected_index = clamp(app.quick_open_selected_index, 0, len(results)-1) }
+	} else { app.quick_open_selected_index = alicorn.roving_clamp(alicorn.Roving_View{count=len(results)}, app.quick_open_selected_index) }
 	backdrop_color := scratchpad_modal_overlay_color(app, rt)
 	panel_fill := scratchpad_modal_panel_fill(app, rt)
 	backdrop_effect := scratchpad_modal_backdrop_effect(app, rt)
@@ -333,6 +409,26 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		fill=panel_fill,
 		backdrop_effect=backdrop_effect,
 	)
+	_ = gui.interaction_scope(
+		ui,
+		app.quick_open_panel_node,
+		rawptr(app),
+		gui.Interaction_Scope_Options{
+			keys={.Escape, .Return, .Up, .Down},
+			modal=true,
+			on_text_change=quick_open_scope_text_change,
+		},
+	)
+	for {
+		event, found := gui.interaction_event_next(ui, app.quick_open_panel_node)
+		if !found { break }
+		if event.kind == .Key { _ = quick_open_handle_key(app, rt, event.key, from_build=true) }
+	}
+	if !app.quick_open_open {
+		alicorn.surface_end(ui)
+		alicorn.modal_overlay_end(ui)
+		return
+	}
 	alicorn.container_begin(ui, .Container, label="quick-open-heading", style=alicorn.layout_style(.Row, height=28, justify=.Space_Between, align=.Center))
 	gui.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22, grow=1))
 	alicorn.container_end(ui)
@@ -382,19 +478,19 @@ quick_open_pointer :: proc(app: ^App, rt: ^alicorn.Runtime, event: alicorn.Point
 	return true
 }
 
-quick_open_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
+quick_open_handle_key :: proc(app: ^App, rt: ^alicorn.Runtime, key: host.Application_Key, from_build := false) -> bool {
 	if app == nil || rt == nil || !app.quick_open_open { return false }
 	#partial switch key {
 	case .Escape:
 		quick_open_close_surface(app, rt, true)
 		return true
 	case .Return:
-		if !app.quick_open_loading || app.quick_open_ready { return quick_open_execute_selected(app, rt) }
+		if !app.quick_open_loading || app.quick_open_ready { return quick_open_execute_selected(app, rt, from_build) }
 		return true
 	case .Up:
-		return quick_open_move_selection(app, rt, -1)
+		return quick_open_move_selection(app, rt, -1, from_build)
 	case .Down:
-		return quick_open_move_selection(app, rt, 1)
+		return quick_open_move_selection(app, rt, 1, from_build)
 	case:
 		return true
 	}

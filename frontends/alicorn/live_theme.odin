@@ -14,7 +14,6 @@ import "core:time"
 import alicorn "alicorn:runtime"
 import theme "alicorn:theme"
 import gui "alicorn:ui"
-import host "alicorn:native/sdl_gpu"
 
 SCRATCHPAD_LIVE_EDITOR_THEME_ENV :: "SCRATCHPAD_LIVE_EDITOR_THEME_PATH"
 SCRATCHPAD_LIVE_THEME_POLL_INTERVAL :: 80 * time.Millisecond
@@ -40,7 +39,7 @@ Scratchpad_Live_Theme_Candidate :: struct {
 Scratchpad_Live_Theme :: struct {
 	path: string,
 	worker: ^thread.Thread,
-	waker: host.Application_Waker,
+	waker: gui.Application_Waker,
 	mutex: sync.Mutex,
 	stop_requested: bool,
 	candidate_ready: bool,
@@ -233,7 +232,7 @@ scratchpad_live_theme_watch :: proc(data: rawptr) {
 
 scratchpad_live_theme_start :: proc(
 	live: ^Scratchpad_Live_Theme,
-	waker: host.Application_Waker,
+	waker: gui.Application_Waker,
 ) {
 	if live == nil || live.path == "" || live.worker != nil { return }
 	live.waker = waker

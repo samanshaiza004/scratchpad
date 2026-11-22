@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "alicorn": {
-    "repository": "https://github.com/samanshaiza004/alicorn.git",
+    "repository": "https://github.com/Carnival-Science/Alicorn.git",
     "ref": "master",
     "revision": "3d49b8bd8db161a9decf95a8e3e304bd13d46ba3"
   },
