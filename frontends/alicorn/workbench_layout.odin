@@ -61,6 +61,10 @@ workbench_group_views_ordered :: proc(window: ^Workbench_State, group_id: Pane_G
 	return ordered
 }
 
+// scratchpad_workbench_group_tabs_build prepares the tab projection, then
+// describes it either directly or through the #231 adopted region. The region
+// exists only on the compact titlebar strip: the split-pane tab bar is built
+// inside a retained surface whose own invalidation already scopes it.
 scratchpad_workbench_group_tabs_build :: proc(
 	app: ^App,
 	ui: ^alicorn.UI,
@@ -71,7 +75,7 @@ scratchpad_workbench_group_tabs_build :: proc(
 ) {
 	if app == nil || ui == nil || rt == nil { return }
 	window := app_workbench_window(app)
-	if window == nil { return }
+	if window == nil { app.document_connected_tab_node_region_cache = 0; return }
 	ordered := workbench_group_views_ordered(window, group_id)
 	defer delete(ordered)
 	entries := make([dynamic]Workbench_Tab_Entry, 0, len(ordered)+1, allocator=context.temp_allocator)
@@ -79,7 +83,7 @@ scratchpad_workbench_group_tabs_build :: proc(
 	items := make([dynamic]alicorn.Tab_Bar_Item, 0, len(ordered)+1, allocator=context.temp_allocator)
 	defer delete(items)
 	group_index := workbench_group_find(window, group_id)
-	if group_index < 0 { return }
+	if group_index < 0 { app.document_connected_tab_node_region_cache = 0; return }
 	for view_id in ordered {
 		view_index := workbench_view_find(window, view_id)
 		if view_index < 0 { continue }
@@ -134,6 +138,7 @@ scratchpad_workbench_group_tabs_build :: proc(
 		})
 	}
 	if len(items) == 0 {
+		app.document_connected_tab_node_region_cache = 0
 		if show_empty {
 			label := "No views open"
 			if len(app.backend.state.documents) == 0 { label = "No documents open" }
@@ -165,6 +170,133 @@ scratchpad_workbench_group_tabs_build :: proc(
 	}
 	style := alicorn.layout_style(.Row, grow=1, height=height, clip=true)
 	if compact && width > 0 { style = alicorn.layout_style(.Row, width=width, height=height, clip=true) }
+
+	result_revision: u64
+	if compact {
+		signature := scratchpad_document_tabs_region_signature(app, rt, window, entries[:], items[:], width, height)
+		result_revision = region_generation_next(&app.document_tabs_region, signature)
+		region_style := alicorn.layout_style(.Row, grow=1, height=height, clip=true)
+		if width > 0 { region_style = alicorn.layout_style(.Row, width=width, height=height, clip=true) }
+		region_id, reused := alicorn.region_begin(
+			ui, "scratchpad-doc-tabs", result_revision,
+			style=region_style,
+		)
+		if reused {
+			if !app.find_open { app.document_connected_tab_node = app.document_connected_tab_node_region_cache }
+			return
+		}
+		scratchpad_workbench_group_tabs_emit(app, ui, rt, group_id, window, entries[:], items[:], options, style, group_index, compact)
+		alicorn.region_end(ui, region_id, false, 0)
+		if !app.find_open { app.document_connected_tab_node = app.document_connected_tab_node_region_cache }
+		return
+	}
+	scratchpad_workbench_group_tabs_emit(app, ui, rt, group_id, window, entries[:], items[:], options, style, group_index, compact)
+}
+
+// The region signature is the tab projection plus every non-item input the
+// emit path reads. Interaction state is included because tab_bar reports a
+// click only when the application calls it again: a reused region would leave
+// the activation pending and drop the click.
+scratchpad_document_tabs_region_signature :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	window: ^Workbench_State,
+	entries: []Workbench_Tab_Entry,
+	items: []alicorn.Tab_Bar_Item,
+	width, height: f32,
+) -> u64 {
+	hash := REGION_HASH_OFFSET
+	for entry, index in entries {
+		hash = region_hash_mix(hash, 1 if entry.search else 0)
+		hash = region_hash_mix(hash, u64(entry.view_id))
+		if index >= len(items) { continue }
+		item := items[index]
+		hash = region_hash_string(hash, item.label)
+		hash = region_hash_string(hash, item.tooltip)
+		hash = region_hash_bool(hash, item.selected)
+		hash = region_hash_bool(hash, item.dirty)
+		hash = region_hash_bool(hash, item.label_italic)
+		hash = region_hash_bool(hash, item.label_muted)
+		hash = region_hash_bool(hash, item.closable)
+		hash = region_hash_mix(hash, item.semantic_id.namespace)
+		hash = region_hash_mix(hash, item.semantic_id.value)
+	}
+	hash = region_hash_f32(hash, width)
+	hash = region_hash_f32(hash, height)
+	hash = region_hash_bool(hash, app.find_open)
+	hash = region_hash_bool(hash, app.floating_window != nil)
+	if app.floating_window != nil { hash = region_hash_string(hash, app.floating_window.document_id) }
+	hash = region_hash_mix(hash, u64(app.editor_theme))
+	hash = region_hash_mix(hash, u64(app.workbench_theme))
+	hash = region_hash_bool(hash, app.workspace_search_tab_open)
+	hash = region_hash_bool(hash, app.workspace_search_mode)
+	hash = region_hash_string(hash, app.workspace_search_query)
+	hash = region_hash_mix(hash, u64(window.focused_group_id))
+	hash = region_hash_mix(hash, u64(window.groups[0].active_view_id if len(window.groups) > 0 else 0))
+	hash = region_hash_string(hash, app.backend.state.git.diff_path)
+	hash = region_hash_bool(hash, app.accessibility_appearance_override_enabled)
+	hash = region_hash_bool(hash, app.accessibility_appearance.reduce_motion)
+	// tab_bar sizes tabs from the retained tab-bar scroll viewport, which is
+	// only known after the first layout of a new strip. Without this the first
+	// description's provisional tab widths would stay cached after the parent
+	// width settles.
+	if len(window.groups) > 0 {
+		tab_bar_key := alicorn.key_string(fmt.tprintf("workbench-group-tabs-%d", u64(window.groups[0].id)))
+		if container_id, found := alicorn.node_by_key(rt, tab_bar_key, .Container); found {
+			if info, ok := alicorn.node_info(rt, container_id); ok {
+				hash = region_hash_f32(hash, info.bounds.w)
+				hash = region_hash_f32(hash, info.bounds.h)
+			}
+			if node, ok := rt.nodes[container_id]; ok {
+				for child_id in node.children {
+					if child, child_ok := rt.nodes[child_id]; child_ok && child.kind == .Scroll_Region {
+						hash = region_hash_f32(hash, child.scroll_viewport_width)
+						hash = region_hash_f32(hash, child.scroll_offset_x)
+						break
+					}
+				}
+			}
+		}
+	}
+	// Pointer/keyboard interaction and tab drag-reorder are application-polled
+	// inputs, not retained state. A cached body would not observe them.
+	if rt != nil {
+		hash = region_hash_mix(hash, u64(rt.activation_node))
+		hash = region_hash_mix(hash, u64(rt.activation_sequence))
+		hash = region_hash_mix(hash, u64(rt.focused))
+		hash = region_hash_bool(hash, rt.focus_visible)
+	}
+	hash = region_hash_mix(hash, u64(app.workspace_drag_kind))
+	hash = region_hash_string(hash, app.workspace_drag_source_document_id)
+	hash = region_hash_mix(hash, app.workspace_drag_target.namespace)
+	hash = region_hash_mix(hash, app.workspace_drag_target.value)
+	hash = region_hash_mix(hash, u64(app.workspace_drag_position))
+	hash = region_hash_bool(hash, app.workspace_drag_motion_reset_pending)
+	hash = region_hash_bool(hash, app.workspace_drag_motion_reset_snap)
+	hash = region_hash_bool(hash, app.document_tab_reorder_motion_cleanup_needed)
+	hash = region_hash_mix(hash, app.document_tab_reorder_motion_signature)
+	return hash
+}
+
+// scratchpad_workbench_group_tabs_emit is the original tab-bar description.
+// It keeps the early returns and the action dispatch unchanged; the caller
+// places it inside the adopted region and owns the region end.
+scratchpad_workbench_group_tabs_emit :: proc(
+	app: ^App,
+	ui: ^alicorn.UI,
+	rt: ^alicorn.Runtime,
+	group_id: Pane_Group_ID,
+	window: ^Workbench_State,
+	entries: []Workbench_Tab_Entry,
+	items: []alicorn.Tab_Bar_Item,
+	options: alicorn.Tab_Bar_Options,
+	style: alicorn.Layout_Style,
+	group_index: int,
+	compact: bool,
+) {
+	if app == nil || ui == nil || rt == nil || window == nil { return }
+	ordered := workbench_group_views_ordered(window, group_id)
+	defer delete(ordered)
 	result := alicorn.tab_bar(
 		ui,
 		alicorn.key_string(fmt.tprintf("workbench-group-tabs-%d", u64(group_id))),
@@ -191,7 +323,7 @@ scratchpad_workbench_group_tabs_build :: proc(
 			)
 		}
 	}
-	if compact && !app.find_open { app.document_connected_tab_node = result.selected_tab }
+	if !app.find_open { app.document_connected_tab_node_region_cache = result.selected_tab }
 	if result.action == .None || result.item_index < 0 || result.item_index >= len(entries) { return }
 	entry := entries[result.item_index]
 	if entry.search {

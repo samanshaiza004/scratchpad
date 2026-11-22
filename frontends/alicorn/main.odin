@@ -272,6 +272,16 @@ App :: struct {
 	workspace_tree_state: alikit_tree.State,
 	workspace_tree_projection_signature: u64,
 	workspace_tree_projection_revision: u64,
+	// Issue #231 adoption: monotonic generations for the two adopted keyed
+	// regions. The projection revision above stays the tree's data identity;
+	// the region generation folds in realized-window, focus, and interaction
+	// inputs.
+	document_tabs_region: Region_Generation,
+	workspace_tree_region: Region_Generation,
+	// The selected tab is produced while the tab strip is described. On a
+	// reused region the body is skipped, so the last value is restored outside
+	// the region instead of being reset with the frame-local node caches.
+	document_connected_tab_node_region_cache: alicorn.Node_ID,
 	workspace_context_target: Workspace_Context_Target,
 	workspace_context_path: string,
 	workspace_context_is_dir: bool,

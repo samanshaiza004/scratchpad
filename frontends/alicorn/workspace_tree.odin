@@ -60,6 +60,19 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 		app=app, rows=rows[:], active_document_path=active_document.path,
 		has_active_document=has_active_document,
 	}
+	signature := workspace_tree_region_signature(app, rt, rows[:], window, active_document.path, has_active_document)
+	revision := region_generation_next(&app.workspace_tree_region, signature)
+	region_id, reused := alicorn.region_begin(
+		ui, "scratchpad-workspace-tree", revision,
+		style=alicorn.layout_style(.Column, grow=1, clip=true),
+	)
+	if reused {
+		// The body's only per-frame cache assignment. The retained scroll node
+		// is stable while the region is cached, so restore it for the frame's
+		// keyboard/pointer routing.
+		app.tree_scroll_owner = app.workspace_tree_state.scroll_node
+		return
+	}
 	_ = alicorn.drop_target(ui, SCRATCHPAD_DRAG_WORKSPACE, tree_semantic_id("", true), .On)
 	event := alikit_tree.build(
 		ui, &app.workspace_tree_state, window, alicorn.key_string(TREE_SCROLL_KEY),
@@ -69,6 +82,61 @@ build_workspace_tree :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	session_ui_restore_tree_focus(app, rt, rows[:])
 	workspace_tree_apply_event(app, rt, rows[:], event, false)
 	if tree_any_truncated(app) { gui.text(ui, "Some folders show only the first 200 entries.") }
+	alicorn.region_end(ui, region_id, false, 0)
+}
+
+// The projection revision is the tree's data identity. The region revision
+// additionally covers the realized scroll window (the virtual list only
+// describes visible rows), the model's focus/selection revision, the active
+// document highlight, the session restore request, and pending interaction.
+// Hashing the full row projection every frame is the region's main residual
+// cost; the emit of visible rows is what the cache skips.
+workspace_tree_region_signature :: proc(
+	app: ^App,
+	rt: ^alicorn.Runtime,
+	rows: []Tree_Row,
+	window: alikit_tree.Window,
+	active_document_path: string,
+	has_active_document: bool,
+) -> u64 {
+	hash := REGION_HASH_OFFSET
+	hash = region_hash_mix(hash, window.revision)
+	hash = region_hash_mix(hash, u64(window.total_count))
+	hash = region_hash_mix(hash, u64(window.offset))
+	hash = region_hash_mix(hash, u64(app.workspace_tree_state.model.revision))
+	hash = region_hash_mix(hash, u64(app.workspace_tree_state.model.focused_id))
+	hash = region_hash_mix(hash, u64(app.workspace_tree_state.model.selected_id))
+	hash = region_hash_bool(hash, has_active_document)
+	hash = region_hash_string(hash, active_document_path)
+	hash = region_hash_bool(hash, tree_any_truncated(app))
+	hash = region_hash_string(hash, app.tree_root_path)
+	hash = region_hash_string(hash, app.tree_focused_path)
+	hash = region_hash_bool(hash, app.tree_focused_is_dir)
+	hash = region_hash_mix(hash, u64(app.editor_theme))
+	hash = region_hash_mix(hash, u64(app.workbench_theme))
+	// The scroll node is retained by the tree. Its realized window is an input
+	// to the description even though the projection hash is unchanged.
+	if scroll_node := app.workspace_tree_state.scroll_node; scroll_node != 0 {
+		if info, found := alicorn.node_info(rt, scroll_node); found {
+			hash = region_hash_f32(hash, info.scroll_offset_y)
+			hash = region_hash_f32(hash, info.scroll_viewport_height)
+		}
+	}
+	if app.session_ui_initialized {
+		hash = region_hash_bool(hash, app.session_ui_tree_restore_complete)
+		hash = region_hash_bool(hash, app.session_ui_restore_pending)
+		hash = region_hash_mix(hash, u64(app.session_ui_restore_token))
+		hash = region_hash_f32(hash, app.session_ui.tree_scroll_y)
+	}
+	if rt != nil {
+		hash = region_hash_mix(hash, u64(rt.activation_node))
+		hash = region_hash_mix(hash, u64(rt.activation_sequence))
+		hash = region_hash_mix(hash, u64(rt.focused))
+		hash = region_hash_bool(hash, rt.focus_visible)
+		preferences := alicorn.style_root_accessibility_observation_get(rt).preferences
+		hash = region_hash_bool(hash, preferences.differentiate_without_color)
+	}
+	return hash
 }
 
 Workspace_Tree_Callback_Data :: struct {
