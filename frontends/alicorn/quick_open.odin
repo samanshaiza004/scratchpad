@@ -123,6 +123,9 @@ quick_open_open_surface :: proc(app: ^App, rt: ^alicorn.Runtime) {
 	app.quick_open_focus_pending = true
 	app.quick_open_restore_pending = false
 	app.quick_open_node = 0
+	app.quick_open_motion_accent_node = 0
+	app.quick_open_reveal_pending = true
+	app.quick_open_motion_policy_signature = 0
 	app.quick_open_results_scroll_node = 0
 	app.quick_open_selected_index = 0
 	find_set_message(&app.quick_open_query, "")
@@ -137,6 +140,9 @@ quick_open_close_surface :: proc(app: ^App, rt: ^alicorn.Runtime, restore_focus:
 	app.quick_open_focus_pending = false
 	app.quick_open_restore_pending = restore_focus
 	app.quick_open_node = 0
+	app.quick_open_motion_accent_node = 0
+	app.quick_open_reveal_pending = false
+	app.quick_open_motion_policy_signature = 0
 	app.quick_open_results_scroll_node = 0
 	find_set_message(&app.quick_open_query, "")
 	if rt != nil { alicorn.invalidate_root(rt, "Scratchpad Quick Open closed") }
@@ -336,7 +342,48 @@ quick_open_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime) {
 	alicorn.container_begin(ui, .Container, label="quick-open-heading", style=alicorn.layout_style(.Row, height=28, justify=.Space_Between, align=.Center))
 	gui.text(ui, "Quick Open", style=alicorn.layout_style(.Row, height=22, grow=1))
 	alicorn.container_end(ui)
-	app.quick_open_node = alicorn.text_field(ui, app.quick_open_query, key=alicorn.key_string("scratchpad-quick-open-query"), style=alicorn.layout_style(.Row, height=40), text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE)
+	if gui.row(ui, key=alicorn.key_string("scratchpad-quick-open-query-row"), height=44, gap=4, align=.Center) {
+		// One decorative accent opts into a birth Reveal. The panel, query,
+		// focus, and accessible controls stay available immediately; this is
+		// paint-only and close never leaves an exit ghost.
+		app.quick_open_motion_accent_node = alicorn.surface_begin(
+			ui,
+			alicorn.surface_core_color_role(.Accent),
+			key=alicorn.key_string("scratchpad-quick-open-motion-accent"),
+			style=alicorn.layout_style(.Row, width=2, height=26),
+			label="scratchpad-quick-open-motion-accent",
+		)
+		alicorn.surface_end(ui)
+		if app.quick_open_motion_accent_node != 0 {
+			policy_signature := scratchpad_motion_policy_signature(app, rt, app.workbench_theme)
+			intent := gui.Motion_Intent.Settle
+			should_declare := app.quick_open_motion_policy_signature != policy_signature
+			if app.quick_open_reveal_pending {
+				intent = .Reveal
+				should_declare = true
+			}
+			if should_declare {
+				status := gui.motion(
+					ui,
+					app.quick_open_motion_accent_node,
+					gui.Motion_Target{opacity=1, has_opacity=true, has_translation=true},
+					intent,
+					gui.Motion_Vector2{y=-6},
+				)
+				if status == .Ok {
+					app.quick_open_motion_policy_signature = policy_signature
+					if intent == .Reveal { app.quick_open_reveal_pending = false }
+				}
+			}
+		}
+		app.quick_open_node = alicorn.text_field(
+			ui,
+			app.quick_open_query,
+			key=alicorn.key_string("scratchpad-quick-open-query"),
+			style=alicorn.layout_style(.Row, grow=1, height=40),
+			text_style=SCRATCHPAD_PROMINENT_INPUT_TEXT_STYLE,
+		)
+	}
 	alicorn.container_begin(ui, .Container, label="quick-open-result-slot", key=alicorn.key_string("quick-open-result-slot"), style=alicorn.layout_style(.Column, height=QUICK_OPEN_RESULTS_HEIGHT, clip=true))
 	if app.quick_open_error != "" {
 		gui.text(ui, app.quick_open_error, style=alicorn.layout_style(.Row, height=22))

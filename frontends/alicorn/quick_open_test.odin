@@ -208,6 +208,134 @@ test_quick_open_fixed_panel_fits_narrow_windows :: proc(t: ^testing.T) {
 		"the query field should remain focusable at narrow window widths")
 }
 
+quick_open_motion_test_render :: proc(t: ^testing.T, app: ^App, rt: ^alicorn.Runtime) -> bool {
+	if !scratchpad_styles_ensure(app, rt) {
+		testing.expect(t, false, "Quick Open motion fixture should register the workbench theme")
+		return false
+	}
+	ui, should_build := alicorn.begin_frame(rt)
+	if !should_build {
+		testing.expect(t, false, "Quick Open motion fixture should build its invalidated description")
+		return false
+	}
+	alicorn.container_begin(&ui, .Root, key=alicorn.key_string("quick-open-motion-content-root"), style=alicorn.layout_style(.Column, grow=1))
+	scope := alicorn.style_environment_push(&ui, scratchpad_workbench_style_environment(app))
+	quick_open_build(app, &ui, rt)
+	alicorn.style_environment_pop(&ui, scope)
+	alicorn.container_end(&ui)
+	alicorn.end_frame(&ui)
+	return true
+}
+
+@(test)
+test_quick_open_reveals_only_its_decoration_once :: proc(t: ^testing.T) {
+	for reduce_motion in ([2]bool{false, true}) {
+		rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
+		app: App
+		app.accessibility_appearance_override_enabled = true
+		app.accessibility_appearance.reduce_motion = reduce_motion
+		app.quick_open_open = true
+		app.quick_open_focus_pending = true
+		app.quick_open_reveal_pending = true
+		app.quick_open_ready = true
+		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
+		if !quick_open_motion_test_render(t, &app, &rt) {
+			alicorn.destroy_runtime(&rt)
+			continue
+		}
+		quick_open_restore_focus_after_frame(&app, &rt)
+		accent_id := app.quick_open_motion_accent_node
+		accent, accent_ok := alicorn.node_info(&rt, accent_id)
+		query_focus_ok := app.quick_open_node != 0 && rt.focused == app.quick_open_node
+		stats := alicorn.motion_diagnostics_stats(&rt)
+		handle, handle_status := alicorn.motion_owner_begin(&rt, accent_id)
+		presentation := alicorn.motion_presentation(&rt, handle)
+		testing.expect(t, accent_ok && app.quick_open_panel_node != 0 && app.quick_open_node != 0 &&
+			query_focus_ok && !app.quick_open_reveal_pending,
+			"the Quick Open panel and query remain present and focused immediately while the accent reveals")
+		testing.expect(t, stats.reveals == 1 && handle_status == .Ok,
+			"the opt-in Reveal should belong only to the passive accent surface")
+		if reduce_motion {
+			testing.expect(t, !presentation.active && presentation.presented_opacity == 1 &&
+				presentation.presented_translation == [2]f32{0, 0},
+				"reduced motion should snap the Quick Open accent to its final presentation")
+		} else {
+			testing.expect(t, presentation.active && presentation.presented_opacity == 0 &&
+				presentation.presented_translation == [2]f32{0, -6},
+				"normal motion should reveal the accent from a small offset and zero opacity")
+		}
+
+		find_set_message(&app.quick_open_query, "src")
+		alicorn.invalidate_root(&rt, "Quick Open query rebuild after Reveal")
+		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
+		if quick_open_motion_test_render(t, &app, &rt) {
+			quick_open_restore_focus_after_frame(&app, &rt)
+			updated_accent, updated_ok := alicorn.node_info(&rt, app.quick_open_motion_accent_node)
+			updated_stats := alicorn.motion_diagnostics_stats(&rt)
+			testing.expect(t, updated_ok && app.quick_open_motion_accent_node == accent_id &&
+				updated_accent.bounds == accent.bounds && updated_stats.reveals == 1 &&
+				updated_stats.intent_declarations == stats.intent_declarations,
+				"query updates should preserve accent geometry and never replay its birth animation")
+			testing.expect(t, rt.focused == app.quick_open_node,
+				"query rebuilds should keep keyboard focus on the Quick Open field")
+		}
+		if !reduce_motion {
+			_ = alicorn.motion_tick(&rt, alicorn.Motion_Time(5_000_000_000))
+		}
+		testing.expect(t, alicorn.motion_activity(&rt).active_owners == 0,
+			"the Quick Open accent should have no motion activity after settlement")
+		quick_open_close_surface(&app, &rt, false)
+		testing.expect(t, !app.quick_open_reveal_pending,
+			"closing Quick Open should discard any pending entrance intent without an exit ghost")
+		alicorn.destroy_runtime(&rt)
+	}
+}
+
+@(test)
+test_quick_open_reduce_motion_change_during_reveal_does_not_replay_birth :: proc(t: ^testing.T) {
+	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 1000, 700})
+	defer alicorn.destroy_runtime(&rt)
+	app: App
+	app.accessibility_appearance_override_enabled = true
+	app.quick_open_open = true
+	app.quick_open_focus_pending = true
+	app.quick_open_reveal_pending = true
+	app.quick_open_ready = true
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(0))
+	if !quick_open_motion_test_render(t, &app, &rt) { return }
+	quick_open_restore_focus_after_frame(&app, &rt)
+	accent_id := app.quick_open_motion_accent_node
+	initial_stats := alicorn.motion_diagnostics_stats(&rt)
+	initial := alicorn.motion_diagnostics_owner_snapshot(&rt, accent_id)
+	testing.expect(t, initial.valid && initial.opacity.active && initial_stats.reveals == 1,
+		"the normal-motion Quick Open should begin its single decorative Reveal")
+
+	app.accessibility_appearance.reduce_motion = true
+	alicorn.invalidate_root(&rt, "Reduce Motion changed during Quick Open Reveal")
+	_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(20_000_000))
+	if quick_open_motion_test_render(t, &app, &rt) {
+		quick_open_restore_focus_after_frame(&app, &rt)
+		changed_stats := alicorn.motion_diagnostics_stats(&rt)
+		handle, handle_status := alicorn.motion_owner_begin(&rt, accent_id)
+		presentation := alicorn.motion_presentation(&rt, handle)
+		testing.expect(t, changed_stats.intent_declarations > initial_stats.intent_declarations &&
+			changed_stats.reveals == 1 && handle_status == .Ok && !presentation.active &&
+			presentation.presented_opacity == 1 && presentation.presented_translation == [2]f32{0, 0},
+			"a policy change should settle the existing entrance to its target without replaying Reveal")
+		testing.expect(t, rt.focused == app.quick_open_node,
+			"changing Reduce Motion during the accent entrance should preserve query focus")
+		alicorn.invalidate_root(&rt, "repeat Quick Open description after policy update")
+		_ = alicorn.motion_clock_set_time(&rt, alicorn.Motion_Time(30_000_000))
+		if quick_open_motion_test_render(t, &app, &rt) {
+			repeated_stats := alicorn.motion_diagnostics_stats(&rt)
+			testing.expect(t, repeated_stats.intent_declarations == changed_stats.intent_declarations &&
+				repeated_stats.reveals == 1,
+				"an unchanged motion policy should not add declarations or repeat the birth Reveal")
+		}
+	}
+	quick_open_close_surface(&app, &rt, false)
+}
+
 @(test)
 test_scratchpad_modal_effects_follow_system_accessibility_preferences :: proc(t: ^testing.T) {
 	for index in 0..<2 {
