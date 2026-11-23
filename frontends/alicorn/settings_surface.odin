@@ -47,7 +47,10 @@ settings_category_select :: proc(app: ^App, rt: ^alicorn.Runtime, category: Sett
 	alicorn.invalidate_root(rt, "Scratchpad Settings category changed")
 }
 
-settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, text_scale: f32 = 1) {
+settings_surface_build :: proc(
+	app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime, text_scale: f32 = 1,
+	navigation_style: Maybe(Settings_Navigation_Style) = nil,
+) {
 	if app == nil || ui == nil || rt == nil { return }
 	scale := max(text_scale, 1)
 	viewport := alicorn.viewport_bounds(rt)
@@ -74,8 +77,10 @@ settings_surface_build :: proc(app: ^App, ui: ^alicorn.UI, rt: ^alicorn.Runtime,
 	if gui.layout(ui, label="scratchpad-settings-body", style=alicorn.layout_style(wide ? .Row : .Column, grow=1, gap=gap, clip=true)) {
 		if wide {
 			alicorn.surface_begin(ui, alicorn.surface_core_color_role(.Subtle_Surface), key=alicorn.key_string("settings-navigation"), label="settings-navigation", style=alicorn.layout_style(.Column, width=navigation_width, padding=8, gap=6), shape=scratchpad_surface_shape(app, 4), material=scratchpad_surface_material(app, app.raised_surface_material), physical_height=scratchpad_surface_height(app, 0.25))
+			style := navigation_style.? or_else settings_navigation_style(app, ui, control_height)
 			for category in Settings_Category {
-				if gui.button(ui, names[category], key=fmt.tprintf("settings-category-%d", category), height=control_height, state=alicorn.Button_State{selected=app.settings_category == category}, content_style=alicorn.button_content_style(.Start, padding_x=12), variant=.Quiet) {
+				if settings_navigation_button(ui, category, names[category], app.settings_category == category,
+					navigation_width-16, style) {
 					settings_category_select(app, rt, category)
 				}
 			}

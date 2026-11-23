@@ -13,14 +13,20 @@ settings_test_find_node :: proc(rt: ^alicorn.Runtime, key, label: string) -> ali
 	return 0
 }
 
-settings_test_build :: proc(app: ^App, rt: ^alicorn.Runtime, scale: f32) -> bool {
+settings_test_build :: proc(
+	app: ^App, rt: ^alicorn.Runtime, scale: f32, navigation_style: Maybe(Settings_Navigation_Style) = nil,
+	resolved_navigation_style: ^Settings_Navigation_Style = nil,
+) -> bool {
 	if !scratchpad_styles_ensure(app, rt) { return false }
 	ui, build := alicorn.begin_frame(rt)
 	if !build { return false }
 	alicorn.container_begin(&ui, .Root, label="settings-test-root", style=alicorn.layout_style(grow=1))
 	scope := alicorn.style_environment_push(&ui, alicorn.Style_Environment{theme=app.workbench_theme, text_scale=scale})
+	if resolved_navigation_style != nil {
+		resolved_navigation_style^ = settings_navigation_style(app, &ui, max(44, 30*scale))
+	}
 	alicorn.container_end(&ui)
-	settings_surface_build(app, &ui, rt, scale)
+	settings_surface_build(app, &ui, rt, scale, navigation_style)
 	alicorn.style_environment_pop(&ui, scope)
 	alicorn.end_frame(&ui)
 	return true

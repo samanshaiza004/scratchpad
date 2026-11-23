@@ -4389,6 +4389,14 @@ application_stop :: proc(state: rawptr) {
 }
 
 main :: proc() {
+	when ODIN_OS == .Darwin {
+		if path, capture := os.lookup_env("SCRATCHPAD_SETTINGS_STYLE_CAPTURE", context.allocator); capture {
+			ok := settings_style_capture_matrix(path)
+			delete(path)
+			if !ok { os.exit(1) }
+			return
+		}
+	}
 	context.assertion_failure_proc = scratchpad_consumer_diagnostics_begin()
 	defer scratchpad_consumer_diagnostics_end()
 	app: App
